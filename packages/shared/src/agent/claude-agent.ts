@@ -1070,6 +1070,7 @@ export class ClaudeAgent extends BaseAgent {
       // Get centralized mini agent configuration (from BaseAgent)
       // This ensures Claude and Codex agents use the same detection and constants
       const miniConfig = this.getMiniAgentConfig();
+      const isTutor = this.config.systemPromptPreset === 'tutor';
 
       // Block SDK tools that require UI we don't have:
       // - EnterPlanMode/ExitPlanMode: We use safe mode instead (user-controlled via UI)
@@ -1106,9 +1107,11 @@ export class ClaudeAgent extends BaseAgent {
 
       // Mini agents: filter to minimal set using centralized keys
       // Regular agents: use full set including docs and user sources
-      const mcpServers: Options['mcpServers'] = miniConfig.enabled
-        ? this.filterMcpServersForMiniAgent(fullMcpServers, miniConfig.mcpServerKeys)
-        : fullMcpServers;
+      const mcpServers: Options['mcpServers'] = isTutor
+        ? {}
+        : miniConfig.enabled
+          ? this.filterMcpServersForMiniAgent(fullMcpServers, miniConfig.mcpServerKeys)
+          : fullMcpServers;
       
       // Configure SDK options
       // Model is always set by caller via connection config
@@ -1219,7 +1222,15 @@ export class ClaudeAgent extends BaseAgent {
         // - Normal agents: Append to Claude Code's system prompt (recommended by docs)
         systemPrompt: miniConfig.enabled
           ? this.getMiniSystemPrompt()
-          : {
+          : isTutor
+            ? getSystemPrompt(
+                undefined,
+                this.config.debugMode,
+                this.workspaceRootPath,
+                this.config.session?.workingDirectory,
+                'tutor',
+              )
+            : {
               type: 'preset' as const,
               preset: 'claude_code' as const,
               // Working directory included for monorepo context file discovery
@@ -1246,9 +1257,11 @@ export class ClaudeAgent extends BaseAgent {
         // - Mini agents: minimal set for quick config edits (reduces token count ~70%)
         // - Regular agents: full Claude Code toolset
         tools: (() => {
-          const toolsValue = miniConfig.enabled
-            ? [...miniConfig.tools]  // Use centralized tool list
-            : { type: 'preset' as const, preset: 'claude_code' as const };
+          const toolsValue = isTutor
+            ? []
+            : miniConfig.enabled
+              ? [...miniConfig.tools]  // Use centralized tool list
+              : { type: 'preset' as const, preset: 'claude_code' as const };
           debug('[ClaudeAgent] 🔧 Tools configuration:', JSON.stringify(toolsValue));
           return toolsValue;
         })(),

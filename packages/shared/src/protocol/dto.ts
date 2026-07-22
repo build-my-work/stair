@@ -16,6 +16,7 @@ import type {
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
+import type { LearningSessionContext } from '../learning/types'
 import type { CustomEndpointConfig } from '../config/llm-connections'
 import type {
   AuthRequest as SharedAuthRequest,
@@ -103,6 +104,8 @@ export interface Session {
   supportsBranching?: boolean
   /** Workspace-scoped project id this session is bound to (undefined = unbound) */
   projectId?: string
+  /** Selected textbook chapter for tutor-mode sessions. */
+  learningContext?: LearningSessionContext
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */
@@ -138,7 +141,7 @@ export interface CreateSessionOptions {
   workingDirectory?: string | 'user_default' | 'none'
   model?: string
   llmConnection?: string
-  systemPromptPreset?: 'default' | 'mini' | string
+  systemPromptPreset?: 'default' | 'mini' | 'tutor' | string
   hidden?: boolean
   sessionStatus?: SessionStatus
   labels?: string[]
@@ -153,6 +156,8 @@ export interface CreateSessionOptions {
   branchFromSessionId?: string
   /** Bind the new session to a workspace project (inherits project's workingDirectory). */
   projectId?: string
+  /** Persist the selected textbook chapter without duplicating its full content. */
+  learningContext?: LearningSessionContext
   /** Mark the new session as a subtask of this parent session (undefined = top-level task). */
   parentSessionId?: string
   /** Tasks Conductor: slug of the task spec this session belongs to (orchestrator + child nodes). */

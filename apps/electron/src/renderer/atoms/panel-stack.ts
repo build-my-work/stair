@@ -69,6 +69,8 @@ export function getPanelTypeFromRoute(route: ViewRoute): PanelType {
   switch (navState.navigator) {
     case 'sessions':
       return 'session'
+    case 'projects':
+      return navState.details?.sessionId ? 'session' : 'other'
     case 'sources':
       return 'source'
     case 'settings':
@@ -106,12 +108,12 @@ function normalizeProportions(stack: PanelStackEntry[]): PanelStackEntry[] {
 }
 
 export function parseSessionIdFromRoute(route: ViewRoute): string | null {
-  // Strip any query string first — a `?x=y` tail on the last segment would otherwise
-  // leak into the extracted session id and poison every focused-session consumer.
-  const segments = route.split('?')[0].split('/')
-  const idx = segments.indexOf('session')
-  if (idx >= 0 && idx + 1 < segments.length) {
-    return segments[idx + 1]
+  const navState = parseRouteToNavigationState(route)
+  if (navState?.navigator === 'sessions') {
+    return navState.details?.sessionId ?? null
+  }
+  if (navState?.navigator === 'projects') {
+    return navState.details?.sessionId ?? null
   }
   return null
 }

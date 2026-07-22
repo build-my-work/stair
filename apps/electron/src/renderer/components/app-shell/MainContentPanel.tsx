@@ -364,7 +364,14 @@ export function MainContentPanel({
     if (projectDetails && projectDetails.type === 'project') {
       return wrapWithStoplight(
         <Panel variant="grow" className={className}>
-          <ProjectInfoPage projectSlug={projectDetails.projectSlug} />
+          {projectDetails.sessionId ? (
+            <ChatPage
+              sessionId={projectDetails.sessionId}
+              projectSlug={projectDetails.projectSlug}
+            />
+          ) : (
+            <ProjectInfoPage projectSlug={projectDetails.projectSlug} />
+          )}
         </Panel>
       )
     }

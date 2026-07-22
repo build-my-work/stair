@@ -560,6 +560,7 @@ export class PiAgent extends BaseAgent {
       baseUrl: runtime.baseUrl,
       customEndpoint: runtime.customEndpoint,
       customModels: runtime.customModels,
+      toolMode: this.config.systemPromptPreset === 'tutor' ? 'none' : 'default',
       // Branch params for Pi SDK session fork
       branchFromSdkSessionId: this.config.session?.branchFromSdkSessionId,
       branchFromSessionPath: this.config.session?.branchFromSessionPath,
@@ -583,7 +584,7 @@ export class PiAgent extends BaseAgent {
     // These tools (SubmitPlan, config_validate, source auth, call_llm, etc.)
     // are executed in the main process when the LLM calls them.
     this.assertBackendSessionToolParity();
-    let sessionToolDefs = getSessionToolProxyDefs();
+    let sessionToolDefs = this.config.systemPromptPreset === 'tutor' ? [] : getSessionToolProxyDefs();
 
     // Mirror Claude's gate: hide `browser_tool` when the user has disabled
     // the built-in browser tool. Without this filter, Pi would still advertise
@@ -615,6 +616,7 @@ export class PiAgent extends BaseAgent {
    * Send pool's proxy tool defs to subprocess for model visibility.
    */
   private registerPoolToolsWithSubprocess(): void {
+    if (this.config.systemPromptPreset === 'tutor') return;
     if (!this.mcpPool) return;
     const proxyDefs = this.mcpPool.getProxyToolDefs();
     if (proxyDefs.length > 0) {

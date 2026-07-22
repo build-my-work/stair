@@ -391,6 +391,12 @@ export const CHANNEL_MAP = {
   deleteProject: invoke(RPC_CHANNELS.projects.DELETE),
   listProjectAssets: invoke(RPC_CHANNELS.projects.LIST_ASSETS),
   uploadProjectAsset: invoke(RPC_CHANNELS.projects.UPLOAD_ASSET),
+  importProjectTextbook: invoke(RPC_CHANNELS.projects.IMPORT_TEXTBOOK),
+  parseProjectTextbookAsset: invoke(RPC_CHANNELS.projects.PARSE_TEXTBOOK_ASSET),
+  listProjectEpubHighlights: invoke(RPC_CHANNELS.projects.LIST_EPUB_HIGHLIGHTS),
+  saveProjectEpubHighlight: invoke(RPC_CHANNELS.projects.SAVE_EPUB_HIGHLIGHT),
+  deleteProjectEpubHighlight: invoke(RPC_CHANNELS.projects.DELETE_EPUB_HIGHLIGHT),
+  exportProjectEpubHighlights: invoke(RPC_CHANNELS.projects.EXPORT_EPUB_HIGHLIGHTS),
   deleteProjectAsset: invoke(RPC_CHANNELS.projects.DELETE_ASSET),
   onProjectsChanged: listener(RPC_CHANNELS.projects.CHANGED),
 

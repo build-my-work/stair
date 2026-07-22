@@ -190,6 +190,10 @@ export const routes = {
         ? `projects/project/${projectSlug}` as const
         : 'projects' as const,
 
+    /** Session opened within a project, preserving project navigation context */
+    projectSession: (projectSlug: string, sessionId: string) =>
+      `projects/project/${projectSlug}/session/${sessionId}` as const,
+
     /** Kanban board view (sessions navigator, board view mode, all sessions) */
     board: () => 'board' as const,
   },

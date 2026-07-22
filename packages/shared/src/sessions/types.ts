@@ -11,6 +11,7 @@
 
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
+import type { LearningSessionContext } from '../learning/types.ts';
 import type { StoredAttachment, MessageRole, ToolStatus, AuthRequestType, AuthStatus, CredentialInputMode, StoredMessage } from '@craft-agent/core/types';
 
 /**
@@ -35,7 +36,7 @@ export const SESSION_PERSISTENT_FIELDS = [
   // Config
   'enabledSourceSlugs', 'permissionMode', 'previousPermissionMode', 'workingDirectory',
   // Model/Connection
-  'model', 'llmConnection', 'connectionLocked', 'thinkingLevel',
+  'model', 'llmConnection', 'connectionLocked', 'thinkingLevel', 'systemPromptPreset',
   // Sharing
   'sharedUrl', 'sharedId',
   // Plan execution
@@ -54,7 +55,7 @@ export const SESSION_PERSISTENT_FIELDS = [
   // Automation origin
   'triggeredBy',
   // Project binding (workspace-scoped grouping)
-  'projectId',
+  'projectId', 'learningContext',
   // Kanban: task/subtask hierarchy + board column
   'parentSessionId',
   'kanbanColumn',
@@ -156,6 +157,8 @@ export interface SessionConfig {
   connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
+  /** Persisted agent role so specialized sessions survive app restarts. */
+  systemPromptPreset?: 'default' | 'mini' | 'tutor' | string;
   /**
    * Pending plan execution state - tracks "Accept & Compact" flow.
    * When set, indicates a plan needs to be executed after compaction completes.
@@ -210,6 +213,8 @@ export interface SessionConfig {
   triggeredBy?: { automationName?: string; event?: string; timestamp?: number };
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
+  /** Selected textbook chapter for a tutor session. */
+  learningContext?: LearningSessionContext;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -288,6 +293,8 @@ export interface SessionHeader {
   connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
+  /** Persisted agent role so specialized sessions survive app restarts. */
+  systemPromptPreset?: 'default' | 'mini' | 'tutor' | string;
   /**
    * Pending plan execution state - tracks "Accept & Compact" flow.
    * When set, indicates a plan needs to be executed after compaction completes.
@@ -317,6 +324,8 @@ export interface SessionHeader {
   triggeredBy?: { automationName?: string; event?: string; timestamp?: number };
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
+  /** Selected textbook chapter for a tutor session. */
+  learningContext?: LearningSessionContext;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -391,6 +400,8 @@ export interface SessionMetadata {
   connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
+  /** Persisted agent role so specialized sessions survive app restarts. */
+  systemPromptPreset?: 'default' | 'mini' | 'tutor' | string;
   /** ID of last message user has read - for unread detection */
   lastReadMessageId?: string;
   /** ID of the last final (non-intermediate) assistant message - for unread detection */
@@ -413,6 +424,8 @@ export interface SessionMetadata {
   branchFromMessageId?: string;
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
+  /** Selected textbook chapter for a tutor session. */
+  learningContext?: LearningSessionContext;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */

@@ -632,6 +632,7 @@ function AppShellContent({
   // Board view replaces the session-list navigator with the full-width Kanban panel,
   // so the navigator (and its resize handle) collapse to zero width while it's active.
   const isBoardView = isSessionsNavigation(navState) && navState.viewMode === 'board'
+  const hideProjectsNavigator = isProjectsNavigation(navState) && isSidebarVisible && !isAutoCompact
 
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
@@ -2624,9 +2625,11 @@ function AppShellContent({
                         id: `nav:projects:${p.config.id}`,
                         title: p.config.name,
                         icon: FolderKanban,
-                        // Highlight when on allSessions view AND filter includes this project (the jump-to state)
-                        variant: (sessionFilter?.kind === 'allSessions' && projectFilter.get(p.config.id) === 'include') ? "default" as const : "ghost" as const,
-                        onClick: () => handleJumpToProjectSessions(p.config.id),
+                        variant: (
+                          (isProjectsNavigation(navState) && navState.details?.projectSlug === p.config.slug)
+                          || (sessionFilter?.kind === 'allSessions' && projectFilter.get(p.config.id) === 'include')
+                        ) ? "default" as const : "ghost" as const,
+                        onClick: () => navigate(routes.view.projects(p.config.slug)),
                       })),
                     },
                     {
@@ -3601,7 +3604,7 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView ? 0 : sessionListWidth)}
+          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || hideProjectsNavigator ? 0 : sessionListWidth)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
           isRightSidebarVisible={false}
           isCompact={isAutoCompact}
@@ -3642,7 +3645,7 @@ function AppShellContent({
         )}
 
         {/* Session List Resize Handle (absolute, hidden in focused mode and board view) */}
-        {!effectiveSidebarAndNavigatorHidden && !isBoardView && (
+        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !hideProjectsNavigator && (
         <div
           ref={sessionListHandleRef}
           onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}

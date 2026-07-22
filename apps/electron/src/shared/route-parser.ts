@@ -52,6 +52,8 @@ export interface ParsedCompoundRoute {
   details: {
     type: string
     id: string
+    /** Selected session within a project detail route. */
+    sessionId?: string
   } | null
 }
 
@@ -184,10 +186,23 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
       return { navigator: 'projects', details: null }
     }
     if (segments[1] === 'project' && segments[2]) {
-      return {
-        navigator: 'projects',
-        details: { type: 'project', id: segments[2] },
+      if (segments.length === 3) {
+        return {
+          navigator: 'projects',
+          details: { type: 'project', id: segments[2] },
+        }
       }
+      if (segments.length === 5 && segments[3] === 'session' && segments[4]) {
+        return {
+          navigator: 'projects',
+          details: {
+            type: 'project',
+            id: segments[2],
+            sessionId: segments[4],
+          },
+        }
+      }
+      return null
     }
     return null
   }
@@ -322,7 +337,11 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
 
   if (parsed.navigator === 'projects') {
     if (!parsed.details) return 'projects'
-    return `projects/project/${parsed.details.id}`
+    const base = `projects/project/${parsed.details.id}`
+    if (parsed.details.sessionId) {
+      return `${base}/session/${parsed.details.sessionId}`
+    }
+    return base
   }
 
   // Sessions navigator
@@ -456,7 +475,14 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
     if (!compound.details) {
       return { type: 'view', name: 'projects', params: {} }
     }
-    return { type: 'view', name: 'project-info', id: compound.details.id, params: {} }
+    return {
+      type: 'view',
+      name: 'project-info',
+      id: compound.details.id,
+      params: compound.details.sessionId
+        ? { sessionId: compound.details.sessionId }
+        : {},
+    }
   }
 
   // Sessions
@@ -601,7 +627,13 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     }
     return {
       navigator: 'projects',
-      details: { type: 'project', projectSlug: compound.details.id },
+      details: {
+        type: 'project',
+        projectSlug: compound.details.id,
+        ...(compound.details.sessionId
+          ? { sessionId: compound.details.sessionId }
+          : {}),
+      },
     }
   }
 
@@ -689,7 +721,13 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
       if (parsed.id) {
         return {
           navigator: 'projects',
-          details: { type: 'project', projectSlug: parsed.id },
+          details: {
+            type: 'project',
+            projectSlug: parsed.id,
+            ...(parsed.params.sessionId
+              ? { sessionId: parsed.params.sessionId }
+              : {}),
+          },
         }
       }
       return { navigator: 'projects', details: null }
@@ -804,7 +842,13 @@ function navigationStateToCompoundRoute(state: NavigationState): ParsedCompoundR
   if (state.navigator === 'projects') {
     return {
       navigator: 'projects',
-      details: state.details ? { type: 'project', id: state.details.projectSlug } : null,
+      details: state.details
+        ? {
+            type: 'project',
+            id: state.details.projectSlug,
+            sessionId: state.details.sessionId,
+          }
+        : null,
     }
   }
 

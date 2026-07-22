@@ -514,15 +514,21 @@ export function NavigationProvider({
 
   // Keep the global session selection in sync with the focused panel
   useEffect(() => {
-    if (isSessionsNavigation(navigationState) && navigationState.details) {
-      setSession({ selected: navigationState.details.sessionId })
+    const selectedSessionId = isSessionsNavigation(navigationState)
+      ? navigationState.details?.sessionId
+      : isProjectsNavigation(navigationState)
+        ? navigationState.details?.sessionId
+        : undefined
+
+    if (selectedSessionId) {
+      setSession({ selected: selectedSessionId })
       if (workspaceId) {
         // Only persist if the session belongs to this workspace (prevents cross-workspace
         // pollution during workspace switch, when workspaceId changed but navigationState
         // still reflects the old workspace's focused panel)
-        const meta = store.get(sessionMetaMapAtom).get(navigationState.details.sessionId)
+        const meta = store.get(sessionMetaMapAtom).get(selectedSessionId)
         if (meta && meta.workspaceId === workspaceId) {
-          storage.set(storage.KEYS.lastSelectedSessionId, navigationState.details.sessionId, workspaceId)
+          storage.set(storage.KEYS.lastSelectedSessionId, selectedSessionId, workspaceId)
         }
       }
     }
@@ -631,6 +637,25 @@ export function NavigationProvider({
           || (remoteWorkspaceId && meta?.workspaceId === remoteWorkspaceId)
         if (!meta || !matchesWorkspace) {
           nextState = { ...nextState, details: null }
+        }
+      }
+
+      // Project sessions use the same session data while retaining their project route.
+      // If a restored/deep-linked session is stale, fall back to its parent project.
+      if (isProjectsNavigation(nextState) && nextState.details?.sessionId) {
+        const freshMetaMap = store.get(sessionMetaMapAtom)
+        const meta = freshMetaMap.get(nextState.details.sessionId)
+        const matchesWorkspace = !workspaceId
+          || meta?.workspaceId === workspaceId
+          || (remoteWorkspaceId && meta?.workspaceId === remoteWorkspaceId)
+        if (!meta || !matchesWorkspace) {
+          nextState = {
+            ...nextState,
+            details: {
+              type: 'project',
+              projectSlug: nextState.details.projectSlug,
+            },
+          }
         }
       }
 

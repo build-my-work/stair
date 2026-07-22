@@ -22,6 +22,7 @@ import { parseRouteToNavigationState } from '../../../shared/route-parser'
 import { closePanelAtom, focusedPanelIdAtom, type PanelStackEntry } from '@/atoms/panel-stack'
 import { useAppShellContext, AppShellProvider } from '@/context/AppShellContext'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
+import { navigate, routes } from '@/lib/navigate'
 import { MainContentPanel } from './MainContentPanel'
 import { PANEL_MIN_WIDTH, RADIUS_EDGE, RADIUS_INNER } from './panel-constants'
 
@@ -64,6 +65,14 @@ export function PanelSlot({
     closePanel(entry.id)
   }, [closePanel, entry.id])
 
+  const handleBack = useCallback(() => {
+    if (navState?.navigator === 'projects' && navState.details?.sessionId) {
+      navigate(routes.view.projects(navState.details.projectSlug))
+      return
+    }
+    handleClose()
+  }, [navState, handleClose])
+
   // Build close button for PanelHeader (via context override)
   const closeButton = useMemo(() => {
     return (
@@ -73,20 +82,19 @@ export function PanelSlot({
         tooltip={t("common.close")}
       />
     )
-  }, [handleClose])
+  }, [handleClose, t])
 
-  // Build back button for compact mode — closes the panel to reveal the session list.
-  // Same PanelHeaderCenterButton style as X and share, just on the left side.
+  // In compact mode, a project session drills back to its project before the project list.
   const backButton = useMemo(() => {
     if (!isCompact) return undefined
     return (
       <PanelHeaderCenterButton
         icon={<ChevronLeft className="h-4 w-4" />}
-        onClick={handleClose}
+        onClick={handleBack}
         tooltip={t("common.backToList")}
       />
     )
-  }, [isCompact, handleClose])
+  }, [isCompact, handleBack, t])
 
   // Override AppShellContext so ChatPage/PanelHeader gets our per-panel close button,
   // back button (compact mode), and isFocusedPanel for input field appearance

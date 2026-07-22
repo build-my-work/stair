@@ -33,6 +33,16 @@ describe('normalizePanelRouteForReconcile', () => {
     expect(normalized).toBe('allSessions/session/s2')
   })
 
+  it('keeps an explicit project session route unchanged', () => {
+    const resolver = (_state: NavigationState): NavigationState => ({
+      navigator: 'projects',
+      details: { type: 'project', projectSlug: 'other-project' },
+    })
+
+    const route = 'projects/project/operating-systems/session/s2' as const
+    expect(normalizePanelRouteForReconcile(route, resolver)).toBe(route)
+  })
+
   it('normalizes each session panel route independently', () => {
     const resolver = (state: NavigationState): NavigationState => {
       if (state.navigator === 'sessions' && !state.details) {

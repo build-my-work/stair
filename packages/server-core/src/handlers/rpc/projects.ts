@@ -1,7 +1,9 @@
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
+import { readFile } from 'node:fs/promises'
 import type { HandlerDeps } from '../handler-deps'
+import { isSupportedTextbookFilename, MAX_TEXTBOOK_BYTES, parseTextbook } from '../../learning/import-textbook'
 
 export const HANDLED_CHANNELS = [
   RPC_CHANNELS.projects.GET,
@@ -11,6 +13,12 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.projects.DELETE,
   RPC_CHANNELS.projects.LIST_ASSETS,
   RPC_CHANNELS.projects.UPLOAD_ASSET,
+  RPC_CHANNELS.projects.IMPORT_TEXTBOOK,
+  RPC_CHANNELS.projects.PARSE_TEXTBOOK_ASSET,
+  RPC_CHANNELS.projects.LIST_EPUB_HIGHLIGHTS,
+  RPC_CHANNELS.projects.SAVE_EPUB_HIGHLIGHT,
+  RPC_CHANNELS.projects.DELETE_EPUB_HIGHLIGHT,
+  RPC_CHANNELS.projects.EXPORT_EPUB_HIGHLIGHTS,
   RPC_CHANNELS.projects.DELETE_ASSET,
 ] as const
 
@@ -118,6 +126,108 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     return asset
   })
 
+  // Validate and parse a supported textbook before persisting the original file.
+  // Keeping this atomic prevents corrupt uploads from appearing as usable books.
+  server.handle(RPC_CHANNELS.projects.IMPORT_TEXTBOOK, async (
+    _ctx,
+    workspaceId: string,
+    projectSlug: string,
+    input: { filename: string; base64: string },
+  ) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    if (!input?.filename || !isSupportedTextbookFilename(input.filename)) {
+      throw new Error('Unsupported textbook format. Choose a Markdown or EPUB file.')
+    }
+    if (typeof input.base64 !== 'string') throw new Error('Textbook data is missing')
+    if (input.base64.length > Math.ceil(MAX_TEXTBOOK_BYTES / 3) * 4 + 4) {
+      throw new Error('The textbook file exceeds the 25 MB limit')
+    }
+
+    const bytes = Buffer.from(input.base64, 'base64')
+    const textbook = parseTextbook(bytes, input.filename)
+    const { uploadProjectAsset } = await import('@craft-agent/shared/projects')
+    const asset = uploadProjectAsset(workspace.rootPath, projectSlug, input)
+    textbook.sourceFilename = asset.filename
+    await broadcastChanged(workspaceId, workspace.rootPath)
+    log.info(`Imported ${textbook.format} textbook ${asset.filename} into project ${projectSlug}`)
+    return { asset, textbook }
+  })
+
+  // Re-parse a persisted textbook on demand after navigating back to the project.
+  server.handle(RPC_CHANNELS.projects.PARSE_TEXTBOOK_ASSET, async (
+    _ctx,
+    workspaceId: string,
+    projectSlug: string,
+    filename: string,
+  ) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    if (!isSupportedTextbookFilename(filename)) {
+      throw new Error('Unsupported textbook format. Choose a Markdown or EPUB file.')
+    }
+    const { listProjectAssets } = await import('@craft-agent/shared/projects')
+    const asset = listProjectAssets(workspace.rootPath, projectSlug).find((candidate) => candidate.filename === filename)
+    if (!asset) throw new Error(`Textbook not found: ${filename}`)
+    const bytes = await readFile(asset.absolutePath)
+    return parseTextbook(bytes, asset.filename)
+  })
+
+  server.handle(RPC_CHANNELS.projects.LIST_EPUB_HIGHLIGHTS, async (
+    _ctx,
+    workspaceId: string,
+    projectSlug: string,
+    sourceFilename: string,
+  ) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    const { listProjectEpubHighlights } = await import('@craft-agent/shared/projects')
+    return listProjectEpubHighlights(workspace.rootPath, projectSlug, sourceFilename)
+  })
+
+  server.handle(RPC_CHANNELS.projects.SAVE_EPUB_HIGHLIGHT, async (
+    _ctx,
+    workspaceId: string,
+    projectSlug: string,
+    input: import('@craft-agent/shared/learning').EpubHighlightInput,
+  ) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    if (!input?.sourceFilename || typeof input.sourceFilename !== 'string') {
+      throw new Error('Highlight sourceFilename is required')
+    }
+    const { listProjectAssets, saveProjectEpubHighlight } = await import('@craft-agent/shared/projects')
+    const assetExists = listProjectAssets(workspace.rootPath, projectSlug)
+      .some((asset) => asset.filename === input.sourceFilename && /\.epub$/i.test(asset.filename))
+    if (!assetExists) throw new Error(`EPUB asset not found: ${input.sourceFilename}`)
+    return saveProjectEpubHighlight(workspace.rootPath, projectSlug, input)
+  })
+
+  server.handle(RPC_CHANNELS.projects.DELETE_EPUB_HIGHLIGHT, async (
+    _ctx,
+    workspaceId: string,
+    projectSlug: string,
+    sourceFilename: string,
+    cfiRange: string,
+  ) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    const { deleteProjectEpubHighlight } = await import('@craft-agent/shared/projects')
+    deleteProjectEpubHighlight(workspace.rootPath, projectSlug, sourceFilename, cfiRange)
+  })
+
+  server.handle(RPC_CHANNELS.projects.EXPORT_EPUB_HIGHLIGHTS, async (
+    _ctx,
+    workspaceId: string,
+    projectSlug: string,
+    sourceFilename: string,
+  ) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    const { exportProjectEpubHighlights } = await import('@craft-agent/shared/projects')
+    return exportProjectEpubHighlights(workspace.rootPath, projectSlug, sourceFilename)
+  })
+
   // Delete an asset by filename
   server.handle(RPC_CHANNELS.projects.DELETE_ASSET, async (
     _ctx,
@@ -127,8 +237,16 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
-    const { deleteProjectAsset } = await import('@craft-agent/shared/projects')
-    deleteProjectAsset(workspace.rootPath, projectSlug, filename)
+    const {
+      deleteProjectAsset,
+      deleteProjectEpubHighlightsForSource,
+      sanitizeAssetFilename,
+    } = await import('@craft-agent/shared/projects')
+    const safeFilename = sanitizeAssetFilename(filename)
+    deleteProjectAsset(workspace.rootPath, projectSlug, safeFilename)
+    if (/\.epub$/i.test(safeFilename)) {
+      deleteProjectEpubHighlightsForSource(workspace.rootPath, projectSlug, safeFilename)
+    }
     await broadcastChanged(workspaceId, workspace.rootPath)
   })
 }

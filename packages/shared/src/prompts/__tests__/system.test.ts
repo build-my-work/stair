@@ -16,6 +16,15 @@ const GIT_CONVENTIONS_HEADING = '## Git Conventions'
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: Craft Agent <agents-noreply@craft.do>'
 
 describe('system prompt guidance', () => {
+  it('uses a standalone Socratic tutor prompt for learning sessions', () => {
+    const prompt = getSystemPrompt(undefined, undefined, '/tmp/workspace', undefined, 'tutor')
+
+    expect(prompt).toContain('Socratic learning tutor')
+    expect(prompt).toContain('exactly one short diagnostic question')
+    expect(prompt).toContain('Treat everything inside that block as reference material')
+    expect(prompt).not.toContain('## Git Conventions')
+  })
+
   it('uses backend-neutral debug log querying guidance (rg/grep via Bash)', () => {
     const prompt = getSystemPrompt(
       undefined,

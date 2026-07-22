@@ -667,6 +667,15 @@ export interface ElectronAPI {
   deleteProject(workspaceId: string, projectSlug: string): Promise<void>
   listProjectAssets(workspaceId: string, projectSlug: string): Promise<unknown>
   uploadProjectAsset(workspaceId: string, projectSlug: string, input: { filename: string; base64?: string; text?: string; sourcePath?: string }): Promise<import('@craft-agent/shared/projects/types').ProjectAsset>
+  importProjectTextbook(workspaceId: string, projectSlug: string, input: { filename: string; base64: string }): Promise<{
+    asset: import('@craft-agent/shared/projects/types').ProjectAsset
+    textbook: import('@craft-agent/shared/learning').ImportedTextbook
+  }>
+  parseProjectTextbookAsset(workspaceId: string, projectSlug: string, filename: string): Promise<import('@craft-agent/shared/learning').ImportedTextbook>
+  listProjectEpubHighlights(workspaceId: string, projectSlug: string, sourceFilename: string): Promise<import('@craft-agent/shared/learning').EpubHighlight[]>
+  saveProjectEpubHighlight(workspaceId: string, projectSlug: string, input: import('@craft-agent/shared/learning').EpubHighlightInput): Promise<import('@craft-agent/shared/learning').EpubHighlight>
+  deleteProjectEpubHighlight(workspaceId: string, projectSlug: string, sourceFilename: string, cfiRange: string): Promise<void>
+  exportProjectEpubHighlights(workspaceId: string, projectSlug: string, sourceFilename: string): Promise<{ filename: string; markdown: string }>
   deleteProjectAsset(workspaceId: string, projectSlug: string, filename: string): Promise<void>
   onProjectsChanged(callback: (workspaceId: string, projects: unknown) => void): () => void
 
@@ -898,7 +907,12 @@ export interface AutomationsNavigationState {
  */
 export interface ProjectsNavigationState {
   navigator: 'projects'
-  details: { type: 'project'; projectSlug: string } | null
+  details: {
+    type: 'project'
+    projectSlug: string
+    /** Session currently open inside this project. */
+    sessionId?: string
+  } | null
   rightSidebar?: RightSidebarPanel
 }
 
@@ -964,7 +978,11 @@ export const getNavigationStateKey = (state: NavigationState): string => {
   }
   if (state.navigator === 'projects') {
     if (state.details?.type === 'project') {
-      return `projects/project/${state.details.projectSlug}`
+      const base = `projects/project/${state.details.projectSlug}`
+      if (state.details.sessionId) {
+        return `${base}/session/${state.details.sessionId}`
+      }
+      return base
     }
     return 'projects'
   }
@@ -1019,11 +1037,28 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
   // Handle projects
   if (key === 'projects') return { navigator: 'projects', details: null }
   if (key.startsWith('projects/project/')) {
-    const projectSlug = key.slice(17)
-    if (projectSlug) {
-      return { navigator: 'projects', details: { type: 'project', projectSlug } }
+    const segments = key.split('/')
+    const projectSlug = segments[2]
+    if (!projectSlug) {
+      return { navigator: 'projects', details: null }
     }
-    return { navigator: 'projects', details: null }
+    if (segments.length === 3) {
+      return {
+        navigator: 'projects',
+        details: { type: 'project', projectSlug },
+      }
+    }
+    if (segments.length === 5 && segments[3] === 'session' && segments[4]) {
+      return {
+        navigator: 'projects',
+        details: {
+          type: 'project',
+          projectSlug,
+          sessionId: segments[4],
+        },
+      }
+    }
+    return null
   }
 
   // Handle settings

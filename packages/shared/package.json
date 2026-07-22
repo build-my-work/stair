@@ -46,6 +46,7 @@
     "./utils/workspace": "./src/utils/workspace.ts",
     "./utils/workspace-slug": "./src/utils/workspace-slug.ts",
     "./labels": "./src/labels/index.ts",
+    "./learning": "./src/learning/index.ts",
     "./labels/auto": "./src/labels/auto/index.ts",
     "./labels/storage": "./src/labels/storage.ts",
     "./labels/crud": "./src/labels/crud.ts",

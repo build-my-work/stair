@@ -330,6 +330,9 @@ export function getMimeType(filePath: string): string {
   if (ext === '.pdf') {
     return 'application/pdf';
   }
+  if (ext === '.epub') {
+    return 'application/epub+zip';
+  }
   const officeMime = OFFICE_EXTENSIONS[ext];
   if (officeMime) {
     return officeMime;

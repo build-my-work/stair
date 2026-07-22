@@ -106,6 +106,7 @@ export class PromptBuilder {
     options: ContextBlockOptions,
     sourceStateBlock?: string
   ): string[] {
+    if (this.config.systemPromptPreset === 'tutor') return [];
     const parts: string[] = [];
 
     // Date/time first (kept on the user tail to preserve prompt caching)
@@ -144,6 +145,7 @@ export class PromptBuilder {
    * number of times per turn.
    */
   buildStableContextParts(): string[] {
+    if (this.config.systemPromptPreset === 'tutor') return [];
     const parts: string[] = [];
 
     // Workspace capabilities

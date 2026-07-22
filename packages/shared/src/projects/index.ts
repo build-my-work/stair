@@ -44,3 +44,14 @@ export {
 } from './storage.ts';
 
 export type { UploadProjectAssetInput } from './storage.ts';
+
+export {
+  deleteProjectEpubHighlight,
+  deleteProjectEpubHighlightsForSource,
+  exportProjectEpubHighlights,
+  getProjectHighlightsPath,
+  HIGHLIGHTS_FILENAME,
+  listProjectEpubHighlights,
+  saveProjectEpubHighlight,
+} from './highlights.ts';
+export type { EpubHighlightsExport } from './highlights.ts';

@@ -6,6 +6,8 @@ import {
   pushPanelAtom,
   reconcilePanelStackAtom,
   updateFocusedPanelRouteAtom,
+  getPanelTypeFromRoute,
+  parseSessionIdFromRoute,
   type PanelStackEntry,
 } from '../panel-stack'
 
@@ -14,6 +16,20 @@ function getStack(store: ReturnType<typeof createStore>): PanelStackEntry[] {
 }
 
 describe('panel stack single-lane behavior', () => {
+  it('treats a project session as a session panel', () => {
+    const route = 'projects/project/operating-systems/session/s1' as const
+
+    expect(getPanelTypeFromRoute(route)).toBe('session')
+    expect(parseSessionIdFromRoute(route)).toBe('s1')
+    expect(getPanelTypeFromRoute('projects/project/operating-systems')).toBe('other')
+  })
+
+  it('does not confuse a project slug named session with the session id', () => {
+    const route = 'projects/project/session/session/s1' as const
+
+    expect(parseSessionIdFromRoute(route)).toBe('s1')
+  })
+
   it('keeps insertion order for new panels', () => {
     const store = createStore()
 

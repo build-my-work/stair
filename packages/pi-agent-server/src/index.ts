@@ -115,6 +115,7 @@ interface InitMessage {
   branchFromSdkTurnId?: string;
   customEndpoint?: { api: CustomEndpointApi; supportsImages?: boolean };
   customModels?: Array<string | { id: string; contextWindow?: number; supportsImages?: boolean }>;
+  toolMode?: 'default' | 'none';
   piAuth?: { provider: string; credential: PiCredential };
 }
 
@@ -546,7 +547,8 @@ async function ensureSession(): Promise<AgentSession> {
   const webFetchTool = createWebFetchTool(() =>
     initConfig ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId) : null
   );
-  const webTools = [searchTool, webFetchTool];
+  const toolsDisabled = initConfig.toolMode === 'none';
+  const webTools = toolsDisabled ? [] : [searchTool, webFetchTool];
 
   // Pi SDK 0.70.0 registration contract:
   //   - `customTools` accepts ToolDefinition[] — our hook-wrapped objects go here
@@ -557,7 +559,7 @@ async function ensureSession(): Promise<AgentSession> {
   //     our hooked versions take effect (permissions + large-response summarization).
   //   - Do NOT pass tool *objects* to `tools` — `allowedToolNames = new Set(options.tools)`
   //     then `.has(name)` returns false for every string lookup → zero tools active.
-  const builtinDefs = [
+  const builtinDefs = toolsDisabled ? [] : [
     createReadToolDefinition(cwd),
     createBashToolDefinition(cwd),
     createEditToolDefinition(cwd),
@@ -566,7 +568,7 @@ async function ensureSession(): Promise<AgentSession> {
     createFindToolDefinition(cwd),
     createLsToolDefinition(cwd),
   ];
-  const proxyTools = buildProxyTools();
+  const proxyTools = toolsDisabled ? [] : buildProxyTools();
   const wrappedAll = wrapToolsWithHooks([...builtinDefs, ...webTools, ...proxyTools]);
   const toolAllowlist = wrappedAll.map(t => t.name);
   debugLog(`Session tools: ${builtinDefs.length} builtin + ${webTools.length} web + ${proxyTools.length} proxy = ${wrappedAll.length} total`);

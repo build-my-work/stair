@@ -26,25 +26,26 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 import { cn } from '@/lib/utils'
 import { PROJECT_COLOR_PALETTE } from '@/utils/project-colors'
 import { InlineColorPickerRow } from '@/components/ui/inline-color-picker-row'
+import { ProjectTextbooksSection } from '@/components/learning/ProjectTextbooksSection'
 import type { LoadedProject, ProjectAsset } from '@craft-agent/shared/projects/types'
 
 interface ProjectInfoPageProps {
   projectSlug: string
 }
 
-type TabKey = 'sessions' | 'assets' | 'settings'
+type TabKey = 'learning' | 'sessions' | 'assets' | 'settings'
 
 export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const { t } = useTranslation()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
-  const { onCreateSession } = useAppShellContext()
+  const { onCreateSession, onOpenFile } = useAppShellContext()
 
   const [project, setProject] = useState<LoadedProject | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [tab, setTab] = useState<TabKey>('sessions')
+  const [tab, setTab] = useState<TabKey>('learning')
   const [assets, setAssets] = useState<ProjectAsset[]>([])
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')
@@ -54,9 +55,9 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const [saving, setSaving] = useState(false)
 
   // Load project (and re-load on broadcast)
-  const loadProject = useCallback(async () => {
+  const loadProject = useCallback(async (showLoading = true) => {
     if (!workspaceId) return
-    setLoading(true)
+    if (showLoading) setLoading(true)
     setError(null)
     try {
       const result = await window.electronAPI.getProject(workspaceId, projectSlug)
@@ -76,7 +77,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
       console.error('[ProjectInfoPage] Failed to load project:', err)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
-      setLoading(false)
+      if (showLoading) setLoading(false)
     }
   }, [workspaceId, projectSlug, t])
 
@@ -87,14 +88,14 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   useEffect(() => {
     if (!workspaceId) return
     const off = window.electronAPI.onProjectsChanged((wsId: string) => {
-      if (wsId === workspaceId) loadProject()
+      if (wsId === workspaceId) loadProject(false)
     })
     return () => {
       if (typeof off === 'function') off()
     }
   }, [workspaceId, loadProject])
 
-  // Load assets when entering Assets tab
+  // Learning materials and generic assets share the same persisted project folder.
   const refreshAssets = useCallback(async () => {
     if (!workspaceId) return
     try {
@@ -106,7 +107,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   }, [workspaceId, projectSlug])
 
   useEffect(() => {
-    if (tab === 'assets') refreshAssets()
+    if (tab === 'assets' || tab === 'learning') refreshAssets()
   }, [tab, refreshAssets])
 
   const projectSessions = useMemo(() => {
@@ -125,7 +126,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     try {
       const session = await onCreateSession(workspaceId, { projectId: project.config.id })
       if (session?.id) {
-        navigate(routes.view.allSessions(session.id))
+        navigate(routes.view.projectSession(project.config.slug, session.id))
       }
     } catch (err) {
       console.error('[ProjectInfoPage] Failed to create session:', err)
@@ -222,6 +223,9 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
 
           {/* Tab bar */}
           <div className="flex items-center gap-1 border-b border-border/50 px-2 mb-4">
+            <TabButton active={tab === 'learning'} onClick={() => setTab('learning')}>
+              {t('projectInfo.tabLearning')}
+            </TabButton>
             <TabButton active={tab === 'sessions'} onClick={() => setTab('sessions')}>
               {t('projectInfo.tabSessions')}
             </TabButton>
@@ -232,6 +236,16 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
               {t('projectInfo.tabSettings')}
             </TabButton>
           </div>
+
+          {/* Learning tab */}
+          {tab === 'learning' && workspaceId && (
+            <ProjectTextbooksSection
+              workspaceId={workspaceId}
+              project={project}
+              assets={assets}
+              refreshAssets={refreshAssets}
+            />
+          )}
 
           {/* Sessions tab */}
           {tab === 'sessions' && (
@@ -255,7 +269,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                       <button
                         type="button"
                         className="text-sm text-foreground hover:underline text-left"
-                        onClick={() => navigate(routes.view.allSessions(s.id))}
+                        onClick={() => navigate(routes.view.projectSession(project.config.slug, s.id))}
                       >
                         {s.name}
                       </button>
@@ -402,7 +416,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        onClick={() => window.electronAPI.openFile(project.folderPath)}
+                        onClick={() => onOpenFile(project.folderPath)}
                         className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
                         aria-label={t('projectInfo.openLocation')}
                       >

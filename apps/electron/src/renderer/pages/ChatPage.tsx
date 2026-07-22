@@ -32,9 +32,11 @@ import { resolveEffectiveConnectionSlug, isSessionConnectionUnavailable } from '
 
 export interface ChatPageProps {
   sessionId: string
+  /** Project context to preserve for project-scoped session routes. */
+  projectSlug?: string
 }
 
-const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
+const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPageProps) {
   const { t } = useTranslation()
   // Diagnostic: mark when component runs
   React.useLayoutEffect(() => {
@@ -482,11 +484,16 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   }, [taskSlug, sessionId, sessionMeta, setKanbanEditorTarget])
 
   const handleDelete = React.useCallback(async () => {
-    await onDeleteSession(sessionId)
-  }, [sessionId, onDeleteSession])
+    const deleted = await onDeleteSession(sessionId)
+    if (deleted && projectSlug) {
+      navigate(routes.view.projects(projectSlug))
+    }
+  }, [sessionId, projectSlug, onDeleteSession])
 
   const handleOpenInNewWindow = React.useCallback(async () => {
-    const route = routes.view.allSessions(sessionId)
+    const route = projectSlug
+      ? routes.view.projectSession(projectSlug, sessionId)
+      : routes.view.allSessions(sessionId)
     const separator = route.includes('?') ? '&' : '?'
     const url = `craftagents://${route}${separator}window=focused`
     try {
@@ -494,7 +501,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     } catch (error) {
       console.error('[ChatPage] openUrl failed:', error)
     }
-  }, [sessionId])
+  }, [sessionId, projectSlug])
 
   // Share action handlers
   const handleShare = React.useCallback(async () => {

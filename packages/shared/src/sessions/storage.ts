@@ -183,11 +183,13 @@ export async function createSession(
     enabledSourceSlugs?: string[];
     model?: string;
     llmConnection?: string;
+    systemPromptPreset?: SessionConfig['systemPromptPreset'];
     hidden?: boolean;
     sessionStatus?: SessionConfig['sessionStatus'];
     labels?: string[];
     isFlagged?: boolean;
     projectId?: string;
+    learningContext?: SessionConfig['learningContext'];
     parentSessionId?: string;
     taskSlug?: string;
     taskRunId?: string;
@@ -220,11 +222,13 @@ export async function createSession(
     enabledSourceSlugs: options?.enabledSourceSlugs,
     model: options?.model,
     llmConnection: options?.llmConnection,
+    systemPromptPreset: options?.systemPromptPreset,
     hidden: options?.hidden,
     sessionStatus: options?.sessionStatus,
     labels: options?.labels,
     isFlagged: options?.isFlagged,
     projectId: options?.projectId,
+    learningContext: options?.learningContext,
     parentSessionId: options?.parentSessionId,
     taskSlug: options?.taskSlug,
     taskRunId: options?.taskRunId,
