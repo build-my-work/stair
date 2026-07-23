@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync, mkdtempS
 import { extname, basename, resolve, join, relative } from 'path';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
 
 /**
  * Strip UTF-8 BOM (Byte Order Mark) from a string.
@@ -34,9 +35,11 @@ export function readJsonFileSync<T = unknown>(filePath: string): T {
  * Uses write-to-temp-then-rename pattern which is atomic on POSIX systems.
  */
 export function atomicWriteFileSync(filePath: string, data: string): void {
-  const tmpPath = filePath + '.tmp';
+  const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(tmpPath, data);
+    // `wx` makes creation exclusive, so even an attacker racing a symlink into
+    // the directory cannot redirect this write to another file.
+    writeFileSync(tmpPath, data, { flag: 'wx', mode: 0o600 });
     renameSync(tmpPath, filePath);
   } catch (error) {
     // Clean up temp file if rename failed

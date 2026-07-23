@@ -5,6 +5,7 @@ import { searchLog } from "@/lib/logger"
 import { parseLabelEntry, matchesLabelFilter } from "@craft-agent/shared/labels"
 import type { LabelConfig } from "@craft-agent/shared/labels"
 import { fuzzyScore } from "@craft-agent/shared/search"
+import { isPrimaryNavigableSession } from "@craft-agent/shared/sessions/navigation"
 import { getSessionTitle, getSessionStatus } from "@/utils/session"
 import type { SessionMeta } from "@/atoms/sessions"
 import type { ViewConfig } from "@craft-agent/shared/views"
@@ -387,8 +388,8 @@ export function useSessionSearch({
 
   // --- Data pipeline ---
 
-  // Filter out hidden sessions before any processing
-  const visibleItems = useMemo(() => items.filter(item => !item.hidden), [items])
+  // Primary search excludes runtime-only and auxiliary side-chat sessions.
+  const visibleItems = useMemo(() => items.filter(isPrimaryNavigableSession), [items])
 
   // Sort by most recent activity first
   const sortedItems = useMemo(() =>

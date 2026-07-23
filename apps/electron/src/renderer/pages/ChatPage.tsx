@@ -27,6 +27,8 @@ import { deriveSessionMessagesLoadState, formatSessionLoadFailure } from '@/lib/
 import { ensureSessionMessagesLoadedAtom, forceSessionMessagesReloadAtom, loadedSessionsAtom, sessionMetaMapAtom } from '@/atoms/sessions'
 import { kanbanEditorTargetAtom } from '@/atoms/kanban'
 import { getSessionTitle } from '@/utils/session'
+import { isProjectRelativeFilePath } from '@/hooks/file-routing'
+import { getWorkspaceFileKind } from '@/components/right-workspace/workspace-file-types'
 // Model resolution: connection.defaultModel (no hardcoded defaults)
 import { resolveEffectiveConnectionSlug, isSessionConnectionUnavailable } from '@config/llm-connections'
 
@@ -34,9 +36,13 @@ export interface ChatPageProps {
   sessionId: string
   /** Project context to preserve for project-scoped session routes. */
   projectSlug?: string
+  /** Render only the chat body for use inside a right-workspace tab. */
+  embedded?: boolean
+  /** Whether this embedded tab is currently visible and should count as viewed. */
+  active?: boolean
 }
 
-const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPageProps) {
+const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug, embedded = false, active = true }: ChatPageProps) {
   const { t } = useTranslation()
   // Diagnostic: mark when component runs
   React.useLayoutEffect(() => {
@@ -83,6 +89,9 @@ const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPa
     onChatMatchInfoChange,
     isFocusedPanel,
   } = useAppShellContext()
+  // Embedded side chats should keep the same composer interactions as the main
+  // chat. Compact controls are reserved for the app's actual narrow layout.
+  const chatUsesCompactLayout = Boolean(isCompactMode)
 
   // Use the unified session options hook for clean access
   const {
@@ -200,11 +209,13 @@ const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPa
   // 2. If processing → when it completes, main process will clear hasUnread
   // The main process handles all the logic; we just report viewing state.
   React.useEffect(() => {
-    if (session && isWindowFocused && isFocusedPanel !== false) {
-      onSetActiveViewingSession(session.id)
-    }
+    const isVisible = embedded ? active : isFocusedPanel !== false
+    if (!session || !isWindowFocused || !isVisible) return
+
+    onSetActiveViewingSession(session.id, true)
+    return () => onSetActiveViewingSession(session.id, false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.id, isWindowFocused, isFocusedPanel, onSetActiveViewingSession])
+  }, [session?.id, isWindowFocused, isFocusedPanel, embedded, active, onSetActiveViewingSession])
 
   // Get pending permission and credential for this session
   const pendingPermission = usePendingPermission(sessionId)
@@ -334,6 +345,16 @@ const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPa
 
   const handleOpenFile = React.useCallback(
     async (path: string) => {
+      const projectId = session?.projectId ?? sessionMeta?.projectId
+      if (
+        projectId &&
+        isProjectRelativeFilePath(path) &&
+        getWorkspaceFileKind(path) !== 'external'
+      ) {
+        onOpenFile(path)
+        return
+      }
+
       // Resolve bare relative paths against session working directory,
       // or workspace root as a fallback when workingDirectory is not set.
       const resolved = (() => {
@@ -377,7 +398,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPa
 
       onOpenFile(resolved)
     },
-    [onOpenFile, workingDirectory, activeWorkspace?.rootPath]
+    [onOpenFile, workingDirectory, activeWorkspace?.rootPath, session?.projectId, sessionMeta?.projectId]
   )
 
   const handleOpenUrl = React.useCallback(
@@ -742,7 +763,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPa
       return (
         <>
           <div className="h-full flex flex-col">
-            <PanelHeader  title={displayTitle} titleMenu={titleMenu} compactTitleMenu={compactTitleMenu} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+            {!embedded && <PanelHeader title={displayTitle} titleMenu={titleMenu} compactTitleMenu={compactTitleMenu} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />}
             <div className="flex-1 flex flex-col min-h-0">
               <ChatDisplay
                 ref={chatDisplayRef}
@@ -782,8 +803,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPa
                 isSearchModeActive={isSearchModeActive}
                 onMatchInfoChange={onChatMatchInfoChange}
                 connectionUnavailable={connectionUnavailable}
-                compactMode={!!isCompactMode}
-                enableCompactModelPicker={!!isCompactMode}
+                compactMode={chatUsesCompactLayout}
+                enableCompactModelPicker={chatUsesCompactLayout}
               />
             </div>
           </div>
@@ -803,7 +824,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPa
     // Session truly doesn't exist
     return (
       <div className="h-full flex flex-col">
-        <PanelHeader  title={t('chat.session')} leadingAction={leadingAction} rightSidebarButton={rightSidebarButton} />
+        {!embedded && <PanelHeader title={t('chat.session')} leadingAction={leadingAction} rightSidebarButton={rightSidebarButton} />}
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground">
           <AlertCircle className="h-10 w-10" />
           <p className="text-sm">{t('chat.sessionNoLongerExists')}</p>
@@ -815,7 +836,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPa
   return (
     <>
       <div className="h-full flex flex-col">
-        <PanelHeader  title={displayTitle} titleMenu={titleMenu} compactTitleMenu={compactTitleMenu} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+        {!embedded && <PanelHeader title={displayTitle} titleMenu={titleMenu} compactTitleMenu={compactTitleMenu} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />}
         <div className="flex-1 flex flex-col min-h-0">
           <ChatDisplay
             ref={chatDisplayRef}
@@ -862,8 +883,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId, projectSlug }: ChatPa
             isSearchModeActive={isSearchModeActive}
             onMatchInfoChange={onChatMatchInfoChange}
             connectionUnavailable={connectionUnavailable}
-            compactMode={!!isCompactMode}
-            enableCompactModelPicker={!!isCompactMode}
+            compactMode={chatUsesCompactLayout}
+            enableCompactModelPicker={chatUsesCompactLayout}
           />
         </div>
       </div>

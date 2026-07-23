@@ -16,7 +16,7 @@ import { expandPath, toPortablePath, getBundledAssetsDir } from '../utils/paths.
 import { debug } from '../utils/debug.ts';
 import { readJsonFileSync } from '../utils/files.ts';
 import { CONFIG_DIR } from './paths.ts';
-import type { StoredAttachment, StoredMessage } from '@craft-agent/core/types';
+import type { FileReference, StoredAttachment, StoredMessage } from '@craft-agent/core/types';
 import type { Plan } from '../agent/plan-types.ts';
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
@@ -1094,6 +1094,7 @@ export interface DraftAttachmentRef {
 export interface SessionDraft {
   text: string;
   attachments?: DraftAttachmentRef[];
+  references?: FileReference[];
 }
 
 interface DraftsData {
@@ -1134,19 +1135,59 @@ function isDraftAttachmentRef(value: unknown): value is DraftAttachmentRef {
   return true;
 }
 
+function isDraftFileReference(value: unknown): value is FileReference {
+  if (!value || typeof value !== 'object') return false;
+  const reference = value as Partial<FileReference>;
+  if (typeof reference.projectId !== 'string' || reference.projectId.length === 0) return false;
+  if (typeof reference.path !== 'string' || !isSafeProjectRelativePath(reference.path)) return false;
+  if (reference.quote !== undefined && typeof reference.quote !== 'string') return false;
+
+  const locator = reference.locator;
+  if (!locator || typeof locator !== 'object' || typeof locator.type !== 'string') return false;
+  switch (locator.type) {
+    case 'epub-cfi':
+      return typeof locator.cfiRange === 'string' && locator.cfiRange.length > 0;
+    case 'pdf-page':
+      return Number.isInteger(locator.page) && locator.page > 0;
+    case 'text-range':
+      return Number.isInteger(locator.startLine)
+        && Number.isInteger(locator.endLine)
+        && locator.startLine > 0
+        && locator.endLine >= locator.startLine;
+    default:
+      return false;
+  }
+}
+
+function isSafeProjectRelativePath(value: string): boolean {
+  if (!value || value.includes('\0') || value.includes('\\')) return false;
+  if (value.startsWith('/') || /^[A-Za-z]:/.test(value)) return false;
+  return value.split('/').every(segment => segment.length > 0 && segment !== '.' && segment !== '..');
+}
+
 function isSessionDraft(value: unknown): value is SessionDraft {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as SessionDraft;
   if (typeof candidate.text !== 'string') return false;
-  if (candidate.attachments !== undefined) {
-    if (!Array.isArray(candidate.attachments)) return false;
-    if (!candidate.attachments.every(isDraftAttachmentRef)) return false;
+  if (
+    candidate.attachments !== undefined
+    && (!Array.isArray(candidate.attachments) || !candidate.attachments.every(isDraftAttachmentRef))
+  ) {
+    return false;
+  }
+  if (
+    candidate.references !== undefined
+    && (!Array.isArray(candidate.references) || !candidate.references.every(isDraftFileReference))
+  ) {
+    return false;
   }
   return true;
 }
 
 function isEmptyDraft(draft: SessionDraft): boolean {
-  return !draft.text && (!draft.attachments || draft.attachments.length === 0);
+  return !draft.text
+    && (!draft.attachments || draft.attachments.length === 0)
+    && (!draft.references || draft.references.length === 0);
 }
 
 /**
@@ -1199,9 +1240,21 @@ export function setSessionDraft(sessionId: string, draft: SessionDraft): void {
       ...(draft.attachments && draft.attachments.length > 0
         ? { attachments: draft.attachments.map(normalizeDraftAttachment) }
         : {}),
+      ...(draft.references && draft.references.length > 0
+        ? { references: draft.references.map(normalizeDraftFileReference) }
+        : {}),
     };
   }
   saveDraftsData(data);
+}
+
+function normalizeDraftFileReference(reference: FileReference): FileReference {
+  return {
+    projectId: reference.projectId,
+    path: reference.path,
+    ...(reference.quote !== undefined ? { quote: reference.quote } : {}),
+    locator: { ...reference.locator },
+  };
 }
 
 function normalizeDraftAttachment(ref: DraftAttachmentRef): DraftAttachmentRef {

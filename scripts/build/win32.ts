@@ -120,7 +120,7 @@ function buildMainProcess(config: BuildConfig): void {
   console.log('  Building main process...');
 
   const mainArgs = [
-    'apps/electron/src/main/index.ts',
+    'apps/electron/src/main/bootstrap.ts',
     '--bundle',
     '--platform=node',
     '--format=cjs',

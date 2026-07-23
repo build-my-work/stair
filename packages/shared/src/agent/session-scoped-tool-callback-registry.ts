@@ -65,6 +65,10 @@ export interface SessionScopedToolCallbacks {
   resolveLabelsFn?: (labels: string[]) => import('@craft-agent/session-tools-core').ResolvedLabelsResult;
   /** Resolve a status display name to its ID. */
   resolveStatusFn?: (status: string) => import('@craft-agent/session-tools-core').ResolvedStatusResult;
+  /** Persist an Artifact in the current session's trusted Project. */
+  saveProjectArtifactFn?: (
+    input: import('@craft-agent/session-tools-core').SaveProjectArtifactToolInput,
+  ) => Promise<import('@craft-agent/session-tools-core').SavedProjectArtifactResult>;
   /** Send a message to another session (inter-session messaging). Resolves with delivery status. */
   sendAgentMessageFn?: (sessionId: string, message: string, attachments?: Array<{ path: string; name?: string }>) => Promise<import('@craft-agent/session-tools-core').SendAgentMessageResult>;
   /**

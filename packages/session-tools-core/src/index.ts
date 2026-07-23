@@ -136,6 +136,10 @@ export type {
   ResolvedStatusResult,
   CreateTaskInput,
   CreateTaskResult,
+  ProjectArtifactLocatorInput,
+  ProjectArtifactReferenceInput,
+  SaveProjectArtifactToolInput,
+  SavedProjectArtifactResult,
 } from './context.ts';
 
 export { createNodeFileSystem } from './context.ts';
@@ -169,6 +173,7 @@ export {
   handleRenderTemplate,
   // Send Developer Feedback
   handleSendDeveloperFeedback,
+  handleSaveProjectArtifact,
 } from './handlers/index.ts';
 
 export type {
@@ -208,6 +213,7 @@ export {
   BrowserToolSchema,
   // Developer feedback schema
   SendDeveloperFeedbackSchema,
+  SaveProjectArtifactSchema,
   // Descriptions
   TOOL_DESCRIPTIONS,
   // Registry

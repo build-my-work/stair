@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import type { EpubHighlight, ImportedChapter } from '@craft-agent/shared/learning'
+import type { ImportedChapter, WorkingFileEpubHighlight } from '@craft-agent/shared/learning'
 
 import {
   buildEpubHighlightOutline,
@@ -8,6 +8,7 @@ import {
   createEpubUnderlineStyle,
   epubHrefsMatch,
   findChapterForEpubLocation,
+  getEpubRenditionOptions,
   groupEpubHighlightsByChapter,
   mapEpubIframeRectToViewport,
   normalizeEpubSelectionText,
@@ -27,6 +28,21 @@ const chapters: ImportedChapter[] = [
 ]
 
 describe('EPUB reader helpers', () => {
+  it('uses a continuous vertical rendition so scrolling crosses chapter boundaries', () => {
+    expect(getEpubRenditionOptions(false)).toMatchObject({
+      manager: 'continuous',
+      flow: 'scrolled',
+      layout: 'reflowable',
+      spread: 'none',
+    })
+    expect(getEpubRenditionOptions(true)).toMatchObject({
+      manager: 'continuous',
+      flow: 'scrolled',
+      layout: 'pre-paginated',
+      spread: 'none',
+    })
+  })
+
   it('maps a rendition spine location to the imported tutor chapter', () => {
     expect(findChapterForEpubLocation(chapters, { index: 3 })?.id).toBe('opening')
   })
@@ -42,7 +58,7 @@ describe('EPUB reader helpers', () => {
   })
 
   it('groups underlines in chapter order and sorts each chapter by creation time', () => {
-    const highlights: EpubHighlight[] = [
+    const highlights: WorkingFileEpubHighlight[] = [
       highlight({ chapterId: 'second', chapterTitle: 'Second', chapterOrder: 1, createdAt: 30, cfiRange: 'cfi-3' }),
       highlight({ chapterId: 'opening', chapterTitle: 'Opening', chapterOrder: 0, createdAt: 20, cfiRange: 'cfi-2' }),
       highlight({ chapterId: 'opening', chapterTitle: 'Opening', chapterOrder: 0, createdAt: 10, cfiRange: 'cfi-1' }),
@@ -123,7 +139,7 @@ describe('EPUB reader helpers', () => {
   })
 
   it('skips a bad CFI without dropping other underlines in the iframe', () => {
-    const highlights: EpubHighlight[] = [
+    const highlights: WorkingFileEpubHighlight[] = [
       highlight({ cfiRange: 'valid-1' }),
       highlight({ cfiRange: 'broken' }),
       highlight({ cfiRange: 'other-spine', spineIndex: 4 }),
@@ -156,12 +172,19 @@ describe('EPUB reader helpers', () => {
       { left: 470, top: 55, width: 20, height: 20 },
       reader,
     )).toEqual({ left: 304, top: 33, placement: 'below' })
+
+    expect(calculateEpubSelectionPopoverAnchor(
+      { left: 470, top: 55, width: 20, height: 20 },
+      reader,
+      176,
+    )).toEqual({ left: 216, top: 33, placement: 'below' })
   })
 })
 
-function highlight(overrides: Partial<EpubHighlight>): EpubHighlight {
+function highlight(overrides: Partial<WorkingFileEpubHighlight>): WorkingFileEpubHighlight {
   return {
-    sourceFilename: 'book.epub',
+    sourcePath: 'books/book.epub',
+    sourceFingerprint: `sha256:${'a'.repeat(64)}`,
     cfiRange: 'cfi',
     text: 'Selected text',
     chapterId: 'opening',

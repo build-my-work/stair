@@ -217,9 +217,13 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 export function getSessionScopedTools(
   sessionId: string,
   workspaceRootPath: string,
-  workspaceId?: string
+  workspaceId?: string,
+  options?: { toolNames?: readonly string[] },
 ): ReturnType<typeof createSdkMcpServer> {
-  const cacheKey = `${sessionId}::${workspaceRootPath}`;
+  const allowedToolNames = options?.toolNames ? new Set(options.toolNames) : null;
+  const toolScope = allowedToolNames ? [...allowedToolNames].sort().join(',') : '*';
+  const cacheKey = `${sessionId}::${workspaceRootPath}::${toolScope}`;
+  const allows = (name: string) => allowedToolNames === null || allowedToolNames.has(name);
 
   // Return cached tools if available, but always create a fresh MCP server wrapper
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -262,37 +266,41 @@ export function getSessionScopedTools(
     // Create tools from the canonical registry — all tools with handlers.
     // Tool visibility is centrally filtered in session-tools-core to avoid backend drift.
     tools = getSessionToolDefs({ includeDeveloperFeedback: FEATURE_FLAGS.developerFeedback })
-      .filter(def => def.handler !== null) // Skip backend-specific tools (call_llm)
+      .filter(def => def.handler !== null && allows(def.name)) // Skip backend-specific tools (call_llm)
       .map(def => registryTool(def.name, def.inputSchema.shape));
 
     // Add call_llm — backend-specific (not in registry handler)
     const sessionPath = getSessionPath(workspaceRootPath, sessionId);
-    tools.push(
-      createLLMTool({
-        sessionId,
-        sessionPath,
-        getQueryFn: () => {
-          const callbacks = getSessionScopedToolCallbacks(sessionId);
-          return callbacks?.queryFn;
-        },
-      }),
-    );
+    if (allows('call_llm')) {
+      tools.push(
+        createLLMTool({
+          sessionId,
+          sessionPath,
+          getQueryFn: () => {
+            const callbacks = getSessionScopedToolCallbacks(sessionId);
+            return callbacks?.queryFn;
+          },
+        }),
+      );
+    }
 
     // Add spawn_session — backend-specific (not in registry handler)
-    tools.push(
-      createSpawnSessionTool({
-        sessionId,
-        getSpawnSessionFn: () => {
-          const callbacks = getSessionScopedToolCallbacks(sessionId);
-          return callbacks?.spawnSessionFn;
-        },
-      }),
-    );
+    if (allows('spawn_session')) {
+      tools.push(
+        createSpawnSessionTool({
+          sessionId,
+          getSpawnSessionFn: () => {
+            const callbacks = getSessionScopedToolCallbacks(sessionId);
+            return callbacks?.spawnSessionFn;
+          },
+        }),
+      );
+    }
 
     // Add browser_* tools — backend-specific (requires BrowserPaneManager in Electron)
     // Gated by the "Built-in browser" setting so users with external browser tools
     // (Playwright, Puppeteer, etc.) can disable the built-in one.
-    if (getBrowserToolEnabled()) {
+    if (getBrowserToolEnabled() && allows('browser_tool')) {
       tools.push(
         ...createBrowserTools({
           sessionId,

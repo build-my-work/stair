@@ -1,4 +1,4 @@
-import type { EpubHighlight, ImportedChapter } from '@craft-agent/shared/learning'
+import type { ImportedChapter, WorkingFileEpubHighlight } from '@craft-agent/shared/learning'
 
 export const EPUB_UNDERLINE_HIGHLIGHT_NAME = 'socratopia-epub-underline'
 
@@ -6,7 +6,7 @@ export interface EpubHighlightChapterGroup {
   chapterId: string
   chapterTitle: string
   chapterOrder: number
-  highlights: EpubHighlight[]
+  highlights: WorkingFileEpubHighlight[]
 }
 
 export interface EpubReaderTocItem {
@@ -18,7 +18,7 @@ export interface EpubReaderTocItem {
 }
 
 export interface EpubHighlightOutlineItem extends Omit<EpubReaderTocItem, 'subitems'> {
-  highlights: EpubHighlight[]
+  highlights: WorkingFileEpubHighlight[]
   subitems: EpubHighlightOutlineItem[]
 }
 
@@ -38,6 +38,18 @@ export interface EpubSelectionPopoverAnchor {
   left: number
   top: number
   placement: 'above' | 'below'
+}
+
+export function getEpubRenditionOptions(fixedLayout: boolean) {
+  return {
+    width: '100%',
+    height: '100%',
+    manager: 'continuous',
+    flow: 'scrolled',
+    layout: fixedLayout ? 'pre-paginated' : 'reflowable',
+    spread: 'none',
+    allowScriptedContent: false,
+  }
 }
 
 const SELECTION_POPOVER_WIDTH = 88
@@ -85,7 +97,7 @@ export function normalizeEpubSelectionText(text: string): string | null {
 
 /** Stable book order for the all-underlines navigator and Markdown export preview. */
 export function groupEpubHighlightsByChapter(
-  highlights: EpubHighlight[],
+  highlights: WorkingFileEpubHighlight[],
 ): EpubHighlightChapterGroup[] {
   const groups = new Map<string, EpubHighlightChapterGroup>()
 
@@ -114,11 +126,11 @@ export function groupEpubHighlightsByChapter(
 export function buildEpubHighlightOutline(
   toc: EpubReaderTocItem[],
   chapters: ImportedChapter[],
-  highlights: EpubHighlight[],
+  highlights: WorkingFileEpubHighlight[],
 ): EpubHighlightOutline {
   const groups = groupEpubHighlightsByChapter(highlights)
   const flatTocItems = flattenEpubToc(toc)
-  const highlightsByTocKey = new Map<string, EpubHighlight[]>()
+  const highlightsByTocKey = new Map<string, WorkingFileEpubHighlight[]>()
   const unmatched: EpubHighlightChapterGroup[] = []
 
   for (const group of groups) {
@@ -162,7 +174,7 @@ function flattenEpubToc(items: EpubReaderTocItem[]): EpubReaderTocItem[] {
 
 function mapHighlightedTocItems(
   items: EpubReaderTocItem[],
-  highlightsByTocKey: Map<string, EpubHighlight[]>,
+  highlightsByTocKey: Map<string, WorkingFileEpubHighlight[]>,
 ): EpubHighlightOutlineItem[] {
   return items.flatMap((item) => {
     const subitems = mapHighlightedTocItems(item.subitems, highlightsByTocKey)
@@ -179,7 +191,7 @@ function mapHighlightedTocItems(
   })
 }
 
-function compareEpubHighlights(left: EpubHighlight, right: EpubHighlight): number {
+function compareEpubHighlights(left: WorkingFileEpubHighlight, right: WorkingFileEpubHighlight): number {
   return left.createdAt - right.createdAt || left.cfiRange.localeCompare(right.cfiRange)
 }
 
@@ -197,7 +209,7 @@ export function createEpubUnderlineStyle(color = '#ef4444'): string {
 
 /** Resolve only the current iframe's saved CFIs; one corrupt entry must not hide the rest. */
 export function resolveEpubHighlightRanges<T>(
-  highlights: EpubHighlight[],
+  highlights: WorkingFileEpubHighlight[],
   spineIndex: number,
   resolve: (cfiRange: string) => T | null,
 ): T[] {
@@ -234,15 +246,16 @@ export function mapEpubIframeRectToViewport(
 export function calculateEpubSelectionPopoverAnchor(
   selectionRect: EpubReaderRect,
   readerRect: EpubReaderRect,
+  popoverWidth = SELECTION_POPOVER_WIDTH,
 ): EpubSelectionPopoverAnchor {
   const minLeft = SELECTION_POPOVER_EDGE
   const maxLeft = Math.max(
     minLeft,
-    readerRect.width - SELECTION_POPOVER_WIDTH - SELECTION_POPOVER_EDGE,
+    readerRect.width - popoverWidth - SELECTION_POPOVER_EDGE,
   )
   const centeredLeft = selectionRect.left - readerRect.left
     + selectionRect.width / 2
-    - SELECTION_POPOVER_WIDTH / 2
+    - popoverWidth / 2
   const left = Math.min(Math.max(centeredLeft, minLeft), maxLeft)
 
   const selectionTop = selectionRect.top - readerRect.top

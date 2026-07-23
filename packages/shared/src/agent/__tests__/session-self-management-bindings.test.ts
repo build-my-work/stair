@@ -215,6 +215,30 @@ describe('attachSessionSelfManagementBindings', () => {
     // No callbacks registered — resolveLabels should be undefined, not an identity function
     expect(ctx.resolveLabels).toBeUndefined();
   });
+
+  it('binds project artifact persistence lazily from the trusted session registry', async () => {
+    const ctx = createBaseContext(sessionId);
+    attachSessionSelfManagementBindings(ctx, sessionId);
+    expect(ctx.saveProjectArtifact).toBeUndefined();
+
+    registerSessionScopedToolCallbacks(sessionId, {
+      saveProjectArtifactFn: async (input) => ({
+        artifactId: input.artifactId ?? 'artifact_12345678',
+        projectId: 'proj_12345678',
+        title: input.title,
+      }),
+    });
+
+    await expect(ctx.saveProjectArtifact!({
+      title: 'Notes',
+      markdown: '# Notes',
+      references: [],
+    })).resolves.toEqual({
+      artifactId: 'artifact_12345678',
+      projectId: 'proj_12345678',
+      title: 'Notes',
+    });
+  });
 });
 
 // ============================================================

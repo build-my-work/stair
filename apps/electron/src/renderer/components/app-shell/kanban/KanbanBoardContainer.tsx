@@ -13,6 +13,7 @@ import { useLabels } from '@/hooks/useLabels'
 import { getSessionTitle } from '@/utils/session'
 import { routes } from '@/lib/navigate'
 import { resolveTaskScopeLabelId } from '@craft-agent/shared/labels'
+import { isPrimaryNavigableSession } from '@craft-agent/shared/sessions/navigation'
 import { DEFAULT_MODEL, getModelShortName } from '@config/models'
 import { getDefaultModelsForConnection, type LlmConnectionWithStatus } from '@config/llm-connections'
 import type { SessionStatus } from '@/config/session-status-config'
@@ -197,7 +198,7 @@ export function KanbanBoardContainer() {
   const specSlugsKey = React.useMemo(() => {
     const slugs = new Set<string>()
     for (const meta of metaMap.values()) {
-      if (meta.parentSessionId || meta.isArchived || meta.hidden || meta.taskDraft) continue
+      if (!isPrimaryNavigableSession(meta) || meta.parentSessionId || meta.isArchived || meta.taskDraft) continue
       if (meta.taskSlug) slugs.add(meta.taskSlug)
     }
     return [...slugs].sort().join(',')
@@ -246,8 +247,9 @@ export function KanbanBoardContainer() {
 
     const result: KanbanTask[] = []
     for (const meta of metaMap.values()) {
+      if (!isPrimaryNavigableSession(meta)) continue
       if (meta.parentSessionId) continue
-      if (meta.isArchived || meta.hidden || meta.taskDraft) continue
+      if (meta.isArchived || meta.taskDraft) continue
       const statusId = meta.sessionStatus ?? 'todo'
       // Placement is the persisted free-string column, else the status' default column.
       // Validity against the *active* column set is enforced by KanbanBoard (unknown

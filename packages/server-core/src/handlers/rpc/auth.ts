@@ -14,6 +14,11 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.credentials.HEALTH_CHECK,
 ] as const
 
+export function getDeleteSessionConfirmationDetail(relatedSideChatCount: number): string {
+  if (relatedSideChatCount <= 0) return 'This action cannot be undone.'
+  return `This also deletes ${relatedSideChatCount} related side chat${relatedSideChatCount === 1 ? '' : 's'}. This action cannot be undone.`
+}
+
 export function registerAuthHandlers(server: RpcServer, deps: HandlerDeps): void {
   // Show logout confirmation dialog (routed to client)
   server.handle(RPC_CHANNELS.auth.SHOW_LOGOUT_CONFIRMATION, async (ctx) => {
@@ -32,7 +37,7 @@ export function registerAuthHandlers(server: RpcServer, deps: HandlerDeps): void
   })
 
   // Show delete session confirmation dialog (routed to client)
-  server.handle(RPC_CHANNELS.auth.SHOW_DELETE_SESSION_CONFIRMATION, async (ctx, name: string) => {
+  server.handle(RPC_CHANNELS.auth.SHOW_DELETE_SESSION_CONFIRMATION, async (ctx, name: string, relatedSideChatCount = 0) => {
     const result = await requestClientConfirmDialog(server, ctx.clientId, {
       type: 'warning',
       buttons: ['Cancel', 'Delete'],
@@ -40,7 +45,7 @@ export function registerAuthHandlers(server: RpcServer, deps: HandlerDeps): void
       cancelId: 0,
       title: 'Delete Conversation',
       message: `Are you sure you want to delete: "${name}"?`,
-      detail: 'This action cannot be undone.',
+      detail: getDeleteSessionConfirmationDetail(relatedSideChatCount),
     })
     // result.response is the index of the clicked button
     // 0 = Cancel, 1 = Delete

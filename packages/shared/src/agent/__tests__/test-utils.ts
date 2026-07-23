@@ -104,7 +104,12 @@ export function createMockBackendConfig(overrides: Partial<BackendConfig> = {}):
 export class TestAgent extends BaseAgent {
   protected backendName = 'Test';
   // Track calls for verification
-  public chatCalls: Array<{ message: string; attachments?: unknown[]; options?: ChatOptions }> = [];
+  public chatCalls: Array<{
+    message: string;
+    attachments?: unknown[];
+    options?: ChatOptions;
+    activeSkillSlugs: string[];
+  }> = [];
   public abortCalls: Array<{ reason?: string }> = [];
   public forceAbortCalls: Array<{ reason: AbortReason }> = [];
   public respondToPermissionCalls: Array<{ requestId: string; allowed: boolean; alwaysAllow?: boolean }> = [];
@@ -120,7 +125,12 @@ export class TestAgent extends BaseAgent {
     attachments?: unknown[],
     options?: ChatOptions
   ): AsyncGenerator<AgentEvent> {
-    this.chatCalls.push({ message, attachments, options });
+    this.chatCalls.push({
+      message,
+      attachments,
+      options,
+      activeSkillSlugs: [...this.getCurrentTurnSkillSlugs()],
+    });
     this._isProcessing = true;
     try {
       yield { type: 'complete' };

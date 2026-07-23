@@ -107,6 +107,19 @@ export interface ContentBadge {
   filePath?: string;
 }
 
+/** A durable, project-relative pointer back to source material. */
+export interface FileReference {
+  projectId: string;
+  /** POSIX-style path relative to the Project working directory. */
+  path: string;
+  /** Optional text snapshot so the reference remains useful if the source changes. */
+  quote?: string;
+  locator:
+    | { type: 'epub-cfi'; cfiRange: string }
+    | { type: 'pdf-page'; page: number }
+    | { type: 'text-range'; startLine: number; endLine: number };
+}
+
 /**
  * Author metadata for annotations
  */
@@ -275,6 +288,8 @@ export interface Message {
   attachments?: StoredAttachment[];
   // Content badges for inline display (sources, skills)
   badges?: ContentBadge[];
+  /** Structured source references attached to this message. */
+  references?: FileReference[];
   /** Annotation payloads for this message */
   annotations?: AnnotationV1[];
   isError?: boolean;
@@ -369,6 +384,8 @@ export interface StoredMessage {
   attachments?: StoredAttachment[];
   /** Content badges for inline display (sources, skills) */
   badges?: ContentBadge[];
+  /** Structured source references attached to this message. */
+  references?: FileReference[];
   /** Annotations persisted at message level */
   annotations?: AnnotationV1[];
   // Turn grouping - critical for TurnCard rendering after reload

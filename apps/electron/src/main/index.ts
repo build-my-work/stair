@@ -1,8 +1,3 @@
-// Load user's shell environment first (before other imports that may use env)
-// This ensures tools like Homebrew, nvm, etc. are available to the agent
-import { loadShellEnv } from './shell-env'
-loadShellEnv()
-
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, shell } from 'electron'
 import { createHash, randomUUID } from 'crypto'
 import { hostname, homedir } from 'os'
@@ -223,10 +218,6 @@ let messagingHandle: MessagingBootstrapHandle | null = null
 
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
-
-// Set app name early (before app.whenReady) to ensure correct macOS menu bar title
-// Supports multi-instance dev: CRAFT_APP_NAME env var (e.g., "Craft Agents [1]")
-app.setName(process.env.CRAFT_APP_NAME || 'Craft Agents')
 
 // Register as default protocol client for craftagents:// URLs
 // This must be done before app.whenReady() on some platforms

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create Learning Artifact"
+  short_description: "Create cited reading notes and Q&A artifacts"
+  default_prompt: "Use $create-learning-artifact to turn my selected reading context into a cited Markdown learning artifact."

@@ -230,6 +230,7 @@ export interface ElectronAPI {
   markAllSessionsRead(workspaceId: string): Promise<void>
   getSessionMessages(sessionId: string): Promise<Session | null>
   createSession(workspaceId: string, options?: CreateSessionOptions): Promise<Session>
+  createSideChat(mainSessionId: string, originMessageId?: string): Promise<Session>
   deleteSession(sessionId: string): Promise<void>
   sendMessage(sessionId: string, message: string, attachments?: FileAttachment[], storedAttachments?: StoredAttachmentType[], options?: SendMessageOptions): Promise<void>
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
@@ -404,7 +405,7 @@ export interface ElectronAPI {
 
   // Auth
   showLogoutConfirmation(): Promise<boolean>
-  showDeleteSessionConfirmation(name: string): Promise<boolean>
+  showDeleteSessionConfirmation(name: string, relatedSideChatCount?: number): Promise<boolean>
   logout(): Promise<void>
 
   // Credential health check (startup validation)
@@ -665,18 +666,20 @@ export interface ElectronAPI {
   createProject(workspaceId: string, input: import('@craft-agent/shared/projects/types').CreateProjectInput): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
   updateProject(workspaceId: string, projectSlug: string, patch: Partial<Omit<import('@craft-agent/shared/projects/types').ProjectConfig, 'id' | 'slug' | 'createdAt'>>): Promise<import('@craft-agent/shared/projects/types').ProjectConfig>
   deleteProject(workspaceId: string, projectSlug: string): Promise<void>
-  listProjectAssets(workspaceId: string, projectSlug: string): Promise<unknown>
-  uploadProjectAsset(workspaceId: string, projectSlug: string, input: { filename: string; base64?: string; text?: string; sourcePath?: string }): Promise<import('@craft-agent/shared/projects/types').ProjectAsset>
-  importProjectTextbook(workspaceId: string, projectSlug: string, input: { filename: string; base64: string }): Promise<{
-    asset: import('@craft-agent/shared/projects/types').ProjectAsset
-    textbook: import('@craft-agent/shared/learning').ImportedTextbook
-  }>
-  parseProjectTextbookAsset(workspaceId: string, projectSlug: string, filename: string): Promise<import('@craft-agent/shared/learning').ImportedTextbook>
-  listProjectEpubHighlights(workspaceId: string, projectSlug: string, sourceFilename: string): Promise<import('@craft-agent/shared/learning').EpubHighlight[]>
-  saveProjectEpubHighlight(workspaceId: string, projectSlug: string, input: import('@craft-agent/shared/learning').EpubHighlightInput): Promise<import('@craft-agent/shared/learning').EpubHighlight>
-  deleteProjectEpubHighlight(workspaceId: string, projectSlug: string, sourceFilename: string, cfiRange: string): Promise<void>
-  exportProjectEpubHighlights(workspaceId: string, projectSlug: string, sourceFilename: string): Promise<{ filename: string; markdown: string }>
-  deleteProjectAsset(workspaceId: string, projectSlug: string, filename: string): Promise<void>
+  listWorkingDirectoryEntries(sessionId: string, relativeDirectory?: string): Promise<import('@craft-agent/shared/protocol').WorkingDirectoryEntry[]>
+  readWorkingDirectoryText(sessionId: string, relativePath: string): Promise<string>
+  readWorkingDirectoryBinary(sessionId: string, relativePath: string): Promise<Uint8Array>
+  readWorkingDirectoryDataUrl(sessionId: string, relativePath: string): Promise<string>
+  openWorkingDirectoryFile(sessionId: string, relativePath: string): Promise<void>
+  parseWorkingDirectoryTextbook(sessionId: string, sourcePath: string): Promise<import('@craft-agent/shared/protocol').WorkingDirectoryTextbookResult>
+  listProjectArtifacts(sessionId: string): Promise<import('@craft-agent/shared/projects').Artifact[]>
+  getProjectArtifact(sessionId: string, artifactId: string): Promise<import('@craft-agent/shared/projects').Artifact | null>
+  saveProjectArtifact(sessionId: string, input: Omit<import('@craft-agent/shared/projects').SaveProjectArtifactInput, 'sourceSessionId'>): Promise<import('@craft-agent/shared/projects').Artifact>
+  deleteProjectArtifact(sessionId: string, artifactId: string): Promise<void>
+  listWorkingFileEpubHighlights(sessionId: string, sourcePath: string): Promise<import('@craft-agent/shared/learning').WorkingFileEpubHighlight[]>
+  saveWorkingFileEpubHighlight(sessionId: string, input: Omit<import('@craft-agent/shared/learning').WorkingFileEpubHighlightInput, 'sourceFingerprint'>): Promise<import('@craft-agent/shared/learning').WorkingFileEpubHighlight>
+  deleteWorkingFileEpubHighlight(sessionId: string, sourcePath: string, cfiRange: string): Promise<void>
+  exportWorkingFileEpubHighlights(sessionId: string, sourcePath: string): Promise<{ filename: string; markdown: string }>
   onProjectsChanged(callback: (workspaceId: string, projects: unknown) => void): () => void
 
   // Automations

@@ -33,6 +33,7 @@ import {
   Info,
   MailOpen,
   FolderKanban,
+  MessageSquare,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -74,6 +75,8 @@ import { SessionList, type ChatGroupingMode } from "./SessionList"
 import { MainContentPanel } from "./MainContentPanel"
 import { BoardListToggle } from "./kanban/BoardListToggle"
 import { PanelStackContainer } from "./PanelStackContainer"
+import { RightWorkspace } from "@/components/right-workspace"
+import { EmbeddedSideChat } from "@/components/side-chat"
 import { CompactSessionListFilter } from "./CompactSessionListFilter"
 import type { ChatDisplayHandle } from "./ChatDisplay"
 import { LeftSidebar } from "./LeftSidebar"
@@ -89,10 +92,19 @@ import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
 import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
+import type { FileReference } from '@craft-agent/core/types'
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
 import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
+import {
+  hydrateRightWorkspaceAtom,
+  rightWorkspaceContextAtom,
+  rightWorkspaceGlobalAtom,
+  showRightWorkspaceReferenceAtom,
+  showRightWorkspaceArtifactAtom,
+  toggleRightWorkspaceAtom,
+} from "@/atoms/right-workspace"
 import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuses } from "@/config/session-status-config"
 import { useStatuses } from "@/hooks/useStatuses"
 import { useLabels } from "@/hooks/useLabels"
@@ -104,6 +116,10 @@ import { createLabelMenuItems, filterItems as filterLabelMenuItems, type LabelMe
 import { buildLabelTree, getDescendantIds, getLabelDisplayName, flattenLabels, extractLabelId, findLabelById, sortLabelsForDisplay, matchesLabelFilter } from "@craft-agent/shared/labels"
 import type { LabelConfig, LabelTreeNode } from "@craft-agent/shared/labels"
 import { resolveEntityColor } from "@craft-agent/shared/colors"
+import {
+  isPrimaryNavigableSession,
+  isStandaloneNavigableSession,
+} from "@craft-agent/shared/sessions/navigation"
 import * as storage from "@/lib/local-storage"
 import { toast } from "sonner"
 import { navigate, routes } from "@/lib/navigate"
@@ -529,6 +545,7 @@ function AppShellContent({
     onOpenStoredUserPreferences,
     onReset,
     onSendMessage,
+    onCreateSession,
     openNewChat,
     pendingPermissions,
   } = contextValue
@@ -599,6 +616,66 @@ function AppShellContent({
   const panelStack = useAtomValue(panelStackAtom)
   const panelCount = useAtomValue(panelCountAtom)
   const focusedSessionId = useAtomValue(focusedSessionIdAtom)
+  const rightWorkspaceGlobal = useAtomValue(rightWorkspaceGlobalAtom)
+  const rightWorkspaceContext = useAtomValue(rightWorkspaceContextAtom)
+  const hydrateRightWorkspace = useSetAtom(hydrateRightWorkspaceAtom)
+  const toggleRightWorkspace = useSetAtom(toggleRightWorkspaceAtom)
+  const showRightWorkspaceReference = useSetAtom(showRightWorkspaceReferenceAtom)
+  const showRightWorkspaceArtifact = useSetAtom(showRightWorkspaceArtifactAtom)
+
+  useEffect(() => {
+    hydrateRightWorkspace({
+      workspaceId: activeWorkspaceId,
+      sessionId: focusedSessionId,
+    })
+  }, [activeWorkspaceId, focusedSessionId, hydrateRightWorkspace])
+
+  useEffect(() => {
+    const openReference = (event: Event) => {
+      const reference = (event as CustomEvent<FileReference>).detail
+      if (!reference || !focusedSessionId) return
+      const focusedProjectId = store.get(sessionMetaMapAtom).get(focusedSessionId)?.projectId
+      if (focusedProjectId && reference.projectId !== focusedProjectId) {
+        toast.error('This reference belongs to another Project')
+        return
+      }
+      if (!showRightWorkspaceReference(reference)) {
+        toast.error('Could not open the referenced file')
+      }
+    }
+    window.addEventListener('craft:open-file-reference', openReference)
+    return () => window.removeEventListener('craft:open-file-reference', openReference)
+  }, [focusedSessionId, showRightWorkspaceReference, store])
+
+  useEffect(() => {
+    const openArtifact = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        artifactId?: string
+        projectId?: string
+        title?: string
+      }>).detail
+      if (!detail?.artifactId || !focusedSessionId) return
+      const focusedProjectId = store.get(sessionMetaMapAtom).get(focusedSessionId)?.projectId
+      if (focusedProjectId && detail.projectId && detail.projectId !== focusedProjectId) {
+        toast.error('This Artifact belongs to another Project')
+        return
+      }
+      if (!showRightWorkspaceArtifact({ artifactId: detail.artifactId, title: detail.title })) {
+        toast.error('Could not open the Artifact')
+      }
+    }
+    window.addEventListener('craft:open-artifact', openArtifact)
+    return () => window.removeEventListener('craft:open-artifact', openArtifact)
+  }, [focusedSessionId, showRightWorkspaceArtifact, store])
+
+  const isRightWorkspaceVisible = Boolean(
+    rightWorkspaceGlobal.visible &&
+    activeWorkspaceId &&
+    focusedSessionId &&
+    rightWorkspaceContext.workspaceId === activeWorkspaceId &&
+    rightWorkspaceContext.sessionId === focusedSessionId &&
+    !isAutoCompact,
+  )
 
   // Navigate the focused panel to a session.
   // If the session is already open in another panel, focus that panel instead.
@@ -1413,22 +1490,57 @@ function AppShellContent({
   }, [activeWorkspaceId, activeSessionWorkingDirectory])
 
   // Filter session metadata by active workspace
-  // Also exclude hidden sessions (mini-agent sessions) from all counts and lists
+  // Primary navigation excludes hidden runtime sessions and auxiliary side chats.
   // For remote workspaces, sessions have the remote workspace ID (not the local one),
   // so we match against both the local and remote workspace IDs.
   const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId
-  const workspaceSessionMetas = useMemo(() => {
+  const workspaceSessionMetasIncludingSideChats = useMemo(() => {
     const metas = Array.from(sessionMetaMap.values())
-    if (!activeWorkspaceId) return metas.filter(s => !s.hidden)
-    return metas.filter(s =>
-      !s.hidden && (s.workspaceId === activeWorkspaceId || (remoteWorkspaceId && s.workspaceId === remoteWorkspaceId))
+    if (!activeWorkspaceId) return metas.filter(session => !session.hidden)
+    return metas.filter(session =>
+      !session.hidden
+      && (session.workspaceId === activeWorkspaceId || (remoteWorkspaceId && session.workspaceId === remoteWorkspaceId))
     )
   }, [sessionMetaMap, activeWorkspaceId, remoteWorkspaceId])
+  const workspaceSessionMetas = useMemo(() => {
+    return workspaceSessionMetasIncludingSideChats.filter(isPrimaryNavigableSession)
+  }, [workspaceSessionMetasIncludingSideChats])
 
   // Active sessions exclude archived - use this for all counts and filters except archived view
   const activeSessionMetas = useMemo(() => {
     return workspaceSessionMetas.filter(s => !s.isArchived)
   }, [workspaceSessionMetas])
+
+  const standaloneSessionMetas = useMemo(() => {
+    return workspaceSessionMetas.filter(isStandaloneNavigableSession)
+  }, [workspaceSessionMetas])
+  const standaloneActiveSessionMetas = useMemo(() => {
+    return standaloneSessionMetas.filter(session => !session.isArchived)
+  }, [standaloneSessionMetas])
+  const projectSessionsByProjectId = useMemo(() => {
+    const grouped = new Map<string, SessionMeta[]>()
+    for (const session of activeSessionMetas) {
+      if (!session.projectId) continue
+      const projectSessions = grouped.get(session.projectId) ?? []
+      projectSessions.push(session)
+      grouped.set(session.projectId, projectSessions)
+    }
+    for (const projectSessions of grouped.values()) {
+      projectSessions.sort((left, right) => (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0))
+    }
+    return grouped
+  }, [activeSessionMetas])
+
+  const focusedSideChats = useMemo(() => {
+    if (!focusedSessionId) return []
+    return workspaceSessionMetasIncludingSideChats
+      .filter((meta) => meta.sideChatForSessionId === focusedSessionId && !meta.isArchived)
+      .sort((left, right) => (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0))
+      .map((meta) => ({ sessionId: meta.id, title: getSessionTitle(meta) }))
+  }, [focusedSessionId, workspaceSessionMetasIncludingSideChats])
+  const canCreateFocusedSideChat = focusedSessionId
+    ? !sessionMetaMap.get(focusedSessionId)?.sideChatForSessionId
+    : false
 
   const refreshWorkspaceUnreadMap = useCallback(async () => {
     try {
@@ -1453,9 +1565,11 @@ function AppShellContent({
   // Keep active workspace unread indicator in sync with live metadata updates
   useEffect(() => {
     if (!activeWorkspaceId) return
-    const activeHasUnread = activeSessionMetas.some((session) => !!session.hasUnread)
+    const activeHasUnread = workspaceSessionMetasIncludingSideChats.some(
+      session => !session.isArchived && !!session.hasUnread,
+    )
     setWorkspaceUnreadMap((prev) => ({ ...prev, [activeWorkspaceId]: activeHasUnread }))
-  }, [activeWorkspaceId, activeSessionMetas])
+  }, [activeWorkspaceId, workspaceSessionMetasIncludingSideChats])
 
   // Keep cross-workspace indicators in sync with global unread updates from main process
   useEffect(() => {
@@ -1472,8 +1586,8 @@ function AppShellContent({
 
   // Count sessions by todo state (scoped to workspace)
   const isMetaDone = (s: SessionMeta) => s.sessionStatus === 'done' || s.sessionStatus === 'cancelled'
-  const flaggedCount = activeSessionMetas.filter(s => s.isFlagged).length
-  const archivedCount = workspaceSessionMetas.filter(s => s.isArchived).length
+  const flaggedCount = standaloneActiveSessionMetas.filter(s => s.isFlagged).length
+  const archivedCount = standaloneSessionMetas.filter(s => s.isArchived).length
 
   // Compute session counts per label (cumulative: parent includes descendants).
   // Flatten the tree for iteration, use the tree for descendant lookups.
@@ -1483,7 +1597,7 @@ function AppShellContent({
     const counts: Record<string, number> = {}
     for (const label of allLabels) {
       // Direct count: sessions explicitly tagged with this label (handles valued entries like "priority::3")
-      const directCount = activeSessionMetas.filter(
+      const directCount = standaloneActiveSessionMetas.filter(
         s => s.labels?.some(l => extractLabelId(l) === label.id)
       ).length
       counts[label.id] = directCount
@@ -1492,14 +1606,14 @@ function AppShellContent({
     for (const label of allLabels) {
       const descendants = getDescendantIds(labelConfigs, label.id)
       if (descendants.length > 0) {
-        const descendantCount = activeSessionMetas.filter(
+        const descendantCount = standaloneActiveSessionMetas.filter(
           s => s.labels?.some(l => descendants.includes(extractLabelId(l)))
         ).length
         counts[label.id] = (counts[label.id] || 0) + descendantCount
       }
     }
     return counts
-  }, [activeSessionMetas, labelConfigs])
+  }, [standaloneActiveSessionMetas, labelConfigs])
 
   // Count sessions by individual todo state (dynamic based on effectiveSessionStatuses)
   // Uses activeSessionMetas to exclude archived sessions from counts.
@@ -1510,13 +1624,13 @@ function AppShellContent({
       counts[state.id] = 0
     }
     // Count sessions
-    for (const s of activeSessionMetas) {
+    for (const s of standaloneActiveSessionMetas) {
       const state = (s.sessionStatus || 'todo') as SessionStatusId
       // Increment count (initialize to 0 if status not in effectiveSessionStatuses yet)
       counts[state] = (counts[state] || 0) + 1
     }
     return counts
-  }, [activeSessionMetas, effectiveSessionStatuses])
+  }, [standaloneActiveSessionMetas, effectiveSessionStatuses])
 
   // Count sources by type for the Sources dropdown subcategories
   const sourceTypeCounts = useMemo(() => {
@@ -1549,34 +1663,41 @@ function AppShellContent({
     }
 
     let result: SessionMeta[]
+    // Project sessions live under their Project in the primary sidebar. An explicit
+    // legacy Project filter can still reveal them so existing task/URL flows keep working.
+    const activePool = projectFilter.size > 0
+      ? activeSessionMetas
+      : standaloneActiveSessionMetas
+    const completePool = projectFilter.size > 0
+      ? workspaceSessionMetas
+      : standaloneSessionMetas
 
     switch (sessionFilter.kind) {
       case 'allSessions':
-        // "All Sessions" - shows active (non-archived) sessions
-        result = activeSessionMetas
+        result = activePool
         break
       case 'flagged':
-        result = activeSessionMetas.filter(s => s.isFlagged)
+        result = activePool.filter(s => s.isFlagged)
         break
       case 'archived':
         // Archived view shows only archived sessions
-        result = workspaceSessionMetas.filter(s => s.isArchived)
+        result = completePool.filter(s => s.isArchived)
         break
       case 'state':
         // Filter by specific todo state (excludes archived)
-        result = activeSessionMetas.filter(s => (s.sessionStatus || 'todo') === sessionFilter.stateId)
+        result = activePool.filter(s => (s.sessionStatus || 'todo') === sessionFilter.stateId)
         break
       case 'label': {
         // Shared predicate (handles '__all__', descendant labels, and the optional
         // project scope) — the same implementation the session list filters with,
         // so the two stay aligned by construction.
-        result = activeSessionMetas.filter(s => matchesLabelFilter(s, sessionFilter, labelConfigs))
+        result = activePool.filter(s => matchesLabelFilter(s, sessionFilter, labelConfigs))
         break
       }
       case 'view': {
         // Filter by view: __all__ shows any session matched by any view,
         // otherwise filter to the specific view (excludes archived)
-        result = activeSessionMetas.filter(s => {
+        result = activePool.filter(s => {
           const matched = evaluateViews(s)
           if (sessionFilter.viewId === '__all__') {
             return matched.length > 0
@@ -1586,7 +1707,7 @@ function AppShellContent({
         break
       }
       default:
-        result = activeSessionMetas
+        result = activePool
     }
 
     // Apply secondary filters (status + labels, AND-ed together) in ALL views.
@@ -1654,7 +1775,17 @@ function AppShellContent({
     }
 
     return result
-  }, [workspaceSessionMetas, activeSessionMetas, sessionFilter, listFilter, labelFilter, projectFilter, labelConfigs])
+  }, [
+    workspaceSessionMetas,
+    activeSessionMetas,
+    standaloneSessionMetas,
+    standaloneActiveSessionMetas,
+    sessionFilter,
+    listFilter,
+    labelFilter,
+    projectFilter,
+    labelConfigs,
+  ])
 
   // Derive "pinned" (non-removable) filters from the current sessionFilter path.
   // These represent filters that are implicit in the current deeplink/route and
@@ -1830,6 +1961,14 @@ function AppShellContent({
   const handleProjectsClick = useCallback(() => {
     navigate(routes.view.projects())
   }, [])
+
+  const handleProjectsRootClick = useCallback(() => {
+    if (isAutoCompact) {
+      handleProjectsClick()
+      return
+    }
+    toggleExpanded('nav:projects')
+  }, [handleProjectsClick, isAutoCompact, toggleExpanded])
 
   const handleAutomationsScheduledClick = useCallback(() => {
     navigate(routes.view.automationsScheduled())
@@ -2056,6 +2195,28 @@ function AppShellContent({
     setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
   }, [activeWorkspace, focusZone, navigate, resolveInheritedNewSessionParams])
 
+  const handleNewProjectSession = useCallback(async (projectId: string, projectSlug: string) => {
+    if (!activeWorkspaceId) return
+
+    try {
+      const session = await onCreateSession(activeWorkspaceId, { projectId })
+      if (!session?.id) return
+
+      // Keep the new session visible under its project before navigating to it.
+      setCollapsedItems(prev => {
+        const next = new Set(prev)
+        next.delete('nav:projects')
+        next.delete(`nav:projects:${projectId}`)
+        return next
+      })
+      navigate(routes.view.projectSession(projectSlug, session.id))
+      setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
+    } catch (error) {
+      console.error('[AppShell] Failed to create project session:', error)
+      toast.error(t('projectInfo.newSessionFailed'))
+    }
+  }, [activeWorkspaceId, focusZone, onCreateSession, t])
+
   // Create a brand new dedicated browser window and focus it.
   // Intentionally unbound: this action should always create a NEW window.
   const handleNewBrowserWindow = useCallback(async () => {
@@ -2134,15 +2295,49 @@ function AppShellContent({
     }
     flattenTree(labelTree)
 
-    // 3. Sources, Skills, Settings
+    // 3. Sources, Skills, Projects, Settings
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
+    result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsRootClick })
+    for (const project of projects) {
+      result.push({
+        id: `nav:projects:${project.config.id}`,
+        type: 'nav',
+        action: () => navigate(routes.view.projects(project.config.slug)),
+      })
+      for (const projectSession of projectSessionsByProjectId.get(project.config.id) ?? []) {
+        result.push({
+          id: `nav:project-session:${projectSession.id}`,
+          type: 'nav',
+          action: () => navigate(routes.view.projectSession(project.config.slug, projectSession.id)),
+        })
+      }
+    }
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleAutomationsClick, handleSettingsClick, handleWhatsNewClick])
+  }, [
+    handleAllSessionsClick,
+    handleFlaggedClick,
+    handleArchivedClick,
+    handleSessionStatusClick,
+    effectiveSessionStatuses,
+    handleLabelClick,
+    labelConfigs,
+    labelTree,
+    viewConfigs,
+    handleViewClick,
+    handleSourcesClick,
+    handleSkillsClick,
+    handleProjectsRootClick,
+    projects,
+    projectSessionsByProjectId,
+    handleAutomationsClick,
+    handleSettingsClick,
+    handleWhatsNewClick,
+  ])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2378,6 +2573,9 @@ function AppShellContent({
           canGoForward={canGoForward}
           onToggleSidebar={handleToggleSidebar}
           onToggleFocusMode={() => setIsSidebarAndNavigatorHidden(prev => !prev)}
+          onToggleRightWorkspace={toggleRightWorkspace}
+          isRightWorkspaceVisible={isRightWorkspaceVisible}
+          canToggleRightWorkspace={Boolean(activeWorkspaceId && focusedSessionId)}
           onAddSessionPanel={() => handleNewChat(true)}
           onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
           isCompact={isAutoCompact}
@@ -2448,8 +2646,8 @@ function AppShellContent({
                     // All Sessions: expandable with status children (sortable) + Flagged & Archived as trailing items
                     {
                       id: "nav:allSessions",
-                      title: t("sidebar.allSessions"),
-                      label: String(workspaceSessionMetas.length),
+                      title: t("projectInfo.tabSessions"),
+                      label: String(standaloneSessionMetas.length),
                       icon: Inbox,
                       variant: sessionFilter?.kind === 'allSessions' ? "default" : "ghost",
                       onClick: handleAllSessionsClick,
@@ -2613,7 +2811,7 @@ function AppShellContent({
                       icon: FolderKanban,
                       // Highlight only when on Projects view itself, not when a child is "active" (jumped-to filter)
                       variant: isProjectsNavigation(navState) ? "default" : "ghost",
-                      onClick: handleProjectsClick,
+                      onClick: handleProjectsRootClick,
                       expandable: projects.length > 0,
                       expanded: isExpanded('nav:projects'),
                       onToggle: () => toggleExpanded('nav:projects'),
@@ -2621,16 +2819,41 @@ function AppShellContent({
                         type: 'projects' as const,
                         onAddProject: openAddProject,
                       },
-                      items: projects.map(p => ({
-                        id: `nav:projects:${p.config.id}`,
-                        title: p.config.name,
-                        icon: FolderKanban,
-                        variant: (
-                          (isProjectsNavigation(navState) && navState.details?.projectSlug === p.config.slug)
-                          || (sessionFilter?.kind === 'allSessions' && projectFilter.get(p.config.id) === 'include')
-                        ) ? "default" as const : "ghost" as const,
-                        onClick: () => navigate(routes.view.projects(p.config.slug)),
-                      })),
+                      items: projects.map(p => {
+                        const projectSessions = projectSessionsByProjectId.get(p.config.id) ?? []
+                        const projectItemId = `nav:projects:${p.config.id}`
+                        return {
+                          id: projectItemId,
+                          title: p.config.name,
+                          icon: FolderKanban,
+                          variant: (
+                            (isProjectsNavigation(navState) && navState.details?.projectSlug === p.config.slug)
+                            || (sessionFilter?.kind === 'allSessions' && projectFilter.get(p.config.id) === 'include')
+                          ) ? "default" as const : "ghost" as const,
+                          onClick: () => navigate(routes.view.projects(p.config.slug)),
+                          quickAction: {
+                            label: t('projectInfo.newSessionButton', { name: p.config.name }),
+                            icon: <SquarePenRounded className="h-3.5 w-3.5" />,
+                            onClick: () => { void handleNewProjectSession(p.config.id, p.config.slug) },
+                          },
+                          expandable: projectSessions.length > 0,
+                          expanded: isExpanded(projectItemId),
+                          onToggle: () => toggleExpanded(projectItemId),
+                          items: projectSessions.map(projectSession => ({
+                            id: `nav:project-session:${projectSession.id}`,
+                            title: getSessionTitle(projectSession),
+                            icon: MessageSquare,
+                            compact: true,
+                            variant: (
+                              isProjectsNavigation(navState)
+                              && navState.details?.sessionId === projectSession.id
+                            ) ? "default" as const : "ghost" as const,
+                            onClick: () => navigate(
+                              routes.view.projectSession(p.config.slug, projectSession.id),
+                            ),
+                          })),
+                        }
+                      }),
                     },
                     {
                       id: "nav:automations",
@@ -3544,7 +3767,9 @@ function AppShellContent({
                 {/* Key on sidebarMode forces full remount when switching views, skipping animations */}
                 <SessionList
                   key={sessionFilter?.kind}
-                  items={searchActive ? workspaceSessionMetas : filteredSessionMetas}
+                  items={searchActive
+                    ? (projectFilter.size > 0 ? workspaceSessionMetas : standaloneSessionMetas)
+                    : filteredSessionMetas}
                   onDelete={handleDeleteSession}
                   onFlag={onFlagSession}
                   onUnflag={onUnflagSession}
@@ -3606,10 +3831,33 @@ function AppShellContent({
           }
           navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || hideProjectsNavigator ? 0 : sessionListWidth)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
-          isRightSidebarVisible={false}
+          isRightSidebarVisible={isRightWorkspaceVisible}
           isCompact={isAutoCompact}
           isResizing={!!isResizing}
         />
+
+        {isRightWorkspaceVisible && activeWorkspaceId && focusedSessionId && (
+          <RightWorkspace
+            workspaceId={activeWorkspaceId}
+            sessionId={focusedSessionId}
+            sideChats={focusedSideChats}
+            onCreateSideChat={canCreateFocusedSideChat ? async () => {
+              try {
+                const created = await window.electronAPI.createSideChat(focusedSessionId)
+                return { sessionId: created.id, title: getSessionTitle(created) }
+              } catch (error) {
+                toast.error('Could not create side chat', {
+                  description: error instanceof Error ? error.message : String(error),
+                })
+                return null
+              }
+            } : undefined}
+            renderSideChat={(sideChatSessionId) => (
+              <EmbeddedSideChat sessionId={sideChatSessionId} active />
+            )}
+            onAddFileReference={contextValue.onAddFileReference}
+          />
+        )}
 
         {/* Sidebar Resize Handle (absolute, hidden in focused mode) */}
         {!effectiveSidebarAndNavigatorHidden && (

@@ -45,7 +45,7 @@ export function ProjectsListPanel({
   const { t } = useTranslation()
 
   const handleDelete = React.useCallback(async (project: LoadedProject) => {
-    // Deleting a project rm -rf's its folder + all assets, so confirm first — mirrors the
+    // Deleting a project removes its internal data, so confirm first — mirrors the
     // ProjectInfoPage delete (shares the same wording key) instead of deleting on a single click.
     if (!window.confirm(t('projectInfo.deleteConfirm', { name: project.config.name }))) return
     try {

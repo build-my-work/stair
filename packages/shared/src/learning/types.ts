@@ -41,34 +41,19 @@ export interface ImportedTextbook {
   chapters: ImportedChapter[];
 }
 
-/** A persisted text selection inside an EPUB textbook. */
-export interface EpubHighlight {
-  /** Persisted project asset filename. */
-  sourceFilename: string;
-  /** EPUB CFI range used to restore and navigate to the selection. */
+/** A persisted selection for an EPUB opened directly from a Project working directory. */
+export interface WorkingFileEpubHighlight {
+  /** Normalized Project working-directory relative path. Never an absolute path or basename guess. */
+  sourcePath: string;
+  /** Content digest that keeps highlights from a replaced edition from attaching to a new file. */
+  sourceFingerprint: string;
   cfiRange: string;
-  /** Selected text snapshot used by the highlights list and export. */
   text: string;
-  /** Deterministic chapter identifier produced by the EPUB importer. */
   chapterId: string;
-  /** Chapter title snapshot used even if the book cannot be reparsed later. */
   chapterTitle: string;
-  /** Zero-based chapter display order. */
   chapterOrder: number;
-  /** Zero-based OPF spine position containing the selection. */
   spineIndex: number;
-  /** Unix timestamp assigned by the server when first saved. */
   createdAt: number;
 }
 
-/** Client input for a highlight; creation time is assigned by the server. */
-export type EpubHighlightInput = Omit<EpubHighlight, 'createdAt'>;
-
-/** Small durable pointer identifying what a tutor session is teaching. */
-export interface LearningSessionContext {
-  sourceFilename: string;
-  textbookTitle: string;
-  chapterId: string;
-  chapterTitle: string;
-  format: TextbookFormat;
-}
+export type WorkingFileEpubHighlightInput = Omit<WorkingFileEpubHighlight, 'createdAt'>;

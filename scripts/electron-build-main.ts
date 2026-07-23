@@ -341,7 +341,7 @@ async function main(): Promise<void> {
   const proc = spawn({
     cmd: [
       "bun", "run", "esbuild",
-      "apps/electron/src/main/index.ts",
+      "apps/electron/src/main/bootstrap.ts",
       "--bundle",
       "--platform=node",
       "--format=cjs",

@@ -106,6 +106,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.sessions.GET_UNREAD_SUMMARY,
   RPC_CHANNELS.sessions.MARK_ALL_READ,
   RPC_CHANNELS.sessions.CREATE,
+  RPC_CHANNELS.sessions.CREATE_SIDE_CHAT,
   RPC_CHANNELS.sessions.DELETE,
   RPC_CHANNELS.sessions.GET_MESSAGES,
   RPC_CHANNELS.sessions.SEND_MESSAGE,
@@ -190,6 +191,14 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
     // The renderer adds the session synchronously from this return value (App.tsx handleCreateSession),
     // so suppress the broadcast to avoid a redundant hydrate round-trip.
     const session = await sessionManager.createSession(workspaceId, options, { emitCreatedEvent: false })
+    end()
+    return session
+  })
+
+  // Create a persistent auxiliary chat derived entirely from trusted main-session state.
+  server.handle(RPC_CHANNELS.sessions.CREATE_SIDE_CHAT, async (_ctx, mainSessionId: string, originMessageId?: string) => {
+    const end = perf.start('rpc.createSideChat', { mainSessionId })
+    const session = await sessionManager.createSideChat(mainSessionId, originMessageId)
     end()
     return session
   })
@@ -319,8 +328,8 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
       case 'markUnread':
         return sessionManager.markSessionUnread(sessionId)
       case 'setActiveViewing':
-        // Track which session user is actively viewing (for unread state machine)
-        return sessionManager.setActiveViewingSession(sessionId, command.workspaceId)
+        // Track every visible session (main chat and side chat may share the screen).
+        return sessionManager.setActiveViewingSession(sessionId, command.workspaceId, command.viewing ?? true)
       case 'setPermissionMode':
         return sessionManager.setSessionPermissionMode(sessionId, command.mode)
       case 'setThinkingLevel':

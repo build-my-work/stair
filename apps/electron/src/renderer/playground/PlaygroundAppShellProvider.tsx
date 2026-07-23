@@ -68,6 +68,7 @@ const playgroundValue: AppShellContextType = {
   onSessionOptionsChange: logCall('onSessionOptionsChange'),
   onInputChange: logCall('onInputChange'),
   onAttachmentsChange: logCall('onAttachmentsChange'),
+  onAddFileReference: logCall('onAddFileReference'),
   // The mobile-webui demos rely on this signal to flip `AppMenu` into its
   // compact layout; harmless for other demos that don't read it.
   isCompactMode: true,

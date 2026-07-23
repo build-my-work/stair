@@ -12,6 +12,7 @@ import {
 import { ContextMenuProvider } from '@/components/ui/menu-context'
 import { SidebarMenu, type SidebarMenuType } from './SidebarMenu'
 import { SortableList, type SortableItemData } from '@/components/ui/sortable-list'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 
 /** Context menu configuration for sidebar items */
 export interface SidebarContextMenuConfig {
@@ -83,6 +84,12 @@ export interface LinkItem {
   sortable?: SortableConfig
   // Optional element rendered after the title (e.g., label type icon), revealed on hover
   afterTitle?: React.ReactNode
+  // Optional row-level action revealed on hover/focus (e.g., create a project session)
+  quickAction?: {
+    label: string
+    icon: React.ReactNode
+    onClick: () => void
+  }
 }
 
 export interface SeparatorItem {
@@ -227,37 +234,70 @@ export function LeftSidebar({ links, isCollapsed, getItemProps, focusedItemId, i
           // so only the clicked item highlights, not the entire section.
           const content = (
             <div className="group/section">
-              {link.contextMenu ? (
-                <ContextMenu modal={true}>
-                  <ContextMenuTrigger asChild>
-                    {buttonElement}
-                  </ContextMenuTrigger>
-                  <StyledContextMenuContent>
-                    <ContextMenuProvider>
-                      <SidebarMenu
-                        type={link.contextMenu.type}
-                        statusId={link.contextMenu.statusId}
-                        labelId={link.contextMenu.labelId}
-                        onConfigureStatuses={link.contextMenu.onConfigureStatuses}
-                        onMarkAllRead={link.contextMenu.onMarkAllRead}
-                        onConfigureLabels={link.contextMenu.onConfigureLabels}
-                        onAddLabel={link.contextMenu.onAddLabel}
-                        onDeleteLabel={link.contextMenu.onDeleteLabel}
-                        onAddSource={link.contextMenu.onAddSource}
-                        onAddSkill={link.contextMenu.onAddSkill}
-                        onAddAutomation={link.contextMenu.onAddAutomation}
-                        onAddProject={link.contextMenu.onAddProject}
-                        sourceType={link.contextMenu.sourceType}
-                        onConfigureViews={link.contextMenu.onConfigureViews}
-                        viewId={link.contextMenu.viewId}
-                        onDeleteView={link.contextMenu.onDeleteView}
-                      />
-                    </ContextMenuProvider>
-                  </StyledContextMenuContent>
-                </ContextMenu>
-              ) : (
-                buttonElement
-              )}
+              <div className="group/row relative">
+                {link.contextMenu ? (
+                  <ContextMenu modal={true}>
+                    <ContextMenuTrigger asChild>
+                      {buttonElement}
+                    </ContextMenuTrigger>
+                    <StyledContextMenuContent>
+                      <ContextMenuProvider>
+                        <SidebarMenu
+                          type={link.contextMenu.type}
+                          statusId={link.contextMenu.statusId}
+                          labelId={link.contextMenu.labelId}
+                          onConfigureStatuses={link.contextMenu.onConfigureStatuses}
+                          onMarkAllRead={link.contextMenu.onMarkAllRead}
+                          onConfigureLabels={link.contextMenu.onConfigureLabels}
+                          onAddLabel={link.contextMenu.onAddLabel}
+                          onDeleteLabel={link.contextMenu.onDeleteLabel}
+                          onAddSource={link.contextMenu.onAddSource}
+                          onAddSkill={link.contextMenu.onAddSkill}
+                          onAddAutomation={link.contextMenu.onAddAutomation}
+                          onAddProject={link.contextMenu.onAddProject}
+                          sourceType={link.contextMenu.sourceType}
+                          onConfigureViews={link.contextMenu.onConfigureViews}
+                          viewId={link.contextMenu.viewId}
+                          onDeleteView={link.contextMenu.onDeleteView}
+                        />
+                      </ContextMenuProvider>
+                    </StyledContextMenuContent>
+                  </ContextMenu>
+                ) : (
+                  buttonElement
+                )}
+                {link.quickAction && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={link.quickAction.label}
+                        data-touch-reveal="true"
+                        className={cn(
+                          "absolute right-1 top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center rounded-[5px]",
+                          "text-foreground/50 opacity-0 transition-[opacity,color,background-color] duration-150",
+                          "hover:bg-foreground/[0.07] hover:text-foreground",
+                          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+                          "group-hover/row:opacity-100 group-focus-within/row:opacity-100",
+                        )}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.stopPropagation()
+                          }
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          link.quickAction?.onClick()
+                        }}
+                      >
+                        {link.quickAction.icon}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">{link.quickAction.label}</TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
               {/* Expandable subitems — outside context menu scope so only the
                 * clicked button gets data-state="open", not nested children */}
               {link.expandable && link.items && (
@@ -494,6 +534,7 @@ const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps & R
           // Compact mode: 4px less total height (py-[3px] vs py-[5px])
           link.compact ? "py-[3px]" : "py-[5px]",
           "px-2",
+          link.quickAction && "pr-8",
           link.variant === "default"
             ? "bg-foreground/[0.07]"
             // Highlight on hover, context menu open (data-state), or EditPopover active (data-edit-active)

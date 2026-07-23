@@ -67,6 +67,46 @@ describe('session draft storage', () => {
     })
   })
 
+  it('round-trips structured file references and keeps a reference-only draft', () => {
+    const configDir = makeConfigDir()
+    runEval(configDir,
+      "setSessionDraft('s1', { text: '', references: [{ projectId: 'project-1', path: 'books/操作系统导论 .epub', quote: '进程就是运行中的程序。', locator: { type: 'epub-cfi', cfiRange: 'epubcfi(/6/4!/4/2/2:0,/4/2/2:8)' } }] })"
+    )
+    const output = runEval(configDir, "console.log(JSON.stringify(getSessionDraft('s1')))" )
+    expect(JSON.parse(output)).toEqual({
+      text: '',
+      references: [{
+        projectId: 'project-1',
+        path: 'books/操作系统导论 .epub',
+        quote: '进程就是运行中的程序。',
+        locator: {
+          type: 'epub-cfi',
+          cfiRange: 'epubcfi(/6/4!/4/2/2:0,/4/2/2:8)',
+        },
+      }],
+    })
+  })
+
+  it('rejects a draft containing an unsafe file reference', () => {
+    const configDir = makeConfigDir()
+    const draftsPath = join(configDir, 'drafts.json')
+    writeFileSync(draftsPath, JSON.stringify({
+      drafts: {
+        s1: {
+          text: 'unsafe',
+          references: [{
+            projectId: 'project-1',
+            path: '../outside.epub',
+            locator: { type: 'epub-cfi', cfiRange: 'epubcfi(/6/4)' },
+          }],
+        },
+      },
+      updatedAt: 0,
+    }), 'utf-8')
+    const output = runEval(configDir, "console.log(JSON.stringify(getAllSessionDrafts()))")
+    expect(JSON.parse(output)).toEqual({})
+  })
+
   it('removes the entry when draft is fully empty', () => {
     const configDir = makeConfigDir()
     runEval(configDir, "setSessionDraft('s1', { text: 'typed' })")

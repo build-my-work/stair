@@ -22,7 +22,7 @@ import {
 } from '../config/llm-connections.ts';
 import type { McpClientPool } from '../mcp/mcp-pool.ts';
 import { loadPlanFromPath, type SessionConfig as Session } from '../sessions/storage.ts';
-import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
+import { loadProjectById, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
 import { DEFAULT_MODEL, isClaudeModel, isAdaptiveThinkingAlwaysOnModel, getDefaultSummarizationModel, getModelContextWindow } from '../config/models.ts';
 import { getCredentialManager } from '../credentials/index.ts';
 import { loadPreferences, formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
@@ -98,6 +98,26 @@ import { IMAGE_LIMITS } from '../utils/files.ts';
 
 /** Image extensions that may need size-guard in PreToolUse (matches Read tool's image detection) */
 const IMAGE_READ_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']);
+
+export interface ClaudeTurnToolPolicy {
+  /** null preserves the normal Claude Code preset. */
+  builtinTools: readonly string[] | null;
+  /** null preserves the full session MCP server. */
+  sessionToolNames: readonly string[] | null;
+}
+
+export function resolveClaudeTurnToolPolicy(
+  systemPromptPreset: string | undefined,
+  activeSkillSlugs: ReadonlySet<string>,
+): ClaudeTurnToolPolicy {
+  if (systemPromptPreset !== 'tutor') {
+    return { builtinTools: null, sessionToolNames: null };
+  }
+  if (activeSkillSlugs.has('create-learning-artifact')) {
+    return { builtinTools: ['Read'], sessionToolNames: ['save_project_artifact'] };
+  }
+  return { builtinTools: [], sessionToolNames: [] };
+}
 
 // Re-export permission mode functions for application usage
 export {
@@ -704,12 +724,6 @@ export class ClaudeAgent extends BaseAgent {
         name: project.config.name,
         description: project.config.description,
         details: project.config.details,
-        assetsPath: getProjectAssetsPath(this.workspaceRootPath, slug),
-        assets: listProjectAssets(this.workspaceRootPath, slug).map((a) => ({
-          filename: a.filename,
-          mimeType: a.mimeType,
-          sizeBytes: a.sizeBytes,
-        })),
         memoryPath: getProjectMemoryPath(this.workspaceRootPath, slug),
         memoryContent: loadProjectMemory(this.workspaceRootPath, slug) ?? undefined,
       };
@@ -1071,6 +1085,13 @@ export class ClaudeAgent extends BaseAgent {
       // This ensures Claude and Codex agents use the same detection and constants
       const miniConfig = this.getMiniAgentConfig();
       const isTutor = this.config.systemPromptPreset === 'tutor';
+      const tutorToolPolicy = resolveClaudeTurnToolPolicy(
+        this.config.systemPromptPreset,
+        this.getCurrentTurnSkillSlugs(),
+      );
+      const tutorBuiltinTools = tutorToolPolicy.builtinTools ?? [];
+      const tutorSessionToolNames = tutorToolPolicy.sessionToolNames ?? [];
+      const isTutorArtifactTurn = isTutor && tutorSessionToolNames.length > 0;
 
       // Block SDK tools that require UI we don't have:
       // - EnterPlanMode/ExitPlanMode: We use safe mode instead (user-controlled via UI)
@@ -1092,7 +1113,12 @@ export class ClaudeAgent extends BaseAgent {
       // Build full MCP servers set first, then filter for mini agents
       const fullMcpServers: Options['mcpServers'] = {
         // Session-scoped tools (SubmitPlan, source_test, update_user_preferences, transform_data, etc.)
-        session: getSessionScopedTools(sessionId, this.workspaceRootPath),
+        session: getSessionScopedTools(
+          sessionId,
+          this.workspaceRootPath,
+          undefined,
+          isTutor ? { toolNames: tutorSessionToolNames } : undefined,
+        ),
         // Craft Agents documentation - always available for searching setup guides
         // This is a public Mintlify MCP server, no auth needed
         'craft-agents-docs': {
@@ -1107,11 +1133,14 @@ export class ClaudeAgent extends BaseAgent {
 
       // Mini agents: filter to minimal set using centralized keys
       // Regular agents: use full set including docs and user sources
-      const mcpServers: Options['mcpServers'] = isTutor
-        ? {}
-        : miniConfig.enabled
-          ? this.filterMcpServersForMiniAgent(fullMcpServers, miniConfig.mcpServerKeys)
-          : fullMcpServers;
+      let mcpServers: Options['mcpServers'];
+      if (isTutor) {
+        mcpServers = isTutorArtifactTurn ? { session: fullMcpServers.session! } : {};
+      } else if (miniConfig.enabled) {
+        mcpServers = this.filterMcpServersForMiniAgent(fullMcpServers, miniConfig.mcpServerKeys);
+      } else {
+        mcpServers = fullMcpServers;
+      }
       
       // Configure SDK options
       // Model is always set by caller via connection config
@@ -1173,6 +1202,16 @@ export class ClaudeAgent extends BaseAgent {
       // field) so the catch handler reads the value passed to *this*
       // chatImpl invocation, not state left over from an earlier call.
       const resolvedCwd = this.resolveSpawnCwd({ isRetry: _isRetry, sessionId });
+
+      let configuredTools: NonNullable<Options['tools']>;
+      if (isTutor) {
+        configuredTools = [...tutorBuiltinTools];
+      } else if (miniConfig.enabled) {
+        configuredTools = [...miniConfig.tools];
+      } else {
+        configuredTools = { type: 'preset', preset: 'claude_code' };
+      }
+      debug('[ClaudeAgent] 🔧 Tools configuration:', JSON.stringify(configuredTools));
 
       const options: Options = {
         ...getDefaultOptions(this.config.envOverrides),
@@ -1256,15 +1295,7 @@ export class ClaudeAgent extends BaseAgent {
         // Tools configuration:
         // - Mini agents: minimal set for quick config edits (reduces token count ~70%)
         // - Regular agents: full Claude Code toolset
-        tools: (() => {
-          const toolsValue = isTutor
-            ? []
-            : miniConfig.enabled
-              ? [...miniConfig.tools]  // Use centralized tool list
-              : { type: 'preset' as const, preset: 'claude_code' as const };
-          debug('[ClaudeAgent] 🔧 Tools configuration:', JSON.stringify(toolsValue));
-          return toolsValue;
-        })(),
+        tools: configuredTools,
         // Bypass SDK's built-in permission system - we handle all permissions via PreToolUse hook
         // This allows Safe Mode to properly allow read-only bash commands without SDK interference
         permissionMode: 'bypassPermissions',

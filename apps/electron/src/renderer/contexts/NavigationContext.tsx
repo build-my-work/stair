@@ -42,6 +42,7 @@ import { useAtomValue, useSetAtom, useStore } from 'jotai'
 import { useSession } from '@/hooks/useSession'
 import { useLabels } from '@/hooks/useLabels'
 import { matchesLabelFilter } from '@craft-agent/shared/labels'
+import { isPrimaryNavigableSession } from '@craft-agent/shared/sessions/navigation'
 import {
   parseRoute,
   parseRouteToNavigationState,
@@ -539,12 +540,11 @@ export function NavigationProvider({
   // =========================================================================
 
   // Helper: Filter sessions by SessionFilter
-  // Always excludes hidden sessions - they should never appear in navigation
+  // Always excludes hidden and auxiliary side-chat sessions from primary navigation.
   const filterSessionsByFilter = useCallback(
     (filter: SessionFilter): SessionMeta[] => {
-      // First filter out hidden sessions - they should never appear in any view
       const visibleSessions = sessionMetas.filter(
-        s => !s.hidden && (!workspaceId || s.workspaceId === workspaceId)
+        s => isPrimaryNavigableSession(s) && (!workspaceId || s.workspaceId === workspaceId)
       )
 
       return visibleSessions.filter((session) => {

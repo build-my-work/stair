@@ -1,22 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import type { EpubHighlightInput } from '../../learning/types.ts';
+import type { WorkingFileEpubHighlightInput } from '../../learning/types.ts';
 import { createProject } from '../storage.ts';
 import {
-  deleteProjectEpubHighlight,
-  deleteProjectEpubHighlightsForSource,
-  exportProjectEpubHighlights,
+  deleteProjectWorkingFileEpubHighlight,
+  exportProjectWorkingFileEpubHighlights,
   getProjectHighlightsPath,
-  listProjectEpubHighlights,
-  saveProjectEpubHighlight,
+  listProjectWorkingFileEpubHighlights,
+  saveProjectWorkingFileEpubHighlight,
 } from '../highlights.ts';
 
 let tempDir: string;
 let workspaceRoot: string;
 let projectSlug: string;
+const FINGERPRINT_V1 = `sha256:${'a'.repeat(64)}`;
+const FINGERPRINT_V2 = `sha256:${'b'.repeat(64)}`;
+const FINGERPRINT_ARCHIVE = `sha256:${'c'.repeat(64)}`;
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'epub-highlights-test-'));
@@ -28,9 +30,12 @@ afterEach(() => {
   if (tempDir && existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
 });
 
-function input(overrides: Partial<EpubHighlightInput> = {}): EpubHighlightInput {
+function input(
+  overrides: Partial<WorkingFileEpubHighlightInput> = {},
+): WorkingFileEpubHighlightInput {
   return {
-    sourceFilename: 'book.epub',
+    sourcePath: 'books/operating-systems.epub',
+    sourceFingerprint: FINGERPRINT_V1,
     cfiRange: 'epubcfi(/6/2!/4/2,/1:0,/1:4)',
     text: 'A useful passage.',
     chapterId: 'chapter-1',
@@ -41,99 +46,166 @@ function input(overrides: Partial<EpubHighlightInput> = {}): EpubHighlightInput 
   };
 }
 
-describe('EPUB highlight storage', () => {
-  it('returns an empty list before the first highlight is saved', () => {
-    expect(listProjectEpubHighlights(workspaceRoot, projectSlug, 'book.epub')).toEqual([]);
-  });
+describe('working-file EPUB highlight storage', () => {
+  it('persists highlights atomically and upserts while preserving creation time', () => {
+    const first = saveProjectWorkingFileEpubHighlight(workspaceRoot, projectSlug, input());
+    const updated = saveProjectWorkingFileEpubHighlight(
+      workspaceRoot,
+      projectSlug,
+      input({ text: 'Updated text.' }),
+    );
 
-  it('persists highlights with a server creation time using an atomic JSON file', () => {
-    const saved = saveProjectEpubHighlight(workspaceRoot, projectSlug, input());
-
-    expect(saved.createdAt).toBeGreaterThan(0);
-    expect(listProjectEpubHighlights(workspaceRoot, projectSlug, 'book.epub')).toEqual([saved]);
-    expect(JSON.parse(readFileSync(getProjectHighlightsPath(workspaceRoot, projectSlug), 'utf8'))).toEqual([saved]);
+    expect(updated.createdAt).toBe(first.createdAt);
+    expect(listProjectWorkingFileEpubHighlights(
+      workspaceRoot,
+      projectSlug,
+      input().sourcePath,
+      FINGERPRINT_V1,
+    )).toEqual([updated]);
+    expect(JSON.parse(readFileSync(getProjectHighlightsPath(workspaceRoot, projectSlug), 'utf8')))
+      .toEqual([updated]);
     expect(existsSync(`${getProjectHighlightsPath(workspaceRoot, projectSlug)}.tmp`)).toBe(false);
   });
 
-  it('upserts the same source and CFI while preserving its creation time', () => {
-    const first = saveProjectEpubHighlight(workspaceRoot, projectSlug, input());
-    const updated = saveProjectEpubHighlight(workspaceRoot, projectSlug, input({ text: 'Updated text.' }));
-
-    expect(updated.createdAt).toBe(first.createdAt);
-    expect(updated.text).toBe('Updated text.');
-    expect(listProjectEpubHighlights(workspaceRoot, projectSlug, 'book.epub')).toEqual([updated]);
-  });
-
-  it('keeps books separate and deletes only the requested highlight', () => {
-    saveProjectEpubHighlight(workspaceRoot, projectSlug, input());
-    saveProjectEpubHighlight(workspaceRoot, projectSlug, input({
-      sourceFilename: 'other.epub',
-      cfiRange: 'epubcfi(/6/4!/4/2,/1:0,/1:4)',
-    }));
-
-    deleteProjectEpubHighlight(
+  it('keeps duplicate basenames in different folders strictly separate', () => {
+    const first = saveProjectWorkingFileEpubHighlight(workspaceRoot, projectSlug, input());
+    saveProjectWorkingFileEpubHighlight(
       workspaceRoot,
       projectSlug,
-      'book.epub',
-      'epubcfi(/6/2!/4/2,/1:0,/1:4)',
+      input({
+        sourcePath: 'archive/operating-systems.epub',
+        sourceFingerprint: FINGERPRINT_ARCHIVE,
+      }),
     );
 
-    expect(listProjectEpubHighlights(workspaceRoot, projectSlug, 'book.epub')).toEqual([]);
-    expect(listProjectEpubHighlights(workspaceRoot, projectSlug, 'other.epub')).toHaveLength(1);
+    expect(listProjectWorkingFileEpubHighlights(
+      workspaceRoot,
+      projectSlug,
+      'books/operating-systems.epub',
+      FINGERPRINT_V1,
+    )).toEqual([first]);
   });
 
-  it('clears every highlight belonging to a deleted EPUB asset', () => {
-    saveProjectEpubHighlight(workspaceRoot, projectSlug, input());
-    saveProjectEpubHighlight(workspaceRoot, projectSlug, input({
-      cfiRange: 'epubcfi(/6/2!/4/2,/1:5,/1:9)',
-    }));
-    saveProjectEpubHighlight(workspaceRoot, projectSlug, input({
-      sourceFilename: 'other.epub',
-      cfiRange: 'epubcfi(/6/4!/4/2,/1:0,/1:4)',
-    }));
+  it('uses the fingerprint to isolate highlights after a file is replaced in place', () => {
+    saveProjectWorkingFileEpubHighlight(workspaceRoot, projectSlug, input());
+    const current = saveProjectWorkingFileEpubHighlight(
+      workspaceRoot,
+      projectSlug,
+      input({ sourceFingerprint: FINGERPRINT_V2, text: 'New edition.' }),
+    );
 
-    deleteProjectEpubHighlightsForSource(workspaceRoot, projectSlug, 'book.epub');
-
-    expect(listProjectEpubHighlights(workspaceRoot, projectSlug, 'book.epub')).toEqual([]);
-    expect(listProjectEpubHighlights(workspaceRoot, projectSlug, 'other.epub')).toHaveLength(1);
+    expect(listProjectWorkingFileEpubHighlights(
+      workspaceRoot,
+      projectSlug,
+      input().sourcePath,
+      FINGERPRINT_V2,
+    )).toEqual([current]);
   });
 
-  it('rejects malformed input before writing', () => {
-    expect(() => saveProjectEpubHighlight(workspaceRoot, projectSlug, input({ cfiRange: 'not-a-cfi' })))
-      .toThrow('valid EPUB CFI');
-    expect(() => saveProjectEpubHighlight(workspaceRoot, projectSlug, input({ chapterOrder: -1 })))
-      .toThrow('non-negative integer');
-    expect(existsSync(getProjectHighlightsPath(workspaceRoot, projectSlug))).toBe(false);
+  it('deletes only the exact path, fingerprint, and CFI', () => {
+    saveProjectWorkingFileEpubHighlight(workspaceRoot, projectSlug, input());
+    saveProjectWorkingFileEpubHighlight(
+      workspaceRoot,
+      projectSlug,
+      input({ sourceFingerprint: FINGERPRINT_V2, text: 'Second edition.' }),
+    );
+
+    deleteProjectWorkingFileEpubHighlight(
+      workspaceRoot,
+      projectSlug,
+      input().sourcePath,
+      FINGERPRINT_V1,
+      input().cfiRange,
+    );
+
+    expect(listProjectWorkingFileEpubHighlights(
+      workspaceRoot,
+      projectSlug,
+      input().sourcePath,
+      FINGERPRINT_V1,
+    )).toEqual([]);
+    expect(listProjectWorkingFileEpubHighlights(
+      workspaceRoot,
+      projectSlug,
+      input().sourcePath,
+      FINGERPRINT_V2,
+    )).toHaveLength(1);
+  });
+
+  it('rejects legacy asset records instead of treating them as working files', () => {
+    const path = getProjectHighlightsPath(workspaceRoot, projectSlug);
+    writeFileSync(path, `${JSON.stringify([{
+      sourceFilename: 'book.epub',
+      cfiRange: input().cfiRange,
+      text: input().text,
+      chapterId: input().chapterId,
+      chapterTitle: input().chapterTitle,
+      chapterOrder: 0,
+      spineIndex: 1,
+      createdAt: 123,
+    }], null, 2)}\n`);
+
+    expect(() => listProjectWorkingFileEpubHighlights(
+      workspaceRoot,
+      projectSlug,
+      input().sourcePath,
+      FINGERPRINT_V1,
+    )).toThrow('sourcePath');
+  });
+
+  it('rejects malformed input and oversized persisted files', () => {
+    expect(() => saveProjectWorkingFileEpubHighlight(
+      workspaceRoot,
+      projectSlug,
+      input({ sourcePath: '../operating-systems.epub' }),
+    )).toThrow('relative');
+    expect(() => saveProjectWorkingFileEpubHighlight(
+      workspaceRoot,
+      projectSlug,
+      input({ cfiRange: 'not-a-cfi' }),
+    )).toThrow('valid EPUB CFI');
+
+    const path = getProjectHighlightsPath(workspaceRoot, projectSlug);
+    writeFileSync(path, '[]');
+    truncateSync(path, 21 * 1024 * 1024);
+    expect(() => listProjectWorkingFileEpubHighlights(
+      workspaceRoot,
+      projectSlug,
+      input().sourcePath,
+      FINGERPRINT_V1,
+    )).toThrow(/too large/i);
   });
 });
 
-describe('EPUB highlight Markdown export', () => {
-  it('groups highlights by chapter order and preserves multiline quotes', () => {
-    saveProjectEpubHighlight(workspaceRoot, projectSlug, input({
-      cfiRange: 'epubcfi(/6/4!/4/2,/1:0,/1:4)',
-      text: 'Later chapter',
-      chapterId: 'chapter-2',
-      chapterTitle: 'Chapter Two',
-      chapterOrder: 1,
-      spineIndex: 2,
-    }));
-    saveProjectEpubHighlight(workspaceRoot, projectSlug, input({ text: 'First line\nSecond line' }));
+describe('working-file EPUB highlight Markdown export', () => {
+  it('groups highlights by chapter and preserves multiline quotes', () => {
+    saveProjectWorkingFileEpubHighlight(
+      workspaceRoot,
+      projectSlug,
+      input({
+        cfiRange: 'epubcfi(/6/4!/4/2,/1:0,/1:4)',
+        text: 'Later chapter',
+        chapterId: 'chapter-2',
+        chapterTitle: 'Chapter Two',
+        chapterOrder: 1,
+        spineIndex: 2,
+      }),
+    );
+    saveProjectWorkingFileEpubHighlight(
+      workspaceRoot,
+      projectSlug,
+      input({ text: 'First line\nSecond line' }),
+    );
 
-    const result = exportProjectEpubHighlights(workspaceRoot, projectSlug, 'book.epub');
+    const result = exportProjectWorkingFileEpubHighlights(
+      workspaceRoot,
+      projectSlug,
+      input().sourcePath,
+      FINGERPRINT_V1,
+    );
 
-    expect(result.filename).toBe('book-highlights.md');
-    expect(result.markdown).toBe([
-      '# book Highlights',
-      '',
-      '## Chapter One',
-      '',
-      '> First line',
-      '> Second line',
-      '',
-      '## Chapter Two',
-      '',
-      '> Later chapter',
-      '',
-    ].join('\n'));
+    expect(result.filename).toBe('operating-systems-highlights.md');
+    expect(result.markdown).toContain('> First line\n> Second line');
+    expect(result.markdown).toContain('## Chapter Two\n\n> Later chapter');
   });
 });

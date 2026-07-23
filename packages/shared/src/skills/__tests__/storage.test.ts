@@ -14,11 +14,12 @@
  * baseline count and validating relative to it.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import {
   loadAllSkills,
+  loadSkillBySlug,
   loadWorkspaceSkills,
   loadSkill,
   skillExists,
@@ -528,6 +529,40 @@ describe('loadAllSkills', () => {
     const dup = skills.find(s => s.slug === `${TEST_PREFIX}dup`);
     expect(dup!.source).toBe('project');
     expect(dup!.metadata.name).toBe('Proj Dup');
+  });
+});
+
+describe('loadSkillBySlug', () => {
+  it('loads project skills first without changing workspace-skill fallback', () => {
+    createSkill(join(workspaceRoot, 'skills'), 'shared-skill', {
+      name: 'Workspace Skill',
+    });
+    const projectSkillDir = createSkill(join(projectRoot, '.agents', 'skills'), 'shared-skill', {
+      name: 'Project Skill',
+    });
+    createSkill(join(workspaceRoot, 'skills'), 'workspace-only', {
+      name: 'Workspace Only',
+    });
+
+    expect(loadSkillBySlug(workspaceRoot, 'shared-skill', projectRoot)).toMatchObject({
+      source: 'project',
+      path: projectSkillDir,
+    });
+    expect(loadSkillBySlug(workspaceRoot, 'workspace-only', projectRoot)).toMatchObject({
+      source: 'workspace',
+      path: join(workspaceRoot, 'skills', 'workspace-only'),
+    });
+  });
+
+  it('rejects traversal slugs and project skill symlinks that escape the trusted skills directory', () => {
+    const outsideSkill = createSkill(join(tempDir, 'outside'), 'escaped-skill');
+    const projectSkillsDir = join(projectRoot, '.agents', 'skills');
+    mkdirSync(projectSkillsDir, { recursive: true });
+    symlinkSync(outsideSkill, join(projectSkillsDir, 'linked-skill'));
+
+    expect(loadSkillBySlug(workspaceRoot, '../outside/escaped-skill', projectRoot)).toBeNull();
+    expect(loadSkillBySlug(workspaceRoot, '..\\outside\\escaped-skill', projectRoot)).toBeNull();
+    expect(loadSkillBySlug(workspaceRoot, 'linked-skill', projectRoot)).toBeNull();
   });
 });
 

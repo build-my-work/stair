@@ -345,6 +345,9 @@ export interface SessionToolContext {
    */
   createTask?(input: CreateTaskInput): Promise<CreateTaskResult>;
 
+  /** Persist a Markdown artifact in the current session's trusted Project. */
+  saveProjectArtifact?(input: SaveProjectArtifactToolInput): Promise<SavedProjectArtifactResult>;
+
   // ============================================================
   // Inter-Session Messaging
   // ============================================================
@@ -409,6 +412,31 @@ export interface SessionToolContext {
    * Used by transform_data and render_template for output files.
    */
   dataPath?: string;
+}
+
+export type ProjectArtifactLocatorInput =
+  | { type: 'epub-cfi'; cfiRange: string }
+  | { type: 'pdf-page'; page: number }
+  | { type: 'text-range'; startLine: number; endLine: number };
+
+export interface ProjectArtifactReferenceInput {
+  path: string;
+  quote?: string;
+  locator: ProjectArtifactLocatorInput;
+}
+
+export interface SaveProjectArtifactToolInput {
+  artifactId?: string;
+  title: string;
+  markdown: string;
+  templateId?: string;
+  references: ProjectArtifactReferenceInput[];
+}
+
+export interface SavedProjectArtifactResult {
+  artifactId: string;
+  projectId: string;
+  title: string;
 }
 
 // ============================================================

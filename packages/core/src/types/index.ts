@@ -30,6 +30,7 @@ export type {
   MessageAttachment,
   StoredAttachment,
   ContentBadge,
+  FileReference,
   AnnotationAuthor,
   AnnotationBody,
   AnnotationIntent,
@@ -64,4 +65,3 @@ export type {
   SessionProcessingStatus,
   ActiveSessionInfo,
 } from './server.ts';
-

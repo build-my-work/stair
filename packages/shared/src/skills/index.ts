@@ -12,6 +12,7 @@ export {
   loadAllSkills,
   invalidateSkillsCache,
   loadSkillBySlug,
+  resolveSkillProjectRoot,
   getSkillIconPath,
   deleteSkill,
   skillExists,

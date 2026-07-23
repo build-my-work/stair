@@ -11,7 +11,6 @@
 
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
-import type { LearningSessionContext } from '../learning/types.ts';
 import type { StoredAttachment, MessageRole, ToolStatus, AuthRequestType, AuthStatus, CredentialInputMode, StoredMessage } from '@craft-agent/core/types';
 
 /**
@@ -34,7 +33,7 @@ export const SESSION_PERSISTENT_FIELDS = [
   // Read tracking
   'lastReadMessageId', 'hasUnread',
   // Config
-  'enabledSourceSlugs', 'permissionMode', 'previousPermissionMode', 'workingDirectory',
+  'enabledSourceSlugs', 'permissionMode', 'previousPermissionMode', 'workingDirectory', 'workingDirectoryMode',
   // Model/Connection
   'model', 'llmConnection', 'connectionLocked', 'thinkingLevel', 'systemPromptPreset',
   // Sharing
@@ -55,7 +54,9 @@ export const SESSION_PERSISTENT_FIELDS = [
   // Automation origin
   'triggeredBy',
   // Project binding (workspace-scoped grouping)
-  'projectId', 'learningContext',
+  'projectId',
+  // Auxiliary side-chat relation (independent from task/subtask hierarchy)
+  'sideChatForSessionId', 'originMessageId',
   // Kanban: task/subtask hierarchy + board column
   'parentSessionId',
   'kanbanColumn',
@@ -143,6 +144,8 @@ export interface SessionConfig {
   enabledSourceSlugs?: string[];
   /** Working directory for this session (used by agent for bash commands and context) */
   workingDirectory?: string;
+  /** Distinguishes an explicit no-directory choice from a legacy/default unset value. */
+  workingDirectoryMode?: 'none';
   /** SDK cwd for session storage - set once at creation, never changes. Ensures SDK can find session transcripts regardless of workingDirectory changes. */
   sdkCwd?: string;
   /** Shared viewer URL (if shared via viewer) */
@@ -213,8 +216,10 @@ export interface SessionConfig {
   triggeredBy?: { automationName?: string; event?: string; timestamp?: number };
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
-  /** Selected textbook chapter for a tutor session. */
-  learningContext?: LearningSessionContext;
+  /** Main session this auxiliary side chat belongs to. Never used for task hierarchy. */
+  sideChatForSessionId?: string;
+  /** Optional main-session message that motivated creation of this side chat. */
+  originMessageId?: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -279,6 +284,8 @@ export interface SessionHeader {
   enabledSourceSlugs?: string[];
   /** Working directory for this session (used by agent for bash commands and context) */
   workingDirectory?: string;
+  /** Distinguishes an explicit no-directory choice from a legacy/default unset value. */
+  workingDirectoryMode?: 'none';
   /** SDK cwd for session storage - set once at creation, never changes */
   sdkCwd?: string;
   /** Shared viewer URL (if shared via viewer) */
@@ -324,8 +331,10 @@ export interface SessionHeader {
   triggeredBy?: { automationName?: string; event?: string; timestamp?: number };
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
-  /** Selected textbook chapter for a tutor session. */
-  learningContext?: LearningSessionContext;
+  /** Main session this auxiliary side chat belongs to. Never used for task hierarchy. */
+  sideChatForSessionId?: string;
+  /** Optional main-session message that motivated creation of this side chat. */
+  originMessageId?: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -388,6 +397,8 @@ export interface SessionMetadata {
   sharedId?: string;
   /** Working directory for this session */
   workingDirectory?: string;
+  /** Distinguishes an explicit no-directory choice from a legacy/default unset value. */
+  workingDirectoryMode?: 'none';
   /** SDK cwd for session storage - set once at creation, never changes */
   sdkCwd?: string;
   /** Role/type of the last message (for badge display without loading messages) */
@@ -424,8 +435,10 @@ export interface SessionMetadata {
   branchFromMessageId?: string;
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
-  /** Selected textbook chapter for a tutor session. */
-  learningContext?: LearningSessionContext;
+  /** Main session this auxiliary side chat belongs to. Never used for task hierarchy. */
+  sideChatForSessionId?: string;
+  /** Optional main-session message that motivated creation of this side chat. */
+  originMessageId?: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */

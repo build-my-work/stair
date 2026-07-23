@@ -6,19 +6,18 @@
 
 export type {
   ProjectConfig,
-  ProjectAsset,
   CreateProjectInput,
   LoadedProject,
   ProjectPromptContext,
+  Artifact,
+  SaveProjectArtifactInput,
 } from './types.ts';
 
 export {
   // Path utilities
   ensureProjectsDir,
-  ensureProjectAssetsDir,
   getWorkspaceProjectsPath,
   getProjectPath,
-  getProjectAssetsPath,
   getProjectMemoryPath,
   MEMORY_FILENAME,
   // Config operations
@@ -36,22 +35,24 @@ export {
   updateProject,
   deleteProject,
   projectExists,
-  // Asset operations
-  listProjectAssets,
-  uploadProjectAsset,
-  deleteProjectAsset,
-  sanitizeAssetFilename,
 } from './storage.ts';
 
-export type { UploadProjectAssetInput } from './storage.ts';
-
 export {
-  deleteProjectEpubHighlight,
-  deleteProjectEpubHighlightsForSource,
-  exportProjectEpubHighlights,
+  deleteProjectWorkingFileEpubHighlight,
+  exportProjectWorkingFileEpubHighlights,
   getProjectHighlightsPath,
   HIGHLIGHTS_FILENAME,
-  listProjectEpubHighlights,
-  saveProjectEpubHighlight,
+  listProjectWorkingFileEpubHighlights,
+  saveProjectWorkingFileEpubHighlight,
 } from './highlights.ts';
 export type { EpubHighlightsExport } from './highlights.ts';
+
+export {
+  ARTIFACTS_DIRECTORY,
+  deleteProjectArtifact,
+  getProjectArtifact,
+  getProjectArtifactPath,
+  getProjectArtifactsPath,
+  listProjectArtifacts,
+  saveProjectArtifact,
+} from './artifacts.ts';

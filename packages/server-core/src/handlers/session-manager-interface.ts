@@ -48,8 +48,14 @@ export interface ISessionManager {
   createSession(
     workspaceId: string,
     options?: CreateSessionOptions,
-    internal?: { emitCreatedEvent?: boolean },
+    internal?: {
+      emitCreatedEvent?: boolean
+      sideChatForSessionId?: string
+      originMessageId?: string
+    },
   ): Promise<Session>
+  /** Create an independent auxiliary chat derived from a trusted main session. */
+  createSideChat(mainSessionId: string, originMessageId?: string): Promise<Session>
   /** Resolved working directory of a live session (Tasks Conductor uses it so children inherit
    *  the orchestrator's cwd). */
   getSessionWorkingDirectory(sessionId: string): string | undefined
@@ -68,7 +74,7 @@ export interface ISessionManager {
   markSessionRead(sessionId: string): Promise<void>
   markSessionUnread(sessionId: string): Promise<void>
   markAllSessionsRead(workspaceId: string): Promise<void>
-  setActiveViewingSession(sessionId: string | null, workspaceId: string): void
+  setActiveViewingSession(sessionId: string | null, workspaceId: string, viewing?: boolean): void
   clearActiveViewingSession(workspaceId: string): void
 
   // ---------------------------------------------------------------------------

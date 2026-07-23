@@ -53,6 +53,16 @@ describe('sendMessage durability', () => {
     return lines.slice(1).map(l => JSON.parse(l)).map(m => m.id as string)
   }
 
+  function readPersistedMessages(sessionId: string): Array<Record<string, unknown>> {
+    const path = getSessionFilePath(tmpRoot, sessionId)
+    if (!existsSync(path)) return []
+    return readFileSync(path, 'utf-8')
+      .trim()
+      .split('\n')
+      .slice(1)
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+  }
+
   it('user message is on disk before onAck fires (normal branch)', async () => {
     const sessionId = 'durability-normal'
     buildSession(sessionId)
@@ -94,12 +104,25 @@ describe('sendMessage durability', () => {
     let ackedMessageId: string | null = null
     let onDiskAtAck = false
 
+    const references = [{
+      projectId: 'project-1',
+      path: 'books/operating-systems.epub',
+      locator: { type: 'epub-cfi' as const, cfiRange: 'epubcfi(/6/2!/4/2:0)' },
+    }]
+    const badges = [{
+      type: 'context' as const,
+      label: 'Selected passage',
+      rawText: 'Selected passage',
+      start: 0,
+      end: 16,
+    }]
+
     await sm.sendMessage(
       sessionId,
       'queued message',
       undefined,
       undefined,
-      undefined,
+      { references, badges },
       undefined,
       undefined,
       (messageId) => {
@@ -110,5 +133,63 @@ describe('sendMessage durability', () => {
 
     expect(ackedMessageId).not.toBeNull()
     expect(onDiskAtAck).toBe(true)
+    const persisted = readPersistedMessages(sessionId).find(message => message.type === 'user')
+    expect(persisted?.isQueued).toBe(true)
+
+    const recoveredManager = new SessionManager()
+    const recovered = createManagedSession(
+      { id: sessionId, name: 'recovered durability test' },
+      {
+        id: 'ws_test',
+        name: 'Test Workspace',
+        rootPath: tmpRoot,
+        createdAt: Date.now(),
+      } as never,
+      { messagesLoaded: false },
+    )
+    recovered.isProcessing = true
+    ;(recoveredManager as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, recovered)
+    await (recoveredManager as unknown as {
+      loadMessagesFromDisk: (managed: typeof recovered) => Promise<void>
+    }).loadMessagesFromDisk(recovered)
+
+    expect(recovered.messageQueue).toHaveLength(1)
+    expect(recovered.messageQueue[0]?.options?.references).toEqual(references)
+    expect(recovered.messageQueue[0]?.options?.badges).toEqual(badges)
+  })
+
+  it('persists structured file references with the user message', async () => {
+    const sessionId = 'durability-reference'
+    buildSession(sessionId)
+    const references = [{
+      projectId: 'project-1',
+      path: 'books/操作系统导论 .epub',
+      quote: '进程就是运行中的程序。',
+      locator: { type: 'epub-cfi' as const, cfiRange: 'epubcfi(/6/4!/4/2:0,/4/2:8)' },
+    }]
+    let referencesAtAck: unknown
+
+    await sm
+      .sendMessage(
+        sessionId,
+        '解释这段话',
+        undefined,
+        undefined,
+        { references },
+        undefined,
+        undefined,
+        () => {
+          referencesAtAck = readPersistedMessages(sessionId)
+            .find(message => message.type === 'user')?.references
+        },
+      )
+      .catch(() => { /* expected post-persist agent-init failure */ })
+
+    const inMemory = (sm as unknown as { sessions: Map<string, { messages: Array<Record<string, unknown>> }> })
+      .sessions.get(sessionId)?.messages.find(message => message.role === 'user')
+    expect(inMemory?.references).toEqual(references)
+    expect(referencesAtAck).toEqual(references)
+    const userMessage = readPersistedMessages(sessionId).find(message => message.type === 'user')
+    expect(userMessage?.references).toEqual(references)
   })
 })

@@ -85,9 +85,11 @@ import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
+import { saveSessionProjectArtifact } from './project-artifact-capability.ts'
+import { appendProjectFileReferencesForModel } from './project-file-references.ts'
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
-import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
+import { loadAllSkills, loadSkillBySlug, resolveSkillProjectRoot, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
 import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
 import { getDefaultSummarizationModel } from '@craft-agent/shared/config/models'
@@ -105,6 +107,15 @@ import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAtta
 import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
 import { resizeImageForAPI, resizeIconBuffer } from '@craft-agent/server-core/services'
 export { sanitizeForTitle }
+
+function recoverQueuedMessageOptions(message: Message): SendMessageOptions | undefined {
+  const options: SendMessageOptions = {
+    ...(message.badges ? { badges: message.badges } : {}),
+    ...(message.references ? { references: message.references } : {}),
+    ...(message.hidden ? { hidden: true } : {}),
+  }
+  return Object.keys(options).length > 0 ? options : undefined
+}
 
 // Module-level platform ref — set once during init via setSessionPlatform()
 let _platform: PlatformServices | null = null
@@ -858,6 +869,10 @@ interface ManagedSession {
   labels?: string[]
   // Workspace-scoped project binding (undefined = unbound)
   projectId?: string
+  // Main session this auxiliary side chat belongs to (independent from parentSessionId tasks)
+  sideChatForSessionId?: string
+  // Optional main-session message that motivated this side chat
+  originMessageId?: string
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
   // Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus
@@ -874,6 +889,8 @@ interface ManagedSession {
   taskDraft?: boolean
   // Working directory for this session (used by agent for bash commands)
   workingDirectory?: string
+  // Distinguishes explicit no-directory from a legacy/default unset value
+  workingDirectoryMode?: 'none'
   // SDK cwd for session storage - set once at creation, never changes.
   // Ensures SDK can find session transcripts regardless of workingDirectory changes.
   sdkCwd?: string
@@ -1229,11 +1246,11 @@ export class SessionManager implements ISessionManager {
   // Promise deduplication for lazy-loading messages (prevents race conditions)
   private messageLoadingPromises: Map<string, Promise<void>> = new Map()
   /**
-   * Track which session the user is actively viewing (per workspace).
-   * Map of workspaceId -> sessionId. Used to determine if a session should be
-   * marked as unread when assistant completes - if user is viewing it, don't mark unread.
+   * Sessions currently visible to the user, grouped by workspace.
+   * A Set is required because the main chat and an active side-chat tab can be
+   * visible simultaneously.
    */
-  private activeViewingSession: Map<string, string> = new Map()
+  private activeViewingSessions: Map<string, Set<string>> = new Map()
   /** Coordinates startup initialization waiters from IPC handlers. */
   private initGate = new InitGate()
   // O(1) index: taskId → sessionId for background task output lookup (avoids O(n) session scan)
@@ -1980,7 +1997,9 @@ export class SessionManager implements ISessionManager {
             // session list shows the right chips — sessions without one hydrate any legacy
             // body value on message load (see hydrateMessagesForColdPersist).
             enabledSourceSlugs: meta.enabledSourceSlugs,
-            workingDirectory: meta.workingDirectory ?? wsDefaultWorkingDir,
+            workingDirectory: meta.workingDirectoryMode === 'none'
+              ? undefined
+              : (meta.workingDirectory ?? wsDefaultWorkingDir),
           })
 
           // Migration: clear orphaned llmConnection references (e.g., after connection was deleted)
@@ -2083,7 +2102,7 @@ export class SessionManager implements ISessionManager {
             messageId: msg.id,
             attachments: undefined,
             storedAttachments: msg.attachments,
-            options: undefined,
+            options: recoverQueuedMessageOptions(msg),
           })
         }
         if (!managed.isProcessing && managed.messageQueue.length > 0) {
@@ -2563,7 +2582,7 @@ export class SessionManager implements ISessionManager {
             messageId: msg.id,
             attachments: undefined,  // Attachments already stored on disk
             storedAttachments: msg.attachments,
-            options: undefined,
+            options: recoverQueuedMessageOptions(msg),
           })
         }
         // Process queue when session becomes active (will be triggered by first message or interaction)
@@ -2587,6 +2606,47 @@ export class SessionManager implements ISessionManager {
     return getSessionStoragePath(managed.workspace.rootPath, sessionId)
   }
 
+  /**
+   * Create an auxiliary chat for a main session.
+   *
+   * The caller supplies only the trusted main-session ID. Workspace/project and
+   * runtime settings are derived server-side so a renderer cannot forge a
+   * cross-workspace association. Side chats are independent conversations and
+   * deliberately do not use parentSessionId, which is reserved for task trees.
+   */
+  async createSideChat(mainSessionId: string, originMessageId?: string): Promise<Session> {
+    const main = this.sessions.get(mainSessionId)
+    if (!main) {
+      throw new Error(`Main session ${mainSessionId} not found`)
+    }
+    if (main.sideChatForSessionId) {
+      throw new Error('A side chat cannot be created from another side chat')
+    }
+
+    if (originMessageId) {
+      await this.ensureMessagesLoaded(main)
+      if (!main.messages.some(message => message.id === originMessageId)) {
+        throw new Error(`Origin message ${originMessageId} does not belong to main session ${mainSessionId}`)
+      }
+    }
+
+    return this.createSession(main.workspace.id, {
+      name: 'Side chat',
+      projectId: main.projectId,
+      workingDirectory: main.workingDirectoryMode === 'none'
+        ? 'none'
+        : main.workingDirectory,
+      model: main.model,
+      llmConnection: main.llmConnection,
+      permissionMode: main.permissionMode,
+      thinkingLevel: main.thinkingLevel,
+      enabledSourceSlugs: main.enabledSourceSlugs,
+    }, {
+      sideChatForSessionId: mainSessionId,
+      originMessageId,
+    })
+  }
+
   async createSession(
     workspaceId: string,
     options?: import('@craft-agent/shared/protocol').CreateSessionOptions,
@@ -2594,7 +2654,11 @@ export class SessionManager implements ISessionManager {
     // announced to the renderer (see notifySessionCreated). Callers that register the session
     // themselves — the `sessions:create` RPC adds it from the return value — pass
     // `{ emitCreatedEvent: false }` to avoid a redundant hydrate.
-    internal?: { emitCreatedEvent?: boolean },
+    internal?: {
+      emitCreatedEvent?: boolean
+      sideChatForSessionId?: string
+      originMessageId?: string
+    },
   ): Promise<Session> {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) {
@@ -2892,12 +2956,14 @@ export class SessionManager implements ISessionManager {
       name: options?.name,
       permissionMode: defaultPermissionMode,
       workingDirectory: resolvedWorkingDir,
+      workingDirectoryMode: options?.workingDirectory === 'none' ? 'none' : undefined,
       hidden: options?.hidden,
       sessionStatus: options?.sessionStatus,
       labels: options?.labels,
       isFlagged: options?.isFlagged,
       projectId: resolvedProjectId,
-      learningContext: options?.learningContext,
+      sideChatForSessionId: internal?.sideChatForSessionId,
+      originMessageId: internal?.originMessageId,
       parentSessionId: options?.parentSessionId,
       taskSlug: options?.taskSlug,
       taskRunId: options?.taskRunId,
@@ -2907,6 +2973,11 @@ export class SessionManager implements ISessionManager {
       // The workspace-default fallback stays dynamic — freezing it into the header would
       // pin every ordinary session to the defaults as of its creation time.
       enabledSourceSlugs: options?.enabledSourceSlugs,
+      // Persist explicit runtime selections immediately. Without these fields an
+      // empty session reverted to workspace defaults after an app restart.
+      model: options?.model ? targetBackendContext.resolvedModel : undefined,
+      llmConnection: options?.llmConnection,
+      thinkingLevel: options?.thinkingLevel ? defaultThinkingLevel : undefined,
       systemPromptPreset: options?.systemPromptPreset,
     })
 
@@ -3439,6 +3510,7 @@ export class SessionManager implements ISessionManager {
         createdAt: managed.lastMessageAt,
         lastUsedAt: managed.lastMessageAt,
         workingDirectory: managed.workingDirectory,
+        workingDirectoryMode: managed.workingDirectoryMode,
         sdkCwd: managed.sdkCwd,
         model: managed.model,
         llmConnection: managed.llmConnection,
@@ -4440,6 +4512,16 @@ export class SessionManager implements ISessionManager {
 
           return { resolved: null, available }
         },
+        saveProjectArtifactFn: async (input) => {
+          if (!managed.projectId) {
+            throw new Error('This session is not bound to a Project')
+          }
+          return saveSessionProjectArtifact({
+            workspaceRootPath: managed.workspace.rootPath,
+            sessionId: managed.id,
+            projectId: managed.projectId,
+          }, input)
+        },
         sendAgentMessageFn: async (sessionId: string, message: string, attachments?: Array<{ path: string; name?: string }>) => {
           // Build FileAttachment[] from paths (same pattern as spawn_session)
           let fileAttachments: FileAttachment[] | undefined
@@ -5115,21 +5197,33 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Set which session the user is actively viewing.
-   * Called when user navigates to a session. Used to determine whether to mark
-   * new messages as unread - if user is viewing, don't mark unread.
+   * Add or remove one visible session for a workspace.
+   * Multiple sessions may be visible when the main chat and a side chat share
+   * the screen. Passing null keeps the legacy "clear workspace" behavior.
    */
-  setActiveViewingSession(sessionId: string | null, workspaceId: string): void {
-    if (sessionId) {
-      this.activeViewingSession.set(workspaceId, sessionId)
-      // When user starts viewing a session that's not processing, clear unread
+  setActiveViewingSession(sessionId: string | null, workspaceId: string, viewing = true): void {
+    if (!sessionId) {
+      this.activeViewingSessions.delete(workspaceId)
+      return
+    }
+
+    if (viewing) {
+      const visible = this.activeViewingSessions.get(workspaceId) ?? new Set<string>()
+      visible.add(sessionId)
+      this.activeViewingSessions.set(workspaceId, visible)
+
+      // When user starts viewing a session that's not processing, clear unread.
       const managed = this.sessions.get(sessionId)
       if (managed && !managed.isProcessing && managed.hasUnread) {
-        this.markSessionRead(sessionId)
+        void this.markSessionRead(sessionId)
       }
-    } else {
-      this.activeViewingSession.delete(workspaceId)
+      return
     }
+
+    const visible = this.activeViewingSessions.get(workspaceId)
+    if (!visible) return
+    visible.delete(sessionId)
+    if (visible.size === 0) this.activeViewingSessions.delete(workspaceId)
   }
 
   /**
@@ -5137,14 +5231,14 @@ export class SessionManager implements ISessionManager {
    * Called when all windows leave a workspace to ensure read/unread state is correct.
    */
   clearActiveViewingSession(workspaceId: string): void {
-    this.activeViewingSession.delete(workspaceId)
+    this.activeViewingSessions.delete(workspaceId)
   }
 
   /**
    * Check if a session is currently being viewed by the user
    */
   private isSessionBeingViewed(sessionId: string, workspaceId: string): boolean {
-    return this.activeViewingSession.get(workspaceId) === sessionId
+    return this.activeViewingSessions.get(workspaceId)?.has(sessionId) ?? false
   }
 
   /**
@@ -5653,6 +5747,17 @@ export class SessionManager implements ISessionManager {
       return
     }
 
+    // Deleting a main session also deletes its auxiliary side chats. Closing a
+    // workspace tab never calls this method, so tab lifecycle stays independent.
+    if (!managed.sideChatForSessionId) {
+      const associatedSideChatIds = Array.from(this.sessions.values())
+        .filter(session => session.sideChatForSessionId === sessionId)
+        .map(session => session.id)
+      for (const sideChatId of associatedSideChatIds) {
+        await this.deleteSession(sideChatId)
+      }
+    }
+
     // Get workspace slug before deleting
     const workspaceRootPath = managed.workspace.rootPath
 
@@ -5727,6 +5832,10 @@ export class SessionManager implements ISessionManager {
     managed.autoRetryPending = undefined
 
     this.sessions.delete(sessionId)
+    for (const [workspaceId, visible] of this.activeViewingSessions) {
+      visible.delete(sessionId)
+      if (visible.size === 0) this.activeViewingSessions.delete(workspaceId)
+    }
 
     // Clean up session metadata in AutomationSystem (prevents memory leak)
     const automationSystem = this.automationSystems.get(workspaceRootPath)
@@ -5813,7 +5922,9 @@ export class SessionManager implements ISessionManager {
       const agent = managed.agent
       let steered = false
       if (behavior === 'steer') {
-        steered = agent?.redirect(message) ?? false
+        steered = agent?.redirect(
+          appendProjectFileReferencesForModel(message, options?.references),
+        ) ?? false
       }
       // For 'queue': skip redirect entirely. The current turn is undisturbed.
 
@@ -5834,6 +5945,8 @@ export class SessionManager implements ISessionManager {
         timestamp: this.monotonic(),
         attachments: storedAttachments,
         badges: options?.badges,
+        references: options?.references,
+        ...(!steered ? { isQueued: true } : {}),
         // Hidden system-generated messages reach the model but never render as a
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
@@ -5893,6 +6006,7 @@ export class SessionManager implements ISessionManager {
         timestamp: this.monotonic(),
         attachments: storedAttachments, // Include for persistence (has thumbnailBase64)
         badges: options?.badges,  // Include content badges (sources, skills with embedded icons)
+        references: options?.references,
         // Hidden system-generated messages reach the model but never render as a
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
@@ -6014,10 +6128,11 @@ export class SessionManager implements ISessionManager {
     if (options?.skillSlugs?.length) {
       try {
         const workspaceRoot = managed.workspace.rootPath
+        const projectRoot = resolveSkillProjectRoot(workspaceRoot, managed)
 
         const requiredSources = new Set<string>()
         for (const slug of options.skillSlugs) {
-          const skill = loadSkillBySlug(workspaceRoot, slug, managed.workingDirectory)
+          const skill = loadSkillBySlug(workspaceRoot, slug, projectRoot)
           if (skill?.metadata.requiredSources) {
             for (const src of skill.metadata.requiredSources) {
               requiredSources.add(src)
@@ -6150,9 +6265,9 @@ export class SessionManager implements ISessionManager {
       // Uses <system-reminder> tags so the LLM treats it as transient system guidance
       // rather than part of the user's message content. The original message is stored
       // in session JSONL (line ~3952); this only affects the SDK's in-process context.
-      let effectiveMessage = message
+      let effectiveMessage = appendProjectFileReferencesForModel(message, options?.references)
       if (managed.wasInterrupted) {
-        effectiveMessage = `${message}\n\n<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>`
+        effectiveMessage = `${effectiveMessage}\n\n<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>`
         managed.wasInterrupted = false
       }
 

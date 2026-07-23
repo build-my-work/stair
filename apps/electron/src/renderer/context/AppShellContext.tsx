@@ -29,6 +29,7 @@ import type { SessionStatus as SessionStatusConfig } from '@/config/session-stat
 import type { SessionOptions, SessionOptionUpdates } from '../hooks/useSessionOptions'
 import { defaultSessionOptions } from '../hooks/useSessionOptions'
 import { sessionAtomFamily } from '../atoms/sessions'
+import type { FileReference } from '@craft-agent/core/types'
 
 export interface AppShellContextType {
   // Data
@@ -88,8 +89,8 @@ export interface AppShellContextType {
   onUnarchiveSession: (sessionId: string) => void
   onMarkSessionRead: (sessionId: string) => void
   onMarkSessionUnread: (sessionId: string) => void
-  /** Track which session user is viewing (for unread state machine) */
-  onSetActiveViewingSession: (sessionId: string) => void
+  /** Add/remove a visible session for the unread state machine. */
+  onSetActiveViewingSession: (sessionId: string, viewing?: boolean) => void
   onSessionStatusChange: (sessionId: string, state: SessionStatus) => void
   onDeleteSession: (sessionId: string, skipConfirmation?: boolean) => Promise<boolean>
 
@@ -131,6 +132,9 @@ export interface AppShellContextType {
 
   // Attachment draft callback — persists attachment refs per session
   onAttachmentsChange: (sessionId: string, attachments: FileAttachment[]) => void
+
+  /** Append a durable project-file citation to a session composer draft. */
+  onAddFileReference: (sessionId: string, reference: FileReference) => void
 
   // Source selection callback (per-session) - provided by AppShell component
   onSessionSourcesChange?: (sessionId: string, sourceSlugs: string[]) => void

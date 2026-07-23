@@ -42,6 +42,7 @@ import { debug } from '../utils/debug.ts';
 import { getStatusCategory } from '../statuses/storage.ts';
 import { readSessionHeader, readSessionJsonl } from './jsonl.ts';
 import { sessionPersistenceQueue } from './persistence-queue.ts';
+import { isPrimaryNavigableSession } from './navigation.ts';
 
 // Re-export types for convenience
 export type { SessionConfig } from './types.ts';
@@ -179,17 +180,20 @@ export async function createSession(
   options?: {
     name?: string;
     workingDirectory?: string;
+    workingDirectoryMode?: SessionConfig['workingDirectoryMode'];
     permissionMode?: SessionConfig['permissionMode'];
     enabledSourceSlugs?: string[];
     model?: string;
     llmConnection?: string;
+    thinkingLevel?: SessionConfig['thinkingLevel'];
     systemPromptPreset?: SessionConfig['systemPromptPreset'];
     hidden?: boolean;
     sessionStatus?: SessionConfig['sessionStatus'];
     labels?: string[];
     isFlagged?: boolean;
     projectId?: string;
-    learningContext?: SessionConfig['learningContext'];
+    sideChatForSessionId?: string;
+    originMessageId?: string;
     parentSessionId?: string;
     taskSlug?: string;
     taskRunId?: string;
@@ -217,18 +221,21 @@ export async function createSession(
     createdAt: now,
     lastUsedAt: now,
     workingDirectory: options?.workingDirectory,
+    workingDirectoryMode: options?.workingDirectoryMode,
     sdkCwd,
     permissionMode: options?.permissionMode,
     enabledSourceSlugs: options?.enabledSourceSlugs,
     model: options?.model,
     llmConnection: options?.llmConnection,
+    thinkingLevel: options?.thinkingLevel,
     systemPromptPreset: options?.systemPromptPreset,
     hidden: options?.hidden,
     sessionStatus: options?.sessionStatus,
     labels: options?.labels,
     isFlagged: options?.isFlagged,
     projectId: options?.projectId,
-    learningContext: options?.learningContext,
+    sideChatForSessionId: options?.sideChatForSessionId,
+    originMessageId: options?.originMessageId,
     parentSessionId: options?.parentSessionId,
     taskSlug: options?.taskSlug,
     taskRunId: options?.taskRunId,
@@ -484,7 +491,7 @@ export async function clearSessionMessages(workspaceRootPath: string, sessionId:
  * Uses listActiveSessions to exclude archived sessions
  */
 export async function getOrCreateLatestSession(workspaceRootPath: string): Promise<SessionConfig> {
-  const sessions = listActiveSessions(workspaceRootPath);
+  const sessions = listActiveSessions(workspaceRootPath).filter(isPrimaryNavigableSession);
   if (sessions.length > 0 && sessions[0]) {
     const latest = sessions[0];
     return {

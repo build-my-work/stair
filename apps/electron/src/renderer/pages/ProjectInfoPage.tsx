@@ -1,7 +1,7 @@
 /**
  * ProjectInfoPage
  *
- * Workspace-project detail page with three tabs: Sessions, Assets, Settings.
+ * Workspace-project detail page with Sessions and Settings tabs.
  * v1 scope only — no memory tab, no provider selection, no plugin marketplace.
  */
 
@@ -9,7 +9,7 @@ import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
-import { FolderKanban, FolderOpen, Plus, Trash2, Upload } from 'lucide-react'
+import { FolderKanban, FolderOpen, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
@@ -17,36 +17,33 @@ import { sessionMetaMapAtom } from '@/atoms/sessions'
 import {
   Info_Page,
   Info_Section,
-  Info_Table,
 } from '@/components/info'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 import { cn } from '@/lib/utils'
 import { PROJECT_COLOR_PALETTE } from '@/utils/project-colors'
 import { InlineColorPickerRow } from '@/components/ui/inline-color-picker-row'
-import { ProjectTextbooksSection } from '@/components/learning/ProjectTextbooksSection'
-import type { LoadedProject, ProjectAsset } from '@craft-agent/shared/projects/types'
+import type { LoadedProject } from '@craft-agent/shared/projects/types'
+import { isPrimaryNavigableSession } from '@craft-agent/shared/sessions/navigation'
 
 interface ProjectInfoPageProps {
   projectSlug: string
 }
 
-type TabKey = 'learning' | 'sessions' | 'assets' | 'settings'
+type TabKey = 'sessions' | 'settings'
 
 export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const { t } = useTranslation()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
-  const { onCreateSession, onOpenFile } = useAppShellContext()
+  const { onCreateSession } = useAppShellContext()
 
   const [project, setProject] = useState<LoadedProject | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [tab, setTab] = useState<TabKey>('learning')
-  const [assets, setAssets] = useState<ProjectAsset[]>([])
+  const [tab, setTab] = useState<TabKey>('sessions')
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')
   const [editWorkingDir, setEditWorkingDir] = useState('')
@@ -95,26 +92,11 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     }
   }, [workspaceId, loadProject])
 
-  // Learning materials and generic assets share the same persisted project folder.
-  const refreshAssets = useCallback(async () => {
-    if (!workspaceId) return
-    try {
-      const list = await window.electronAPI.listProjectAssets(workspaceId, projectSlug)
-      setAssets(Array.isArray(list) ? (list as ProjectAsset[]) : [])
-    } catch (err) {
-      console.error('[ProjectInfoPage] Failed to load assets:', err)
-    }
-  }, [workspaceId, projectSlug])
-
-  useEffect(() => {
-    if (tab === 'assets' || tab === 'learning') refreshAssets()
-  }, [tab, refreshAssets])
-
   const projectSessions = useMemo(() => {
     if (!project) return []
     const result: { id: string; name: string }[] = []
     for (const meta of sessionMetaMap.values()) {
-      if ((meta as { projectId?: string }).projectId === project.config.id) {
+      if (isPrimaryNavigableSession(meta) && meta.projectId === project.config.id) {
         result.push({ id: meta.id, name: meta.name ?? meta.id })
       }
     }
@@ -177,35 +159,6 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     }
   }, [workspaceId, project, t])
 
-  const handleUpload = useCallback(async (file: File) => {
-    if (!workspaceId || !project) return
-    try {
-      const arrayBuffer = await file.arrayBuffer()
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
-      await window.electronAPI.uploadProjectAsset(workspaceId, project.config.slug, {
-        filename: file.name,
-        base64,
-      })
-      await refreshAssets()
-      toast.success(t('projectInfo.assetUploaded', { name: file.name }))
-    } catch (err) {
-      console.error('[ProjectInfoPage] Upload failed:', err)
-      toast.error(t('projectInfo.uploadFailed'))
-    }
-  }, [workspaceId, project, refreshAssets, t])
-
-  const handleDeleteAsset = useCallback(async (asset: ProjectAsset) => {
-    if (!workspaceId || !project) return
-    if (!window.confirm(t('projectInfo.deleteAssetConfirm', { name: asset.filename }))) return
-    try {
-      await window.electronAPI.deleteProjectAsset(workspaceId, project.config.slug, asset.filename)
-      await refreshAssets()
-    } catch (err) {
-      console.error('[ProjectInfoPage] Asset delete failed:', err)
-      toast.error(t('projectInfo.deleteAssetFailed'))
-    }
-  }, [workspaceId, project, refreshAssets, t])
-
   return (
     <Info_Page
       loading={loading}
@@ -223,29 +176,13 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
 
           {/* Tab bar */}
           <div className="flex items-center gap-1 border-b border-border/50 px-2 mb-4">
-            <TabButton active={tab === 'learning'} onClick={() => setTab('learning')}>
-              {t('projectInfo.tabLearning')}
-            </TabButton>
             <TabButton active={tab === 'sessions'} onClick={() => setTab('sessions')}>
               {t('projectInfo.tabSessions')}
-            </TabButton>
-            <TabButton active={tab === 'assets'} onClick={() => setTab('assets')}>
-              {t('projectInfo.tabAssets')}
             </TabButton>
             <TabButton active={tab === 'settings'} onClick={() => setTab('settings')}>
               {t('projectInfo.tabSettings')}
             </TabButton>
           </div>
-
-          {/* Learning tab */}
-          {tab === 'learning' && workspaceId && (
-            <ProjectTextbooksSection
-              workspaceId={workspaceId}
-              project={project}
-              assets={assets}
-              refreshAssets={refreshAssets}
-            />
-          )}
 
           {/* Sessions tab */}
           {tab === 'sessions' && (
@@ -273,58 +210,6 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                       >
                         {s.name}
                       </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Info_Section>
-          )}
-
-          {/* Assets tab */}
-          {tab === 'assets' && (
-            <Info_Section
-              title={t('projectInfo.tabAssets')}
-              actions={
-                <label
-                  className="inline-flex items-center gap-1 h-7 px-3 text-xs font-medium rounded-[8px] bg-background shadow-minimal hover:bg-foreground/[0.03] transition-colors cursor-pointer"
-                >
-                  <Upload className="h-3.5 w-3.5" />
-                  {t('projectInfo.uploadAssets')}
-                  <input
-                    type="file"
-                    className="hidden"
-                    multiple
-                    onChange={async (e) => {
-                      const files = Array.from(e.target.files ?? [])
-                      for (const f of files) await handleUpload(f)
-                      e.target.value = ''
-                    }}
-                  />
-                </label>
-              }
-            >
-              {assets.length === 0 ? (
-                <div className="px-4 py-6 text-sm text-muted-foreground">
-                  {t('projectInfo.noAssets')}
-                </div>
-              ) : (
-                <ul className="divide-y divide-border/50">
-                  {assets.map((a) => (
-                    <li key={a.filename} className="px-4 py-2 flex items-center gap-3">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm truncate">{a.filename}</div>
-                        <div className="text-xs text-foreground/50">
-                          {(a.sizeBytes / 1024).toFixed(1)} KB · {a.mimeType}
-                        </div>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => handleDeleteAsset(a)}
-                        className="text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
                     </li>
                   ))}
                 </ul>
@@ -405,30 +290,6 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
             </Info_Section>
           )}
 
-          {/* Metadata read-out for quick reference */}
-          <Info_Section title={t('projectInfo.metadata')}>
-            <Info_Table>
-              <Info_Table.Row label={t('common.slug')} value={project.config.slug} />
-              <Info_Table.Row label={t('common.location')}>
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="flex-1 min-w-0 truncate font-mono text-xs">{project.folderPath}</span>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={() => onOpenFile(project.folderPath)}
-                        className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
-                        aria-label={t('projectInfo.openLocation')}
-                      >
-                        <FolderOpen className="h-3.5 w-3.5" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t('projectInfo.openLocation')}</TooltipContent>
-                  </Tooltip>
-                </div>
-              </Info_Table.Row>
-            </Info_Table>
-          </Info_Section>
         </Info_Page.Content>
       )}
     </Info_Page>

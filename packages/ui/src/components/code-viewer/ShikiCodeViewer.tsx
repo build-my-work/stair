@@ -23,6 +23,10 @@ export interface ShikiCodeViewerProps {
   filePath?: string
   /** Starting line number (default: 1) */
   startLine?: number
+  /** Optional source line to reveal and highlight. */
+  targetLine?: number
+  /** Inclusive end of the highlighted source range. */
+  targetEndLine?: number
   /** Theme mode */
   theme?: 'light' | 'dark'
   /** Shiki theme name (e.g., 'github-dark', 'dracula'). Defaults to github-dark/github-light based on theme mode */
@@ -67,6 +71,8 @@ export function ShikiCodeViewer({
   language,
   filePath,
   startLine = 1,
+  targetLine,
+  targetEndLine,
   theme = 'light',
   shikiTheme,
   onReady,
@@ -75,6 +81,8 @@ export function ShikiCodeViewer({
   const [highlighted, setHighlighted] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const hasCalledReady = useRef(false)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const codeContentRef = useRef<HTMLDivElement>(null)
 
   // Resolve language from props or file path
   const resolvedLang = useMemo(() => {
@@ -85,6 +93,11 @@ export function ShikiCodeViewer({
 
   // Split code into lines for line numbers
   const lines = useMemo(() => code.split('\n'), [code])
+  const targetStartIndex = targetLine === undefined ? null : targetLine - startLine
+  const targetEndLineNumber = targetEndLine ?? targetLine
+  const targetEndIndex = targetStartIndex === null || targetEndLineNumber === undefined
+    ? null
+    : Math.max(targetStartIndex, targetEndLineNumber - startLine)
 
   // Highlight code with Shiki
   useEffect(() => {
@@ -132,6 +145,22 @@ export function ShikiCodeViewer({
     }
   }, [code, resolvedLang, theme, shikiTheme, onReady])
 
+  useEffect(() => {
+    if (!targetLine || targetStartIndex === null || targetStartIndex < 0 || targetEndIndex === null) return
+    const container = scrollContainerRef.current
+    if (container) {
+      const lineHeight = 13 * 1.6
+      container.scrollTop = Math.max(0, 16 + targetStartIndex * lineHeight - container.clientHeight / 3)
+    }
+
+    const renderedLines = codeContentRef.current?.querySelectorAll<HTMLElement>('.line') ?? []
+    renderedLines.forEach((line, index) => {
+      line.style.backgroundColor = index >= targetStartIndex && index <= targetEndIndex
+        ? 'color-mix(in srgb, var(--destructive) 12%, transparent)'
+        : ''
+    })
+  }, [highlighted, targetEndIndex, targetLine, targetStartIndex])
+
   // Use CSS variables so custom themes are respected
   const backgroundColor = 'var(--background)'
   const lineNumberColor = theme === 'dark' ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)'
@@ -139,6 +168,7 @@ export function ShikiCodeViewer({
 
   return (
     <div
+      ref={scrollContainerRef}
       className={cn('h-full w-full overflow-auto', className)}
       style={{ backgroundColor }}
     >
@@ -152,15 +182,28 @@ export function ShikiCodeViewer({
             minWidth: '60px',
           }}
         >
-          {lines.map((_, index) => (
-            <div
-              key={index}
-              className="font-mono text-[13px] leading-[1.6] px-2"
-              style={{ color: lineNumberColor }}
-            >
-              {startLine + index}
-            </div>
-          ))}
+          {lines.map((_, index) => {
+            const lineNumber = startLine + index
+            const isTarget = targetStartIndex !== null
+              && targetEndIndex !== null
+              && index >= targetStartIndex
+              && index <= targetEndIndex
+            return (
+              <div
+                key={index}
+                className="font-mono text-[13px] leading-[1.6] px-2"
+                data-target-line={isTarget ? 'true' : undefined}
+                style={{
+                  color: isTarget ? 'var(--destructive)' : lineNumberColor,
+                  backgroundColor: isTarget
+                    ? 'color-mix(in srgb, var(--destructive) 12%, transparent)'
+                    : undefined,
+                }}
+              >
+                {lineNumber}
+              </div>
+            )
+          })}
         </div>
 
         {/* Code content */}
@@ -171,6 +214,7 @@ export function ShikiCodeViewer({
             </pre>
           ) : (
             <div
+              ref={codeContentRef}
               className={cn(
                 'font-mono text-[13px] leading-[1.6]',
                 '[&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0 [&_pre]:whitespace-pre',

@@ -75,6 +75,7 @@ import { CHAT_LAYOUT } from "@/config/layout"
 import { collectFileChangesFromActivities, getFirstFileChangeIdForActivity } from "@/lib/file-changes"
 import { resolveBranchNewPanelOption } from "./branching"
 import { handleErrorMessageAction } from "./error-message-actions"
+import { ArtifactResultCards } from "@/components/artifacts/ArtifactResultCards"
 
 // ============================================================================
 // CSS Custom Highlight API helper
@@ -1886,6 +1887,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                           }
                         }}
                       />
+                      <ArtifactResultCards activities={turn.activities} />
                       </div>
                     )
                   })}
@@ -2237,6 +2239,10 @@ function MessageBubble({
         content={message.content}
         attachments={message.attachments}
         badges={message.badges}
+        references={message.references}
+        onReferenceClick={(reference) => window.dispatchEvent(new CustomEvent('craft:open-file-reference', {
+          detail: reference,
+        }))}
         isPending={message.isPending}
         isQueued={message.isQueued}
         onUrlClick={onOpenUrl}
@@ -2377,6 +2383,7 @@ const MemoizedMessageBubble = React.memo(MessageBubble, (prev, next) => {
     prev.message.id === next.message.id &&
     prev.message.content === next.message.content &&
     prev.message.role === next.message.role &&
+    prev.message.references === next.message.references &&
     prev.sessionId === next.sessionId &&
     prev.compactMode === next.compactMode
   )

@@ -8,13 +8,13 @@ import ePub, {
 } from 'epubjs'
 import {
   BookOpenText,
-  ChevronLeft,
   ChevronRight,
   Copy,
   Download,
   ListTree,
   Loader2,
-  Play,
+  MessageSquareQuote,
+  MessagesSquare,
   Trash2,
   Underline,
   Waves,
@@ -23,11 +23,12 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import type {
-  EpubHighlight,
-  EpubHighlightInput,
   ImportedChapter,
   ImportedTextbook,
+  WorkingFileEpubHighlight,
+  WorkingFileEpubHighlightInput,
 } from '@craft-agent/shared/learning'
+import type { FileReference } from '@craft-agent/core/types'
 
 import { useTheme } from '@/context/ThemeContext'
 import * as storage from '@/lib/local-storage'
@@ -41,6 +42,7 @@ import {
   EPUB_UNDERLINE_HIGHLIGHT_NAME,
   epubHrefsMatch,
   findChapterForEpubLocation,
+  getEpubRenditionOptions,
   mapEpubIframeRectToViewport,
   normalizeEpubSelectionText,
   resolveEpubHighlightRanges,
@@ -50,16 +52,19 @@ import {
 } from './epub-reader-utils'
 
 interface EpubReaderProps {
-  assetPath: string
+  workingFile: {
+    sessionId: string
+    sourcePath: string
+    projectId: string
+  }
   sourceKey: string
-  workspaceId: string
-  projectSlug: string
   textbook: ImportedTextbook
   selectedChapterId: string | null
   accentColor?: string
-  starting: boolean
   onChapterChange: (chapterId: string) => void
-  onStartLearning: () => void
+  compactLayout?: boolean
+  onReference?: (reference: FileReference, target: 'main' | 'sideChat') => void
+  navigationTarget?: { cfiRange: string; nonce: number }
 }
 
 type ReaderTocItem = EpubReaderTocItem
@@ -67,8 +72,6 @@ type ReaderTocItem = EpubReaderTocItem
 interface ReaderLocation {
   spineIndex: number
   href: string
-  atStart: boolean
-  atEnd: boolean
 }
 
 interface RenderedView {
@@ -76,7 +79,7 @@ interface RenderedView {
   contents?: Contents
 }
 
-type PendingEpubHighlight = EpubHighlightInput
+type PendingEpubHighlight = Omit<WorkingFileEpubHighlightInput, 'sourceFingerprint'>
 
 type ReaderPanel = 'contents' | 'highlights'
 
@@ -123,16 +126,15 @@ const DARK_READER_THEME = {
 }
 
 export function EpubReader({
-  assetPath,
+  workingFile,
   sourceKey,
-  workspaceId,
-  projectSlug,
   textbook,
   selectedChapterId,
   accentColor,
-  starting,
   onChapterChange,
-  onStartLearning,
+  compactLayout = false,
+  onReference,
+  navigationTarget,
 }: EpubReaderProps) {
   const { t } = useTranslation()
   const { isDark } = useTheme()
@@ -147,21 +149,25 @@ export function EpubReader({
   const isDarkRef = React.useRef(isDark)
   const selectedChapterIdRef = React.useRef(selectedChapterId)
   const onChapterChangeRef = React.useRef(onChapterChange)
-  const highlightsRef = React.useRef<EpubHighlight[]>([])
+  const onReferenceRef = React.useRef(onReference)
+  const highlightsRef = React.useRef<WorkingFileEpubHighlight[]>([])
   const lastReportedChapterIdRef = React.useRef<string | null>(null)
   const reflowableRef = React.useRef(false)
 
   isDarkRef.current = isDark
   selectedChapterIdRef.current = selectedChapterId
   onChapterChangeRef.current = onChapterChange
+  onReferenceRef.current = onReference
+  const referenceEnabled = Boolean(onReference)
+  const selectionPopoverWidth = referenceEnabled ? 176 : 88
 
   const [status, setStatus] = React.useState<'loading' | 'ready' | 'error'>('loading')
   const [errorMessage, setErrorMessage] = React.useState('')
-  const [panelOpen, setPanelOpen] = React.useState(true)
+  const [panelOpen, setPanelOpen] = React.useState(!compactLayout)
   const [panel, setPanel] = React.useState<ReaderPanel>('contents')
   const [toc, setToc] = React.useState<ReaderTocItem[]>([])
   const [moving, setMoving] = React.useState(false)
-  const [highlights, setHighlights] = React.useState<EpubHighlight[]>([])
+  const [highlights, setHighlights] = React.useState<WorkingFileEpubHighlight[]>([])
   const [highlightsLoading, setHighlightsLoading] = React.useState(true)
   const [pendingHighlight, setPendingHighlight] = React.useState<PendingEpubHighlight | null>(null)
   const [selectionAnchor, setSelectionAnchor] = React.useState<EpubSelectionPopoverAnchor | null>(null)
@@ -174,8 +180,6 @@ export function EpubReader({
     return {
       spineIndex,
       href: chapter?.locator.format === 'epub' ? chapter.locator.href : '',
-      atStart: spineIndex === 0,
-      atEnd: false,
     }
   })
 
@@ -214,11 +218,12 @@ export function EpubReader({
     setHighlights([])
     dismissSelectionPopover()
 
-    void window.electronAPI.listProjectEpubHighlights(
-      workspaceId,
-      projectSlug,
-      textbook.sourceFilename,
-    ).then((saved) => {
+    const loadHighlights = window.electronAPI.listWorkingFileEpubHighlights(
+      workingFile.sessionId,
+      workingFile.sourcePath,
+    )
+
+    void loadHighlights.then((saved) => {
       if (!disposed) setHighlights(saved)
     }).catch((error) => {
       console.error('[EpubReader] Failed to load underlines:', error)
@@ -230,7 +235,7 @@ export function EpubReader({
     return () => {
       disposed = true
     }
-  }, [workspaceId, projectSlug, textbook.sourceFilename, t, dismissSelectionPopover])
+  }, [workingFile, t, dismissSelectionPopover])
 
   React.useEffect(() => {
     if (!pendingHighlight || !selectionAnchor) return
@@ -262,8 +267,6 @@ export function EpubReader({
       setLocation({
         spineIndex: start.index,
         href: start.href,
-        atStart: nextLocation.atStart,
-        atEnd: nextLocation.atEnd,
       })
 
       const chapter = findChapterForEpubLocation(textbook.chapters, start)
@@ -309,6 +312,7 @@ export function EpubReader({
             anchor = calculateEpubSelectionPopoverAnchor(
               mappedSelectionRect,
               readerViewport.getBoundingClientRect(),
+              selectionPopoverWidth,
             )
           }
         } catch (error) {
@@ -331,15 +335,15 @@ export function EpubReader({
 
       dismissSelectionPopover()
       selectionContentsRef.current = contents
-      setPendingHighlight({
-        sourceFilename: textbook.sourceFilename,
+      const selectionInput = {
         cfiRange,
         text,
         chapterId: chapter.id,
         chapterTitle: chapter.title,
         chapterOrder: chapter.order,
         spineIndex: chapter.locator.spineIndex,
-      })
+      }
+      setPendingHighlight({ ...selectionInput, sourcePath: workingFile.sourcePath })
       setSelectionAnchor(anchor)
 
       const closeOnScroll = () => dismissSelectionPopover()
@@ -359,7 +363,10 @@ export function EpubReader({
       reflowableRef.current = false
 
       try {
-        const bytes = await window.electronAPI.readFileBinary(assetPath)
+        const bytes = await window.electronAPI.readWorkingDirectoryBinary(
+          workingFile.sessionId,
+          workingFile.sourcePath,
+        )
         if (disposed) return
         const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
         book = ePub(buffer, { replacements: 'blobUrl' })
@@ -380,14 +387,7 @@ export function EpubReader({
         const fixedLayout = metadata.layout === 'pre-paginated'
           || displayOptions?.fixedLayout === 'true'
         reflowableRef.current = !fixedLayout
-        rendition = book.renderTo(mount, {
-          width: '100%',
-          height: '100%',
-          flow: fixedLayout ? 'paginated' : 'scrolled-doc',
-          layout: fixedLayout ? 'pre-paginated' : 'reflowable',
-          spread: 'none',
-          allowScriptedContent: false,
-        })
+        rendition = book.renderTo(mount, getEpubRenditionOptions(fixedLayout))
         renditionRef.current = rendition
         rendition.on('relocated', handleRelocated)
         rendition.on('rendered', handleRendered)
@@ -468,7 +468,7 @@ export function EpubReader({
       if (renditionRef.current === rendition) renditionRef.current = null
       if (bookRef.current === book) bookRef.current = null
     }
-  }, [assetPath, sourceKey, textbook.chapters, textbook.sourceFilename, textbook.title, dismissSelectionPopover])
+  }, [sourceKey, textbook.chapters, textbook.title, workingFile, selectionPopoverWidth, dismissSelectionPopover])
 
   React.useEffect(() => {
     const rendition = renditionRef.current
@@ -484,6 +484,25 @@ export function EpubReader({
     }
   }, [highlights, status])
 
+  React.useEffect(() => {
+    const rendition = renditionRef.current
+    const book = bookRef.current
+    if (!rendition || !book || status !== 'ready' || !navigationTarget) return
+
+    const spineIndex = book.spine.get(navigationTarget.cfiRange)?.index
+    let displayPromise: Promise<unknown>
+    if (typeof spineIndex === 'number' && Number.isInteger(spineIndex)) {
+      displayPromise = displayEpubCfi(
+        rendition,
+        spineIndex,
+        navigationTarget.cfiRange,
+      )
+    } else {
+      displayPromise = rendition.display(navigationTarget.cfiRange)
+    }
+    void displayPromise.catch(error => console.error('[EpubReader] Failed to open reference:', error))
+  }, [navigationTarget, status])
+
   const displayTocItem = React.useCallback(async (item: ReaderTocItem) => {
     const rendition = renditionRef.current
     if (!rendition || moving) return
@@ -494,21 +513,6 @@ export function EpubReader({
       else await rendition.display(item.href)
     } catch (error) {
       console.error('[EpubReader] Failed to open table-of-contents item:', error)
-    } finally {
-      setMoving(false)
-    }
-  }, [dismissSelectionPopover, moving])
-
-  const move = React.useCallback(async (direction: 'previous' | 'next') => {
-    const rendition = renditionRef.current
-    if (!rendition || moving) return
-    dismissSelectionPopover()
-    setMoving(true)
-    try {
-      if (direction === 'previous') await rendition.prev()
-      else await rendition.next()
-    } catch (error) {
-      console.error(`[EpubReader] Failed to move ${direction}:`, error)
     } finally {
       setMoving(false)
     }
@@ -527,9 +531,8 @@ export function EpubReader({
     if (!pendingHighlight || savingHighlight) return
     setSavingHighlight(true)
     try {
-      const saved = await window.electronAPI.saveProjectEpubHighlight(
-        workspaceId,
-        projectSlug,
+      const saved = await window.electronAPI.saveWorkingFileEpubHighlight(
+        workingFile.sessionId,
         pendingHighlight,
       )
       setHighlights((current) => [
@@ -543,7 +546,7 @@ export function EpubReader({
     } finally {
       setSavingHighlight(false)
     }
-  }, [dismissSelectionPopover, pendingHighlight, projectSlug, savingHighlight, t, workspaceId])
+  }, [dismissSelectionPopover, pendingHighlight, savingHighlight, t, workingFile])
 
   const copyPendingSelection = React.useCallback(async () => {
     if (!pendingHighlight) return
@@ -556,7 +559,19 @@ export function EpubReader({
     }
   }, [dismissSelectionPopover, pendingHighlight, t])
 
-  const displayHighlight = React.useCallback(async (highlight: EpubHighlight) => {
+  const referencePendingSelection = React.useCallback((target: 'main' | 'sideChat') => {
+    const handleReference = onReferenceRef.current
+    if (!pendingHighlight || !workingFile || !handleReference) return
+    handleReference({
+      projectId: workingFile.projectId,
+      path: workingFile.sourcePath,
+      quote: pendingHighlight.text,
+      locator: { type: 'epub-cfi', cfiRange: pendingHighlight.cfiRange },
+    }, target)
+    dismissSelectionPopover()
+  }, [dismissSelectionPopover, pendingHighlight, workingFile])
+
+  const displayHighlight = React.useCallback(async (highlight: WorkingFileEpubHighlight) => {
     const rendition = renditionRef.current
     if (!rendition || moving) return
     dismissSelectionPopover()
@@ -571,14 +586,13 @@ export function EpubReader({
     }
   }, [dismissSelectionPopover, moving, t])
 
-  const deleteHighlight = React.useCallback(async (highlight: EpubHighlight) => {
+  const deleteHighlight = React.useCallback(async (highlight: WorkingFileEpubHighlight) => {
     if (deletingCfi) return
     setDeletingCfi(highlight.cfiRange)
     try {
-      await window.electronAPI.deleteProjectEpubHighlight(
-        workspaceId,
-        projectSlug,
-        textbook.sourceFilename,
+      await window.electronAPI.deleteWorkingFileEpubHighlight(
+        workingFile.sessionId,
+        workingFile.sourcePath,
         highlight.cfiRange,
       )
       setHighlights((current) => current.filter((item) => item.cfiRange !== highlight.cfiRange))
@@ -588,16 +602,15 @@ export function EpubReader({
     } finally {
       setDeletingCfi(null)
     }
-  }, [deletingCfi, projectSlug, t, textbook.sourceFilename, workspaceId])
+  }, [deletingCfi, t, workingFile])
 
   const exportHighlights = React.useCallback(async () => {
     if (exporting || highlights.length === 0) return
     setExporting(true)
     try {
-      const exported = await window.electronAPI.exportProjectEpubHighlights(
-        workspaceId,
-        projectSlug,
-        textbook.sourceFilename,
+      const exported = await window.electronAPI.exportWorkingFileEpubHighlights(
+        workingFile.sessionId,
+        workingFile.sourcePath,
       )
       downloadMarkdown(exported.filename, exported.markdown)
     } catch (error) {
@@ -606,14 +619,26 @@ export function EpubReader({
     } finally {
       setExporting(false)
     }
-  }, [exporting, highlights.length, projectSlug, t, textbook.sourceFilename, workspaceId])
+  }, [exporting, highlights.length, t, workingFile])
+
+  let panelGridClass: string | undefined
+  if (panelOpen) {
+    if (compactLayout) {
+      panelGridClass = 'grid-cols-[minmax(96px,2fr)_minmax(0,3fr)]'
+    } else {
+      panelGridClass = 'md:grid-cols-[240px_minmax(0,1fr)]'
+    }
+  }
 
   return (
     <div
-      className="overflow-hidden"
+      className={cn('overflow-hidden', compactLayout && 'flex h-full min-h-0 flex-col')}
       style={{ '--reader-accent': accentColor ?? 'var(--accent)' } as React.CSSProperties}
     >
-      <div className="min-h-16 border-b border-border/50 px-3 py-2.5 flex items-center gap-3">
+      <div className={cn(
+        'min-h-16 border-b border-border/50 px-3 py-2.5 flex items-center gap-3',
+        compactLayout && 'shrink-0',
+      )}>
         <Button
           type="button"
           variant={panelOpen && panel === 'contents' ? 'secondary' : 'ghost'}
@@ -649,28 +674,17 @@ export function EpubReader({
           </div>
         </div>
 
-        <Button
-          type="button"
-          size="sm"
-          className="shrink-0"
-          aria-label={t('projectInfo.learnCurrentChapter')}
-          disabled={!selectedChapter || starting}
-          onClick={onStartLearning}
-        >
-          {starting ? <Loader2 className="animate-spin" /> : <Play />}
-          <span className="hidden sm:inline">{t('projectInfo.learnCurrentChapter')}</span>
-        </Button>
       </div>
 
-      <div
-        className={cn(
-          'grid',
-          panelOpen && 'md:grid-cols-[240px_minmax(0,1fr)]',
-        )}
-      >
+      <div className={cn('grid', panelGridClass, compactLayout && 'min-h-0 flex-1')}>
         {panelOpen && (
           <nav
-            className="relative h-64 overflow-y-auto border-b border-border/50 bg-foreground/[0.015] md:h-[min(68vh,650px)] md:border-b-0 md:border-r"
+            className={cn(
+              'relative overflow-y-auto bg-foreground/[0.015]',
+              compactLayout
+                ? 'h-full min-h-0 border-r border-border/50'
+                : 'h-64 border-b border-border/50 md:h-[min(68vh,650px)] md:border-b-0 md:border-r',
+            )}
             aria-label={panel === 'contents'
               ? t('projectInfo.readerContents')
               : t('projectInfo.readerHighlights')}
@@ -749,7 +763,10 @@ export function EpubReader({
 
         <section
           ref={readerViewportRef}
-          className="relative h-[min(68vh,650px)] min-h-[520px] overflow-hidden bg-[#f8fafc] dark:bg-[#151821]"
+          className={cn(
+            'relative overflow-hidden bg-[#f8fafc] dark:bg-[#151821]',
+            compactLayout ? 'h-full min-h-0' : 'h-[min(68vh,650px)] min-h-[520px]',
+          )}
         >
           <div ref={mountRef} className="h-full w-full overflow-hidden" />
 
@@ -759,8 +776,12 @@ export function EpubReader({
               role="toolbar"
               aria-label={t('projectInfo.readerHighlights')}
               data-placement={selectionAnchor.placement}
-              className="absolute z-20 flex h-11 w-[88px] items-stretch overflow-hidden rounded-xl border border-white/10 bg-[#3f444d] p-1 text-zinc-100 shadow-modal-small"
-              style={{ left: selectionAnchor.left, top: selectionAnchor.top }}
+              className="absolute z-20 flex h-11 items-stretch overflow-hidden rounded-xl border border-white/10 bg-[#3f444d] p-1 text-zinc-100 shadow-modal-small"
+              style={{
+                left: selectionAnchor.left,
+                top: selectionAnchor.top,
+                width: selectionPopoverWidth,
+              }}
               onKeyDown={(event) => {
                 if (event.key !== 'Escape') return
                 event.preventDefault()
@@ -793,6 +814,32 @@ export function EpubReader({
                   : <Waves className="h-[18px] w-[18px]" />}
                 <span className="sr-only">{t('projectInfo.readerSaveHighlight')}</span>
               </Button>
+              {referenceEnabled && (
+                <>
+                  <div className="my-1.5 w-px bg-white/15" aria-hidden="true" />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-full min-w-0 flex-1 rounded-lg px-0 text-zinc-200 hover:bg-white/10 hover:text-white"
+                    onClick={() => referencePendingSelection('main')}
+                  >
+                    <MessageSquareQuote className="h-[18px] w-[18px]" />
+                    <span className="sr-only">Reference in main chat</span>
+                  </Button>
+                  <div className="my-1.5 w-px bg-white/15" aria-hidden="true" />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-full min-w-0 flex-1 rounded-lg px-0 text-zinc-200 hover:bg-white/10 hover:text-white"
+                    onClick={() => referencePendingSelection('sideChat')}
+                  >
+                    <MessagesSquare className="h-[18px] w-[18px]" />
+                    <span className="sr-only">Reference in side chat</span>
+                  </Button>
+                </>
+              )}
             </div>
           )}
 
@@ -815,35 +862,16 @@ export function EpubReader({
         </section>
       </div>
 
-      <div className="min-h-12 border-t border-border/50 px-3 flex items-center justify-between">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={status !== 'ready' || moving || location.atStart}
-          onClick={() => void move('previous')}
-        >
-          <ChevronLeft />
-          {t('projectInfo.readerPrevious')}
-        </Button>
-
+      <div className={cn(
+        'min-h-12 border-t border-border/50 px-3 flex items-center justify-center',
+        compactLayout && 'shrink-0',
+      )}>
         <span className="font-mono text-[11px] tabular-nums text-muted-foreground" aria-live="polite">
           {t('projectInfo.readerProgress', {
             current: Math.min(Math.max(currentNumber, 1), textbook.chapters.length),
             total: textbook.chapters.length,
           })}
         </span>
-
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={status !== 'ready' || moving || location.atEnd}
-          onClick={() => void move('next')}
-        >
-          {t('projectInfo.readerNext')}
-          <ChevronRight />
-        </Button>
       </div>
     </div>
   )
@@ -852,8 +880,8 @@ export function EpubReader({
 type HighlightActionProps = {
   deletingCfi: string | null
   deleteLabel: string
-  onSelect: (highlight: EpubHighlight) => void
-  onDelete: (highlight: EpubHighlight) => void
+  onSelect: (highlight: WorkingFileEpubHighlight) => void
+  onDelete: (highlight: WorkingFileEpubHighlight) => void
 }
 
 function HighlightOutline({
@@ -947,7 +975,7 @@ function HighlightEntries({
   onSelect,
   onDelete,
 }: HighlightActionProps & {
-  highlights: EpubHighlight[]
+  highlights: WorkingFileEpubHighlight[]
   depth: number
 }) {
   if (highlights.length === 0) return null
@@ -1151,7 +1179,7 @@ async function displayEpubCfi(
   await rendition.display(cfiRange)
 }
 
-function applyEpubHighlights(contents: Contents, highlights: EpubHighlight[]): void {
+function applyEpubHighlights(contents: Contents, highlights: WorkingFileEpubHighlight[]): void {
   try {
     const contentWindow = contents.window as Window & {
       CSS?: typeof CSS

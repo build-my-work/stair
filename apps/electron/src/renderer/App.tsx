@@ -5,6 +5,7 @@ import type { ThemeOverrides } from '@config/theme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
 import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
 import type { SessionDraft, DraftAttachmentRef } from '@craft-agent/shared/config'
+import type { FileReference } from '@craft-agent/core/types'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
 import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
 import { generateMessageId } from '../shared/types'
@@ -30,6 +31,10 @@ import { navigate, routes } from './lib/navigate'
 import { attachmentFromContentRef, toDraftRef } from './lib/drafts'
 import { stripMarkdown } from './utils/text'
 import { coerceInputText } from './lib/input-text'
+import {
+  appendFileReferenceToDraft,
+  filterFileReferencesForComposerText,
+} from './lib/file-reference-draft'
 import { getSessionsToRefreshAfterStaleReconnect } from './lib/reconnect-recovery'
 import { formatSessionLoadFailure, shouldTreatSessionLoadFailureAsTransportFallback } from './lib/session-load'
 import { extractWorkspaceSlugFromPath } from '@craft-agent/shared/utils/workspace-slug'
@@ -60,6 +65,9 @@ import {
   pushBackgroundFinishedAtom,
 } from '@/atoms/background-finished'
 import { visibleSessionIdsAtom } from '@/atoms/panel-stack'
+import { showRightWorkspaceFileAtom } from '@/atoms/right-workspace'
+import { getWorkspaceFileKind } from '@/components/right-workspace/workspace-file-types'
+import { parseSavedArtifactToolResult } from '@/components/artifacts/artifact-result'
 import { getSessionTitle } from '@/utils/session'
 import { extractBadges } from '@/lib/mentions'
 import { getDefaultStore } from 'jotai'
@@ -97,6 +105,12 @@ type SessionListRefreshOptions = {
 }
 
 const SESSION_REFRESH_LOG_ID_LIMIT = 25
+
+function isEmptySessionDraft(draft: SessionDraft): boolean {
+  return !draft.text
+    && !draft.attachments?.length
+    && !draft.references?.length
+}
 
 function summarizeIds(ids: Iterable<string>, limit = SESSION_REFRESH_LOG_ID_LIMIT) {
   const all = Array.from(ids)
@@ -216,6 +230,17 @@ function handleBackgroundTaskEvent(
         : t
     ))
   } else if (event.type === 'tool_result' && 'toolUseId' in evt) {
+    const savedArtifact = parseSavedArtifactToolResult({
+      toolName: typeof evt.toolName === 'string' ? evt.toolName : undefined,
+      result: typeof evt.result === 'string' ? evt.result : undefined,
+      isError: evt.isError === true,
+    })
+    if (savedArtifact) {
+      window.dispatchEvent(new CustomEvent('craft:artifact-changed', {
+        detail: savedArtifact,
+      }))
+    }
+
     // Remove task when it completes - but NOT if this is the initial backgrounding result
     // Background tasks return immediately with agentId/shell_id/backgroundTaskId,
     // we should only remove when the task actually completes
@@ -301,6 +326,7 @@ export default function App() {
   const removeSession = useSetAtom(removeSessionAtom)
   const updateSessionDirect = useSetAtom(updateSessionAtom)
   const replaceLoadedSession = useSetAtom(replaceLoadedSessionAtom)
+  const showRightWorkspaceFile = useSetAtom(showRightWorkspaceFileAtom)
   const store = useStore()
 
   // Helper to update a session by ID with partial fields
@@ -1180,18 +1206,28 @@ export default function App() {
       // (closures would retain the full sessions array with all messages)
       const metaMap = store.get(sessionMetaMapAtom)
       const meta = metaMap.get(sessionId)
+      const relatedSideChatIds = Array.from(metaMap.values())
+        .filter(candidate => candidate.sideChatForSessionId === sessionId)
+        .map(candidate => candidate.id)
       // Session is empty if it has no lastFinalMessageId (no assistant responses) and no name (set on first user message)
       const isEmpty = !meta || (!meta.lastFinalMessageId && !meta.name)
 
       if (!isEmpty) {
-        const confirmed = await window.electronAPI.showDeleteSessionConfirmation(meta?.name || 'Untitled')
+        const confirmed = await window.electronAPI.showDeleteSessionConfirmation(
+          meta?.name || 'Untitled',
+          relatedSideChatIds.length,
+        )
         if (!confirmed) return false
       }
     }
 
+    const relatedSideChatIds = Array.from(store.get(sessionMetaMapAtom).values())
+      .filter(candidate => candidate.sideChatForSessionId === sessionId)
+      .map(candidate => candidate.id)
     await window.electronAPI.deleteSession(sessionId)
     // Remove from per-session atom and metadata map (no sessionsAtom)
     removeSession(sessionId)
+    for (const sideChatId of relatedSideChatIds) removeSession(sideChatId)
     return true
   }, [store, removeSession])
 
@@ -1226,11 +1262,17 @@ export default function App() {
    * Called when user navigates to a session. Main process uses this to determine
    * whether to mark new assistant messages as unread.
    */
-  const handleSetActiveViewingSession = useCallback((sessionId: string) => {
-    // Optimistic UI update: clear hasUnread immediately
-    updateSessionById(sessionId, { hasUnread: false })
-    // Tell main process user is viewing this session
-    window.electronAPI.sessionCommand(sessionId, { type: 'setActiveViewing', workspaceId: windowWorkspaceId ?? '' })
+  const handleSetActiveViewingSession = useCallback((sessionId: string, viewing = true) => {
+    if (viewing) {
+      // Optimistic UI update: clear hasUnread immediately.
+      updateSessionById(sessionId, { hasUnread: false })
+    }
+    // The server tracks a set because main chat and side chat can both be visible.
+    window.electronAPI.sessionCommand(sessionId, {
+      type: 'setActiveViewing',
+      workspaceId: windowWorkspaceId ?? '',
+      viewing,
+    })
   }, [updateSessionById, windowWorkspaceId])
 
   const handleMarkSessionRead = useCallback((sessionId: string) => {
@@ -1265,6 +1307,7 @@ export default function App() {
   }, [updateSessionById])
 
   const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[]) => {
+    const references = sessionDraftsRef.current.get(sessionId)?.references
     try {
       // Capture pre-send processing state so we can flag mid-stream sends
       // for the queued badge (#616 follow-up — covers Pi steer path which
@@ -1396,6 +1439,7 @@ export default function App() {
         timestamp: Date.now(),
         attachments: storedAttachments,
         badges: badges.length > 0 ? badges : undefined,
+        references: references && references.length > 0 ? references : undefined,
         isPending: true,  // Optimistic - will be confirmed by backend
         isQueued: sendingMidStream,
       }
@@ -1411,6 +1455,7 @@ export default function App() {
       await window.electronAPI.sendMessage(sessionId, message, processedAttachments, storedAttachments, {
         skillSlugs,
         badges: badges.length > 0 ? badges : undefined,
+        references: references && references.length > 0 ? references : undefined,
         optimisticMessageId: userMessage.id,
       })
     } catch (error) {
@@ -1528,14 +1573,18 @@ export default function App() {
     const text = coerceInputText(value)
     const existing = sessionDraftsRef.current.get(sessionId)
     const existingAttachments = Array.isArray(existing?.attachments) ? existing.attachments : []
+    const existingReferences = Array.isArray(existing?.references) ? existing.references : []
+    const retainedReferences = filterFileReferencesForComposerText(existingReferences, text)
     const nextDraft: SessionDraft = {
       text,
       ...(existingAttachments.length > 0
         ? { attachments: existingAttachments }
         : {}),
+      ...(text && retainedReferences.length > 0
+        ? { references: retainedReferences }
+        : {}),
     }
-    const isEmpty = !nextDraft.text && (!nextDraft.attachments || nextDraft.attachments.length === 0)
-    if (isEmpty) {
+    if (isEmptySessionDraft(nextDraft)) {
       sessionDraftsRef.current.delete(sessionId)
     } else {
       sessionDraftsRef.current.set(sessionId, nextDraft)
@@ -1557,14 +1606,28 @@ export default function App() {
     const nextDraft: SessionDraft = {
       text: coerceInputText(existing?.text),
       ...(refs.length > 0 ? { attachments: refs } : {}),
+      ...(existing?.references && existing.references.length > 0
+        ? { references: existing.references }
+        : {}),
     }
-    const isEmpty = !nextDraft.text && (!nextDraft.attachments || nextDraft.attachments.length === 0)
-    if (isEmpty) {
+    if (isEmptySessionDraft(nextDraft)) {
       sessionDraftsRef.current.delete(sessionId)
     } else {
       sessionDraftsRef.current.set(sessionId, nextDraft)
     }
     schedulePersistDraft(sessionId)
+  }, [schedulePersistDraft])
+
+  const handleAddFileReference = useCallback((sessionId: string, reference: FileReference) => {
+    const current = sessionDraftsRef.current.get(sessionId) ?? { text: '' }
+    const next = appendFileReferenceToDraft(current, reference)
+    if (next === current) return
+
+    sessionDraftsRef.current.set(sessionId, next)
+    schedulePersistDraft(sessionId)
+    window.dispatchEvent(new CustomEvent('craft:restore-input', {
+      detail: { sessionId, text: next.text },
+    }))
   }, [schedulePersistDraft])
 
   // Open new chat - creates session and selects it
@@ -1668,6 +1731,10 @@ export default function App() {
   // show an in-app preview overlay or open externally. Replaces the old
   // handleOpenFile/handleOpenUrl that always opened in external apps.
   const linkInterceptor = useLinkInterceptor({
+    openFileInWorkspace: (path) => {
+      if (getWorkspaceFileKind(path) === 'external') return false
+      return showRightWorkspaceFile(path)
+    },
     openFileExternal: async (path) => {
       try {
         await window.electronAPI.openFile(path)
@@ -1887,6 +1954,7 @@ export default function App() {
     onSessionOptionsChange: handleSessionOptionsChange,
     onInputChange: handleInputChange,
     onAttachmentsChange: handleAttachmentsChange,
+    onAddFileReference: handleAddFileReference,
     // New chat (via deep link navigation)
     openNewChat,
   }), [
@@ -1928,6 +1996,7 @@ export default function App() {
     handleSessionOptionsChange,
     handleInputChange,
     handleAttachmentsChange,
+    handleAddFileReference,
     openNewChat,
   ])
 

@@ -17,6 +17,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { classifyFile, type FilePreviewType } from '@craft-agent/ui'
 import { getLanguageFromPath } from '@/lib/file-utils'
+import { isProjectRelativeFilePath } from './file-routing'
 
 // ── Preview state types ────────────────────────────────────────────────────────
 // Each variant carries the data needed to render its specific overlay.
@@ -74,6 +75,8 @@ export type FilePreviewState =
 // Callbacks injected by App.tsx so the hook doesn't depend on window.electronAPI directly.
 
 interface LinkInterceptorOptions {
+  /** Open a trusted project-relative path in the right workspace. */
+  openFileInWorkspace?: (path: string) => boolean
   /** Open file in default external application (e.g., VS Code) */
   openFileExternal: (path: string) => Promise<void>
   /** Open URL in default browser */
@@ -138,6 +141,14 @@ export function useLinkInterceptor(options: LinkInterceptorOptions): LinkInterce
    * (e.g., @uiw/react-json-view crashes on null value).
    */
   const handleOpenFile = useCallback(async (path: string) => {
+    if (
+      isProjectRelativeFilePath(path) &&
+      optionsRef.current.openFileInWorkspace?.(path)
+    ) {
+      setPreviewState(null)
+      return
+    }
+
     const classification = classifyFile(path)
 
     if (!classification.canPreview || !classification.type) {

@@ -87,7 +87,7 @@ function detectInstance(): void {
     const instanceNum = match[1];
     process.env.CRAFT_INSTANCE_NUMBER = instanceNum;
     process.env.CRAFT_VITE_PORT = `${instanceNum}173`;
-    process.env.CRAFT_APP_NAME = `Craft Agents [${instanceNum}]`;
+    process.env.CRAFT_APP_NAME = `stair [${instanceNum}]`;
     process.env.CRAFT_CONFIG_DIR = join(process.env.HOME || "", `.craft-agent-${instanceNum}`);
     process.env.CRAFT_DEEPLINK_SCHEME = `craftagents${instanceNum}`;
     console.log(`🔢 Instance ${instanceNum} detected: port=${process.env.CRAFT_VITE_PORT}, config=${process.env.CRAFT_CONFIG_DIR}`);
@@ -285,7 +285,7 @@ function getElectronEnv(): Record<string, string> {
     ...process.env as Record<string, string>,
     VITE_DEV_SERVER_URL: `http://localhost:${vitePort}`,
     CRAFT_CONFIG_DIR: process.env.CRAFT_CONFIG_DIR || "",
-    CRAFT_APP_NAME: process.env.CRAFT_APP_NAME || "Craft Agents",
+    CRAFT_APP_NAME: process.env.CRAFT_APP_NAME || "stair",
     CRAFT_DEEPLINK_SCHEME: process.env.CRAFT_DEEPLINK_SCHEME || "craftagents",
     CRAFT_INSTANCE_NUMBER: process.env.CRAFT_INSTANCE_NUMBER || "",
   };
@@ -460,7 +460,7 @@ async function main(): Promise<void> {
   // Build main and preload entries in parallel
   const [mainResult, preloadResult, toolbarPreloadResult] = await Promise.all([
     runEsbuild(
-      "apps/electron/src/main/index.ts",
+      "apps/electron/src/main/bootstrap.ts",
       "apps/electron/dist/main.cjs",
       oauthDefines,
       { alias: MAIN_PROCESS_ALIAS }
@@ -549,7 +549,7 @@ async function main(): Promise<void> {
 
   // 2. Main process watcher (using esbuild watch API)
   const mainContext = await esbuild.context({
-    entryPoints: [join(ROOT_DIR, "apps/electron/src/main/index.ts")],
+    entryPoints: [join(ROOT_DIR, "apps/electron/src/main/bootstrap.ts")],
     bundle: true,
     platform: "node",
     format: "cjs",

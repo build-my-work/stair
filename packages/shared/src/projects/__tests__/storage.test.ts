@@ -12,7 +12,6 @@ import {
   createProject,
   getProjectMemoryPath,
   loadProjectMemory,
-  sanitizeAssetFilename,
 } from '../storage.ts';
 
 let tempDir: string;
@@ -33,18 +32,10 @@ function makeProjectSlug(name = 'Memory Test'): string {
   return createProject(workspaceRoot, { name }).slug;
 }
 
-describe('sanitizeAssetFilename', () => {
-  it('strips control chars and NUL bytes (the literal-NUL regex fix)', () => {
-    // A NUL, newline, and tab are all removed — the source regex no longer carries a literal NUL.
-    expect(sanitizeAssetFilename('re\x00port\n\t.pdf')).toBe('report.pdf');
-  });
-
-  it('strips path separators and leading dots so an upload stays in the assets dir', () => {
-    expect(sanitizeAssetFilename('..\\..\\etc\\passwd')).toBe('etcpasswd');
-  });
-
-  it('falls back to a generated name when the input reduces to empty', () => {
-    expect(sanitizeAssetFilename('\x00\n\t')).toMatch(/^asset_[0-9a-f]{8}$/);
+describe('createProject', () => {
+  it('does not create a legacy assets directory', () => {
+    const slug = makeProjectSlug();
+    expect(existsSync(join(workspaceRoot, 'projects', slug, 'assets'))).toBe(false);
   });
 });
 

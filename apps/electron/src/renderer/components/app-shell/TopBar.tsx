@@ -55,6 +55,9 @@ interface TopBarProps {
   canGoForward: boolean
   onToggleSidebar: () => void
   onToggleFocusMode: () => void
+  onToggleRightWorkspace: () => void
+  isRightWorkspaceVisible: boolean
+  canToggleRightWorkspace?: boolean
   onAddSessionPanel: () => void
   onAddBrowserPanel: () => void
   /** When true, hides controls that don't apply in compact/mobile layout */
@@ -81,6 +84,9 @@ export function TopBar({
   canGoForward,
   onToggleSidebar,
   onToggleFocusMode,
+  onToggleRightWorkspace,
+  isRightWorkspaceVisible,
+  canToggleRightWorkspace = true,
   onAddSessionPanel,
   onAddBrowserPanel,
   isCompact,
@@ -227,6 +233,25 @@ export function TopBar({
         <div className="min-w-0">
           <BrowserTabStrip activeSessionId={activeSessionId} maxVisibleBadges={maxVisibleBrowserBadges} />
         </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <TopBarButton
+              onClick={onToggleRightWorkspace}
+              disabled={!canToggleRightWorkspace}
+              aria-label={isRightWorkspaceVisible ? 'Hide learning workspace' : 'Show learning workspace'}
+              aria-pressed={isRightWorkspaceVisible}
+              className={cn(
+                'h-[26px] w-[26px] rounded-lg',
+                isRightWorkspaceVisible && 'bg-foreground/8 text-foreground',
+              )}
+            >
+              <Icons.PanelRight className="h-4 w-4 text-foreground/60" strokeWidth={1.5} />
+            </TopBarButton>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {isRightWorkspaceVisible ? 'Hide learning workspace' : 'Show learning workspace'}
+          </TooltipContent>
+        </Tooltip>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <TopBarButton aria-label={t("menu.addPanelMenu")} className="ml-1 h-[26px] w-[26px] rounded-lg">

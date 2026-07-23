@@ -59,6 +59,9 @@ export type { ScriptSandboxArgs } from './script-sandbox.ts';
 export { handleRenderTemplate } from './render-template.ts';
 export type { RenderTemplateArgs } from './render-template.ts';
 
+// Project Artifact
+export { handleSaveProjectArtifact } from './save-project-artifact.ts';
+
 // Send Developer Feedback
 export { handleSendDeveloperFeedback } from './send-developer-feedback.ts';
 export type { SendDeveloperFeedbackArgs } from './send-developer-feedback.ts';

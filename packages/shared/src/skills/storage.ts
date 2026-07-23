@@ -7,16 +7,18 @@
 
 import {
   existsSync,
+  realpathSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
 } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join, relative, sep } from 'path';
 import matter from 'gray-matter';
 import type { LoadedSkill, SkillMetadata, SkillSource } from './types.ts';
 import { getWorkspaceSkillsPath } from '../workspaces/storage.ts';
+import { loadProjectById } from '../projects/storage.ts';
 import {
   validateIconValue,
   findIconFile,
@@ -105,6 +107,8 @@ function parseSkillFile(content: string): { metadata: SkillMetadata; body: strin
  * @param source - Where this skill is loaded from
  */
 function loadSkillFromDir(skillsDir: string, slug: string, source: SkillSource): LoadedSkill | null {
+  if (!isSafeSkillSlug(slug)) return null;
+
   const skillDir = join(skillsDir, slug);
   const skillFile = join(skillDir, 'SKILL.md');
 
@@ -115,6 +119,20 @@ function loadSkillFromDir(skillsDir: string, slug: string, source: SkillSource):
 
   // Check SKILL.md exists
   if (!existsSync(skillFile)) {
+    return null;
+  }
+
+  // A targeted slug may come from an RPC/automation caller rather than the
+  // mention parser. Keep both the skill directory and SKILL.md inside the
+  // selected skills root, including after resolving symbolic links.
+  try {
+    const realSkillsDir = realpathSync(skillsDir);
+    const realSkillDir = realpathSync(skillDir);
+    const realSkillFile = realpathSync(skillFile);
+    if (!isPathWithin(realSkillsDir, realSkillDir) || !isPathWithin(realSkillDir, realSkillFile)) {
+      return null;
+    }
+  } catch {
     return null;
   }
 
@@ -139,6 +157,24 @@ function loadSkillFromDir(skillsDir: string, slug: string, source: SkillSource):
     path: skillDir,
     source,
   };
+}
+
+function isSafeSkillSlug(slug: string): boolean {
+  return typeof slug === 'string'
+    && slug.length > 0
+    && slug !== '.'
+    && slug !== '..'
+    && !slug.includes('/')
+    && !slug.includes('\\')
+    && !slug.includes('\0');
+}
+
+function isPathWithin(parent: string, candidate: string): boolean {
+  const pathFromParent = relative(parent, candidate);
+  return pathFromParent === ''
+    || (!isAbsolute(pathFromParent)
+      && pathFromParent !== '..'
+      && !pathFromParent.startsWith(`..${sep}`));
 }
 
 /**
@@ -268,6 +304,21 @@ export function loadSkillBySlug(workspaceRoot: string, slug: string, projectRoot
 
   // Lowest priority: global
   return loadSkillFromDir(GLOBAL_AGENT_SKILLS_DIR, slug, 'global');
+}
+
+/**
+ * Resolve the trusted Project root used for project-level skill discovery.
+ * Existing sessions may predate a Project working-directory binding, so their
+ * persisted workingDirectory can be empty even though the Project now has one.
+ */
+export function resolveSkillProjectRoot(
+  workspaceRoot: string,
+  session: { workingDirectory?: string; workingDirectoryMode?: 'none'; projectId?: string } | undefined,
+): string | undefined {
+  if (!session || session.workingDirectoryMode === 'none') return undefined;
+  if (session.workingDirectory) return session.workingDirectory;
+  if (!session.projectId) return undefined;
+  return loadProjectById(workspaceRoot, session.projectId)?.config.workingDirectory;
 }
 
 /**

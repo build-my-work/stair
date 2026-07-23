@@ -78,6 +78,7 @@ import { resolveSearchProvider } from './tools/search/resolve-provider.ts';
 import { createSearchTool } from './tools/search/create-search-tool.ts';
 import { allowCraftMetadataProperties, stripCraftMetadata } from './craft-metadata-schema.ts';
 import { applySystemPromptOverride } from './system-prompt-override.ts';
+import { getPiToolModeCapabilities, type PiToolMode } from './tool-mode.ts';
 
 // ============================================================
 // Types — JSONL Protocol
@@ -115,7 +116,7 @@ interface InitMessage {
   branchFromSdkTurnId?: string;
   customEndpoint?: { api: CustomEndpointApi; supportsImages?: boolean };
   customModels?: Array<string | { id: string; contextWindow?: number; supportsImages?: boolean }>;
-  toolMode?: 'default' | 'none';
+  toolMode?: PiToolMode;
   piAuth?: { provider: string; credential: PiCredential };
 }
 
@@ -547,8 +548,8 @@ async function ensureSession(): Promise<AgentSession> {
   const webFetchTool = createWebFetchTool(() =>
     initConfig ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId) : null
   );
-  const toolsDisabled = initConfig.toolMode === 'none';
-  const webTools = toolsDisabled ? [] : [searchTool, webFetchTool];
+  const toolCapabilities = getPiToolModeCapabilities(initConfig.toolMode);
+  const webTools = toolCapabilities.webTools ? [searchTool, webFetchTool] : [];
 
   // Pi SDK 0.70.0 registration contract:
   //   - `customTools` accepts ToolDefinition[] — our hook-wrapped objects go here
@@ -559,16 +560,21 @@ async function ensureSession(): Promise<AgentSession> {
   //     our hooked versions take effect (permissions + large-response summarization).
   //   - Do NOT pass tool *objects* to `tools` — `allowedToolNames = new Set(options.tools)`
   //     then `.has(name)` returns false for every string lookup → zero tools active.
-  const builtinDefs = toolsDisabled ? [] : [
-    createReadToolDefinition(cwd),
-    createBashToolDefinition(cwd),
-    createEditToolDefinition(cwd),
-    createWriteToolDefinition(cwd),
-    createGrepToolDefinition(cwd),
-    createFindToolDefinition(cwd),
-    createLsToolDefinition(cwd),
-  ];
-  const proxyTools = toolsDisabled ? [] : buildProxyTools();
+  const builtinDefs: ToolDefinition<any, any>[] = [];
+  if (toolCapabilities.builtinTools !== 'none') {
+    builtinDefs.push(createReadToolDefinition(cwd));
+  }
+  if (toolCapabilities.builtinTools === 'all') {
+    builtinDefs.push(
+      createBashToolDefinition(cwd),
+      createEditToolDefinition(cwd),
+      createWriteToolDefinition(cwd),
+      createGrepToolDefinition(cwd),
+      createFindToolDefinition(cwd),
+      createLsToolDefinition(cwd),
+    );
+  }
+  const proxyTools = toolCapabilities.proxyTools ? buildProxyTools() : [];
   const wrappedAll = wrapToolsWithHooks([...builtinDefs, ...webTools, ...proxyTools]);
   const toolAllowlist = wrappedAll.map(t => t.name);
   debugLog(`Session tools: ${builtinDefs.length} builtin + ${webTools.length} web + ${proxyTools.length} proxy = ${wrappedAll.length} total`);

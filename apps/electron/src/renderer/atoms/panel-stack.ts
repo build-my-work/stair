@@ -45,6 +45,21 @@ export interface PanelStackEntry {
 
 export const panelStackAtom = atom<PanelStackEntry[]>([])
 export const focusedPanelIdAtom = atom<string | null>(null)
+const embeddedVisibleSessionIdsAtom = atom<Set<string>>(new Set<string>())
+
+/** Register an embedded chat that is currently on screen outside the main panel stack. */
+export const setEmbeddedSessionVisibilityAtom = atom(
+  null,
+  (get, set, update: { sessionId: string; visible: boolean }) => {
+    const current = get(embeddedVisibleSessionIdsAtom)
+    if (current.has(update.sessionId) === update.visible) return
+
+    const next = new Set(current)
+    if (update.visible) next.add(update.sessionId)
+    else next.delete(update.sessionId)
+    set(embeddedVisibleSessionIdsAtom, next)
+  },
+)
 
 export const panelCountAtom = atom((get) => get(panelStackAtom).length)
 
@@ -130,7 +145,7 @@ export const focusedSessionIdAtom = atom((get) => {
  * background" — a session shown in any panel is not.
  */
 export const visibleSessionIdsAtom = atom((get) => {
-  const ids = new Set<string>()
+  const ids = new Set(get(embeddedVisibleSessionIdsAtom))
   for (const entry of get(panelStackAtom)) {
     const id = parseSessionIdFromRoute(entry.route)
     if (id) ids.add(id)

@@ -46,7 +46,7 @@ import { EventQueue } from './backend/event-queue.ts';
 // System prompt for Craft Agent context
 import { getSystemPrompt } from '../prompts/system.ts';
 import { getCoAuthorPreference } from '../config/preferences.ts';
-import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
+import { loadProjectById, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
 import type { ProjectPromptContext } from '../projects/types.ts';
 
 // Credential manager for token storage
@@ -117,6 +117,27 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'browser_tool',
 ]);
 
+export type PiSubprocessToolMode = 'default' | 'none' | 'tutor-artifact';
+
+const LEARNING_ARTIFACT_SKILL = 'create-learning-artifact';
+const LEARNING_ARTIFACT_TOOL = 'mcp__session__save_project_artifact';
+
+export function resolvePiTurnToolMode(
+  systemPromptPreset: string | undefined,
+  activeSkillSlugs: ReadonlySet<string>,
+): PiSubprocessToolMode {
+  if (systemPromptPreset !== 'tutor') return 'default';
+  return activeSkillSlugs.has(LEARNING_ARTIFACT_SKILL) ? 'tutor-artifact' : 'none';
+}
+
+export function getPiSessionToolProxyDefsForMode(mode: PiSubprocessToolMode) {
+  if (mode === 'none') return [];
+  const definitions = getSessionToolProxyDefs();
+  return mode === 'tutor-artifact'
+    ? definitions.filter(definition => definition.name === LEARNING_ARTIFACT_TOOL)
+    : definitions;
+}
+
 /**
  * Map a transport `err.code` to an agent-facing string for `browser_tool` failures.
  * Returns null for unknown codes so callers can fall back to the raw `err.message`.
@@ -168,6 +189,7 @@ export class PiAgent extends BaseAgent {
   private readline: ReadlineInterface | null = null;
   private subprocessReady: Promise<void> | null = null;
   private subprocessReadyResolve: (() => void) | null = null;
+  private subprocessToolMode: PiSubprocessToolMode | null = null;
 
   // Pi session ID (managed by subprocess, reported back)
   private piSessionId: string | null = null;
@@ -209,12 +231,6 @@ export class PiAgent extends BaseAgent {
         name: project.config.name,
         description: project.config.description,
         details: project.config.details,
-        assetsPath: getProjectAssetsPath(root, slug),
-        assets: listProjectAssets(root, slug).map((a) => ({
-          filename: a.filename,
-          mimeType: a.mimeType,
-          sizeBytes: a.sizeBytes,
-        })),
         memoryPath: getProjectMemoryPath(root, slug),
         memoryContent: loadProjectMemory(root, slug) ?? undefined,
       };
@@ -419,6 +435,18 @@ export class PiAgent extends BaseAgent {
     await this.spawnSubprocess();
   }
 
+  /** Restart between turns when a Tutor enters or leaves the explicit Artifact skill. */
+  private async alignSubprocessToolModeForCurrentTurn(): Promise<void> {
+    const desiredMode = resolvePiTurnToolMode(
+      this.config.systemPromptPreset,
+      this.getCurrentTurnSkillSlugs(),
+    );
+    if (this.subprocess && this.subprocessToolMode !== desiredMode) {
+      this.debug(`Restarting Pi subprocess for tool mode ${this.subprocessToolMode ?? 'unknown'} -> ${desiredMode}`);
+      await this.killSubprocessGracefully();
+    }
+  }
+
   /**
    * Spawn the pi-agent-server subprocess and set up JSONL communication.
    */
@@ -540,6 +568,12 @@ export class PiAgent extends BaseAgent {
     const plansFolderPath = getSessionPlansPath(this.config.workspace.rootPath, sessionId);
     const workingDirectory = this.config.session?.workingDirectory || cwd;
 
+    const toolMode = resolvePiTurnToolMode(
+      this.config.systemPromptPreset,
+      this.getCurrentTurnSkillSlugs(),
+    );
+    this.subprocessToolMode = toolMode;
+
     // Send init command (flat structure matching subprocess InboundMessage type)
     this.send({
       type: 'init',
@@ -560,7 +594,7 @@ export class PiAgent extends BaseAgent {
       baseUrl: runtime.baseUrl,
       customEndpoint: runtime.customEndpoint,
       customModels: runtime.customModels,
-      toolMode: this.config.systemPromptPreset === 'tutor' ? 'none' : 'default',
+      toolMode,
       // Branch params for Pi SDK session fork
       branchFromSdkSessionId: this.config.session?.branchFromSdkSessionId,
       branchFromSessionPath: this.config.session?.branchFromSessionPath,
@@ -584,7 +618,7 @@ export class PiAgent extends BaseAgent {
     // These tools (SubmitPlan, config_validate, source auth, call_llm, etc.)
     // are executed in the main process when the LLM calls them.
     this.assertBackendSessionToolParity();
-    let sessionToolDefs = this.config.systemPromptPreset === 'tutor' ? [] : getSessionToolProxyDefs();
+    let sessionToolDefs = getPiSessionToolProxyDefsForMode(toolMode);
 
     // Mirror Claude's gate: hide `browser_tool` when the user has disabled
     // the built-in browser tool. Without this filter, Pi would still advertise
@@ -1731,6 +1765,7 @@ export class PiAgent extends BaseAgent {
 
     this.subprocess = null;
     this.readline = null;
+    this.subprocessToolMode = null;
     this.resetSubprocessErrorDedup();
     this.subprocessReady = null;
     this.subprocessReadyResolve = null;
@@ -1960,6 +1995,7 @@ export class PiAgent extends BaseAgent {
     options?: ChatOptions
   ): AsyncGenerator<AgentEvent> {
     let message = messageParam;
+    await this.alignSubprocessToolModeForCurrentTurn();
     // Reset state for new turn
     this._isProcessing = true;
     this.abortReason = undefined;
@@ -2457,6 +2493,7 @@ export class PiAgent extends BaseAgent {
     if (this.subprocess === child) {
       this.subprocess = null;
     }
+    this.subprocessToolMode = null;
     this.subprocessReady = null;
     this.subprocessReadyResolve = null;
     this.callbackPort = 0;
@@ -2489,6 +2526,8 @@ export class PiAgent extends BaseAgent {
       this.subprocess.kill('SIGTERM');
       this.subprocess = null;
     }
+
+    this.subprocessToolMode = null;
 
     this.subprocessReady = null;
     this.subprocessReadyResolve = null;

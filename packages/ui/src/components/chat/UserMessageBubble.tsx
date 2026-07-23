@@ -12,8 +12,8 @@
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Clock } from 'lucide-react'
-import type { StoredAttachment, ContentBadge } from '@craft-agent/core'
+import { BookOpenText, Clock } from 'lucide-react'
+import type { StoredAttachment, ContentBadge, FileReference } from '@craft-agent/core'
 import { normalizePath } from '@craft-agent/core/utils'
 import { cn } from '../../lib/utils'
 import { Markdown } from '../markdown'
@@ -315,6 +315,10 @@ export interface UserMessageBubbleProps {
   attachments?: StoredAttachment[]
   /** Content badges for inline display (sources, skills) */
   badges?: ContentBadge[]
+  /** Durable project-file citations attached to the message. */
+  references?: FileReference[]
+  /** Reopen a citation at its precise locator. */
+  onReferenceClick?: (reference: FileReference) => void
   /** Whether the message is awaiting backend confirmation. User bubbles stay visually stable. */
   isPending?: boolean
   /** Whether the message is queued (badge shown) */
@@ -336,11 +340,14 @@ export function UserMessageBubble({
   onFileClick,
   attachments,
   badges,
+  references,
+  onReferenceClick,
   isQueued,
   compactMode,
 }: UserMessageBubbleProps) {
   const { t } = useTranslation()
   const hasAttachments = attachments && attachments.length > 0
+  const hasReferences = references && references.length > 0
 
   // Show the queued chip while `isQueued` is true AND for at least
   // QUEUED_MIN_VISIBLE_MS after it first became true — even if the backend
@@ -467,6 +474,24 @@ export function UserMessageBubble({
               </div>
             )
           })}
+        </div>
+      )}
+
+      {hasReferences && (
+        <div className="flex max-w-[80%] flex-wrap justify-end gap-1.5">
+          {references.map((reference, index) => (
+            <button
+              key={`${reference.path}:${index}`}
+              type="button"
+              className="flex max-w-[240px] items-center gap-1.5 rounded-md bg-user-message-bubble px-2.5 py-1.5 text-[11px] text-muted-foreground shadow-minimal transition-colors hover:text-foreground disabled:pointer-events-none"
+              disabled={!onReferenceClick}
+              title={reference.path}
+              onClick={() => onReferenceClick?.(reference)}
+            >
+              <BookOpenText className="size-3.5 shrink-0" />
+              <span className="truncate">{reference.path.split('/').at(-1) ?? reference.path}</span>
+            </button>
+          ))}
         </div>
       )}
 

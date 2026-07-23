@@ -65,7 +65,7 @@ import { buildTitlePrompt, buildRegenerateTitlePrompt, validateTitle } from '../
 
 // Skill extraction for Codex/Copilot backends (Claude uses native SDK Skill tool)
 import { parseMentions, resolveSkillMentions, resolveSourceMentions, resolveFileMentions } from '../mentions/index.ts';
-import { loadAllSkills } from '../skills/storage.ts';
+import { loadAllSkills, resolveSkillProjectRoot } from '../skills/storage.ts';
 
 // ============================================================
 // Mini Agent Configuration
@@ -217,6 +217,12 @@ export abstract class BaseAgent implements AgentBackend {
   // ============================================================
   protected _pendingSourceActivationRestart: { sourceSlug: string; userMessage: string } | null = null;
   protected _currentTurnUserMessage: string | null = null;
+  private _currentTurnSkillSlugs: ReadonlySet<string> = new Set();
+
+  /** Skill slugs resolved from the raw user message for the currently executing turn. */
+  protected getCurrentTurnSkillSlugs(): ReadonlySet<string> {
+    return this._currentTurnSkillSlugs;
+  }
 
   setPendingSourceActivationRestart(pending: { sourceSlug: string; userMessage: string }): void {
     // First-writer-wins under parallel `mcp__session__source_test` calls. The
@@ -935,7 +941,7 @@ ${formattedMessages}
     missingSkills: string[];
   } {
     const workspaceRoot = this.config.workspace?.rootPath ?? this.workingDirectory;
-    const projectRoot = this.config.session?.workingDirectory;
+    const projectRoot = resolveSkillProjectRoot(workspaceRoot, this.config.session);
     const skills = loadAllSkills(workspaceRoot, projectRoot);
     const skillSlugs = skills.map(s => s.slug);
 
@@ -1014,10 +1020,12 @@ ${formattedMessages}
   ): AsyncGenerator<AgentEvent> {
     const { skillPaths, cleanMessage, missingSkills } = this.extractSkillPaths(message);
     if (missingSkills.length > 0) {
+      this._currentTurnSkillSlugs = new Set();
       yield { type: 'error', message: `Skill(s) not found: ${missingSkills.join(', ')}` };
       yield { type: 'complete' };
       return;
     }
+    this._currentTurnSkillSlugs = new Set(skillPaths.keys());
 
     // Register skill prerequisites — blocks all tools until SKILL.md files are read.
     if (skillPaths.size > 0) {
@@ -1051,6 +1059,7 @@ ${formattedMessages}
       yield* this.chatImpl(effectiveMessage, attachments, options);
     } finally {
       this.setCurrentTurnUserMessage(null);
+      this._currentTurnSkillSlugs = new Set();
     }
   }
 

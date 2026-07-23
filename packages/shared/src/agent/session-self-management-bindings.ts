@@ -88,6 +88,14 @@ export function attachSessionSelfManagementBindings(
     enumerable: true,
   });
 
+  Object.defineProperty(context, 'saveProjectArtifact', {
+    get() {
+      return getSessionScopedToolCallbacks(sessionId)?.saveProjectArtifactFn;
+    },
+    configurable: true,
+    enumerable: true,
+  });
+
   Object.defineProperty(context, 'sendAgentMessage', {
     get() {
       return getSessionScopedToolCallbacks(sessionId)?.sendAgentMessageFn;

@@ -42,6 +42,7 @@ import { handleListBackgroundTasks } from './handlers/list-background-tasks.ts';
 import { handleCreateTask } from './handlers/create-task.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
 import { handleListMessagingChannels, handleUnbindMessagingChannel } from './handlers/messaging.ts';
+import { handleSaveProjectArtifact } from './handlers/save-project-artifact.ts';
 
 // ============================================================
 // Canonical Zod Schemas
@@ -127,6 +128,36 @@ export const UpdatePreferencesSchema = z.object({
   country: z.string().optional().describe("The user's country"),
   notes: z.string().optional().describe('Additional notes about the user that would be helpful to remember (preferences, context, etc.). Replaces any existing notes.'),
   includeCoAuthoredBy: z.boolean().optional().describe("Whether to include 'Co-Authored-By: Craft Agent' trailer on git commits. Defaults to true."),
+});
+
+const ProjectArtifactLocatorSchema = z.union([
+  z.object({
+    type: z.literal('epub-cfi'),
+    cfiRange: z.string().min(10).max(8_192),
+  }),
+  z.object({
+    type: z.literal('pdf-page'),
+    page: z.number().int().min(1),
+  }),
+  z.object({
+    type: z.literal('text-range'),
+    startLine: z.number().int().min(1),
+    endLine: z.number().int().min(1),
+  }).refine((value) => value.endLine >= value.startLine, {
+    message: 'endLine must be greater than or equal to startLine',
+  }),
+]);
+
+export const SaveProjectArtifactSchema = z.object({
+  artifactId: z.string().regex(/^artifact_[a-z0-9-]{8,80}$/).optional(),
+  title: z.string().trim().min(1).max(300),
+  markdown: z.string().max(10 * 1024 * 1024),
+  templateId: z.string().trim().min(1).max(200).optional(),
+  references: z.array(z.object({
+    path: z.string().min(1).max(4_096),
+    quote: z.string().max(1_000_000).optional(),
+    locator: ProjectArtifactLocatorSchema,
+  })).max(1_000).default([]),
 });
 
 export const TransformDataSchema = z.object({
@@ -521,6 +552,10 @@ Shows which external chat apps are connected and can send/receive messages.`,
 
   unbind_messaging_channel: `Disconnect a messaging channel from the current session.
 Messages will no longer be forwarded between the chat app and this session.`,
+
+  save_project_artifact: `Save or update a durable Markdown learning artifact in the current Project.
+
+Use this only after the user explicitly asks to create or update a reusable result. Provide a clear title, complete Markdown, and project-relative source references. The application selects the trusted Project storage location; you cannot choose a disk path or another Project.`,
 } as const;
 
 // ============================================================
@@ -598,6 +633,7 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   // Messaging gateway tools
   { name: 'list_messaging_channels', description: TOOL_DESCRIPTIONS.list_messaging_channels, inputSchema: ListMessagingChannelsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListMessagingChannels },
   { name: 'unbind_messaging_channel', description: TOOL_DESCRIPTIONS.unbind_messaging_channel, inputSchema: UnbindMessagingChannelSchema, executionMode: 'registry', safeMode: 'block', handler: handleUnbindMessagingChannel },
+  { name: 'save_project_artifact', description: TOOL_DESCRIPTIONS.save_project_artifact, inputSchema: SaveProjectArtifactSchema, executionMode: 'registry', safeMode: 'block', handler: handleSaveProjectArtifact },
 ];
 
 export interface SessionToolFilterOptions {

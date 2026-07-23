@@ -6,10 +6,16 @@
  * and lifecycle management.
  */
 import { describe, it, expect, beforeEach } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { AbortReason } from '../backend/types.ts';
+import { createProject } from '../../projects/storage.ts';
 import {
   TestAgent,
   createMockBackendConfig,
+  createMockSession,
+  createMockWorkspace,
   createMockSource,
   collectEvents,
 } from './test-utils.ts';
@@ -102,6 +108,48 @@ describe('BaseAgent', () => {
     it('should allow setting session ID', () => {
       agent.setSessionId('new-session-id');
       expect(agent.getSessionId()).toBe('new-session-id');
+    });
+
+    it('loads a project skill from the current Project when the existing session has no working directory snapshot', async () => {
+      const workspaceRoot = mkdtempSync(join(tmpdir(), 'base-agent-project-skill-'));
+      const projectRoot = join(workspaceRoot, 'book');
+      const skillDir = join(projectRoot, '.agents', 'skills', 'create-learning-artifact');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), [
+        '---',
+        'name: Create Learning Artifact',
+        'description: Save a cited learning artifact',
+        '---',
+        '',
+        'Use save_project_artifact.',
+      ].join('\n'));
+      const project = createProject(workspaceRoot, {
+        name: 'Operating Systems',
+        workingDirectory: projectRoot,
+      });
+      const projectAgent = new TestAgent(createMockBackendConfig({
+        workspace: createMockWorkspace({ rootPath: workspaceRoot }),
+        session: createMockSession({
+          workspaceRootPath: workspaceRoot,
+          projectId: project.id,
+          workingDirectory: undefined,
+        }),
+      }));
+
+      try {
+        const events = await collectEvents(projectAgent.chat('[skill:create-learning-artifact]'));
+
+        expect(events.some(event => event.type === 'error')).toBe(false);
+        expect(projectAgent.chatCalls).toHaveLength(1);
+        expect(projectAgent.chatCalls[0]?.message).toContain(join(skillDir, 'SKILL.md'));
+        expect(projectAgent.chatCalls[0]?.activeSkillSlugs).toEqual(['create-learning-artifact']);
+
+        await collectEvents(projectAgent.chat('继续讲解这一章'));
+        expect(projectAgent.chatCalls[1]?.activeSkillSlugs).toEqual([]);
+      } finally {
+        projectAgent.destroy();
+        rmSync(workspaceRoot, { recursive: true, force: true });
+      }
     });
   });
 

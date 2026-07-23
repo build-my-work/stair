@@ -2356,21 +2356,21 @@ export function FreeFormInput({
                         <div className="text-xs text-muted-foreground">{thinkingDisabled ? t('thinking.notSupported') : t('thinking.extendedDesc')}</div>
                       </div>
                     </StyledDropdownMenuSubTrigger>
-                    <StyledDropdownMenuSubContent className="min-w-[220px]">
+                    <StyledDropdownMenuSubContent className="w-80 max-w-[calc(100vw-24px)] whitespace-normal">
                       {availableThinkingLevels.map(({ id, nameKey, descriptionKey }) => {
                         const isSelected = thinkingLevel === id
                         return (
                           <StyledDropdownMenuItem
                             key={id}
                             onSelect={() => onThinkingLevelChange?.(id)}
-                            className="flex items-center justify-between px-2 py-2 rounded-lg cursor-pointer"
+                            className="flex items-start justify-between gap-3 px-2 py-2 rounded-lg cursor-pointer whitespace-normal"
                           >
-                            <div className="text-left">
+                            <div className="min-w-0 flex-1 text-left">
                               <div className="font-medium text-sm">{t(nameKey)}</div>
-                              <div className="text-xs text-muted-foreground">{t(descriptionKey)}</div>
+                              <div className="text-xs leading-5 text-muted-foreground break-words">{t(descriptionKey)}</div>
                             </div>
                             {isSelected && (
-                              <Check className="h-3 w-3 text-foreground shrink-0 ml-3" />
+                              <Check className="mt-1 h-3 w-3 shrink-0 text-foreground" />
                             )}
                           </StyledDropdownMenuItem>
                         )

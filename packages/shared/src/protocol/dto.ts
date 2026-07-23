@@ -10,13 +10,14 @@ import type {
   Message,
   TypedError,
   ContentBadge,
+  FileReference,
   ToolDisplayMeta,
   AnnotationV1,
   PermissionRequest as BasePermissionRequest,
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
-import type { LearningSessionContext } from '../learning/types'
+import type { ImportedTextbook } from '../learning/types'
 import type { CustomEndpointConfig } from '../config/llm-connections'
 import type {
   AuthRequest as SharedAuthRequest,
@@ -69,6 +70,8 @@ export interface Session {
   hasUnread?: boolean
   enabledSourceSlugs?: string[]
   workingDirectory?: string
+  /** Explicit no-directory selection, persisted separately from an unset legacy value. */
+  workingDirectoryMode?: 'none'
   sessionFolderPath?: string
   sharedUrl?: string
   sharedId?: string
@@ -104,8 +107,10 @@ export interface Session {
   supportsBranching?: boolean
   /** Workspace-scoped project id this session is bound to (undefined = unbound) */
   projectId?: string
-  /** Selected textbook chapter for tutor-mode sessions. */
-  learningContext?: LearningSessionContext
+  /** Main session this auxiliary side chat belongs to. */
+  sideChatForSessionId?: string
+  /** Optional main-session message that motivated this side chat. */
+  originMessageId?: string
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */
@@ -156,8 +161,6 @@ export interface CreateSessionOptions {
   branchFromSessionId?: string
   /** Bind the new session to a workspace project (inherits project's workingDirectory). */
   projectId?: string
-  /** Persist the selected textbook chapter without duplicating its full content. */
-  learningContext?: LearningSessionContext
   /** Mark the new session as a subtask of this parent session (undefined = top-level task). */
   parentSessionId?: string
   /** Tasks Conductor: slug of the task spec this session belongs to (orchestrator + child nodes). */
@@ -428,6 +431,8 @@ export type SessionEvent =
 export interface SendMessageOptions {
   skillSlugs?: string[]
   badges?: ContentBadge[]
+  /** Structured project-file locators cited by this user message. */
+  references?: FileReference[]
   optimisticMessageId?: string
   /**
    * When true, the message drives a turn (reaches the model) but is marked
@@ -451,7 +456,7 @@ export type SessionCommand =
   | { type: 'setSessionStatus'; state: SessionStatus }
   | { type: 'markRead' }
   | { type: 'markUnread' }
-  | { type: 'setActiveViewing'; workspaceId: string }
+  | { type: 'setActiveViewing'; workspaceId: string; viewing?: boolean }
   | { type: 'setPermissionMode'; mode: PermissionMode }
   | { type: 'setThinkingLevel'; level: ThinkingLevel }
   | { type: 'updateWorkingDirectory'; dir: string }
@@ -553,6 +558,24 @@ export interface SessionFile {
   type: 'file' | 'directory'
   size?: number
   children?: SessionFile[]
+}
+
+/** One lazily listed entry below a Project's trusted workingDirectory. */
+export interface WorkingDirectoryEntry {
+  name: string
+  relativePath: string
+  type: 'file' | 'directory'
+  sizeBytes?: number
+  modifiedAt: number
+  isSymlink: boolean
+}
+
+/** Parsed learning material plus the stable identity of its working-directory source. */
+export interface WorkingDirectoryTextbookResult {
+  textbook: ImportedTextbook
+  projectId: string
+  sourcePath: string
+  sourceFingerprint: string
 }
 
 export interface FileSearchResult {

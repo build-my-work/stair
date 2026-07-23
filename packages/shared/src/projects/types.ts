@@ -1,13 +1,15 @@
+import type { FileReference } from '@craft-agent/core/types';
+
 /**
  * Project Types
  *
  * Projects are workspace-scoped collections that group sessions, working directory,
- * and shared assets/context for a body of work. Modeled after Codex/Cowork Projects.
+ * and shared context for a body of work. Modeled after Codex/Cowork Projects.
  *
  * File structure:
  * {workspaceRootPath}/projects/{projectSlug}/
  *   ├── config.json   - Project settings
- *   └── assets/       - Uploaded files (PDFs, images, text)
+ *   └── MEMORY.md     - Durable project knowledge
  */
 
 /**
@@ -55,18 +57,6 @@ export interface ProjectConfig {
 }
 
 /**
- * Project asset (resolved at read time from the assets folder)
- */
-export interface ProjectAsset {
-  filename: string;
-  sizeBytes: number;
-  mimeType: string;
-  uploadedAt: number;
-  /** Absolute path on disk; resolved at read time, never persisted in config */
-  absolutePath: string;
-}
-
-/**
  * Project creation input (without auto-generated fields)
  */
 export interface CreateProjectInput {
@@ -85,8 +75,6 @@ export interface LoadedProject {
   config: ProjectConfig;
   /** Absolute path to project folder */
   folderPath: string;
-  /** Absolute path to project assets folder */
-  assetsPath: string;
   /** Absolute path to workspace folder */
   workspaceRootPath: string;
   /** Workspace this project belongs to (derived from basename of workspaceRootPath) */
@@ -101,11 +89,31 @@ export interface ProjectPromptContext {
   name: string;
   description?: string;
   details?: string;
-  assetsPath: string;
-  /** Lightweight manifest of reference files (newest-first); bodies are read on-demand. */
-  assets: { filename: string; mimeType: string; sizeBytes: number }[];
   /** Absolute path to MEMORY.md, so the agent knows where to persist learnings. */
   memoryPath: string;
   /** MEMORY.md content, already capped by loadProjectMemory. */
   memoryContent?: string;
+}
+
+/** A versioned Markdown artifact persisted in Craft Project data. */
+export interface Artifact {
+  version: 1;
+  id: string;
+  projectId: string;
+  sourceSessionId?: string;
+  title: string;
+  markdown: string;
+  templateId?: string;
+  references: FileReference[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SaveProjectArtifactInput {
+  id?: string;
+  sourceSessionId?: string;
+  title: string;
+  markdown: string;
+  templateId?: string;
+  references: FileReference[];
 }

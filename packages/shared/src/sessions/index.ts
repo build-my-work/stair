@@ -96,6 +96,13 @@ export {
 // Field utilities
 export { pickSessionFields } from './utils.ts';
 
+// Primary navigation visibility
+export { isPrimaryNavigableSession, isStandaloneNavigableSession } from './navigation.ts';
+export type {
+  PrimaryNavigableSessionFields,
+  StandaloneNavigableSessionFields,
+} from './navigation.ts';
+
 // Slug generator utilities
 export {
   generateDatePrefix,
@@ -126,5 +133,3 @@ export {
   validateBundle,
   MAX_BUNDLE_SIZE_BYTES,
 } from './bundle.ts';
-
-
