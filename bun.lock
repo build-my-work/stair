@@ -155,7 +155,7 @@
         "cmdk": "^1.1.1",
         "electron-log": "^5.4.3",
         "electron-updater": "^6.8.0",
-        "epubjs": "0.3.93",
+        "epubjs": "github:futurepress/epub.js#eee359d0790002115a1156a9833c54f4bcd44c1d",
         "i18next-browser-languagedetector": "^8.2.1",
         "jotai-family": "^1.0.1",
         "motion": "^12.23.26",
@@ -2045,7 +2045,7 @@
 
     "env-paths": ["env-paths@3.0.0", "", {}, "sha512-dtJUTepzMW3Lm/NPxRf3wP4642UWhjL2sQxc+ym2YMj1m/H2zDNQOlezafzkHwn6sMstjHTwG6iQQsctDW/b1A=="],
 
-    "epubjs": ["epubjs@0.3.93", "", { "dependencies": { "@types/localforage": "0.0.34", "@xmldom/xmldom": "^0.7.5", "core-js": "^3.18.3", "event-emitter": "^0.3.5", "jszip": "^3.7.1", "localforage": "^1.10.0", "lodash": "^4.17.21", "marks-pane": "^1.0.9", "path-webpack": "0.0.3" } }, "sha512-c06pNSdBxcXv3dZSbXAVLE1/pmleRhOT6mXNZo6INKmvuKpYB65MwU/lO7830czCtjIiK9i+KR+3S+p0wtljrw=="],
+    "epubjs": ["epubjs@github:futurepress/epub.js#eee359d", { "dependencies": { "@types/localforage": "0.0.34", "@xmldom/xmldom": "^0.7.5", "core-js": "^3.18.3", "event-emitter": "^0.3.5", "jszip": "^3.7.1", "localforage": "^1.10.0", "lodash": "^4.17.21", "marks-pane": "^1.0.9", "path-webpack": "0.0.3" } }, "futurepress-epub.js-eee359d"],
 
     "err-code": ["err-code@2.0.3", "", {}, "sha512-2bmlRpNKBxT/CRmPOlyISQpNj+qSeYvcym/uT0Jx2bMOlKLtSy1ZmLuVxSEKKyor/N5yhvp/ZiG1oE3DEYMSFA=="],
 
