@@ -120,6 +120,35 @@ export interface FileReference {
     | { type: 'text-range'; startLine: number; endLine: number };
 }
 
+/** A durable snapshot and text-quote locator for a selected web passage. */
+export interface WebSelectionReference {
+  kind: 'web-selection';
+  /** Final page URL at the time the selection was captured. */
+  url: string;
+  /** Page title at the time the selection was captured. */
+  title: string;
+  /** Untrusted visible text copied into the user's composed message. */
+  quote: string;
+  locator: {
+    type: 'text-quote';
+    /** Exact selected text. Must match `quote`. */
+    exact: string;
+    /** Bounded text immediately before the selection, used to disambiguate matches. */
+    prefix?: string;
+    /** Bounded text immediately after the selection, used to disambiguate matches. */
+    suffix?: string;
+  };
+}
+
+/** A source reference attached to a user message. */
+export type MessageReference = FileReference | WebSelectionReference;
+
+export function isWebSelectionReference(
+  reference: MessageReference,
+): reference is WebSelectionReference {
+  return 'kind' in reference && reference.kind === 'web-selection';
+}
+
 /**
  * Author metadata for annotations
  */
@@ -289,7 +318,7 @@ export interface Message {
   // Content badges for inline display (sources, skills)
   badges?: ContentBadge[];
   /** Structured source references attached to this message. */
-  references?: FileReference[];
+  references?: MessageReference[];
   /** Annotation payloads for this message */
   annotations?: AnnotationV1[];
   isError?: boolean;
@@ -385,7 +414,7 @@ export interface StoredMessage {
   /** Content badges for inline display (sources, skills) */
   badges?: ContentBadge[];
   /** Structured source references attached to this message. */
-  references?: FileReference[];
+  references?: MessageReference[];
   /** Annotations persisted at message level */
   annotations?: AnnotationV1[];
   // Turn grouping - critical for TurnCard rendering after reload

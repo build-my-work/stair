@@ -87,6 +87,65 @@ describe('session draft storage', () => {
     })
   })
 
+  it('round-trips a valid web selection reference', () => {
+    const configDir = makeConfigDir()
+    const reference = {
+      kind: 'web-selection',
+      url: 'https://example.com/articles/system-calls',
+      title: 'System calls',
+      quote: 'A system call transfers control to the kernel.',
+      locator: {
+        type: 'text-quote',
+        exact: 'A system call transfers control to the kernel.',
+        prefix: 'Before',
+        suffix: 'After',
+      },
+    }
+    runEval(
+      configDir,
+      `setSessionDraft('s1', { text: '', references: [${JSON.stringify(reference)}] })`,
+    )
+    const output = runEval(configDir, "console.log(JSON.stringify(getSessionDraft('s1')))")
+    expect(JSON.parse(output)).toEqual({ text: '', references: [reference] })
+  })
+
+  it('rejects unsafe or oversized web selection references on load', () => {
+    const configDir = makeConfigDir()
+    const draftsPath = join(configDir, 'drafts.json')
+    const base = {
+      kind: 'web-selection',
+      url: 'https://example.com/article',
+      title: 'Example',
+      quote: 'selected text',
+      locator: {
+        type: 'text-quote',
+        exact: 'selected text',
+        prefix: 'before',
+        suffix: 'after',
+      },
+    }
+    const longQuote = 'q'.repeat(8_001)
+    const invalidReferences = [
+      { ...base, url: 'ftp://example.com/article' },
+      { ...base, url: `https://example.com/${'u'.repeat(8_192)}` },
+      { ...base, title: 't'.repeat(513) },
+      { ...base, quote: longQuote, locator: { ...base.locator, exact: longQuote } },
+      { ...base, locator: { ...base.locator, exact: 'different text' } },
+      { ...base, locator: { ...base.locator, prefix: 'p'.repeat(65) } },
+      { ...base, locator: { ...base.locator, suffix: 's'.repeat(65) } },
+    ]
+    writeFileSync(draftsPath, JSON.stringify({
+      drafts: Object.fromEntries(invalidReferences.map((reference, index) => [
+        `invalid-${index}`,
+        { text: 'drop', references: [reference] },
+      ])),
+      updatedAt: 0,
+    }), 'utf-8')
+
+    const output = runEval(configDir, "console.log(JSON.stringify(getAllSessionDrafts()))")
+    expect(JSON.parse(output)).toEqual({})
+  })
+
   it('rejects a draft containing an unsafe file reference', () => {
     const configDir = makeConfigDir()
     const draftsPath = join(configDir, 'drafts.json')

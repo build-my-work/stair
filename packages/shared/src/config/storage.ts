@@ -16,7 +16,14 @@ import { expandPath, toPortablePath, getBundledAssetsDir } from '../utils/paths.
 import { debug } from '../utils/debug.ts';
 import { readJsonFileSync } from '../utils/files.ts';
 import { CONFIG_DIR } from './paths.ts';
-import type { FileReference, StoredAttachment, StoredMessage } from '@craft-agent/core/types';
+import {
+  isWebSelectionReference,
+  type FileReference,
+  type MessageReference,
+  type StoredAttachment,
+  type StoredMessage,
+  type WebSelectionReference,
+} from '@craft-agent/core/types';
 import type { Plan } from '../agent/plan-types.ts';
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
@@ -1094,7 +1101,7 @@ export interface DraftAttachmentRef {
 export interface SessionDraft {
   text: string;
   attachments?: DraftAttachmentRef[];
-  references?: FileReference[];
+  references?: MessageReference[];
 }
 
 interface DraftsData {
@@ -1103,6 +1110,10 @@ interface DraftsData {
 }
 
 const ATTACHMENT_CONTENT_TYPES = new Set(['image', 'pdf', 'text', 'office', 'audio', 'unknown']);
+const MAX_WEB_REFERENCE_URL_LENGTH = 8_192;
+const MAX_WEB_REFERENCE_TITLE_LENGTH = 512;
+const MAX_WEB_REFERENCE_QUOTE_LENGTH = 8_000;
+const MAX_WEB_REFERENCE_CONTEXT_LENGTH = 64;
 
 function isAbsoluteDraftPath(p: string): boolean {
   if (!p) return false;
@@ -1159,6 +1170,78 @@ function isDraftFileReference(value: unknown): value is FileReference {
   }
 }
 
+function isDraftWebSelectionReference(value: unknown): value is WebSelectionReference {
+  if (!value || typeof value !== 'object') return false;
+  const reference = value as Partial<WebSelectionReference>;
+  if (reference.kind !== 'web-selection') return false;
+  if (!isSafeWebReferenceUrl(reference.url)) return false;
+  if (
+    typeof reference.title !== 'string'
+    || reference.title.trim().length === 0
+    || reference.title.length > MAX_WEB_REFERENCE_TITLE_LENGTH
+  ) {
+    return false;
+  }
+  if (
+    typeof reference.quote !== 'string'
+    || reference.quote.trim().length === 0
+    || reference.quote.length > MAX_WEB_REFERENCE_QUOTE_LENGTH
+  ) {
+    return false;
+  }
+
+  const locator = reference.locator;
+  if (!locator || typeof locator !== 'object' || locator.type !== 'text-quote') return false;
+  if (
+    typeof locator.exact !== 'string'
+    || locator.exact !== reference.quote
+    || locator.exact.length > MAX_WEB_REFERENCE_QUOTE_LENGTH
+  ) {
+    return false;
+  }
+  if (
+    locator.prefix !== undefined
+    && (typeof locator.prefix !== 'string' || locator.prefix.length > MAX_WEB_REFERENCE_CONTEXT_LENGTH)
+  ) {
+    return false;
+  }
+  if (
+    locator.suffix !== undefined
+    && (typeof locator.suffix !== 'string' || locator.suffix.length > MAX_WEB_REFERENCE_CONTEXT_LENGTH)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isSafeWebReferenceUrl(value: unknown): value is string {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > MAX_WEB_REFERENCE_URL_LENGTH
+    || value !== value.trim()
+  ) {
+    return false;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isDraftMessageReference(value: unknown): value is MessageReference {
+  if (
+    value
+    && typeof value === 'object'
+    && (value as { kind?: unknown }).kind === 'web-selection'
+  ) {
+    return isDraftWebSelectionReference(value);
+  }
+  return isDraftFileReference(value);
+}
+
 function isSafeProjectRelativePath(value: string): boolean {
   if (!value || value.includes('\0') || value.includes('\\')) return false;
   if (value.startsWith('/') || /^[A-Za-z]:/.test(value)) return false;
@@ -1177,7 +1260,7 @@ function isSessionDraft(value: unknown): value is SessionDraft {
   }
   if (
     candidate.references !== undefined
-    && (!Array.isArray(candidate.references) || !candidate.references.every(isDraftFileReference))
+    && (!Array.isArray(candidate.references) || !candidate.references.every(isDraftMessageReference))
   ) {
     return false;
   }
@@ -1241,14 +1324,28 @@ export function setSessionDraft(sessionId: string, draft: SessionDraft): void {
         ? { attachments: draft.attachments.map(normalizeDraftAttachment) }
         : {}),
       ...(draft.references && draft.references.length > 0
-        ? { references: draft.references.map(normalizeDraftFileReference) }
+        ? { references: draft.references.map(normalizeDraftMessageReference) }
         : {}),
     };
   }
   saveDraftsData(data);
 }
 
-function normalizeDraftFileReference(reference: FileReference): FileReference {
+function normalizeDraftMessageReference(reference: MessageReference): MessageReference {
+  if (isWebSelectionReference(reference)) {
+    return {
+      kind: 'web-selection',
+      url: reference.url,
+      title: reference.title,
+      quote: reference.quote,
+      locator: {
+        type: 'text-quote',
+        exact: reference.locator.exact,
+        ...(reference.locator.prefix !== undefined ? { prefix: reference.locator.prefix } : {}),
+        ...(reference.locator.suffix !== undefined ? { suffix: reference.locator.suffix } : {}),
+      },
+    };
+  }
   return {
     projectId: reference.projectId,
     path: reference.path,

@@ -182,6 +182,22 @@ export function BrowserTabStrip({
     setActiveInstanceId(instance.id)
     if (instancesOverride) return
 
+    if (instance.hostMode === 'embedded') {
+      const sessionId = instance.selectionSessionId ?? activeSessionId
+      if (!activeWorkspaceId || !sessionId) {
+        console.warn(`[BrowserTabStrip] No session available for embedded browser ${instance.id}`)
+        return
+      }
+      window.dispatchEvent(new CustomEvent('craft:open-browser-instance', {
+        detail: {
+          instanceId: instance.id,
+          sessionId,
+          title: instance.title,
+        },
+      }))
+      return
+    }
+
     const browserPaneApi = window.electronAPI?.browserPane
     if (!browserPaneApi) {
       console.warn('[BrowserTabStrip] browserPane API unavailable for focus action')
@@ -191,7 +207,7 @@ export function BrowserTabStrip({
     void browserPaneApi.focus(instance.id).catch((error) => {
       console.warn(`[BrowserTabStrip] Failed to focus browser window ${instance.id}:`, error)
     })
-  }, [instancesOverride, setActiveInstanceId])
+  }, [activeSessionId, activeWorkspaceId, instancesOverride, setActiveInstanceId])
 
   const openSessionUsingWindow = useCallback((instance: BrowserInstanceInfo) => {
     const sessionId = instance.boundSessionId ?? instance.ownerSessionId
@@ -234,7 +250,7 @@ export function BrowserTabStrip({
           onSelect={() => focusBrowserWindow(instance)}
         >
           <Icons.Monitor className="h-3.5 w-3.5" />
-          Show Browser Window
+          {instance.hostMode === 'embedded' ? 'Open Browser Tab' : 'Show Browser Window'}
         </StyledDropdownMenuItem>
 
         <StyledDropdownMenuItem

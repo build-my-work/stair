@@ -117,6 +117,7 @@
   "automations.webhookUrl": "URL",
   "browser.closeWindowEntirely": "完全关闭窗口",
   "browser.hideWindow": "隐藏窗口",
+  "browser.newTab": "新建浏览器标签页",
   "browser.newWindow": "新建浏览器窗口",
   "browser.readyDescription": "让任何会话使用此浏览器（或打开另一个）来完成研究、填写表单、质检或数据提取等任务。",
   "browser.readyTitle": "浏览器已准备就绪 ;)",

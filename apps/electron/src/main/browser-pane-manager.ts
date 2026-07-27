@@ -1,21 +1,36 @@
 /**
  * BrowserPaneManager
  *
- * Owns browser instances as dedicated BrowserWindow objects.
- * Each instance maps 1:1 to a full native window while preserving
- * shared session/cookie partition and CDP automation support.
+ * Owns browser instances and their native BrowserViews.
+ *
+ * Every instance keeps a dedicated BrowserWindow for the upstream standalone
+ * Agent/remote path. Manual learning browsers may temporarily move the same
+ * views into a managed Craft window, preserving cookies, page state, selection
+ * overlays, and CDP automation across attach/detach.
  */
 
 import { join, parse as parsePath } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
-import { BrowserView, BrowserWindow, app, ipcMain, nativeTheme, session, shell, type Session as ElectronSession } from 'electron'
+import {
+  BrowserView,
+  BrowserWindow,
+  app,
+  ipcMain,
+  nativeTheme,
+  session,
+  shell,
+  type Event as ElectronEvent,
+  type Session as ElectronSession,
+} from 'electron'
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
 import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry } from './browser-cdp'
 import {
   type BrowserEmptyStateLaunchPayload,
   type BrowserEmptyStateLaunchResult,
+  type BrowserPaneHostBounds,
+  type BrowserPaneHostMode,
   type BrowserInstanceInfo,
 } from '../shared/types'
 import { DEFAULT_THEME, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
@@ -29,6 +44,19 @@ import type {
   BrowserCapabilityRequest,
   ScreenshotResultWire,
 } from '@craft-agent/server-core/transport'
+import type { WebSelectionReference } from '@craft-agent/core/types'
+import {
+  BROWSER_OVERLAY_ASK_CHANNEL,
+  BROWSER_PAGE_SELECTION_CHANNEL,
+  buildWebSelectionRevealExpression,
+  calculateBrowserSelectionOverlayBounds,
+  createWebSelectionReference,
+  sanitizeBrowserSelectionCapture,
+  sanitizeWebSelectionReference,
+  type BrowserSelectionAskPayload,
+  type BrowserSelectionCapturePayload,
+  type BrowserSelectionRevealResult,
+} from '../shared/browser-selection'
 
 export type { BrowserInstanceInfo }
 
@@ -139,10 +167,20 @@ interface AgentControlLockState {
 
 interface BrowserInstance {
   id: string
+  /**
+   * Dedicated window retained as a parking/standalone host. Manual learning
+   * browsers can move the same BrowserViews into a managed Craft window without
+   * replacing the upstream standalone path used by agents and remote sessions.
+   */
   window: BrowserWindow
   toolbarView: BrowserView
   pageView: BrowserView
   nativeOverlayView: BrowserView
+  hostMode: BrowserPaneHostMode
+  embeddedHostWindow: BrowserWindow | null
+  embeddedHostWebContentsId: number | null
+  embeddedBounds: BrowserPaneHostBounds | null
+  embeddedAttached: boolean
   cdp: BrowserCDP
   currentUrl: string
   title: string
@@ -181,6 +219,14 @@ interface BrowserInstance {
   networkLogs: BrowserNetworkEntry[]
   downloads: BrowserDownloadEntry[]
   lastLaunchToken: string | null
+  pendingSelection: {
+    capture: BrowserSelectionCapturePayload
+    reference: WebSelectionReference
+  } | null
+  /** Main app renderer that created/adopted this browser, used for targeted Ask delivery. */
+  originWebContentsId: number | null
+  /** Durable citation destination, independent from per-turn agent ownership. */
+  selectionSessionId: string | null
 }
 
 interface CreateBrowserInstanceOptions {
@@ -188,6 +234,8 @@ interface CreateBrowserInstanceOptions {
   ownerType?: 'session' | 'manual'
   ownerSessionId?: string
   workspaceId?: string | null
+  originWebContentsId?: number | null
+  selectionSessionId?: string | null
 }
 
 export interface BrowserScreenshotOptions {
@@ -323,7 +371,21 @@ interface LastBrowserAction {
   timestamp: number
 }
 
+interface EmbeddedHostLifecycle {
+  window: BrowserWindow
+  instanceIds: Set<string>
+  closedListener: () => void
+  navigationListener: (
+    event: ElectronEvent,
+    url: string,
+    isInPlace: boolean,
+    isMainFrame: boolean,
+  ) => void
+  renderProcessGoneListener: () => void
+}
+
 let instanceCounter = 0
+let selectionEventCounter = 0
 
 export class BrowserPaneManager implements IBrowserPaneManager {
   private instances: Map<string, BrowserInstance> = new Map()
@@ -331,12 +393,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private stateChangeCallback: ((info: BrowserInstanceInfo) => void) | null = null
   private removedCallback: ((id: string) => void) | null = null
   private interactedCallback: ((id: string) => void) | null = null
+  private selectionAskCallback: ((
+    payload: BrowserSelectionAskPayload,
+    targetClientId: string | null,
+  ) => void) | null = null
   private partitionPermissionsInitialized = false
   private partitionObserversInitialized = false
   private inFlightRequestsByWebContentsId = new Map<number, number>()
   private lastNetworkActivityByWebContentsId = new Map<number, number>()
   private popupWindowsByParentInstanceId = new Map<string, Set<BrowserWindow>>()
   private popupParentByWebContentsId = new Map<number, string>()
+  private embeddedHostLifecycles = new Map<number, EmbeddedHostLifecycle>()
   private windowManager: WindowManager | null = null
   private sessionPathResolver: ((sessionId: string) => string | null) | null = null
 
@@ -360,12 +427,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.interactedCallback = callback
   }
 
+  onSelectionAsk(
+    callback: (payload: BrowserSelectionAskPayload, targetClientId: string | null) => void,
+  ): void {
+    this.selectionAskCallback = callback
+  }
+
   createInstance(id?: string, options?: CreateBrowserInstanceOptions): string {
     const instanceId = id || `browser-${++instanceCounter}`
     const shouldShow = options?.show ?? false
     const ownerType = options?.ownerType ?? 'manual'
     const ownerSessionId = ownerType === 'session' ? (options?.ownerSessionId ?? null) : null
     const workspaceId = options?.workspaceId ?? null
+    const originWebContentsId = options?.originWebContentsId
+      ?? this.resolveOriginWebContentsId(workspaceId)
+    const selectionSessionId = options?.selectionSessionId ?? ownerSessionId
 
     if (this.instances.has(instanceId)) {
       mainLog.warn(`[browser-pane] Instance already exists, reusing: ${instanceId}`)
@@ -410,6 +486,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const pageView = new BrowserView({
       webPreferences: {
+        preload: join(__dirname, 'browser-page-preload.cjs'),
         partition: SESSION_PARTITION,
         session: ses,
         contextIsolation: true,
@@ -425,6 +502,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const nativeOverlayView = new BrowserView({
       webPreferences: {
+        preload: join(__dirname, 'browser-overlay-preload.cjs'),
         partition: SESSION_PARTITION,
         session: ses,
         contextIsolation: true,
@@ -449,6 +527,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       toolbarView,
       pageView,
       nativeOverlayView,
+      hostMode: 'standalone',
+      embeddedHostWindow: null,
+      embeddedHostWebContentsId: null,
+      embeddedBounds: null,
+      embeddedAttached: false,
       cdp,
       currentUrl: 'about:blank',
       title: 'New Tab',
@@ -484,6 +567,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       networkLogs: [],
       downloads: [],
       lastLaunchToken: null,
+      pendingSelection: null,
+      originWebContentsId,
+      selectionSessionId,
     }
 
     const defaultUa = pageView.webContents.userAgent || ''
@@ -502,6 +588,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     this.setupWindowListeners(instance)
     this.instances.set(instanceId, instance)
+    this.reserveEmbeddedLearningHost(instance)
     this.emitStateChange(instance)
     mainLog.info(`[browser-pane] toolbar version: v4-react-chromeless`)
     mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, ownerType=${ownerType}, ownerSessionId=${ownerSessionId ?? 'none'})`)
@@ -515,17 +602,34 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       })
     void this.loadEmptyStatePage(instance).catch((error) => {
       mainLog.warn(`[browser-pane] empty-state load failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
-      void pageView.webContents.loadURL('about:blank')
+      const currentUrl = pageView.webContents.getURL()
+      // A real navigation can supersede the asynchronous new-tab load. In
+      // that case, restoring about:blank would abort the requested page and
+      // incorrectly make revealSelection report navigation_failed.
+      if (currentUrl === 'about:blank' || this.isBrowserEmptyStateUrl(currentUrl)) {
+        void pageView.webContents.loadURL('about:blank').catch((fallbackError) => {
+          mainLog.warn(
+            `[browser-pane] empty-state fallback failed id=${instance.id}: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+          )
+        })
+      }
     })
 
     return instanceId
   }
 
-  destroyInstance(id: string): void {
+  destroyInstance(id: string, requestingWebContentsId?: number | null): void {
     const instance = this.instances.get(id)
     if (!instance) {
       mainLog.info(`[browser-pane] destroy requested for missing instance id=${id}`)
       return
+    }
+    if (
+      requestingWebContentsId !== undefined
+      && instance.embeddedHostWebContentsId !== null
+      && instance.embeddedHostWebContentsId !== requestingWebContentsId
+    ) {
+      throw new Error('Embedded browser belongs to another Craft window')
     }
 
     const destroyedBefore = instance.window.isDestroyed()
@@ -556,6 +660,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     runCleanup('closePopupsForParent', () => this.closePopupsForParent(instance.id, 'parent_destroy'))
     runCleanup('applyAgentControlLock', () => this.applyAgentControlLock(instance, false))
     runCleanup('updateNativeOverlayState', () => this.updateNativeOverlayState(instance))
+    runCleanup('releaseEmbeddedHost', () => this.releaseEmbeddedHost(instance))
 
     try {
       if (!instance.window.isDestroyed()) {
@@ -595,11 +700,371 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return instance
   }
 
+  private normalizeHostBounds(
+    value: BrowserPaneHostBounds,
+    zoomFactor = 1,
+  ): BrowserPaneHostBounds {
+    const fields = [value?.x, value?.y, value?.width, value?.height]
+    if (!fields.every(field => Number.isFinite(field))) {
+      throw new Error('Embedded browser bounds must contain finite x, y, width, and height values')
+    }
+    const scale = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1
+
+    return {
+      x: Math.max(0, Math.floor(value.x * scale)),
+      y: Math.max(0, Math.floor(value.y * scale)),
+      width: Math.max(0, Math.floor(value.width * scale)),
+      height: Math.max(0, Math.floor(value.height * scale)),
+    }
+  }
+
+  private resolveManagedHostWindow(webContentsId: number): BrowserWindow {
+    const managed = this.windowManager?.getAllWindows().find(
+      candidate => candidate.window.webContents.id === webContentsId,
+    )
+    if (!managed || managed.window.isDestroyed()) {
+      throw new Error(`Craft host window not found for webContents ${webContentsId}`)
+    }
+    return managed.window
+  }
+
+  private removeBrowserViews(window: BrowserWindow, instance: BrowserInstance): void {
+    if (window.isDestroyed()) return
+    for (const view of [instance.toolbarView, instance.nativeOverlayView, instance.pageView]) {
+      try {
+        window.removeBrowserView(view)
+      } catch {
+        // Electron treats removal of a non-owned BrowserView as a no-op on most
+        // versions. Keep this defensive for older versions and test doubles.
+      }
+    }
+  }
+
+  private addBrowserViews(window: BrowserWindow, instance: BrowserInstance): void {
+    if (window.isDestroyed()) return
+    window.addBrowserView(instance.pageView)
+    window.addBrowserView(instance.nativeOverlayView)
+    window.addBrowserView(instance.toolbarView)
+  }
+
+  private getActiveHostWindow(instance: BrowserInstance): BrowserWindow {
+    if (
+      instance.hostMode === 'embedded'
+      && instance.embeddedAttached
+      && instance.embeddedHostWindow
+      && !instance.embeddedHostWindow.isDestroyed()
+    ) {
+      return instance.embeddedHostWindow
+    }
+    return instance.window
+  }
+
+  private getSurfaceBounds(instance: BrowserInstance): BrowserPaneHostBounds {
+    if (
+      instance.hostMode === 'embedded'
+      && instance.embeddedAttached
+      && instance.embeddedBounds
+    ) {
+      return instance.embeddedBounds
+    }
+
+    const [width, height] = instance.window.getContentSize()
+    return { x: 0, y: 0, width, height }
+  }
+
+  private setTopBrowserView(instance: BrowserInstance, view: BrowserView): void {
+    const hostWindow = this.getActiveHostWindow(instance)
+    if (!hostWindow.isDestroyed()) {
+      hostWindow.setTopBrowserView(view)
+    }
+  }
+
+  private destroyEmbeddedInstancesForHost(
+    hostWebContentsId: number,
+    reason: 'host_closed' | 'renderer_navigation' | 'renderer_gone',
+  ): void {
+    const lifecycle = this.embeddedHostLifecycles.get(hostWebContentsId)
+    if (!lifecycle) return
+
+    const instanceIds = [...lifecycle.instanceIds]
+    mainLog.info(
+      `[browser-pane] embedded host unavailable hostWebContentsId=${hostWebContentsId} reason=${reason} instances=${instanceIds.length}`,
+    )
+    for (const instanceId of instanceIds) {
+      const instance = this.instances.get(instanceId)
+      if (instance?.embeddedHostWebContentsId === hostWebContentsId) {
+        this.destroyInstance(instanceId)
+      }
+    }
+  }
+
+  private ensureEmbeddedHostLifecycle(
+    hostWindow: BrowserWindow,
+    hostWebContentsId: number,
+  ): EmbeddedHostLifecycle {
+    const existing = this.embeddedHostLifecycles.get(hostWebContentsId)
+    if (existing?.window === hostWindow) return existing
+
+    if (existing) {
+      if (!existing.window.isDestroyed()) {
+        existing.window.removeListener('closed', existing.closedListener)
+        const existingWebContents = existing.window.webContents
+        if (!existingWebContents.isDestroyed()) {
+          existingWebContents.removeListener('did-start-navigation', existing.navigationListener)
+          existingWebContents.removeListener('render-process-gone', existing.renderProcessGoneListener)
+        }
+      }
+      this.embeddedHostLifecycles.delete(hostWebContentsId)
+    }
+
+    const closedListener = (): void => {
+      this.destroyEmbeddedInstancesForHost(hostWebContentsId, 'host_closed')
+    }
+    const navigationListener: EmbeddedHostLifecycle['navigationListener'] = (
+      _event,
+      _url,
+      isInPlace,
+      isMainFrame,
+    ): void => {
+      if (isMainFrame === false || isInPlace) return
+      this.destroyEmbeddedInstancesForHost(hostWebContentsId, 'renderer_navigation')
+    }
+    const renderProcessGoneListener = (): void => {
+      this.destroyEmbeddedInstancesForHost(hostWebContentsId, 'renderer_gone')
+    }
+    const lifecycle: EmbeddedHostLifecycle = {
+      window: hostWindow,
+      instanceIds: new Set(),
+      closedListener,
+      navigationListener,
+      renderProcessGoneListener,
+    }
+    this.embeddedHostLifecycles.set(hostWebContentsId, lifecycle)
+    hostWindow.once('closed', closedListener)
+    hostWindow.webContents.on('did-start-navigation', navigationListener)
+    hostWindow.webContents.on('render-process-gone', renderProcessGoneListener)
+    return lifecycle
+  }
+
+  private registerEmbeddedHostLifecycle(
+    instance: BrowserInstance,
+    hostWindow: BrowserWindow,
+    hostWebContentsId: number,
+  ): void {
+    const lifecycle = this.ensureEmbeddedHostLifecycle(hostWindow, hostWebContentsId)
+    lifecycle.instanceIds.add(instance.id)
+  }
+
+  /**
+   * A center-workspace browser is created hidden, then attached by the
+   * renderer on its next layout pass. Reserve its originating Craft window
+   * immediately so a reload or close during that gap still destroys it.
+   */
+  private reserveEmbeddedLearningHost(instance: BrowserInstance): void {
+    if (
+      !this.windowManager
+      || instance.ownerType !== 'manual'
+      || instance.ownerSessionId !== null
+      || !instance.selectionSessionId
+      || typeof instance.originWebContentsId !== 'number'
+      || instance.embeddedHostWebContentsId !== null
+    ) {
+      return
+    }
+
+    const hostWindow = this.windowManager.getAllWindows()
+      .find(candidate => (
+        candidate.window.webContents.id === instance.originWebContentsId
+        && !candidate.window.isDestroyed()
+      ))
+      ?.window
+    if (!hostWindow) {
+      mainLog.warn(
+        `[browser-pane] learning browser host unavailable id=${instance.id} originWebContentsId=${instance.originWebContentsId}`,
+      )
+      return
+    }
+
+    instance.embeddedHostWindow = hostWindow
+    instance.embeddedHostWebContentsId = instance.originWebContentsId
+    this.registerEmbeddedHostLifecycle(
+      instance,
+      hostWindow,
+      instance.originWebContentsId,
+    )
+  }
+
+  private unregisterEmbeddedHostLifecycle(instance: BrowserInstance): void {
+    const hostWebContentsId = instance.embeddedHostWebContentsId
+    if (hostWebContentsId === null) return
+
+    const lifecycle = this.embeddedHostLifecycles.get(hostWebContentsId)
+    if (!lifecycle) return
+    lifecycle.instanceIds.delete(instance.id)
+    if (lifecycle.instanceIds.size > 0) return
+
+    this.embeddedHostLifecycles.delete(hostWebContentsId)
+    if (lifecycle.window.isDestroyed()) return
+    lifecycle.window.removeListener('closed', lifecycle.closedListener)
+    const hostWebContents = lifecycle.window.webContents
+    if (!hostWebContents.isDestroyed()) {
+      hostWebContents.removeListener('did-start-navigation', lifecycle.navigationListener)
+      hostWebContents.removeListener('render-process-gone', lifecycle.renderProcessGoneListener)
+    }
+  }
+
+  /**
+   * Move embedded views back to the hidden dedicated window while retaining
+   * the embedded host identity. This is the normal "switch away from tab"
+   * path; focus() can reattach the same views later.
+   */
+  private parkEmbeddedViews(instance: BrowserInstance): void {
+    if (instance.hostMode !== 'embedded' || !instance.embeddedAttached) return
+
+    const hostWindow = instance.embeddedHostWindow
+    if (hostWindow) {
+      this.removeBrowserViews(hostWindow, instance)
+    }
+    if (!instance.window.isDestroyed()) {
+      this.addBrowserViews(instance.window, instance)
+    }
+    instance.embeddedAttached = false
+    instance.isVisible = false
+    this.layoutAllViews(instance)
+  }
+
+  /**
+   * Permanently return an instance to standalone mode. Session/agent binding
+   * uses this to guarantee that embedded manual browsers are never adopted by
+   * the upstream standalone agent path.
+   */
+  private releaseEmbeddedHost(instance: BrowserInstance): void {
+    const hasReservedHost = instance.embeddedHostWebContentsId !== null
+      || instance.embeddedHostWindow !== null
+    if (instance.hostMode === 'embedded') {
+      this.parkEmbeddedViews(instance)
+    } else if (!hasReservedHost) {
+      return
+    }
+    this.unregisterEmbeddedHostLifecycle(instance)
+    instance.hostMode = 'standalone'
+    instance.embeddedHostWindow = null
+    instance.embeddedHostWebContentsId = null
+    instance.embeddedBounds = null
+    instance.embeddedAttached = false
+    this.layoutAllViews(instance)
+    this.pushToolbarState(instance)
+  }
+
+  attachToHost(
+    id: string,
+    hostWebContentsId: number,
+    bounds: BrowserPaneHostBounds,
+  ): void {
+    const instance = this.requireAliveInstance(id)
+    if (
+      instance.ownerType !== 'manual'
+      || instance.boundSessionId !== null
+      || instance.ownerSessionId !== null
+    ) {
+      throw new Error('Only unbound manual browsers can be embedded in a Craft window')
+    }
+
+    const hostWindow = this.resolveManagedHostWindow(hostWebContentsId)
+    const zoomFactor = typeof hostWindow.webContents.getZoomFactor === 'function'
+      ? hostWindow.webContents.getZoomFactor()
+      : 1
+    const nextBounds = this.normalizeHostBounds(bounds, zoomFactor)
+
+    if (
+      instance.embeddedHostWindow
+      && instance.embeddedHostWindow !== hostWindow
+    ) {
+      throw new Error('Browser instance belongs to another Craft window')
+    }
+
+    if (!instance.window.isDestroyed()) {
+      instance.window.hide()
+    }
+
+    if (!instance.embeddedAttached) {
+      this.removeBrowserViews(instance.window, instance)
+      this.addBrowserViews(hostWindow, instance)
+    }
+
+    instance.hostMode = 'embedded'
+    instance.embeddedHostWindow = hostWindow
+    instance.embeddedHostWebContentsId = hostWebContentsId
+    instance.embeddedBounds = nextBounds
+    instance.embeddedAttached = true
+    instance.originWebContentsId = hostWebContentsId
+    instance.isVisible = nextBounds.width > 0 && nextBounds.height > 0
+    this.registerEmbeddedHostLifecycle(instance, hostWindow, hostWebContentsId)
+
+    this.layoutAllViews(instance)
+    this.pushToolbarState(instance)
+    this.emitStateChange(instance)
+    mainLog.info(
+      `[browser-pane] attached embedded id=${id} hostWebContentsId=${hostWebContentsId} bounds=${nextBounds.x},${nextBounds.y},${nextBounds.width},${nextBounds.height}`,
+    )
+  }
+
+  detachFromHost(id: string, hostWebContentsId?: number): void {
+    const instance = this.requireAliveInstance(id)
+    if (instance.hostMode !== 'embedded') return
+    if (
+      hostWebContentsId !== undefined
+      && instance.embeddedHostWebContentsId !== hostWebContentsId
+    ) {
+      return
+    }
+
+    if (instance.pendingShowOnReady) {
+      instance.pendingShowOnReady = false
+      instance.pendingShowToken += 1
+    }
+    this.forceCloseToolbarMenu(instance, 'embedded-detach')
+    this.parkEmbeddedViews(instance)
+    this.emitStateChange(instance)
+    mainLog.info(`[browser-pane] detached embedded id=${id}`)
+  }
+
+  updateHostBounds(
+    id: string,
+    bounds: BrowserPaneHostBounds,
+    hostWebContentsId?: number,
+  ): void {
+    const instance = this.requireAliveInstance(id)
+    if (instance.hostMode !== 'embedded') {
+      throw new Error(`Browser instance is not embedded: ${id}`)
+    }
+    if (
+      hostWebContentsId !== undefined
+      && instance.embeddedHostWebContentsId !== hostWebContentsId
+    ) {
+      throw new Error('Browser instance belongs to another Craft window')
+    }
+
+    const hostWindow = instance.embeddedHostWindow
+    if (!hostWindow || hostWindow.isDestroyed()) {
+      throw new Error(`Embedded browser host is unavailable: ${id}`)
+    }
+    const zoomFactor = typeof hostWindow.webContents.getZoomFactor === 'function'
+      ? hostWindow.webContents.getZoomFactor()
+      : 1
+    instance.embeddedBounds = this.normalizeHostBounds(bounds, zoomFactor)
+    if (instance.embeddedAttached) {
+      instance.isVisible = instance.embeddedBounds.width > 0 && instance.embeddedBounds.height > 0
+      this.layoutAllViews(instance)
+      this.emitStateChange(instance)
+    }
+  }
+
   async handleEmptyStateLaunchFromRenderer(
     senderWebContentsId: number,
     payload: BrowserEmptyStateLaunchPayload,
   ): Promise<BrowserEmptyStateLaunchResult> {
-    const instance = this.findInstanceByPageWebContentsId(senderWebContentsId)
+    const instance = this.getInstanceByWebContentsId(senderWebContentsId)
     if (!instance) {
       mainLog.warn(`[browser-pane] empty-state launch ignored: sender not mapped senderWebContentsId=${senderWebContentsId}`)
       return { ok: false, handled: false, reason: 'instance_not_found' }
@@ -620,13 +1085,165 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  private findInstanceByPageWebContentsId(senderWebContentsId: number): BrowserInstance | undefined {
+  private findInstanceByOverlayWebContentsId(senderWebContentsId: number): BrowserInstance | undefined {
     for (const instance of this.instances.values()) {
-      if (instance.pageView.webContents.id === senderWebContentsId) {
+      if (instance.nativeOverlayView.webContents.id === senderWebContentsId) {
         return instance
       }
     }
     return undefined
+  }
+
+  private resolveOriginWebContentsId(workspaceId: string | null): number | null {
+    if (!this.windowManager) return null
+    const managedWindows = this.windowManager.getAllWindows()
+    const focused = typeof BrowserWindow.getFocusedWindow === 'function'
+      ? BrowserWindow.getFocusedWindow()
+      : null
+    if (focused) {
+      const focusedManaged = managedWindows.find(
+        managed => managed.window.webContents.id === focused.webContents.id,
+      )
+      if (focusedManaged && (!workspaceId || focusedManaged.workspaceId === workspaceId)) {
+        return focusedManaged.window.webContents.id
+      }
+    }
+
+    if (workspaceId) {
+      const workspaceMatches = managedWindows.filter(
+        managed => managed.workspaceId === workspaceId,
+      )
+      if (workspaceMatches.length === 1) {
+        return workspaceMatches[0].window.webContents.id
+      }
+      return null
+    }
+
+    return managedWindows.length === 1
+      ? managedWindows[0].window.webContents.id
+      : null
+  }
+
+  private resolveOriginWindow(instance: BrowserInstance): BrowserWindow | null {
+    if (!this.windowManager) return null
+    const managedWindows = this.windowManager.getAllWindows()
+    if (instance.originWebContentsId !== null) {
+      const exact = managedWindows.find(
+        managed => managed.window.webContents.id === instance.originWebContentsId,
+      )
+      if (exact) return exact.window
+    }
+
+    if (instance.workspaceId) {
+      const workspaceMatches = managedWindows.filter(
+        managed => managed.workspaceId === instance.workspaceId,
+      )
+      if (workspaceMatches.length === 1) {
+        instance.originWebContentsId = workspaceMatches[0].window.webContents.id
+        return workspaceMatches[0].window
+      }
+    }
+
+    return null
+  }
+
+  private getOriginClientId(instance: BrowserInstance): string | null {
+    const originWindow = this.resolveOriginWindow(instance)
+    if (!originWindow || !this.windowManager) return null
+    return this.windowManager.getClientIdForWindow(originWindow.webContents.id) ?? null
+  }
+
+  private adoptOriginWebContents(
+    instance: BrowserInstance,
+    originWebContentsId: number | null | undefined,
+  ): void {
+    if (typeof originWebContentsId === 'number' && originWebContentsId > 0) {
+      instance.originWebContentsId = originWebContentsId
+    }
+  }
+
+  private clearPendingSelection(instance: BrowserInstance): void {
+    if (!instance.pendingSelection) return
+    instance.pendingSelection = null
+    this.updateNativeOverlayState(instance)
+  }
+
+  private handlePageSelection(
+    senderWebContentsId: number,
+    value: unknown,
+  ): void {
+    const instance = this.getInstanceByWebContentsId(senderWebContentsId)
+    if (!instance) return
+
+    if (value === null) {
+      this.clearPendingSelection(instance)
+      return
+    }
+
+    const capture = sanitizeBrowserSelectionCapture(value)
+    const pageWebContents = instance.pageView.webContents
+    if (!capture || pageWebContents.isDestroyed()) {
+      this.clearPendingSelection(instance)
+      return
+    }
+
+    const reference = createWebSelectionReference(
+      capture,
+      pageWebContents.getURL(),
+      pageWebContents.getTitle(),
+    )
+    if (!reference) {
+      this.clearPendingSelection(instance)
+      return
+    }
+
+    instance.pendingSelection = { capture, reference }
+    this.updateNativeOverlayState(instance)
+  }
+
+  private handleOverlayAsk(
+    senderWebContentsId: number,
+    target: unknown,
+  ): void {
+    if (target !== 'main' && target !== 'sideChat') return
+
+    const instance = this.findInstanceByOverlayWebContentsId(senderWebContentsId)
+    if (
+      !instance
+      || !instance.pendingSelection
+      || instance.agentControl?.active
+      || instance.toolbarMenuOverlayActive
+    ) {
+      return
+    }
+
+    const { reference } = instance.pendingSelection
+    instance.pendingSelection = null
+    this.updateNativeOverlayState(instance)
+
+    const normalizeSessionId = (value: string | null): string | null => {
+      if (!value || !this.isRemoteOwnerKey(value)) return value
+      return this.parseOwnerKey(value)?.sessionId ?? null
+    }
+    const payload: BrowserSelectionAskPayload = {
+      eventId: `browser-selection-${Date.now()}-${++selectionEventCounter}`,
+      target,
+      instanceId: instance.id,
+      reference,
+      boundSessionId: normalizeSessionId(instance.boundSessionId),
+      selectionSessionId: normalizeSessionId(instance.selectionSessionId),
+      workspaceId: instance.workspaceId,
+    }
+
+    const targetClientId = this.getOriginClientId(instance)
+    this.selectionAskCallback?.(payload, targetClientId)
+
+    const originWindow = this.resolveOriginWindow(instance)
+    if (originWindow && !originWindow.isDestroyed()) {
+      if (originWindow.isMinimized()) originWindow.restore()
+      originWindow.show()
+      originWindow.focus()
+    }
   }
 
   private resolveLaunchWorkspaceId(): string | null {
@@ -731,6 +1348,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async navigate(id: string, url: string): Promise<{ url: string; title: string }> {
     const instance = this.requireAliveInstance(id)
+    this.clearPendingSelection(instance)
 
     let normalizedUrl = url.trim()
     const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedUrl)
@@ -760,6 +1378,126 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle)
       }
+    }
+  }
+
+  async revealSelection(
+    value: WebSelectionReference,
+    options?: {
+      workspaceId?: string | null
+      originWebContentsId?: number | null
+      selectionSessionId?: string | null
+    },
+  ): Promise<BrowserSelectionRevealResult> {
+    const reference = sanitizeWebSelectionReference(value)
+    if (!reference) {
+      return { ok: false, found: false, reason: 'invalid_reference' }
+    }
+
+    const originWebContentsId = options?.originWebContentsId ?? null
+    const workspaceId = options?.workspaceId ?? null
+    const selectionSessionId = options?.selectionSessionId?.trim() || null
+    const instance = Array.from(this.instances.values())
+      .find(candidate => (
+        !candidate.window.isDestroyed()
+        && candidate.pageView.webContents.getURL() === reference.url
+        && candidate.ownerType === 'manual'
+        && candidate.boundSessionId === null
+        && candidate.ownerSessionId === null
+        && (
+          selectionSessionId === null
+            ? (candidate.selectionSessionId ?? null) === null
+            : (
+                candidate.selectionSessionId === null
+                || candidate.selectionSessionId === selectionSessionId
+              )
+        )
+        && (
+          originWebContentsId === null
+            ? candidate.workspaceId === workspaceId
+            : (
+                candidate.originWebContentsId === originWebContentsId
+                && (
+                  candidate.embeddedHostWebContentsId === null
+                  || candidate.embeddedHostWebContentsId === originWebContentsId
+                )
+              )
+        )
+      ))
+      ?? this.requireAliveInstance(this.createInstance(undefined, {
+        show: originWebContentsId === null,
+        ownerType: 'manual',
+        workspaceId,
+        originWebContentsId,
+        selectionSessionId,
+      }))
+
+    this.adoptOriginWebContents(instance, originWebContentsId)
+    if (selectionSessionId) {
+      instance.selectionSessionId = selectionSessionId
+    }
+    this.reserveEmbeddedLearningHost(instance)
+    this.clearPendingSelection(instance)
+
+    try {
+      if (instance.pageView.webContents.getURL() !== reference.url) {
+        await this.navigate(instance.id, reference.url)
+      }
+    } catch (error) {
+      mainLog.warn(
+        `[browser-pane] reveal selection navigation failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return {
+        ok: false,
+        instanceId: instance.id,
+        found: false,
+        reason: 'navigation_failed',
+      }
+    }
+
+    let currentUrl: URL
+    try {
+      currentUrl = new URL(instance.pageView.webContents.getURL())
+    } catch {
+      return {
+        ok: false,
+        instanceId: instance.id,
+        found: false,
+        reason: 'unsupported_url',
+      }
+    }
+    if (currentUrl.protocol !== 'http:' && currentUrl.protocol !== 'https:') {
+      return {
+        ok: false,
+        instanceId: instance.id,
+        found: false,
+        reason: 'unsupported_url',
+      }
+    }
+
+    let found = false
+    try {
+      found = Boolean(await instance.pageView.webContents.executeJavaScript(
+        buildWebSelectionRevealExpression(reference),
+      ))
+    } catch (error) {
+      mainLog.warn(
+        `[browser-pane] reveal selection lookup failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+
+    // A local renderer activates the matching center-workspace tab after this
+    // call returns. Focusing here would reattach native views over whichever
+    // Chat/EPUB tab is still visible. Headless/remote callers retain the
+    // standalone focus behavior.
+    if (originWebContentsId === null) {
+      this.focus(instance.id)
+    }
+    return {
+      ok: true,
+      instanceId: instance.id,
+      found,
+      ...(!found ? { reason: 'selection_not_found' as const } : {}),
     }
   }
 
@@ -806,6 +1544,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
 
+    if (instance.hostMode === 'embedded') {
+      const hostWindow = instance.embeddedHostWindow
+      const bounds = instance.embeddedBounds
+      if (!hostWindow || hostWindow.isDestroyed() || !bounds) {
+        return
+      }
+      if (!instance.embeddedAttached) {
+        this.removeBrowserViews(instance.window, instance)
+        this.addBrowserViews(hostWindow, instance)
+        instance.embeddedAttached = true
+        this.layoutAllViews(instance)
+      }
+      if (hostWindow.isMinimized()) hostWindow.restore()
+      hostWindow.show()
+      hostWindow.focus()
+      instance.pageView.webContents.focus()
+      instance.isVisible = bounds.width > 0 && bounds.height > 0
+      this.emitStateChange(instance)
+      return
+    }
+
     if (win.isMinimized()) win.restore()
     win.show()
     win.focus()
@@ -835,6 +1594,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     this.forceCloseToolbarMenu(instance, 'window-hide')
+
+    if (instance.hostMode === 'embedded') {
+      // Embedded visibility is owned by the renderer surface lifecycle.
+      // Parking here would leave an active center tab blank with no state
+      // transition that can cause React to attach it again.
+      instance.isHiding = false
+      return
+    }
 
     // Cancel an in-flight page load before hiding. Hiding the window while the
     // BrowserView is still loading can trigger a Chromium compositor assertion
@@ -1039,8 +1806,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private suspendOverlayForCapture(instance: BrowserInstance): boolean {
-    const shouldSuspend = !!instance.agentControl?.active
-      && instance.nativeOverlayReady
+    const shouldSuspend = instance.nativeOverlayReady
+      && (
+        !!instance.agentControl?.active
+        || instance.toolbarMenuOverlayActive
+        || !!instance.pendingSelection
+      )
 
     if (!shouldSuspend) return false
 
@@ -1718,6 +2489,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount = 500): Promise<void> {
     const instance = this.requireAliveInstance(id)
+    this.clearPendingSelection(instance)
 
     const deltaX = direction === 'left' ? -amount : direction === 'right' ? amount : 0
     const deltaY = direction === 'up' ? -amount : direction === 'down' ? amount : 0
@@ -1725,18 +2497,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     await instance.pageView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`)
   }
 
-  bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null }): void {
+  bindSession(
+    id: string,
+    sessionId: string,
+    options?: { workspaceId?: string | null; originWebContentsId?: number | null },
+  ): void {
     const instance = this.instances.get(id)
     if (instance) {
+      // Agent/session browsers retain the upstream standalone window model.
+      // Embedded manual instances are never allowed to cross that boundary.
+      this.releaseEmbeddedHost(instance)
       instance.boundSessionId = sessionId
       instance.ownerType = 'session'
       instance.ownerSessionId = sessionId
+      instance.selectionSessionId = sessionId
       // Adopt the new binder's workspace. Manual windows being reused for a
       // session start carrying that session's workspace so the receiving
       // workspace's UI sees them and others don't.
       if (options?.workspaceId !== undefined) {
         instance.workspaceId = options.workspaceId
       }
+      this.adoptOriginWebContents(instance, options?.originWebContentsId)
       this.emitStateChange(instance)
     }
   }
@@ -1799,6 +2580,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       (i) =>
         i.boundSessionId === null &&
         i.ownerType === 'manual' &&
+        i.hostMode === 'standalone' &&
+        (i.selectionSessionId === null || i.ownerSessionId !== null) &&
         (i.workspaceId === null || i.workspaceId === workspaceId),
     )
     if (candidates.length === 0) return null
@@ -1809,16 +2592,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   createForSession(
     sessionId: string,
-    options?: { show?: boolean; allowReuseManual?: boolean; workspaceId?: string | null },
+    options?: {
+      show?: boolean
+      allowReuseManual?: boolean
+      workspaceId?: string | null
+      originWebContentsId?: number | null
+    },
   ): string {
     const workspaceId = options?.workspaceId ?? null
     const existing = this.getBoundForSession(sessionId)
     if (existing) {
       // Already bound — adopt the workspace if the caller provided one and the
       // existing instance was bound before we knew about its workspace.
-      if (options?.workspaceId !== undefined) {
-        const instance = this.instances.get(existing)
-        if (instance) instance.workspaceId = options.workspaceId
+      const instance = this.instances.get(existing)
+      if (instance) {
+        instance.selectionSessionId = sessionId
+        if (options?.workspaceId !== undefined) {
+          instance.workspaceId = options.workspaceId
+        }
+        this.adoptOriginWebContents(instance, options?.originWebContentsId)
       }
       if (options?.show) {
         this.focus(existing)
@@ -1833,7 +2625,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (allowReuseManual) {
       const reusable = this.findReusableUnboundInstance(workspaceId)
       if (reusable) {
-        this.bindSession(reusable.id, sessionId, { workspaceId })
+        this.bindSession(reusable.id, sessionId, {
+          workspaceId,
+          originWebContentsId: options?.originWebContentsId,
+        })
         if (options?.show) {
           this.focus(reusable.id)
         }
@@ -1847,6 +2642,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       ownerType: 'session',
       ownerSessionId: sessionId,
       workspaceId,
+      originWebContentsId: options?.originWebContentsId,
     })
   }
 
@@ -1970,12 +2766,57 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         pointer-events: none;
         cursor: default;
       }
+      #selection-actions {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 5px;
+        box-sizing: border-box;
+        border: 1px solid rgba(148, 163, 184, 0.32);
+        border-radius: 10px;
+        background: rgba(15, 23, 42, 0.94);
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.24);
+        backdrop-filter: blur(8px);
+        pointer-events: auto;
+      }
+      #selection-actions button {
+        min-width: 0;
+        height: 30px;
+        flex: 1 1 0;
+        padding: 0 9px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: rgba(248, 250, 252, 0.92);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      #selection-actions button:first-child {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      #selection-actions button:hover {
+        background: rgba(255, 255, 255, 0.22);
+      }
+      #selection-actions button:focus-visible {
+        outline: 2px solid rgba(125, 211, 252, 0.9);
+        outline-offset: -2px;
+      }
     </style>
   </head>
   <body>
     <div id="overlay">
       <div id="shield"></div>
       <div id="chip">Agent is working…</div>
+    </div>
+    <div id="selection-actions" role="group" aria-label="Ask about selected text">
+      <button type="button" data-browser-selection-target="main">Ask</button>
+      <button type="button" data-browser-selection-target="sideChat">Side chat</button>
     </div>
   </body>
 </html>`
@@ -1994,37 +2835,70 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private getToolbarEffectiveHeight(instance: BrowserInstance): number {
     if (!instance.toolbarMenuOpen) return TOOLBAR_HEIGHT
 
-    const [, contentHeight] = instance.window.getContentSize()
-    return Math.max(TOOLBAR_HEIGHT, contentHeight)
+    const { height } = this.getSurfaceBounds(instance)
+    return Math.max(TOOLBAR_HEIGHT, height)
   }
 
   private layoutToolbarView(instance: BrowserInstance): void {
-    const [width] = instance.window.getContentSize()
+    const { x, y, width } = this.getSurfaceBounds(instance)
     const toolbarHeight = this.getToolbarEffectiveHeight(instance)
 
-    instance.toolbarView.setBounds({ x: 0, y: 0, width, height: toolbarHeight })
-    instance.toolbarView.setAutoResize({ width: true, height: false })
+    instance.toolbarView.setBounds({ x, y, width, height: toolbarHeight })
+    instance.toolbarView.setAutoResize({
+      width: instance.hostMode !== 'embedded' || !instance.embeddedAttached,
+      height: false,
+    })
   }
 
   private updateNativeOverlayState(instance: BrowserInstance): void {
     const control = instance.agentControl
     const agentActive = !!control?.active
     const menuActive = !!instance.toolbarMenuOverlayActive
-    const shouldShow = agentActive || menuActive
+    const selectionActive = !!instance.pendingSelection
+    const shouldShow = agentActive || menuActive || selectionActive
 
-    if (!shouldShow || !instance.nativeOverlayReady || instance.window.isDestroyed()) {
+    const hostWindow = this.getActiveHostWindow(instance)
+    if (!shouldShow || !instance.nativeOverlayReady || hostWindow.isDestroyed()) {
       instance.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-      if (!instance.window.isDestroyed()) {
-        instance.window.setTopBrowserView(instance.toolbarView)
+      if (!hostWindow.isDestroyed()) {
+        hostWindow.setTopBrowserView(instance.toolbarView)
       }
       return
     }
 
-    const [width, height] = instance.window.getContentSize()
-    const overlayHeight = Math.max(100, height - TOOLBAR_HEIGHT)
-    instance.nativeOverlayView.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width, height: overlayHeight })
-    instance.nativeOverlayView.setAutoResize({ width: true, height: true })
-    instance.window.setTopBrowserView(instance.toolbarView)
+    const { x, y, width, height } = this.getSurfaceBounds(instance)
+    if (agentActive || menuActive) {
+      const overlayHeight = Math.max(100, height - TOOLBAR_HEIGHT)
+      instance.nativeOverlayView.setBounds({
+        x,
+        y: y + TOOLBAR_HEIGHT,
+        width,
+        height: overlayHeight,
+      })
+      instance.nativeOverlayView.setAutoResize({
+        width: instance.hostMode !== 'embedded' || !instance.embeddedAttached,
+        height: instance.hostMode !== 'embedded' || !instance.embeddedAttached,
+      })
+    } else {
+      const selection = instance.pendingSelection!
+      const zoomFactor = typeof instance.pageView.webContents.getZoomFactor === 'function'
+        ? instance.pageView.webContents.getZoomFactor()
+        : 1
+      const selectionBounds = calculateBrowserSelectionOverlayBounds(
+        selection.capture.rect,
+        width,
+        Math.max(100, height - TOOLBAR_HEIGHT),
+        TOOLBAR_HEIGHT,
+        zoomFactor,
+      )
+      instance.nativeOverlayView.setBounds({
+        ...selectionBounds,
+        x: x + selectionBounds.x,
+        y: y + selectionBounds.y,
+      })
+      instance.nativeOverlayView.setAutoResize({ width: false, height: false })
+    }
+    hostWindow.setTopBrowserView(instance.toolbarView)
 
     if (agentActive) {
       const label = this.getAgentControlLabel(control)
@@ -2034,8 +2908,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         const overlay = document.getElementById('overlay');
         const chip = document.getElementById('chip');
         const shield = document.getElementById('shield');
-        if (!overlay || !chip || !shield) return;
+        const actions = document.getElementById('selection-actions');
+        if (!overlay || !chip || !shield || !actions) return;
 
+        overlay.style.display = 'block';
         overlay.style.borderColor = ${JSON.stringify(accent)};
         overlay.style.boxShadow = 'inset 0 0 0 1px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 45%, transparent), inset 0 0 24px color-mix(in oklab, ' + ${JSON.stringify(accent)} + ' 28%, transparent)';
         chip.textContent = ${JSON.stringify(label)};
@@ -2043,23 +2919,44 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         shield.style.pointerEvents = 'auto';
         shield.style.cursor = 'not-allowed';
         shield.style.background = 'rgba(2, 6, 23, 0.03)';
+        actions.style.display = 'none';
       })()`).catch(() => {})
       return
     }
 
-    // Menu mode: transparent full-page tap-catcher, no visuals
+    if (menuActive) {
+      // Menu mode: transparent full-page tap-catcher, no visuals.
+      void instance.nativeOverlayView.webContents.executeJavaScript(`(() => {
+        const overlay = document.getElementById('overlay');
+        const chip = document.getElementById('chip');
+        const shield = document.getElementById('shield');
+        const actions = document.getElementById('selection-actions');
+        if (!overlay || !chip || !shield || !actions) return;
+
+        overlay.style.display = 'block';
+        overlay.style.borderColor = 'transparent';
+        overlay.style.boxShadow = 'none';
+        chip.style.display = 'none';
+        shield.style.pointerEvents = 'auto';
+        shield.style.cursor = 'default';
+        shield.style.background = 'rgba(0, 0, 0, 0.001)';
+        actions.style.display = 'none';
+      })()`).catch(() => {})
+      return
+    }
+
     void instance.nativeOverlayView.webContents.executeJavaScript(`(() => {
       const overlay = document.getElementById('overlay');
       const chip = document.getElementById('chip');
       const shield = document.getElementById('shield');
-      if (!overlay || !chip || !shield) return;
+      const actions = document.getElementById('selection-actions');
+      if (!overlay || !chip || !shield || !actions) return;
 
-      overlay.style.borderColor = 'transparent';
-      overlay.style.boxShadow = 'none';
+      overlay.style.display = 'none';
       chip.style.display = 'none';
-      shield.style.pointerEvents = 'auto';
-      shield.style.cursor = 'default';
-      shield.style.background = 'rgba(0, 0, 0, 0.001)';
+      shield.style.pointerEvents = 'none';
+      shield.style.background = 'transparent';
+      actions.style.display = 'flex';
     })()`).catch(() => {})
   }
 
@@ -2103,6 +3000,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     this.destroyingIds.delete(instance.id)
+    if (instance.hostMode === 'embedded') {
+      if (instance.embeddedAttached && instance.embeddedHostWindow) {
+        this.removeBrowserViews(instance.embeddedHostWindow, instance)
+      }
+      instance.embeddedAttached = false
+    }
+    this.unregisterEmbeddedHostLifecycle(instance)
     this.closePopupsForParent(instance.id, 'parent_destroy')
     this.applyAgentControlLock(instance, false)
     this.updateNativeOverlayState(instance)
@@ -2113,18 +3017,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private layoutPageView(instance: BrowserInstance): void {
-    const [width, height] = instance.window.getContentSize()
-    instance.pageView.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width, height: Math.max(100, height - TOOLBAR_HEIGHT) })
-    instance.pageView.setAutoResize({ width: true, height: true })
+    const { x, y, width, height } = this.getSurfaceBounds(instance)
+    instance.pageView.setBounds({
+      x,
+      y: y + TOOLBAR_HEIGHT,
+      width,
+      height: instance.hostMode === 'embedded' && instance.embeddedAttached
+        ? Math.max(0, height - TOOLBAR_HEIGHT)
+        : Math.max(100, height - TOOLBAR_HEIGHT),
+    })
+    const autoResize = instance.hostMode !== 'embedded' || !instance.embeddedAttached
+    instance.pageView.setAutoResize({ width: autoResize, height: autoResize })
     this.updateNativeOverlayState(instance)
   }
 
   private layoutAllViews(instance: BrowserInstance): void {
     this.layoutToolbarView(instance)
     this.layoutPageView(instance)
-    if (!instance.window.isDestroyed()) {
-      instance.window.setTopBrowserView(instance.toolbarView)
-    }
+    this.setTopBrowserView(instance, instance.toolbarView)
   }
 
   private forceCloseToolbarMenu(instance: BrowserInstance, reason: string): void {
@@ -2309,6 +3219,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       canGoBack: instance.canGoBack,
       canGoForward: instance.canGoForward,
       themeColor: instance.themeColor,
+      hostMode: instance.hostMode,
     }
     instance.toolbarView.webContents.send(TOOLBAR_CHANNELS.STATE_UPDATE, state)
   }
@@ -2362,6 +3273,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
       if (!changed) return
 
+      this.clearPendingSelection(inst)
       inst.toolbarMenuOpen = true
       inst.toolbarMenuHeight = normalizedHeight
       inst.toolbarMenuOverlayActive = true
@@ -2380,6 +3292,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (inst) this.destroyInstance(inst.id)
     })
 
+    ipcMain.on(BROWSER_PAGE_SELECTION_CHANNEL, (event, value: unknown) => {
+      if (event.senderFrame && event.senderFrame !== event.sender.mainFrame) return
+      this.handlePageSelection(event.sender.id, value)
+    })
+
+    ipcMain.on(BROWSER_OVERLAY_ASK_CHANNEL, (event, target: unknown) => {
+      if (event.senderFrame && event.senderFrame !== event.sender.mainFrame) return
+      this.handleOverlayAsk(event.sender.id, target)
+    })
+
     mainLog.info('[browser-pane] Toolbar IPC handlers registered')
   }
 
@@ -2395,8 +3317,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   /** Register the `__browser:invoke` IPC handler. Call once at app startup. */
   registerCapabilityIpc(): void {
-    ipcMain.handle('__browser:invoke', async (_event, req: BrowserCapabilityRequest) => {
-      return await this.dispatchCapability(req)
+    ipcMain.handle('__browser:invoke', async (event, req: BrowserCapabilityRequest) => {
+      return await this.dispatchCapability(req, event.sender.id)
     })
     mainLog.info('[browser-pane] Capability IPC handler registered')
   }
@@ -2491,7 +3413,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /** Main dispatcher. Strongly-typed `switch` over `IBrowserPaneManager` methods. */
-  private async dispatchCapability(req: BrowserCapabilityRequest): Promise<unknown> {
+  private async dispatchCapability(
+    req: BrowserCapabilityRequest,
+    originWebContentsId?: number,
+  ): Promise<unknown> {
     if (!req || req.v !== 1) {
       throw new CodedError('HANDLER_ERROR',
         `Unsupported browser capability request shape (v=${(req as { v?: unknown })?.v}).`)
@@ -2507,6 +3432,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           show: options?.show ?? false,
           allowReuseManual: false,
           workspaceId: req.workspaceId,
+          originWebContentsId,
         })
       }
       // Remote agents must NEVER reuse an existing manual / unbound window —
@@ -2520,12 +3446,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           show: false,
           allowReuseManual: false,
           workspaceId: req.workspaceId,
+          originWebContentsId,
         })
       case 'focusBoundForSession': {
         const id = this.createForSession(ownerKey, {
           show: true,
           allowReuseManual: false,
           workspaceId: req.workspaceId,
+          originWebContentsId,
         })
         this.focus(id)
         return id
@@ -2574,12 +3502,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       case 'bindSession': {
         const [instanceId] = args as [string, string]
         this.requireOwnedInstance(instanceId, ownerKey)
-        this.bindSession(instanceId, ownerKey, { workspaceId: req.workspaceId })
+        this.bindSession(instanceId, ownerKey, {
+          workspaceId: req.workspaceId,
+          originWebContentsId,
+        })
         return undefined
       }
       case 'focus': {
         const [instanceId] = args as [string]
         this.requireOwnedInstance(instanceId, ownerKey)
+        this.adoptOriginWebContents(this.requireAliveInstance(instanceId), originWebContentsId)
         this.focus(instanceId)
         return undefined
       }
@@ -2755,10 +3687,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (instance.window.isDestroyed()) return
     if (instance.pendingShowToken !== tokenAtReady) return
 
-    instance.window.show()
-    instance.window.focus()
-    instance.isVisible = true
-    this.emitStateChange(instance)
+    this.focus(instance.id)
 
   }
 
@@ -2777,6 +3706,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   ): void {
     for (const instance of this.instances.values()) {
       if (instance.boundSessionId === sessionId) {
+        this.clearPendingSelection(instance)
         instance.agentControl = {
           active: true,
           sessionId,
@@ -3342,6 +4272,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
 
     pageWc.on('did-start-loading', () => {
+      this.clearPendingSelection(instance)
       instance.isLoading = true
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
@@ -3417,6 +4348,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     })
 
     pageWc.on('did-navigate-in-page', (_event, urlFromEvent) => {
+      this.clearPendingSelection(instance)
       const url = typeof pageWc.getURL === 'function' ? pageWc.getURL() : (urlFromEvent || instance.currentUrl)
       const normalized = this.normalizePageState(url, instance.title)
       instance.currentUrl = normalized.url
@@ -3542,7 +4474,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           minHeight: 520,
           show: true,
           autoHideMenuBar: true,
-          parent: instance.window,
+          parent: this.getActiveHostWindow(instance),
           modal: false,
           webPreferences: {
             partition: SESSION_PARTITION,
@@ -3597,9 +4529,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       boundSessionId: instance.boundSessionId,
       ownerType: instance.ownerType,
       ownerSessionId: instance.ownerSessionId,
+      selectionSessionId: instance.selectionSessionId,
       isVisible: instance.isVisible,
       agentControlActive: !!instance.agentControl?.active,
       themeColor: instance.themeColor,
+      hostMode: instance.hostMode,
+      originWebContentsId: instance.originWebContentsId,
+      embeddedHostWebContentsId: instance.embeddedHostWebContentsId,
       workspaceId: instance.workspaceId,
     }
   }

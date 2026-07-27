@@ -117,6 +117,7 @@
   "automations.webhookUrl": "URL",
   "browser.closeWindowEntirely": "Ablak teljes bezárása",
   "browser.hideWindow": "Ablak elrejtése",
+  "browser.newTab": "Új böngészőlap",
   "browser.newWindow": "Új böngészőablak",
   "browser.readyDescription": "Kérj meg bármely munkamenetet, hogy használja ezt a böngészőt (vagy nyiss egy másikat) feladatokhoz, például kutatáshoz, űrlapkitöltéshez, minőségellenőrzéshez vagy adatkinyeréshez.",
   "browser.readyTitle": "Ez a böngésző készen áll az agentjeidre – és rád is ;)",

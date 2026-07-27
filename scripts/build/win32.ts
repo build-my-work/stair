@@ -183,6 +183,18 @@ export async function buildElectronAppWindows(config: BuildConfig): Promise<void
     'node ./node_modules/esbuild/bin/esbuild apps/electron/src/preload/bootstrap.ts --bundle --platform=node --format=cjs --outfile=apps/electron/dist/bootstrap-preload.cjs --external:electron',
     rootDir
   );
+  run(
+    'node ./node_modules/esbuild/bin/esbuild apps/electron/src/preload/browser-toolbar.ts --bundle --platform=node --format=cjs --outfile=apps/electron/dist/browser-toolbar-preload.cjs --external:electron',
+    rootDir
+  );
+  run(
+    'node ./node_modules/esbuild/bin/esbuild apps/electron/src/preload/browser-page.ts --bundle --platform=node --format=cjs --outfile=apps/electron/dist/browser-page-preload.cjs --external:electron',
+    rootDir
+  );
+  run(
+    'node ./node_modules/esbuild/bin/esbuild apps/electron/src/preload/browser-overlay.ts --bundle --platform=node --format=cjs --outfile=apps/electron/dist/browser-overlay-preload.cjs --external:electron',
+    rootDir
+  );
 
   // Build renderer - invoke vite directly via node
   console.log('  Building renderer...');

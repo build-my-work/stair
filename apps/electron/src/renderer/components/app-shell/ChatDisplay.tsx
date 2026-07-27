@@ -76,6 +76,7 @@ import { collectFileChangesFromActivities, getFirstFileChangeIdForActivity } fro
 import { resolveBranchNewPanelOption } from "./branching"
 import { handleErrorMessageAction } from "./error-message-actions"
 import { ArtifactResultCards } from "@/components/artifacts/ArtifactResultCards"
+import { isWebSelectionReference } from "@craft-agent/core/types"
 
 // ============================================================================
 // CSS Custom Highlight API helper
@@ -2240,9 +2241,17 @@ function MessageBubble({
         attachments={message.attachments}
         badges={message.badges}
         references={message.references}
-        onReferenceClick={(reference) => window.dispatchEvent(new CustomEvent('craft:open-file-reference', {
-          detail: reference,
-        }))}
+        onReferenceClick={(reference) => {
+          if (isWebSelectionReference(reference)) {
+            window.dispatchEvent(new CustomEvent('craft:open-web-reference', {
+              detail: { reference, sessionId },
+            }))
+            return
+          }
+          window.dispatchEvent(new CustomEvent('craft:open-file-reference', {
+            detail: reference,
+          }))
+        }}
         isPending={message.isPending}
         isQueued={message.isQueued}
         onUrlClick={onOpenUrl}

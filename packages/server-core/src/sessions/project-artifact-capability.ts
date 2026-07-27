@@ -2,7 +2,10 @@ import type {
   SaveProjectArtifactToolInput,
   SavedProjectArtifactResult,
 } from '@craft-agent/session-tools-core'
-import type { FileReference } from '@craft-agent/core/types'
+import {
+  isWebSelectionReference,
+  type FileReference,
+} from '@craft-agent/core/types'
 import {
   getProjectArtifact,
   loadProjectById,
@@ -71,6 +74,9 @@ function resolveTrustedReferences(
   for (const message of storedSession?.messages ?? []) {
     if (message.type !== 'user') continue
     for (const reference of message.references ?? []) {
+      // Web selections are valid conversational context but are not Project
+      // files and must never satisfy save_project_artifact's trust check.
+      if (isWebSelectionReference(reference)) continue
       if (reference.projectId !== context.projectId) continue
       const key = referenceLocationKey(reference.path, reference.locator)
       if (key) trustedByLocation.set(key, reference)

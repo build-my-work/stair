@@ -176,6 +176,9 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.browserPane.RELOAD,
   RPC_CHANNELS.browserPane.STOP,
   RPC_CHANNELS.browserPane.FOCUS,
+  RPC_CHANNELS.browserPane.ATTACH,
+  RPC_CHANNELS.browserPane.DETACH,
+  RPC_CHANNELS.browserPane.UPDATE_BOUNDS,
   RPC_CHANNELS.browserPane.SNAPSHOT,
   RPC_CHANNELS.browserPane.CLICK,
   RPC_CHANNELS.browserPane.FILL,
@@ -183,10 +186,12 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.browserPane.SCREENSHOT,
   RPC_CHANNELS.browserPane.EVALUATE,
   RPC_CHANNELS.browserPane.SCROLL,
+  RPC_CHANNELS.browserPane.REVEAL_SELECTION,
   RPC_CHANNELS.browserPane.LAUNCH,
   RPC_CHANNELS.browserPane.STATE_CHANGED,
   RPC_CHANNELS.browserPane.REMOVED,
   RPC_CHANNELS.browserPane.INTERACTED,
+  RPC_CHANNELS.browserPane.SELECTION_ASK,
 
   // gitbash — Windows-specific local
   RPC_CHANNELS.gitbash.CHECK,

@@ -37,6 +37,7 @@ interface ToolbarState {
   canGoBack: boolean
   canGoForward: boolean
   themeColor?: string | null
+  hostMode?: 'standalone' | 'embedded'
 }
 
 declare global {
@@ -209,10 +210,12 @@ function BrowserToolbarApp() {
                 minWidth="min-w-44"
                 className="titlebar-no-drag z-[110] max-h-none overflow-visible"
               >
-                <StyledDropdownMenuItem onSelect={handleHideWindow}>
-                  <EyeOff className="h-3.5 w-3.5" />
-                  {t('browser.hideWindow')}
-                </StyledDropdownMenuItem>
+                {state.hostMode !== 'embedded' && (
+                  <StyledDropdownMenuItem onSelect={handleHideWindow}>
+                    <EyeOff className="h-3.5 w-3.5" />
+                    {t('browser.hideWindow')}
+                  </StyledDropdownMenuItem>
+                )}
                 <StyledDropdownMenuItem variant="destructive" onSelect={handleCloseWindowEntirely}>
                   <XCircle className="h-3.5 w-3.5" />
                   {t('browser.closeWindowEntirely')}

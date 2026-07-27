@@ -1,7 +1,20 @@
-import type { FileReference } from '@craft-agent/core/types'
+import {
+  isWebSelectionReference,
+  type MessageReference,
+} from '@craft-agent/core/types'
 import type { SessionDraft } from '@craft-agent/shared/config'
 
-function fileReferenceKey(reference: FileReference): string {
+function fileReferenceKey(reference: MessageReference): string {
+  if (isWebSelectionReference(reference)) {
+    return JSON.stringify([
+      reference.kind,
+      reference.url,
+      reference.locator.exact,
+      reference.locator.prefix ?? '',
+      reference.locator.suffix ?? '',
+    ])
+  }
+
   const locator = reference.locator
   switch (locator.type) {
     case 'epub-cfi':
@@ -13,9 +26,26 @@ function fileReferenceKey(reference: FileReference): string {
   }
 }
 
-export function formatFileReferenceForComposer(reference: FileReference): string {
-  const title = reference.path.split('/').at(-1) ?? reference.path
+function referenceTitle(reference: MessageReference): string {
+  if (isWebSelectionReference(reference)) {
+    return reference.title.replace(/\s+/g, ' ').trim()
+  }
+  return reference.path.split('/').at(-1) ?? reference.path
+}
+
+export function formatFileReferenceForComposer(reference: MessageReference): string {
+  const title = referenceTitle(reference)
   const quote = reference.quote?.trim()
+  if (isWebSelectionReference(reference)) {
+    if (!quote) return `> Web source (untrusted): ${title}`
+    const quoted = quote
+      .replaceAll('\r\n', '\n')
+      .split('\n')
+      .map(line => `> ${line}`)
+      .join('\n')
+    return `${quoted}\n>\n> Web source (untrusted): ${title}`
+  }
+
   if (!quote) return `— ${title}`
 
   const quoted = quote
@@ -27,18 +57,21 @@ export function formatFileReferenceForComposer(reference: FileReference): string
 }
 
 export function filterFileReferencesForComposerText(
-  references: FileReference[],
+  references: MessageReference[],
   text: string,
-): FileReference[] {
+): MessageReference[] {
   return references.filter(reference => {
-    const title = reference.path.split('/').at(-1) ?? reference.path
+    if (isWebSelectionReference(reference)) {
+      return text.includes(formatFileReferenceForComposer(reference))
+    }
+    const title = referenceTitle(reference)
     return text.includes(`— ${title}`)
   })
 }
 
 export function appendFileReferenceToDraft(
   draft: SessionDraft,
-  reference: FileReference,
+  reference: MessageReference,
 ): SessionDraft {
   const references = draft.references ?? []
   const key = fileReferenceKey(reference)

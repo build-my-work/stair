@@ -23,6 +23,7 @@ const OVERLAY_SELECTORS = [
 
   // Dropdown menus
   '[data-slot="dropdown-menu-content"]',
+  '[role="menu"][data-state="open"]',
 
   // Context menus (right-click)
   '[data-slot="context-menu-content"]',
@@ -32,6 +33,7 @@ const OVERLAY_SELECTORS = [
 
   // Select dropdowns
   '[data-slot="select-content"]',
+  '[role="listbox"][data-state="open"]',
 
   // Command palette (when open inside a dialog, the dialog selector catches it)
   // But standalone command menus would need: '[data-slot="command"]'

@@ -40,6 +40,34 @@ describe('hasOpenOverlay', () => {
     expect(hasOpenOverlay()).toBe(true)
   })
 
+  it('returns true when a popover is open', () => {
+    ;(globalThis as unknown as { document: { querySelector: (selector: string) => object | null } }).document = {
+      querySelector: (selector: string) => {
+        if (selector.includes('[data-slot="popover-content"]')) {
+          return {}
+        }
+
+        return null
+      },
+    }
+
+    expect(hasOpenOverlay()).toBe(true)
+  })
+
+  it('returns true for shared Radix menus without a data-slot attribute', () => {
+    ;(globalThis as unknown as { document: { querySelector: (selector: string) => object | null } }).document = {
+      querySelector: (selector: string) => {
+        if (selector.includes('[role="menu"][data-state="open"]')) {
+          return {}
+        }
+
+        return null
+      },
+    }
+
+    expect(hasOpenOverlay()).toBe(true)
+  })
+
   it('returns false when no overlays are open', () => {
     ;(globalThis as unknown as { document: { querySelector: (_selector: string) => null } }).document = {
       querySelector: () => null,

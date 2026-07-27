@@ -48,6 +48,8 @@ export interface SidebarContextMenuConfig {
   viewId?: string
   /** Handler for "Delete View" action */
   onDeleteView?: (id: string) => void
+  /** Handler for renaming an individual session */
+  onRename?: () => void
 }
 
 /**
@@ -63,7 +65,7 @@ export interface LinkItem {
   id: string            // Unique ID for navigation (e.g., 'nav:allSessions')
   title: string
   label?: string        // Optional badge (e.g., count)
-  icon: LucideIcon | React.ReactNode  // LucideIcon or custom React element
+  icon?: LucideIcon | React.ReactNode  // LucideIcon or custom React element
   iconColor?: string    // Optional color class for the icon
   /** Whether the icon responds to color (uses currentColor). Default true for Lucide icons. */
   iconColorable?: boolean
@@ -188,7 +190,7 @@ export function LeftSidebar({ links, isCollapsed, getItemProps, focusedItemId, i
     <div className={cn("flex flex-col select-none", !isNested && "py-1")}>
       <NavWrapper
         className={cn(
-          "grid gap-0.5",
+          "grid grid-cols-[minmax(0,1fr)] gap-0.5",
           isNested ? "pl-5 pr-0 relative" : "px-2"
         )}
         role="navigation"
@@ -233,8 +235,8 @@ export function LeftSidebar({ links, isCollapsed, getItemProps, focusedItemId, i
           // ContextMenuTrigger with asChild sets data-state="open" on the button
           // so only the clicked item highlights, not the entire section.
           const content = (
-            <div className="group/section">
-              <div className="group/row relative">
+            <div className="group/section min-w-0">
+              <div className="group/row relative min-w-0">
                 {link.contextMenu ? (
                   <ContextMenu modal={true}>
                     <ContextMenuTrigger asChild>
@@ -259,6 +261,7 @@ export function LeftSidebar({ links, isCollapsed, getItemProps, focusedItemId, i
                           onConfigureViews={link.contextMenu.onConfigureViews}
                           viewId={link.contextMenu.viewId}
                           onDeleteView={link.contextMenu.onDeleteView}
+                          onRename={link.contextMenu.onRename}
                         />
                       </ContextMenuProvider>
                     </StyledContextMenuContent>
@@ -320,7 +323,7 @@ export function LeftSidebar({ links, isCollapsed, getItemProps, focusedItemId, i
 
           // For nested items, wrap in motion.div for stagger animation
           return isNested ? (
-            <motion.div key={link.id} variants={itemVariants}>
+            <motion.div key={link.id} variants={itemVariants} className="min-w-0">
               {content}
             </motion.div>
           ) : (
@@ -450,6 +453,7 @@ function SortableStatusList({ items, onReorder, getItemProps, focusedItemId, tra
                         onConfigureViews={item.contextMenu.onConfigureViews}
                         viewId={item.contextMenu.viewId}
                         onDeleteView={item.contextMenu.onDeleteView}
+                        onRename={item.contextMenu.onRename}
                       />
                     </ContextMenuProvider>
                   </StyledContextMenuContent>
@@ -529,7 +533,7 @@ const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps & R
         onClick={isOverlay ? undefined : link.onClick}
         data-tutorial={link.dataTutorial}
         className={cn(
-          "group flex w-full items-center gap-2 rounded-[6px] text-[13px] select-none outline-none",
+          "group flex min-w-0 w-full items-center gap-2 overflow-hidden rounded-[6px] text-[13px] select-none outline-none",
           "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
           // Compact mode: 4px less total height (py-[3px] vs py-[5px])
           link.compact ? "py-[3px]" : "py-[5px]",
@@ -543,36 +547,38 @@ const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps & R
         )}
       >
         {/* Icon container with hover toggle for expandable items */}
-        <span className="relative h-3.5 w-3.5 shrink-0 flex items-center justify-center">
-          {link.expandable && !isOverlay ? (
-            <>
-              {/* Main icon - hidden on hover */}
-              <span className="absolute inset-0 flex items-center justify-center group-hover:opacity-0 transition-opacity duration-150">
-                {renderIcon(link)}
-              </span>
-              {/* Toggle chevron - shown on hover. data-no-dnd prevents drag activation on click. */}
-              <span
-                className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer"
-                data-no-dnd="true"
-                data-touch-reveal="true"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  link.onToggle?.()
-                }}
-              >
-                <ChevronRight
-                  className={cn(
-                    "h-3.5 w-3.5 text-muted-foreground transition-transform duration-200",
-                    link.expanded && "rotate-90"
-                  )}
-                />
-              </span>
-            </>
-          ) : (
-            renderIcon(link)
-          )}
-        </span>
-        {link.title}
+        {link.icon && (
+          <span className="relative h-3.5 w-3.5 shrink-0 flex items-center justify-center">
+            {link.expandable && !isOverlay ? (
+              <>
+                {/* Main icon - hidden on hover */}
+                <span className="absolute inset-0 flex items-center justify-center group-hover:opacity-0 transition-opacity duration-150">
+                  {renderIcon(link)}
+                </span>
+                {/* Toggle chevron - shown on hover. data-no-dnd prevents drag activation on click. */}
+                <span
+                  className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer"
+                  data-no-dnd="true"
+                  data-touch-reveal="true"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    link.onToggle?.()
+                  }}
+                >
+                  <ChevronRight
+                    className={cn(
+                      "h-3.5 w-3.5 text-muted-foreground transition-transform duration-200",
+                      link.expanded && "rotate-90"
+                    )}
+                  />
+                </span>
+              </>
+            ) : (
+              renderIcon(link)
+            )}
+          </span>
+        )}
+        <span className="min-w-0 flex-1 truncate text-left">{link.title}</span>
         {/* After-title element: type indicator icon, right-aligned before count badge, revealed on hover */}
         {link.afterTitle && (
           <span data-touch-reveal="true" className="ml-auto opacity-0 group-hover/section:opacity-100 group-data-[state=open]:opacity-100 group-data-[edit-active=true]:opacity-100 transition-opacity">

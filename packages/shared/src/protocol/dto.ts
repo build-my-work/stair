@@ -10,7 +10,7 @@ import type {
   Message,
   TypedError,
   ContentBadge,
-  FileReference,
+  MessageReference,
   ToolDisplayMeta,
   AnnotationV1,
   PermissionRequest as BasePermissionRequest,
@@ -431,8 +431,8 @@ export type SessionEvent =
 export interface SendMessageOptions {
   skillSlugs?: string[]
   badges?: ContentBadge[]
-  /** Structured project-file locators cited by this user message. */
-  references?: FileReference[]
+  /** Structured source locators cited by this user message. */
+  references?: MessageReference[]
   optimisticMessageId?: string
   /**
    * When true, the message drives a turn (reaches the model) but is marked
@@ -830,6 +830,20 @@ export interface WindowCloseRequest {
 // Browser / navigation types (data shapes used by BroadcastEventMap)
 // ---------------------------------------------------------------------------
 
+export type BrowserPaneHostMode = 'standalone' | 'embedded'
+
+/**
+ * BrowserView bounds relative to the host BrowserWindow's content area.
+ * The renderer should update these values from a ResizeObserver whenever the
+ * middle content panel moves or resizes.
+ */
+export interface BrowserPaneHostBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface BrowserInstanceInfo {
   id: string
   url: string
@@ -841,9 +855,17 @@ export interface BrowserInstanceInfo {
   boundSessionId: string | null
   ownerType: 'session' | 'manual'
   ownerSessionId: string | null
+  /** Session whose composer receives selections from this manual browser. */
+  selectionSessionId?: string | null
   isVisible: boolean
   agentControlActive: boolean
   themeColor: string | null
+  /** How the native browser views are currently presented. */
+  hostMode?: BrowserPaneHostMode
+  /** Local Craft renderer that created this manual browser. */
+  originWebContentsId?: number | null
+  /** Local Craft renderer currently reserved as this embedded browser's host. */
+  embeddedHostWebContentsId?: number | null
   /**
    * Workspace that owns this browser instance, or `null` for unbound manual
    * windows. Renderers filter the tab strip / status badge by `activeWorkspaceId`

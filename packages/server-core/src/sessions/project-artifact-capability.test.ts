@@ -35,7 +35,16 @@ describe('session project artifact capability', () => {
         id: 'message-user',
         type: 'user',
         content: '请整理这段内容',
-        references: [trustedReference],
+        references: [{
+          kind: 'web-selection',
+          url: 'https://example.com/processes',
+          title: 'Processes on the web',
+          quote: 'A process is a running program.',
+          locator: {
+            type: 'text-quote',
+            exact: 'A process is a running program.',
+          },
+        }, trustedReference],
       }],
       tokenUsage: {
         inputTokens: 0,

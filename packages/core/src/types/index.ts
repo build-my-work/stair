@@ -31,6 +31,8 @@ export type {
   StoredAttachment,
   ContentBadge,
   FileReference,
+  WebSelectionReference,
+  MessageReference,
   AnnotationAuthor,
   AnnotationBody,
   AnnotationIntent,
@@ -53,7 +55,7 @@ export type {
   AuthRequestType,
   AuthStatus,
 } from './message.ts';
-export { generateMessageId } from './message.ts';
+export { generateMessageId, isWebSelectionReference } from './message.ts';
 
 // Message persistence mappers
 export { messageToStored, storedToMessage } from './message-mapper.ts';

@@ -5,7 +5,7 @@ import type { ThemeOverrides } from '@config/theme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
 import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
 import type { SessionDraft, DraftAttachmentRef } from '@craft-agent/shared/config'
-import type { FileReference } from '@craft-agent/core/types'
+import type { MessageReference } from '@craft-agent/core/types'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
 import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
 import { generateMessageId } from '../shared/types'
@@ -64,8 +64,8 @@ import {
   showBackgroundFinishedChipAtom,
   pushBackgroundFinishedAtom,
 } from '@/atoms/background-finished'
-import { visibleSessionIdsAtom } from '@/atoms/panel-stack'
-import { showRightWorkspaceFileAtom } from '@/atoms/right-workspace'
+import { focusedSessionIdAtom, visibleSessionIdsAtom } from '@/atoms/panel-stack'
+import { openContentWorkspaceFileAtom } from '@/atoms/content-workspace'
 import { getWorkspaceFileKind } from '@/components/right-workspace/workspace-file-types'
 import { parseSavedArtifactToolResult } from '@/components/artifacts/artifact-result'
 import { getSessionTitle } from '@/utils/session'
@@ -326,7 +326,7 @@ export default function App() {
   const removeSession = useSetAtom(removeSessionAtom)
   const updateSessionDirect = useSetAtom(updateSessionAtom)
   const replaceLoadedSession = useSetAtom(replaceLoadedSessionAtom)
-  const showRightWorkspaceFile = useSetAtom(showRightWorkspaceFileAtom)
+  const openContentWorkspaceFile = useSetAtom(openContentWorkspaceFileAtom)
   const store = useStore()
 
   // Helper to update a session by ID with partial fields
@@ -1618,7 +1618,7 @@ export default function App() {
     schedulePersistDraft(sessionId)
   }, [schedulePersistDraft])
 
-  const handleAddFileReference = useCallback((sessionId: string, reference: FileReference) => {
+  const handleAddFileReference = useCallback((sessionId: string, reference: MessageReference) => {
     const current = sessionDraftsRef.current.get(sessionId) ?? { text: '' }
     const next = appendFileReferenceToDraft(current, reference)
     if (next === current) return
@@ -1733,7 +1733,10 @@ export default function App() {
   const linkInterceptor = useLinkInterceptor({
     openFileInWorkspace: (path) => {
       if (getWorkspaceFileKind(path) === 'external') return false
-      return showRightWorkspaceFile(path)
+      const workspaceId = store.get(windowWorkspaceIdAtom)
+      const sessionId = store.get(focusedSessionIdAtom)
+      if (!workspaceId || !sessionId) return false
+      return openContentWorkspaceFile({ workspaceId, sessionId, path })
     },
     openFileExternal: async (path) => {
       try {

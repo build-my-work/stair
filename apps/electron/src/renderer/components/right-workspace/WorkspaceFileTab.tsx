@@ -11,7 +11,6 @@ import { Markdown } from '@/components/markdown'
 import { ShikiCodeViewer } from '@/components/shiki/ShikiCodeViewer'
 import { Button } from '@/components/ui/button'
 import type { FileReference } from '@craft-agent/core/types'
-import type { RightWorkspaceFileNavigation } from '@/atoms/right-workspace'
 import { getWorkspaceFileKind, getWorkspaceFileLanguage } from './workspace-file-types'
 
 export { getWorkspaceFileKind, getWorkspaceFileLanguage } from './workspace-file-types'
@@ -36,7 +35,11 @@ interface WorkspaceFileTabProps {
   sessionId: string
   path: string
   onReference?: (reference: FileReference, target: 'main' | 'sideChat') => void
-  navigation?: RightWorkspaceFileNavigation
+  navigation?: {
+    path: string
+    locator: FileReference['locator']
+    nonce: number
+  }
 }
 
 export function WorkspaceFileTab({ workspaceId, sessionId, path, onReference, navigation }: WorkspaceFileTabProps) {

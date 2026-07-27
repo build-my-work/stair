@@ -117,6 +117,7 @@
   "automations.webhookUrl": "URL",
   "browser.closeWindowEntirely": "Close Window Entirely",
   "browser.hideWindow": "Hide Window",
+  "browser.newTab": "New Browser Tab",
   "browser.newWindow": "New Browser Window",
   "browser.readyDescription": "Ask any session to use this browser (or open another one) to complete tasks like research, form filling, QA checks, or data extraction.",
   "browser.readyTitle": "This browser is ready for your Agents - and you ;)",

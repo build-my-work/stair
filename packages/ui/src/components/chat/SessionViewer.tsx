@@ -9,7 +9,10 @@
 
 import type { ReactNode } from 'react'
 import { useMemo, useState, useCallback } from 'react'
-import type { StoredSession } from '@craft-agent/core'
+import {
+  isWebSelectionReference,
+  type StoredSession,
+} from '@craft-agent/core'
 import { cn } from '../../lib/utils'
 import { CHAT_LAYOUT, CHAT_CLASSES } from '../../lib/layout'
 import { PlatformProvider, type PlatformActions } from '../../context'
@@ -169,8 +172,19 @@ export function SessionViewer({
                       attachments={turn.message.attachments}
                       badges={turn.message.badges}
                       references={turn.message.references}
-                      onReferenceClick={platformActions.onOpenFile
-                        ? (reference) => platformActions.onOpenFile?.(reference.path)
+                      canOpenReference={(reference) => (
+                        isWebSelectionReference(reference)
+                          ? Boolean(platformActions.onOpenUrl)
+                          : Boolean(platformActions.onOpenFile)
+                      )}
+                      onReferenceClick={platformActions.onOpenFile || platformActions.onOpenUrl
+                        ? (reference) => {
+                            if (isWebSelectionReference(reference)) {
+                              platformActions.onOpenUrl?.(reference.url)
+                            } else {
+                              platformActions.onOpenFile?.(reference.path)
+                            }
+                          }
                         : undefined}
                       onUrlClick={platformActions.onOpenUrl}
                       onFileClick={platformActions.onOpenFile}

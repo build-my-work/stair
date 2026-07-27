@@ -17,7 +17,7 @@
 
 import * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useAtomValue } from 'jotai'
+import { useAtomValue, useSetAtom, useStore } from 'jotai'
 import { useTranslation } from 'react-i18next'
 import { Panel } from './Panel'
 import { MultiSelectPanel } from './MultiSelectPanel'
@@ -46,6 +46,14 @@ import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
+import {
+  CONTENT_WORKSPACE_MAIN_CHAT_TAB_ID,
+  closeContentWorkspaceTabAtom,
+  contentWorkspaceStateAtomFamily,
+  setContentWorkspaceActiveTabAtom,
+} from '@/atoms/content-workspace'
+import { ContentWorkspace } from '@/components/content-workspace'
+import type { FileReference } from '@craft-agent/core/types'
 
 export interface MainContentPanelProps {
   /** Whether both sidebar and navigator are hidden (focus mode / CMD+.) */
@@ -365,7 +373,12 @@ export function MainContentPanel({
       return wrapWithStoplight(
         <Panel variant="grow" className={className}>
           {projectDetails.sessionId ? (
-            <ChatPage
+            <SessionContentWorkspace
+              workspaceId={
+                activeWorkspaceId
+                ?? sessionMetaMap.get(projectDetails.sessionId)?.workspaceId
+                ?? ''
+              }
               sessionId={projectDetails.sessionId}
               projectSlug={projectDetails.projectSlug}
             />
@@ -417,7 +430,14 @@ export function MainContentPanel({
     if (navState.details) {
       return wrapWithStoplight(
         <Panel variant="grow" className={className}>
-          <ChatPage sessionId={navState.details.sessionId} />
+          <SessionContentWorkspace
+            workspaceId={
+              activeWorkspaceId
+              ?? sessionMetaMap.get(navState.details.sessionId)?.workspaceId
+              ?? ''
+            }
+            sessionId={navState.details.sessionId}
+          />
         </Panel>
       )
     }
@@ -438,5 +458,86 @@ export function MainContentPanel({
         <p className="text-sm">{t("session.selectConversation")}</p>
       </div>
     </Panel>
+  )
+}
+
+function SessionContentWorkspace({
+  workspaceId,
+  sessionId,
+  projectSlug,
+}: {
+  workspaceId: string
+  sessionId: string
+  projectSlug?: string
+}) {
+  const {
+    onAddFileReference,
+    onAddLearningReference,
+  } = useAppShellContext()
+  const key = React.useMemo(
+    () => ({ workspaceId, sessionId }),
+    [sessionId, workspaceId],
+  )
+  const store = useStore()
+  const closeTab = useSetAtom(closeContentWorkspaceTabAtom)
+  const setActiveTab = useSetAtom(setContentWorkspaceActiveTabAtom)
+
+  React.useEffect(() => {
+    let disposed = false
+    void window.electronAPI.browserPane.list().then((instances) => {
+      if (disposed) return
+      const liveIds = new Set(instances.map(instance => instance.id))
+      const current = store.get(contentWorkspaceStateAtomFamily(key))
+      for (const tab of current.tabs) {
+        if (tab.type === 'browser' && !liveIds.has(tab.instanceId)) {
+          closeTab({ ...key, tabId: tab.id })
+        }
+      }
+    }).catch((error) => {
+      console.warn('[ContentWorkspace] Failed to reconcile browsers:', error)
+    })
+
+    const cleanupRemoved = window.electronAPI.browserPane.onRemoved((instanceId) => {
+      const current = store.get(contentWorkspaceStateAtomFamily(key))
+      const browserTab = current.tabs.find(
+        tab => tab.type === 'browser' && tab.instanceId === instanceId,
+      )
+      if (browserTab) closeTab({ ...key, tabId: browserTab.id })
+    })
+    return () => {
+      disposed = true
+      cleanupRemoved()
+    }
+  }, [closeTab, key, store])
+
+  const handleReference = React.useCallback((
+    reference: FileReference,
+    target: 'main' | 'sideChat',
+  ) => {
+    if (target === 'main') {
+      setActiveTab({
+        ...key,
+        tabId: CONTENT_WORKSPACE_MAIN_CHAT_TAB_ID,
+      })
+    }
+    if (onAddLearningReference) {
+      onAddLearningReference(sessionId, reference, target)
+      return
+    }
+    onAddFileReference(sessionId, reference)
+  }, [key, onAddFileReference, onAddLearningReference, sessionId, setActiveTab])
+
+  const mainChat = <ChatPage sessionId={sessionId} projectSlug={projectSlug} />
+
+  if (!workspaceId) return mainChat
+
+  return (
+    <ContentWorkspace
+      key={`${workspaceId}:${sessionId}`}
+      workspaceId={workspaceId}
+      sessionId={sessionId}
+      mainChat={mainChat}
+      onReference={handleReference}
+    />
   )
 }

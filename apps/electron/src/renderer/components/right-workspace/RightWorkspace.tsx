@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import type { FileReference } from '@craft-agent/core/types'
+import type { MessageReference } from '@craft-agent/core/types'
 
 import {
   RIGHT_WORKSPACE_MAX_FILE_EXPLORER_WIDTH,
@@ -28,7 +28,7 @@ import { RightWorkspaceTabBar, type ArtifactMenuItem, type SideChatMenuItem } fr
 import { RightWorkspaceTabContent } from './RightWorkspaceTabContent'
 import { WorkingDirectoryFileExplorer } from './WorkingDirectoryFileExplorer'
 
-interface RightWorkspaceProps {
+export interface RightWorkspaceProps {
   workspaceId: string
   sessionId: string
   className?: string
@@ -37,7 +37,8 @@ interface RightWorkspaceProps {
   onOpenArtifacts?: () => void
   renderSideChat?: (sessionId: string) => React.ReactNode
   renderArtifact?: (artifactId: string) => React.ReactNode
-  onAddFileReference?: (sessionId: string, reference: FileReference) => void
+  onAddFileReference?: (sessionId: string, reference: MessageReference) => void
+  onOpenFileInContent?: (path: string) => void
 }
 
 export function RightWorkspace({
@@ -50,6 +51,7 @@ export function RightWorkspace({
   renderSideChat,
   renderArtifact,
   onAddFileReference,
+  onOpenFileInContent,
 }: RightWorkspaceProps) {
   const state = useAtomValue(rightWorkspaceStateAtom)
   const activeTab = useAtomValue(rightWorkspaceActiveTabAtom)
@@ -119,7 +121,7 @@ export function RightWorkspace({
   }, [activeTab, sideChats])
 
   const addFileReference = React.useCallback(async (
-    reference: FileReference,
+    reference: MessageReference,
     target: 'main' | 'sideChat',
   ) => {
     if (!onAddFileReference) return
@@ -158,6 +160,7 @@ export function RightWorkspace({
   const createSideChatAction = onCreateSideChat ? createSideChat : undefined
   const openArtifactsAction = artifacts.length > 0 || onOpenArtifacts ? openArtifacts : undefined
   const addFileReferenceAction = onAddFileReference ? addFileReference : undefined
+  const openFileAction = onOpenFileInContent ?? openFile
 
   return (
     <aside
@@ -202,7 +205,7 @@ export function RightWorkspace({
                 scrollTop={state.fileExplorerScrollTop}
                 onExpandedDirectoriesChange={(expandedDirectories) => updateFileExplorer({ expandedDirectories })}
                 onScrollTopChange={(scrollTop) => updateFileExplorer({ scrollTop })}
-                onOpenFile={openFile}
+                onOpenFile={openFileAction}
               />
               <RightWorkspaceResizeSash
                 value={explorerWidth}

@@ -9,6 +9,7 @@ import {
   ChevronRight,
   ChevronDown,
   MoreHorizontal,
+  Pencil,
   RotateCw,
   Flag,
   ListFilter,
@@ -33,7 +34,6 @@ import {
   Info,
   MailOpen,
   FolderKanban,
-  MessageSquare,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -91,20 +91,44 @@ import { useFocusZone } from "@/hooks/keyboard"
 import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
-import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
-import type { FileReference } from '@craft-agent/core/types'
+import type {
+  Session,
+  Workspace,
+  FileAttachment,
+  PermissionRequest,
+  LoadedSource,
+  LoadedSkill,
+  PermissionMode,
+  SourceFilter,
+  AutomationFilter,
+  BrowserSelectionAskPayload,
+} from "../../../shared/types"
+import type {
+  FileReference,
+  MessageReference,
+  WebSelectionReference,
+} from '@craft-agent/core/types'
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
 import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
 import {
   hydrateRightWorkspaceAtom,
+  openRightWorkspaceSideChatTabAtom,
+  rightWorkspaceActiveTabAtom,
   rightWorkspaceContextAtom,
   rightWorkspaceGlobalAtom,
-  showRightWorkspaceReferenceAtom,
+  setRightWorkspaceVisibleAtom,
   showRightWorkspaceArtifactAtom,
   toggleRightWorkspaceAtom,
 } from "@/atoms/right-workspace"
+import {
+  CONTENT_WORKSPACE_MAIN_CHAT_TAB_ID,
+  openContentWorkspaceBrowserAtom,
+  openContentWorkspaceFileAtom,
+  setContentWorkspaceActiveTabAtom,
+  showContentWorkspaceReferenceAtom,
+} from '@/atoms/content-workspace'
 import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuses } from "@/config/session-status-config"
 import { useStatuses } from "@/hooks/useStatuses"
 import { useLabels } from "@/hooks/useLabels"
@@ -147,6 +171,7 @@ import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
+import { RenameDialog } from "@/components/ui/rename-dialog"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
 import SettingsNavigator from "@/pages/settings/SettingsNavigator"
@@ -163,6 +188,10 @@ import {
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
+import {
+  pickSideChatForBrowserSelection,
+  resolveBrowserSelectionSessionRoute,
+} from "./browser-selection-routing"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -546,6 +575,7 @@ function AppShellContent({
     onReset,
     onSendMessage,
     onCreateSession,
+    onAddFileReference,
     openNewChat,
     pendingPermissions,
   } = contextValue
@@ -619,9 +649,14 @@ function AppShellContent({
   const rightWorkspaceGlobal = useAtomValue(rightWorkspaceGlobalAtom)
   const rightWorkspaceContext = useAtomValue(rightWorkspaceContextAtom)
   const hydrateRightWorkspace = useSetAtom(hydrateRightWorkspaceAtom)
+  const openRightWorkspaceSideChat = useSetAtom(openRightWorkspaceSideChatTabAtom)
+  const setRightWorkspaceVisible = useSetAtom(setRightWorkspaceVisibleAtom)
   const toggleRightWorkspace = useSetAtom(toggleRightWorkspaceAtom)
-  const showRightWorkspaceReference = useSetAtom(showRightWorkspaceReferenceAtom)
   const showRightWorkspaceArtifact = useSetAtom(showRightWorkspaceArtifactAtom)
+  const openContentWorkspaceBrowser = useSetAtom(openContentWorkspaceBrowserAtom)
+  const openContentWorkspaceFile = useSetAtom(openContentWorkspaceFileAtom)
+  const setContentWorkspaceActiveTab = useSetAtom(setContentWorkspaceActiveTabAtom)
+  const showContentWorkspaceReference = useSetAtom(showContentWorkspaceReferenceAtom)
 
   useEffect(() => {
     hydrateRightWorkspace({
@@ -633,19 +668,28 @@ function AppShellContent({
   useEffect(() => {
     const openReference = (event: Event) => {
       const reference = (event as CustomEvent<FileReference>).detail
-      if (!reference || !focusedSessionId) return
+      if (!reference || !focusedSessionId || !activeWorkspaceId) return
       const focusedProjectId = store.get(sessionMetaMapAtom).get(focusedSessionId)?.projectId
       if (focusedProjectId && reference.projectId !== focusedProjectId) {
         toast.error('This reference belongs to another Project')
         return
       }
-      if (!showRightWorkspaceReference(reference)) {
+      if (!showContentWorkspaceReference({
+        workspaceId: activeWorkspaceId,
+        sessionId: focusedSessionId,
+        reference,
+      })) {
         toast.error('Could not open the referenced file')
       }
     }
     window.addEventListener('craft:open-file-reference', openReference)
     return () => window.removeEventListener('craft:open-file-reference', openReference)
-  }, [focusedSessionId, showRightWorkspaceReference, store])
+  }, [
+    activeWorkspaceId,
+    focusedSessionId,
+    showContentWorkspaceReference,
+    store,
+  ])
 
   useEffect(() => {
     const openArtifact = (event: Event) => {
@@ -1542,6 +1586,284 @@ function AppShellContent({
     ? !sessionMetaMap.get(focusedSessionId)?.sideChatForSessionId
     : false
 
+  const createSideChatForMain = useCallback(async (mainSessionId: string) => {
+    try {
+      const created = await window.electronAPI.createSideChat(mainSessionId)
+      return { sessionId: created.id, title: getSessionTitle(created) }
+    } catch (error) {
+      toast.error('Could not create side chat', {
+        description: error instanceof Error ? error.message : String(error),
+      })
+      return null
+    }
+  }, [])
+
+  const handleAddLearningReference = useCallback(async (
+    mainSessionId: string,
+    reference: MessageReference,
+    target: 'main' | 'sideChat',
+  ) => {
+    if (target === 'main') {
+      onAddFileReference(mainSessionId, reference)
+      setTimeout(() => focusChatInputForSession(mainSessionId), 50)
+      return
+    }
+    if (!activeWorkspaceId) return
+
+    const workspaceContext = store.get(rightWorkspaceContextAtom)
+    if (
+      workspaceContext.workspaceId !== activeWorkspaceId
+      || workspaceContext.sessionId !== mainSessionId
+    ) {
+      hydrateRightWorkspace({
+        workspaceId: activeWorkspaceId,
+        sessionId: mainSessionId,
+      })
+    }
+
+    const activeRightTab = store.get(rightWorkspaceActiveTabAtom)
+    const activeSideChatId = activeRightTab?.type === 'sideChat'
+      ? activeRightTab.sessionId
+      : null
+    const availableSideChats = workspaceSessionMetasIncludingSideChats
+      .filter(meta => meta.sideChatForSessionId === mainSessionId && !meta.isArchived)
+      .sort((left, right) => (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0))
+    const reusableSideChat = availableSideChats.find(
+      meta => meta.id === activeSideChatId,
+    ) ?? availableSideChats[0]
+    const targetSideChat = reusableSideChat
+      ? { sessionId: reusableSideChat.id, title: getSessionTitle(reusableSideChat) }
+      : await createSideChatForMain(mainSessionId)
+    if (!targetSideChat) return
+
+    onAddFileReference(targetSideChat.sessionId, reference)
+    openRightWorkspaceSideChat(targetSideChat)
+    setRightWorkspaceVisible(true)
+    setTimeout(() => focusChatInputForSession(targetSideChat.sessionId), 50)
+  }, [
+    activeWorkspaceId,
+    createSideChatForMain,
+    focusChatInputForSession,
+    hydrateRightWorkspace,
+    onAddFileReference,
+    openRightWorkspaceSideChat,
+    setRightWorkspaceVisible,
+    store,
+    workspaceSessionMetasIncludingSideChats,
+  ])
+
+  const handledBrowserSelectionAsksRef = useRef(new Set<string>())
+  const handleBrowserSelectionAsk = useCallback(async (payload: BrowserSelectionAskPayload) => {
+    if (!activeWorkspaceId) {
+      toast.error('Open a workspace before asking about this selection')
+      return
+    }
+
+    const eventMatchesWorkspace = !payload.workspaceId
+      || payload.workspaceId === activeWorkspaceId
+      || payload.workspaceId === remoteWorkspaceId
+    if (!eventMatchesWorkspace) {
+      toast.error('This browser is linked to another workspace', {
+        description: 'Switch back to that workspace, then select the passage again.',
+      })
+      return
+    }
+
+    const eventKey = `${payload.eventId}:${payload.target}`
+    const handledEvents = handledBrowserSelectionAsksRef.current
+    if (handledEvents.has(eventKey)) return
+    handledEvents.add(eventKey)
+    if (handledEvents.size > 100) {
+      const oldest = handledEvents.values().next().value
+      if (oldest) handledEvents.delete(oldest)
+    }
+
+    const sessionsById = new Map(
+      workspaceSessionMetasIncludingSideChats.map(meta => [meta.id, meta]),
+    )
+    const route = resolveBrowserSelectionSessionRoute(payload, sessionsById)
+    if (!route.ok) {
+      toast.error(
+        route.reason === 'unbound'
+          ? 'This browser is not linked to a chat'
+          : 'The chat linked to this browser is no longer available',
+        {
+          description: route.reason === 'unbound'
+            ? 'Open the browser from the chat you want to use, then try again.'
+            : 'Return to the original chat and open a new browser window.',
+        },
+      )
+      return
+    }
+
+    if (payload.target === 'main') {
+      onAddFileReference(route.mainSessionId, payload.reference)
+      setContentWorkspaceActiveTab({
+        workspaceId: activeWorkspaceId,
+        sessionId: route.mainSessionId,
+        tabId: CONTENT_WORKSPACE_MAIN_CHAT_TAB_ID,
+      })
+      navigateToSessionInPanel(route.mainSessionId)
+      setTimeout(() => focusChatInputForSession(route.mainSessionId), 50)
+      return
+    }
+
+    navigateToSessionInPanel(route.mainSessionId)
+    const workspaceContext = store.get(rightWorkspaceContextAtom)
+    if (
+      workspaceContext.workspaceId !== activeWorkspaceId
+      || workspaceContext.sessionId !== route.mainSessionId
+    ) {
+      // Load this main chat's persisted workspace state before choosing a
+      // fallback so its last active side-chat tab wins over recency.
+      hydrateRightWorkspace({
+        workspaceId: activeWorkspaceId,
+        sessionId: route.mainSessionId,
+      })
+    }
+    const activeRightTab = store.get(rightWorkspaceActiveTabAtom)
+    const reusableSideChat = pickSideChatForBrowserSelection(
+      route,
+      workspaceSessionMetasIncludingSideChats,
+      activeRightTab?.type === 'sideChat' ? activeRightTab.sessionId : null,
+    )
+    const targetSideChat = reusableSideChat
+      ? { sessionId: reusableSideChat.id, title: getSessionTitle(reusableSideChat) }
+      : await createSideChatForMain(route.mainSessionId)
+    if (!targetSideChat) return
+
+    onAddFileReference(targetSideChat.sessionId, payload.reference)
+    openRightWorkspaceSideChat(targetSideChat)
+    setRightWorkspaceVisible(true)
+    focusChatInputForSession(targetSideChat.sessionId)
+  }, [
+    activeWorkspaceId,
+    createSideChatForMain,
+    focusChatInputForSession,
+    hydrateRightWorkspace,
+    navigateToSessionInPanel,
+    onAddFileReference,
+    openRightWorkspaceSideChat,
+    remoteWorkspaceId,
+    setRightWorkspaceVisible,
+    setContentWorkspaceActiveTab,
+    store,
+    workspaceSessionMetasIncludingSideChats,
+  ])
+
+  useEffect(() => {
+    return window.electronAPI.browserPane.onSelectionAsk((payload) => {
+      void handleBrowserSelectionAsk(payload)
+    })
+  }, [handleBrowserSelectionAsk])
+
+  const handleOpenWebReference = useCallback(async (
+    reference: WebSelectionReference,
+    sourceSessionId?: string,
+  ) => {
+    if (!activeWorkspaceId) {
+      toast.error('Open a workspace before opening this web reference')
+      return
+    }
+
+    const sourceSession = sourceSessionId
+      ? workspaceSessionMetasIncludingSideChats.find(meta => meta.id === sourceSessionId)
+      : undefined
+    const mainSessionId = sourceSession?.sideChatForSessionId
+      ?? sourceSessionId
+      ?? focusedSessionId
+    if (!mainSessionId) {
+      toast.error('Open a chat before opening this web reference')
+      return
+    }
+
+    try {
+      const result = await window.electronAPI.browserPane.revealSelection(
+        reference,
+        mainSessionId,
+      )
+      if (!result.ok || !result.instanceId) {
+        toast.error('Could not open the referenced web selection')
+        return
+      }
+
+      navigateToSessionInPanel(mainSessionId)
+      if (!openContentWorkspaceBrowser({
+        workspaceId: activeWorkspaceId,
+        sessionId: mainSessionId,
+        instanceId: result.instanceId,
+        title: reference.title,
+      })) {
+        toast.error('Could not open the browser in this workspace')
+        return
+      }
+
+      if (result.found === false) {
+        toast.info('The page opened, but the selected text has changed')
+      }
+    } catch (error) {
+      toast.error('Could not open the referenced web selection', {
+        description: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }, [
+    activeWorkspaceId,
+    focusedSessionId,
+    navigateToSessionInPanel,
+    openContentWorkspaceBrowser,
+    workspaceSessionMetasIncludingSideChats,
+  ])
+
+  useEffect(() => {
+    const openWebReference = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        reference?: WebSelectionReference
+        sessionId?: string
+      }>).detail
+      if (!detail?.reference) return
+      void handleOpenWebReference(detail.reference, detail.sessionId)
+    }
+    window.addEventListener('craft:open-web-reference', openWebReference)
+    return () => window.removeEventListener('craft:open-web-reference', openWebReference)
+  }, [handleOpenWebReference])
+
+  useEffect(() => {
+    const openBrowserInstance = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        instanceId?: string
+        sessionId?: string
+        title?: string
+      }>).detail
+      if (!detail?.instanceId || !activeWorkspaceId) return
+
+      const sourceSession = detail.sessionId
+        ? workspaceSessionMetasIncludingSideChats.find(meta => meta.id === detail.sessionId)
+        : undefined
+      const mainSessionId = sourceSession?.sideChatForSessionId
+        ?? detail.sessionId
+        ?? focusedSessionId
+      if (!mainSessionId) return
+
+      navigateToSessionInPanel(mainSessionId)
+      if (!openContentWorkspaceBrowser({
+        workspaceId: activeWorkspaceId,
+        sessionId: mainSessionId,
+        instanceId: detail.instanceId,
+        title: detail.title,
+      })) {
+        toast.error('Could not open the browser in this workspace')
+      }
+    }
+    window.addEventListener('craft:open-browser-instance', openBrowserInstance)
+    return () => window.removeEventListener('craft:open-browser-instance', openBrowserInstance)
+  }, [
+    activeWorkspaceId,
+    focusedSessionId,
+    navigateToSessionInPanel,
+    openContentWorkspaceBrowser,
+    workspaceSessionMetasIncludingSideChats,
+  ])
+
   const refreshWorkspaceUnreadMap = useCallback(async () => {
     try {
       const summary = await window.electronAPI.getUnreadSummary()
@@ -1835,6 +2157,7 @@ function AppShellContent({
     sessionStatuses: effectiveSessionStatuses,
     onSessionSourcesChange: handleSessionSourcesChange,
     onJumpToTaskSessions: handleJumpToTaskSessions,
+    onAddLearningReference: handleAddLearningReference,
     rightSidebarButton: null,
     isCompactMode: isAutoCompact,
     // Search state for ChatDisplay highlighting
@@ -1849,7 +2172,7 @@ function AppShellContent({
     automationTestResults,
     getAutomationHistory,
     onReplayAutomation: handleReplayAutomation,
-  }), [contextValue, handleDeleteSession, sources, skills, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
+  }), [contextValue, handleDeleteSession, sources, skills, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, handleAddLearningReference, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {
@@ -2132,6 +2455,34 @@ function AppShellContent({
   // The previous flow auto-created with the default name and produced ugly
   // permanent slugs (new-project, new-project-1, …).
   const [createProjectDialogOpen, setCreateProjectDialogOpen] = useState(false)
+  const [sidebarRenameSessionId, setSidebarRenameSessionId] = useState<string | null>(null)
+  const [sidebarRenameSessionName, setSidebarRenameSessionName] = useState("")
+  const [sidebarRenameDialogOpen, setSidebarRenameDialogOpen] = useState(false)
+
+  const openSidebarSessionRename = useCallback((sessionId: string, currentName: string) => {
+    setSidebarRenameSessionId(sessionId)
+    setSidebarRenameSessionName(currentName)
+    requestAnimationFrame(() => setSidebarRenameDialogOpen(true))
+  }, [])
+
+  const handleSidebarSessionRename = useCallback(() => {
+    const name = sidebarRenameSessionName.trim()
+    if (sidebarRenameSessionId && name) {
+      onRenameSession(sidebarRenameSessionId, name)
+    }
+    setSidebarRenameDialogOpen(false)
+    setSidebarRenameSessionId(null)
+    setSidebarRenameSessionName("")
+  }, [onRenameSession, sidebarRenameSessionId, sidebarRenameSessionName])
+
+  const handleSidebarRenameDialogOpenChange = useCallback((open: boolean) => {
+    setSidebarRenameDialogOpen(open)
+    if (!open) {
+      setSidebarRenameSessionId(null)
+      setSidebarRenameSessionName("")
+    }
+  }, [])
+
   const openAddProject = useCallback(() => {
     if (!activeWorkspace?.id) return
     setCreateProjectDialogOpen(true)
@@ -2217,19 +2568,35 @@ function AppShellContent({
     }
   }, [activeWorkspaceId, focusZone, onCreateSession, t])
 
-  // Create a brand new dedicated browser window and focus it.
-  // Intentionally unbound: this action should always create a NEW window.
+  // Manual learning browsers live in the focused session's center workspace.
+  // Agent/remote browser instances keep using Craft's standalone window path.
   const handleNewBrowserWindow = useCallback(async () => {
     try {
+      if (!activeWorkspaceId || !focusedSessionId) {
+        const instanceId = await window.electronAPI.browserPane.create({ show: true })
+        await window.electronAPI.browserPane.focus(instanceId)
+        return
+      }
+
       const instanceId = await window.electronAPI.browserPane.create({
-        show: true,
+        show: false,
+        selectionSessionId: focusedSessionId,
       })
-      await window.electronAPI.browserPane.focus(instanceId)
+      const opened = openContentWorkspaceBrowser({
+        workspaceId: activeWorkspaceId,
+        sessionId: focusedSessionId,
+        instanceId,
+        title: 'New tab',
+      })
+      if (!opened) {
+        await window.electronAPI.browserPane.destroy(instanceId)
+        throw new Error('Could not open the browser tab')
+      }
     } catch (error) {
-      console.error('[Chat] Failed to create browser window:', error)
+      console.error('[Chat] Failed to create browser:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
-  }, [])
+  }, [activeWorkspaceId, focusedSessionId, openContentWorkspaceBrowser, t])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -2839,19 +3206,31 @@ function AppShellContent({
                           expandable: projectSessions.length > 0,
                           expanded: isExpanded(projectItemId),
                           onToggle: () => toggleExpanded(projectItemId),
-                          items: projectSessions.map(projectSession => ({
-                            id: `nav:project-session:${projectSession.id}`,
-                            title: getSessionTitle(projectSession),
-                            icon: MessageSquare,
-                            compact: true,
-                            variant: (
-                              isProjectsNavigation(navState)
-                              && navState.details?.sessionId === projectSession.id
-                            ) ? "default" as const : "ghost" as const,
-                            onClick: () => navigate(
-                              routes.view.projectSession(p.config.slug, projectSession.id),
-                            ),
-                          })),
+                          items: projectSessions.map(projectSession => {
+                            const title = getSessionTitle(projectSession)
+                            const onRename = () => openSidebarSessionRename(projectSession.id, title)
+                            return {
+                              id: `nav:project-session:${projectSession.id}`,
+                              title,
+                              compact: true,
+                              variant: (
+                                isProjectsNavigation(navState)
+                                && navState.details?.sessionId === projectSession.id
+                              ) ? "default" as const : "ghost" as const,
+                              onClick: () => navigate(
+                                routes.view.projectSession(p.config.slug, projectSession.id),
+                              ),
+                              contextMenu: {
+                                type: 'session' as const,
+                                onRename,
+                              },
+                              quickAction: {
+                                label: t("session.renameSession"),
+                                icon: <Pencil className="h-3.5 w-3.5" />,
+                                onClick: onRename,
+                              },
+                            }
+                          }),
                         }
                       }),
                     },
@@ -3829,7 +4208,11 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || hideProjectsNavigator ? 0 : sessionListWidth)}
+          navigatorWidth={isAutoCompact
+            ? sessionListWidth
+            : (effectiveSidebarAndNavigatorHidden || isBoardView || hideProjectsNavigator || isRightWorkspaceVisible
+                ? 0
+                : sessionListWidth)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
           isRightSidebarVisible={isRightWorkspaceVisible}
           isCompact={isAutoCompact}
@@ -3841,21 +4224,22 @@ function AppShellContent({
             workspaceId={activeWorkspaceId}
             sessionId={focusedSessionId}
             sideChats={focusedSideChats}
-            onCreateSideChat={canCreateFocusedSideChat ? async () => {
-              try {
-                const created = await window.electronAPI.createSideChat(focusedSessionId)
-                return { sessionId: created.id, title: getSessionTitle(created) }
-              } catch (error) {
-                toast.error('Could not create side chat', {
-                  description: error instanceof Error ? error.message : String(error),
-                })
-                return null
-              }
-            } : undefined}
+            onCreateSideChat={canCreateFocusedSideChat
+              ? () => createSideChatForMain(focusedSessionId)
+              : undefined}
             renderSideChat={(sideChatSessionId) => (
               <EmbeddedSideChat sessionId={sideChatSessionId} active />
             )}
             onAddFileReference={contextValue.onAddFileReference}
+            onOpenFileInContent={(path) => {
+              if (!openContentWorkspaceFile({
+                workspaceId: activeWorkspaceId,
+                sessionId: focusedSessionId,
+                path,
+              })) {
+                toast.error('Could not open the selected file')
+              }
+            }}
           />
         )}
 
@@ -3893,7 +4277,7 @@ function AppShellContent({
         )}
 
         {/* Session List Resize Handle (absolute, hidden in focused mode and board view) */}
-        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !hideProjectsNavigator && (
+        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !hideProjectsNavigator && !isRightWorkspaceVisible && (
         <div
           ref={sessionListHandleRef}
           onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}
@@ -4151,6 +4535,16 @@ function AppShellContent({
         open={createProjectDialogOpen}
         onCancel={() => setCreateProjectDialogOpen(false)}
         onSubmit={handleCreateProjectSubmit}
+      />
+
+      <RenameDialog
+        open={sidebarRenameDialogOpen}
+        onOpenChange={handleSidebarRenameDialogOpenChange}
+        title={t("session.renameSession")}
+        value={sidebarRenameSessionName}
+        onValueChange={setSidebarRenameSessionName}
+        onSubmit={handleSidebarSessionRename}
+        placeholder={t("session.enterSessionName")}
       />
 
       {/* Messaging dialogs (pairing-code + WA connect) — driven by messagingDialogAtom.

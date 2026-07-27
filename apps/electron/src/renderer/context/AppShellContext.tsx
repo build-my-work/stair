@@ -29,7 +29,7 @@ import type { SessionStatus as SessionStatusConfig } from '@/config/session-stat
 import type { SessionOptions, SessionOptionUpdates } from '../hooks/useSessionOptions'
 import { defaultSessionOptions } from '../hooks/useSessionOptions'
 import { sessionAtomFamily } from '../atoms/sessions'
-import type { FileReference } from '@craft-agent/core/types'
+import type { MessageReference } from '@craft-agent/core/types'
 
 export interface AppShellContextType {
   // Data
@@ -133,8 +133,14 @@ export interface AppShellContextType {
   // Attachment draft callback — persists attachment refs per session
   onAttachmentsChange: (sessionId: string, attachments: FileAttachment[]) => void
 
-  /** Append a durable project-file citation to a session composer draft. */
-  onAddFileReference: (sessionId: string, reference: FileReference) => void
+  /** Append a durable source citation to a session composer draft. */
+  onAddFileReference: (sessionId: string, reference: MessageReference) => void
+  /** Route a reading selection to the main composer or its auxiliary side chat. */
+  onAddLearningReference?: (
+    mainSessionId: string,
+    reference: MessageReference,
+    target: 'main' | 'sideChat',
+  ) => void
 
   // Source selection callback (per-session) - provided by AppShell component
   onSessionSourcesChange?: (sessionId: string, sourceSlugs: string[]) => void

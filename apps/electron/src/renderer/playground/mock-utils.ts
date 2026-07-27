@@ -260,6 +260,12 @@ export const mockElectronAPI = {
     focus: async (instanceId: string) => {
       console.log('[Playground] browserPane.focus called:', instanceId)
     },
+    revealSelection: async () => ({
+      ok: true,
+      found: false,
+      reason: 'selection_not_found' as const,
+    }),
+    onSelectionAsk: () => () => {},
   },
 
   openFile: async (path: string) => {

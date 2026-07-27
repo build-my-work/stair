@@ -20,6 +20,7 @@ import type {
   ContentBadge,
   ToolDisplayMeta,
   AnnotationV1,
+  WebSelectionReference,
 } from '@craft-agent/core/types';
 
 // Mode types from dedicated subpath export (avoids pulling in SDK)
@@ -44,7 +45,12 @@ export type {
   ContentBadge,
   ToolDisplayMeta,
   AnnotationV1,
+  WebSelectionReference,
 };
+
+export type {
+  BrowserSelectionAskPayload,
+} from './browser-selection';
 
 // Auth types for onboarding
 import type { AuthState, SetupNeeds } from '@craft-agent/shared/auth/types';
@@ -108,6 +114,8 @@ export interface BrowserPaneCreateOptions {
   id?: string
   show?: boolean
   bindToSessionId?: string
+  /** Durable destination for selected-page citations without changing browser ownership/reuse. */
+  selectionSessionId?: string
 }
 
 /**
@@ -641,10 +649,24 @@ export interface ElectronAPI {
     reload(id: string): Promise<void>
     stop(id: string): Promise<void>
     focus(id: string): Promise<void>
+    /**
+     * Move a manual browser's native views into the calling Craft window.
+     * Bounds are relative to that BrowserWindow's content area.
+     */
+    attach(id: string, bounds: import('@craft-agent/shared/protocol').BrowserPaneHostBounds): Promise<void>
+    /** Return an embedded browser to its hidden standalone parking window. */
+    detach(id: string): Promise<void>
+    /** Resize/reposition an embedded browser inside its current Craft window. */
+    updateBounds(id: string, bounds: import('@craft-agent/shared/protocol').BrowserPaneHostBounds): Promise<void>
+    revealSelection(
+      reference: WebSelectionReference,
+      selectionSessionId?: string,
+    ): Promise<import('./browser-selection').BrowserSelectionRevealResult>
     emptyStateLaunch(payload: BrowserEmptyStateLaunchPayload): Promise<BrowserEmptyStateLaunchResult>
     onStateChanged(callback: (info: BrowserInstanceInfo) => void): () => void
     onRemoved(callback: (id: string) => void): () => void
     onInteracted(callback: (id: string) => void): () => void
+    onSelectionAsk(callback: (payload: import('./browser-selection').BrowserSelectionAskPayload) => void): () => void
   }
 
   // LLM Connections (provider configurations)

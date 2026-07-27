@@ -12,8 +12,13 @@
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { BookOpenText, Clock } from 'lucide-react'
-import type { StoredAttachment, ContentBadge, FileReference } from '@craft-agent/core'
+import { BookOpenText, Clock, Globe2 } from 'lucide-react'
+import {
+  isWebSelectionReference,
+  type ContentBadge,
+  type MessageReference,
+  type StoredAttachment,
+} from '@craft-agent/core'
 import { normalizePath } from '@craft-agent/core/utils'
 import { cn } from '../../lib/utils'
 import { Markdown } from '../markdown'
@@ -315,10 +320,12 @@ export interface UserMessageBubbleProps {
   attachments?: StoredAttachment[]
   /** Content badges for inline display (sources, skills) */
   badges?: ContentBadge[]
-  /** Durable project-file citations attached to the message. */
-  references?: FileReference[]
+  /** Durable source citations attached to the message. */
+  references?: MessageReference[]
   /** Reopen a citation at its precise locator. */
-  onReferenceClick?: (reference: FileReference) => void
+  onReferenceClick?: (reference: MessageReference) => void
+  /** Optional per-reference capability check for platform-specific viewers. */
+  canOpenReference?: (reference: MessageReference) => boolean
   /** Whether the message is awaiting backend confirmation. User bubbles stay visually stable. */
   isPending?: boolean
   /** Whether the message is queued (badge shown) */
@@ -342,6 +349,7 @@ export function UserMessageBubble({
   badges,
   references,
   onReferenceClick,
+  canOpenReference,
   isQueued,
   compactMode,
 }: UserMessageBubbleProps) {
@@ -479,19 +487,28 @@ export function UserMessageBubble({
 
       {hasReferences && (
         <div className="flex max-w-[80%] flex-wrap justify-end gap-1.5">
-          {references.map((reference, index) => (
-            <button
-              key={`${reference.path}:${index}`}
-              type="button"
-              className="flex max-w-[240px] items-center gap-1.5 rounded-md bg-user-message-bubble px-2.5 py-1.5 text-[11px] text-muted-foreground shadow-minimal transition-colors hover:text-foreground disabled:pointer-events-none"
-              disabled={!onReferenceClick}
-              title={reference.path}
-              onClick={() => onReferenceClick?.(reference)}
-            >
-              <BookOpenText className="size-3.5 shrink-0" />
-              <span className="truncate">{reference.path.split('/').at(-1) ?? reference.path}</span>
-            </button>
-          ))}
+          {references.map((reference, index) => {
+            const webSelection = isWebSelectionReference(reference)
+            const source = webSelection ? reference.url : reference.path
+            const label = webSelection
+              ? reference.title
+              : (reference.path.split('/').at(-1) ?? reference.path)
+            return (
+              <button
+                key={`${source}:${index}`}
+                type="button"
+                className="flex max-w-[240px] items-center gap-1.5 rounded-md bg-user-message-bubble px-2.5 py-1.5 text-[11px] text-muted-foreground shadow-minimal transition-colors hover:text-foreground disabled:pointer-events-none"
+                disabled={!onReferenceClick || canOpenReference?.(reference) === false}
+                title={source}
+                onClick={() => onReferenceClick?.(reference)}
+              >
+                {webSelection
+                  ? <Globe2 className="size-3.5 shrink-0" />
+                  : <BookOpenText className="size-3.5 shrink-0" />}
+                <span className="truncate">{label}</span>
+              </button>
+            )
+          })}
         </div>
       )}
 

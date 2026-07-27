@@ -74,7 +74,7 @@ describe('right workspace state', () => {
     expect(afterLastClose.expandedDirectories).toEqual(['books'])
   })
 
-  it('restores valid state, removes duplicate file tabs, and repairs a stale active id', () => {
+  it('migrates legacy file tabs out of the right sidebar and repairs a stale active id', () => {
     const restored = parsePersistedRightWorkspaceSession({
       version: RIGHT_WORKSPACE_STATE_VERSION,
       tabs: [
@@ -89,9 +89,10 @@ describe('right workspace state', () => {
       fileExplorerScrollTop: 48,
     })
 
-    expect(restored.tabs).toHaveLength(2)
-    expect(restored.tabs[0]).toMatchObject({ id: 'file-1', path: 'book.epub' })
-    expect(restored.activeTabId).toBe('file-1')
+    expect(restored.tabs).toEqual([
+      { id: 'chat-1', type: 'sideChat', sessionId: 'side-1', title: 'Questions' },
+    ])
+    expect(restored.activeTabId).toBe('chat-1')
     expect(restored.fileExplorerWidth).toBe(420)
     expect(restored.expandedDirectories).toEqual(['chapters'])
     expect(restored.fileExplorerScrollTop).toBe(48)
@@ -114,7 +115,7 @@ describe('right workspace state', () => {
       version: RIGHT_WORKSPACE_STATE_VERSION,
       visible: true,
       width: 9999,
-    })).toEqual({ visible: true, width: 760 })
+    })).toEqual({ visible: true, width: 640 })
   })
 
   it('reveals a file only when a focused workspace session is available', () => {

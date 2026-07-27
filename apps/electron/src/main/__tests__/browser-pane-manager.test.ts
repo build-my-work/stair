@@ -6,22 +6,32 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
+import type { WebSelectionReference } from '@craft-agent/core/types'
 
 const createdWindows: any[] = []
 let toolbarLoadFailuresRemaining = 0
+let failNextEmptyStateLoadAfterYield = false
 const mockShellOpenExternal = mock(async () => {})
 const mockIpcMainHandle = mock(() => {})
+const mockIpcMainOn = mock(() => {})
+let webContentsIdCounter = 0
 
 function createMockWebContents() {
   const listeners: Record<string, Function[]> = {}
   let currentUrl = 'about:blank'
+  const mainFrame = {}
   return {
+    id: ++webContentsIdCounter,
+    mainFrame,
     userAgent: 'Mock Chrome Electron/99.0.0',
     session: {},
     isDestroyed: mock(() => false),
     on: (event: string, cb: Function) => {
       if (!listeners[event]) listeners[event] = []
       listeners[event].push(cb)
+    },
+    removeListener: (event: string, cb: Function) => {
+      listeners[event] = (listeners[event] || []).filter(fn => fn !== cb)
     },
     loadURL: mock(async (url: string) => {
       currentUrl = url
@@ -32,6 +42,11 @@ function createMockWebContents() {
       }
     }),
     loadFile: mock(async (_path: string, _opts?: unknown) => {
+      if (failNextEmptyStateLoadAfterYield && _path.includes('browser-empty-state.html')) {
+        failNextEmptyStateLoadAfterYield = false
+        await Promise.resolve()
+        throw new Error('mock superseded empty-state load')
+      }
       if (toolbarLoadFailuresRemaining > 0) {
         toolbarLoadFailuresRemaining--
         throw new Error('mock toolbar load failure')
@@ -47,6 +62,7 @@ function createMockWebContents() {
     stop: mock(() => {}),
     setUserAgent: mock(() => {}),
     setBackgroundColor: mock(() => {}),
+    getZoomFactor: mock(() => 1),
     capturePage: mock(async () => {
       const img = {
         isEmpty: () => false,
@@ -71,6 +87,7 @@ function createMockWebContents() {
     _emit: (event: string, ...args: any[]) => {
       for (const cb of listeners[event] || []) cb({}, ...args)
     },
+    _listenerCount: (event: string) => (listeners[event] || []).length,
   }
 }
 
@@ -102,12 +119,19 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
         listeners[event] = (listeners[event] || []).filter(fn => fn !== wrapped)
         cb(...args)
       }
+      ;(wrapped as Function & { listener?: Function }).listener = cb
       if (!listeners[event]) listeners[event] = []
       listeners[event].push(wrapped)
+    },
+    removeListener: (event: string, cb: Function) => {
+      listeners[event] = (listeners[event] || []).filter(
+        fn => fn !== cb && (fn as Function & { listener?: Function }).listener !== cb,
+      )
     },
     _emit: (event: string, ...args: any[]) => {
       for (const cb of listeners[event] || []) cb(...args)
     },
+    _listenerCount: (event: string) => (listeners[event] || []).length,
     isDestroyed: mock(() => false),
     isMinimized: mock(() => false),
     restore: mock(() => {}),
@@ -123,6 +147,7 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     }),
     setBrowserView: mock((_view: any) => {}),
     addBrowserView: mock((_view: any) => {}),
+    removeBrowserView: mock((_view: any) => {}),
     setTopBrowserView: mock((_view: any) => {}),
     getContentSize: mock(() => [contentWidth, contentHeight]),
     setContentSize: mock((width: number, height: number) => {
@@ -146,6 +171,9 @@ mock.module('electron', () => ({
       this.webContents = win.webContents
       Object.assign(this, win)
     }
+    static getFocusedWindow() {
+      return null
+    }
   },
   BrowserView: class MockBrowserView {
     webContents: any
@@ -157,6 +185,7 @@ mock.module('electron', () => ({
   },
   ipcMain: {
     handle: mockIpcMainHandle,
+    on: mockIpcMainOn,
   },
   Menu: {
     buildFromTemplate: mock(() => ({
@@ -244,8 +273,10 @@ describe('BrowserPaneManager', () => {
   beforeEach(() => {
     createdWindows.length = 0
     toolbarLoadFailuresRemaining = 0
+    failNextEmptyStateLoadAfterYield = false
     mockShellOpenExternal.mockClear()
     mockIpcMainHandle.mockClear()
+    mockIpcMainOn.mockClear()
     manager = new BrowserPaneManager()
   })
 
@@ -264,6 +295,616 @@ describe('BrowserPaneManager', () => {
     expect(first).toBe('same-id')
     expect(second).toBe('same-id')
     expect(manager.listInstances()).toHaveLength(1)
+  })
+
+  it('embeds a manual browser in the calling Craft window and parks it on detach', () => {
+    const hostWindow = createMockWindow({ width: 1440, height: 900 })
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+
+    manager.createInstance('embedded-manual', {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+    })
+    const instance = (manager as any).instances.get('embedded-manual')
+    instance.window.addBrowserView.mockClear()
+    instance.window.removeBrowserView.mockClear()
+    instance.toolbarView.setBounds.mockClear()
+    instance.pageView.setBounds.mockClear()
+
+    manager.attachToHost('embedded-manual', hostWindow.webContents.id, {
+      x: 240,
+      y: 64,
+      width: 900,
+      height: 700,
+    })
+
+    expect(instance.window.hide).toHaveBeenCalled()
+    expect(instance.window.removeBrowserView).toHaveBeenCalledTimes(3)
+    expect(hostWindow.addBrowserView).toHaveBeenCalledTimes(3)
+    expect(instance.toolbarView.setBounds).toHaveBeenLastCalledWith({
+      x: 240,
+      y: 64,
+      width: 900,
+      height: 48,
+    })
+    expect(instance.pageView.setBounds).toHaveBeenLastCalledWith({
+      x: 240,
+      y: 112,
+      width: 900,
+      height: 652,
+    })
+    expect(manager.listInstances()[0]).toMatchObject({
+      hostMode: 'embedded',
+      isVisible: true,
+    })
+
+    manager.updateHostBounds('embedded-manual', {
+      x: 200,
+      y: 80,
+      width: 760,
+      height: 620,
+    })
+    expect(instance.pageView.setBounds).toHaveBeenLastCalledWith({
+      x: 200,
+      y: 128,
+      width: 760,
+      height: 572,
+    })
+
+    instance.window.addBrowserView.mockClear()
+    hostWindow.removeBrowserView.mockClear()
+    manager.hide('embedded-manual')
+    expect(instance.embeddedAttached).toBe(true)
+    expect(hostWindow.removeBrowserView).not.toHaveBeenCalled()
+
+    instance.pendingShowOnReady = true
+    instance.pendingShowToken = 4
+    manager.detachFromHost('embedded-manual')
+
+    expect(hostWindow.removeBrowserView).toHaveBeenCalledTimes(3)
+    expect(instance.window.addBrowserView).toHaveBeenCalledTimes(3)
+    expect(instance.pendingShowOnReady).toBe(false)
+    expect(instance.pendingShowToken).toBe(5)
+    expect(manager.listInstances()[0]).toMatchObject({
+      hostMode: 'embedded',
+      isVisible: false,
+    })
+  })
+
+  it('focuses and reattaches an embedded browser to its Craft host', () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    manager.createInstance('embedded-focus', {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+    })
+    const instance = (manager as any).instances.get('embedded-focus')
+    instance.toolbarReady = true
+
+    manager.attachToHost('embedded-focus', hostWindow.webContents.id, {
+      x: 200,
+      y: 0,
+      width: 800,
+      height: 700,
+    })
+    manager.detachFromHost('embedded-focus')
+    hostWindow.addBrowserView.mockClear()
+
+    manager.focus('embedded-focus')
+
+    expect(hostWindow.addBrowserView).toHaveBeenCalledTimes(3)
+    expect(hostWindow.show).toHaveBeenCalled()
+    expect(hostWindow.focus).toHaveBeenCalled()
+    expect(instance.pageView.webContents.focus).toHaveBeenCalled()
+    expect(instance.window.show).not.toHaveBeenCalled()
+  })
+
+  it('scales renderer CSS bounds into host-window DIP at non-default zoom', () => {
+    const hostWindow = createMockWindow()
+    hostWindow.webContents.getZoomFactor = mock(() => 1.5)
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    manager.createInstance('embedded-zoom', { workspaceId: 'ws-learning' })
+    const instance = (manager as any).instances.get('embedded-zoom')
+
+    manager.attachToHost('embedded-zoom', hostWindow.webContents.id, {
+      x: 100,
+      y: 40,
+      width: 600,
+      height: 400,
+    })
+
+    expect(instance.toolbarView.setBounds).toHaveBeenLastCalledWith({
+      x: 150,
+      y: 60,
+      width: 900,
+      height: 48,
+    })
+    expect(instance.pageView.setBounds).toHaveBeenLastCalledWith({
+      x: 150,
+      y: 108,
+      width: 900,
+      height: 552,
+    })
+  })
+
+  it('rejects cross-window reparent and ignores a stale host detach', () => {
+    const firstHost = createMockWindow()
+    const secondHost = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [
+        { window: firstHost, workspaceId: 'ws-learning' },
+        { window: secondHost, workspaceId: 'ws-learning' },
+      ],
+    } as any)
+    manager.createInstance('embedded-host-owner', { workspaceId: 'ws-learning' })
+
+    manager.attachToHost('embedded-host-owner', firstHost.webContents.id, {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 700,
+    })
+
+    expect(() => manager.attachToHost(
+      'embedded-host-owner',
+      secondHost.webContents.id,
+      { x: 0, y: 0, width: 800, height: 700 },
+    )).toThrow('belongs to another Craft window')
+    expect(() => manager.destroyInstance(
+      'embedded-host-owner',
+      secondHost.webContents.id,
+    )).toThrow('belongs to another Craft window')
+    expect(manager.listInstances()).toHaveLength(1)
+    manager.detachFromHost('embedded-host-owner', secondHost.webContents.id)
+    expect((manager as any).instances.get('embedded-host-owner').embeddedAttached).toBe(true)
+    expect(() => manager.updateHostBounds(
+      'embedded-host-owner',
+      { x: 0, y: 0, width: 700, height: 600 },
+      secondHost.webContents.id,
+    )).toThrow('belongs to another Craft window')
+
+    manager.detachFromHost('embedded-host-owner', firstHost.webContents.id)
+    expect(() => manager.attachToHost(
+      'embedded-host-owner',
+      secondHost.webContents.id,
+      { x: 0, y: 0, width: 800, height: 700 },
+    )).toThrow('belongs to another Craft window')
+    manager.destroyInstance('embedded-host-owner', firstHost.webContents.id)
+    expect(manager.listInstances()).toHaveLength(0)
+  })
+
+  it('returns an embedded citation for the renderer to activate without stale reattachment', async () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    manager.createInstance('embedded-reveal', {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+    })
+    const instance = (manager as any).instances.get('embedded-reveal')
+    instance.toolbarReady = true
+    await instance.pageView.webContents.loadURL('https://example.com/lesson')
+    instance.pageView.webContents.executeJavaScript = mock(async () => true)
+    manager.attachToHost('embedded-reveal', hostWindow.webContents.id, {
+      x: 200,
+      y: 0,
+      width: 800,
+      height: 700,
+    })
+    manager.detachFromHost('embedded-reveal')
+    hostWindow.focus.mockClear()
+    instance.window.show.mockClear()
+
+    const result = await manager.revealSelection({
+      kind: 'web-selection',
+      url: 'https://example.com/lesson',
+      title: 'Lesson',
+      quote: 'system call',
+      locator: { type: 'text-quote', exact: 'system call' },
+    }, {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+      selectionSessionId: 'main-session',
+    })
+
+    expect(result).toMatchObject({ ok: true, found: true, instanceId: 'embedded-reveal' })
+    expect(instance.selectionSessionId).toBe('main-session')
+    expect(hostWindow.focus).not.toHaveBeenCalled()
+    expect(instance.embeddedAttached).toBe(false)
+    expect(instance.window.show).not.toHaveBeenCalled()
+  })
+
+  it('keeps a locally-created citation browser hidden until the renderer attaches it', async () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+
+    const result = await manager.revealSelection({
+      kind: 'web-selection',
+      url: 'https://example.com/new-citation',
+      title: 'New citation',
+      quote: 'selected passage',
+      locator: { type: 'text-quote', exact: 'selected passage' },
+    }, {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+      selectionSessionId: 'main-session',
+    })
+
+    expect(result).toMatchObject({ ok: true })
+    const instance = (manager as any).instances.get(result.instanceId)
+    expect(instance.selectionSessionId).toBe('main-session')
+    expect(instance.embeddedHostWebContentsId).toBe(hostWindow.webContents.id)
+    expect(hostWindow._listenerCount('closed')).toBe(1)
+    expect(instance.window.show).not.toHaveBeenCalled()
+  })
+
+  it('destroys a center-workspace browser if Craft reloads before its first attach', () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    manager.createInstance('pending-center-browser', {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+      selectionSessionId: 'main-session',
+    })
+
+    const instance = (manager as any).instances.get('pending-center-browser')
+    expect(instance).toMatchObject({
+      hostMode: 'standalone',
+      embeddedAttached: false,
+      embeddedHostWebContentsId: hostWindow.webContents.id,
+    })
+
+    hostWindow.webContents._emit(
+      'did-start-navigation',
+      'http://localhost:5173/?workspace=ws-learning',
+      false,
+      true,
+    )
+
+    expect(instance.window.destroy).toHaveBeenCalled()
+    expect(manager.listInstances()).toHaveLength(0)
+  })
+
+  it('destroys a revealed citation if Craft closes before the renderer attaches it', async () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+
+    const result = await manager.revealSelection({
+      kind: 'web-selection',
+      url: 'https://example.com/pending-citation',
+      title: 'Pending citation',
+      quote: 'selected passage',
+      locator: { type: 'text-quote', exact: 'selected passage' },
+    }, {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+      selectionSessionId: 'main-session',
+    })
+    const instance = (manager as any).instances.get(result.instanceId)
+
+    expect(instance.embeddedAttached).toBe(false)
+    hostWindow._emit('closed')
+
+    expect(instance.window.destroy).toHaveBeenCalled()
+    expect(manager.listInstances()).toHaveLength(0)
+  })
+
+  it('reserves a reused manual browser before revealing it in the center workspace', async () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    manager.createInstance('legacy-manual-browser', {
+      show: true,
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+    })
+    const instance = (manager as any).instances.get('legacy-manual-browser')
+    await instance.pageView.webContents.loadURL('https://example.com/reused-citation')
+    expect(instance.embeddedHostWebContentsId).toBeNull()
+
+    const result = await manager.revealSelection({
+      kind: 'web-selection',
+      url: 'https://example.com/reused-citation',
+      title: 'Reused citation',
+      quote: 'selected passage',
+      locator: { type: 'text-quote', exact: 'selected passage' },
+    }, {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+      selectionSessionId: 'main-session',
+    })
+
+    expect(result.instanceId).toBe('legacy-manual-browser')
+    expect(instance.embeddedHostWebContentsId).toBe(hostWindow.webContents.id)
+    hostWindow._emit('closed')
+    expect(manager.listInstances()).toHaveLength(0)
+  })
+
+  it('does not reuse a session-owned Agent browser for an embedded citation', async () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    const agentInstanceId = manager.createForSession('agent-session', {
+      workspaceId: 'ws-learning',
+    })
+    const agentInstance = (manager as any).instances.get(agentInstanceId)
+    await agentInstance.pageView.webContents.loadURL('https://example.com/shared-page')
+
+    const result = await manager.revealSelection({
+      kind: 'web-selection',
+      url: 'https://example.com/shared-page',
+      title: 'Shared page',
+      quote: 'selected passage',
+      locator: { type: 'text-quote', exact: 'selected passage' },
+    }, {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+      selectionSessionId: 'main-session',
+    })
+
+    expect(result.instanceId).not.toBe(agentInstanceId)
+    expect(agentInstance.boundSessionId).toBe('agent-session')
+    const citationInstance = (manager as any).instances.get(result.instanceId)
+    expect(citationInstance).toMatchObject({
+      ownerType: 'manual',
+      boundSessionId: null,
+      originWebContentsId: hostWindow.webContents.id,
+    })
+  })
+
+  it('does not reuse a released Agent browser for an embedded citation', async () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    const agentInstanceId = manager.createForSession('released-agent-session', {
+      workspaceId: 'ws-learning',
+    })
+    const agentInstance = (manager as any).instances.get(agentInstanceId)
+    await agentInstance.pageView.webContents.loadURL('https://example.com/released-agent-page')
+    manager.unbindSession(agentInstanceId)
+
+    const result = await manager.revealSelection({
+      kind: 'web-selection',
+      url: 'https://example.com/released-agent-page',
+      title: 'Released Agent page',
+      quote: 'selected passage',
+      locator: { type: 'text-quote', exact: 'selected passage' },
+    }, {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+      selectionSessionId: 'main-session',
+    })
+
+    expect(result.instanceId).not.toBe(agentInstanceId)
+    expect(agentInstance).toMatchObject({
+      ownerType: 'manual',
+      boundSessionId: null,
+      ownerSessionId: 'released-agent-session',
+      hostMode: 'standalone',
+    })
+  })
+
+  it('keeps same-page learning browsers isolated between sessions', async () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    const reference: WebSelectionReference = {
+      kind: 'web-selection',
+      url: 'https://example.com/shared-learning-page',
+      title: 'Shared learning page',
+      quote: 'selected passage',
+      locator: { type: 'text-quote', exact: 'selected passage' },
+    }
+
+    const first = await manager.revealSelection(reference, {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+      selectionSessionId: 'main-session-a',
+    })
+    const second = await manager.revealSelection(reference, {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+      selectionSessionId: 'main-session-b',
+    })
+
+    expect(first.instanceId).not.toBe(second.instanceId)
+    expect((manager as any).instances.get(first.instanceId).selectionSessionId)
+      .toBe('main-session-a')
+    expect((manager as any).instances.get(second.instanceId).selectionSessionId)
+      .toBe('main-session-b')
+  })
+
+  it('does not restore about:blank when citation navigation supersedes the empty state', async () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    failNextEmptyStateLoadAfterYield = true
+
+    const result = await manager.revealSelection({
+      kind: 'web-selection',
+      url: 'https://example.com/race-free-citation',
+      title: 'Race-free citation',
+      quote: 'selected passage',
+      locator: { type: 'text-quote', exact: 'selected passage' },
+    }, {
+      workspaceId: 'ws-learning',
+      originWebContentsId: hostWindow.webContents.id,
+      selectionSessionId: 'main-session',
+    })
+    await Promise.resolve()
+
+    expect(result).toMatchObject({ ok: true })
+    const instance = (manager as any).instances.get(result.instanceId)
+    expect(instance.pageView.webContents.getURL()).toBe('https://example.com/race-free-citation')
+    expect(instance.pageView.webContents.loadURL.mock.calls).not.toContainEqual(['about:blank'])
+  })
+
+  it('keeps embedded manual browsers out of agent/session reuse', () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    manager.createInstance('embedded-not-reusable', { workspaceId: 'ws-learning' })
+    manager.attachToHost('embedded-not-reusable', hostWindow.webContents.id, {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 700,
+    })
+    manager.detachFromHost('embedded-not-reusable')
+
+    const sessionInstanceId = manager.createForSession('session-agent', {
+      workspaceId: 'ws-learning',
+      allowReuseManual: true,
+    })
+
+    expect(sessionInstanceId).not.toBe('embedded-not-reusable')
+    expect((manager as any).instances.get(sessionInstanceId).hostMode).toBe('standalone')
+  })
+
+  it('rejects embedding active and released session-owned browsers', () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    const id = manager.createForSession('session-agent', {
+      workspaceId: 'ws-learning',
+    })
+
+    expect(() => manager.attachToHost(id, hostWindow.webContents.id, {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 700,
+    })).toThrow('Only unbound manual browsers')
+
+    manager.unbindSession(id)
+    expect(() => manager.attachToHost(id, hostWindow.webContents.id, {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 700,
+    })).toThrow('Only unbound manual browsers')
+  })
+
+  it('destroys an embedded browser when its Craft host closes', () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    manager.createInstance('embedded-host-close', { workspaceId: 'ws-learning' })
+    manager.attachToHost('embedded-host-close', hostWindow.webContents.id, {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 700,
+    })
+
+    hostWindow._emit('closed')
+
+    expect(manager.listInstances()).toHaveLength(0)
+  })
+
+  it('shares one lifecycle listener set across embedded browsers in the same Craft host', () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    for (const id of ['embedded-listener-a', 'embedded-listener-b']) {
+      manager.createInstance(id, { workspaceId: 'ws-learning' })
+      manager.attachToHost(id, hostWindow.webContents.id, {
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 700,
+      })
+    }
+
+    expect(hostWindow._listenerCount('closed')).toBe(1)
+    expect(hostWindow.webContents._listenerCount('did-start-navigation')).toBe(1)
+    expect(hostWindow.webContents._listenerCount('render-process-gone')).toBe(1)
+
+    manager.destroyInstance('embedded-listener-a')
+    expect(hostWindow._listenerCount('closed')).toBe(1)
+    manager.destroyInstance('embedded-listener-b')
+    expect(hostWindow._listenerCount('closed')).toBe(0)
+    expect(hostWindow.webContents._listenerCount('did-start-navigation')).toBe(0)
+    expect(hostWindow.webContents._listenerCount('render-process-gone')).toBe(0)
+  })
+
+  it('destroys embedded browsers before the Craft renderer reloads', () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    manager.createInstance('embedded-reload', { workspaceId: 'ws-learning' })
+    manager.attachToHost('embedded-reload', hostWindow.webContents.id, {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 700,
+    })
+
+    hostWindow.webContents._emit(
+      'did-start-navigation',
+      'http://localhost:5173/?workspace=ws-learning',
+      false,
+      true,
+    )
+
+    expect(hostWindow.removeBrowserView).toHaveBeenCalledTimes(3)
+    expect(manager.listInstances()).toHaveLength(0)
+  })
+
+  it('keeps embedded browsers across in-place and subframe navigation but destroys them after renderer loss', () => {
+    const hostWindow = createMockWindow()
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: hostWindow, workspaceId: 'ws-learning' }],
+    } as any)
+    manager.createInstance('embedded-renderer-loss', { workspaceId: 'ws-learning' })
+    manager.attachToHost('embedded-renderer-loss', hostWindow.webContents.id, {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 700,
+    })
+
+    hostWindow.webContents._emit(
+      'did-start-navigation',
+      'http://localhost:5173/?route=next-session',
+      true,
+      true,
+    )
+    expect(manager.listInstances()).toHaveLength(1)
+
+    hostWindow.webContents._emit(
+      'did-start-navigation',
+      'https://example.com/iframe',
+      false,
+      false,
+    )
+    expect(manager.listInstances()).toHaveLength(1)
+
+    hostWindow.webContents._emit('render-process-gone')
+    expect(manager.listInstances()).toHaveLength(0)
   })
 
   it('allows http(s) popups with shared browser partition', () => {
@@ -408,6 +1049,24 @@ describe('BrowserPaneManager', () => {
     expect(info.ownerSessionId).toBe('sess-reuse')
     expect(info.boundSessionId).toBe('sess-reuse')
     expect(manager.listInstances()).toHaveLength(1)
+  })
+
+  it('does not let an agent claim a manual learning browser before it attaches', () => {
+    manager.createInstance('learning-pending-attach', {
+      workspaceId: 'ws-learning',
+      selectionSessionId: 'reading-session',
+    })
+
+    const id = manager.createForSession('agent-session', {
+      workspaceId: 'ws-learning',
+    })
+
+    expect(id).not.toBe('learning-pending-attach')
+    expect(manager.listInstances().find(instance => instance.id === 'learning-pending-attach'))
+      .toMatchObject({
+        ownerType: 'manual',
+        selectionSessionId: 'reading-session',
+      })
   })
 
   describe('workspaceId stamping', () => {
@@ -556,6 +1215,90 @@ describe('BrowserPaneManager', () => {
     expect(instance.pageView.webContents.loadURL).toHaveBeenCalledWith(
       'https://duckduckgo.com/?q=craft%20agents%20browser%20tools'
     )
+  })
+
+  it('clears a pending text selection on navigation, scroll, and toolbar menu open', async () => {
+    manager.createInstance('selection-clear')
+    const instance = (manager as any).instances.get('selection-clear')
+    await instance.pageView.webContents.loadURL('https://example.com/lesson')
+
+    const capture = {
+      quote: 'system call',
+      prefix: 'a',
+      suffix: 'boundary',
+      rect: { x: 20, y: 30, width: 80, height: 18 },
+    }
+    const select = () => {
+      ;(manager as any).handlePageSelection(instance.pageView.webContents.id, capture)
+      expect(instance.pendingSelection).not.toBeNull()
+    }
+
+    select()
+    await manager.navigate('selection-clear', 'https://example.com/next')
+    expect(instance.pendingSelection).toBeNull()
+
+    select()
+    await manager.scroll('selection-clear', 'down', 100).catch(() => {})
+    expect(instance.pendingSelection).toBeNull()
+
+    select()
+    manager.registerToolbarIpc()
+    const menuRegistration = (
+      mockIpcMainHandle.mock.calls as unknown as Array<[
+        string,
+        (_event: unknown, instanceId: string, open: boolean, height?: number) => Promise<void>,
+      ]>
+    ).find(([channel]) => channel === 'browser-toolbar:menu-geometry')
+    expect(menuRegistration).toBeTruthy()
+    await menuRegistration![1]({}, 'selection-clear', true, 240)
+    expect(instance.pendingSelection).toBeNull()
+  })
+
+  it('targets selection Ask to the stored origin client and restores its main window', async () => {
+    const originWindow = createMockWindow()
+    const originWebContentsId = originWindow.webContents.id
+    manager.setWindowManager({
+      getAllWindows: () => [{ window: originWindow, workspaceId: 'ws-origin' }],
+      getClientIdForWindow: (webContentsId: number) => (
+        webContentsId === originWebContentsId ? 'client-origin' : undefined
+      ),
+    } as any)
+
+    manager.createInstance('selection-ask', {
+      workspaceId: 'ws-origin',
+      originWebContentsId,
+      selectionSessionId: 'session-origin',
+    })
+    const instance = (manager as any).instances.get('selection-ask')
+    await instance.pageView.webContents.loadURL('https://example.com/lesson')
+    ;(manager as any).handlePageSelection(instance.pageView.webContents.id, {
+      quote: 'system call',
+      rect: { x: 20, y: 30, width: 80, height: 18 },
+    })
+
+    const deliveries: Array<{ payload: any; targetClientId: string | null }> = []
+    manager.onSelectionAsk((payload, targetClientId) => {
+      deliveries.push({ payload, targetClientId })
+    })
+    ;(manager as any).handleOverlayAsk(instance.nativeOverlayView.webContents.id, 'main')
+
+    expect(deliveries[0]?.targetClientId).toBe('client-origin')
+    expect(deliveries[0]?.payload.target).toBe('main')
+    expect(deliveries[0]?.payload.reference.quote).toBe('system call')
+    expect(deliveries[0]?.payload.selectionSessionId).toBe('session-origin')
+    expect(instance.pendingSelection).toBeNull()
+    expect(originWindow.show).toHaveBeenCalled()
+    expect(originWindow.focus).toHaveBeenCalled()
+  })
+
+  it('preserves the selection destination after per-turn ownership is released', () => {
+    const id = manager.createForSession('session-reading')
+    const instance = (manager as any).instances.get(id)
+
+    manager.unbindSession(id)
+
+    expect(instance.boundSessionId).toBeNull()
+    expect(instance.selectionSessionId).toBe('session-reading')
   })
 
   it('clears navigation timeout timer on success', async () => {

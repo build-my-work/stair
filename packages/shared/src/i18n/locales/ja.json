@@ -117,6 +117,7 @@
   "automations.webhookUrl": "URL",
   "browser.closeWindowEntirely": "ウィンドウを完全に閉じる",
   "browser.hideWindow": "ウィンドウを非表示",
+  "browser.newTab": "新しいブラウザタブ",
   "browser.newWindow": "新しいブラウザウィンドウ",
   "browser.readyDescription": "任意のセッションにこのブラウザ（または別のブラウザ）を使用させて、リサーチ、フォーム入力、QA チェック、データ抽出などのタスクを実行できます。",
   "browser.readyTitle": "このブラウザはエージェントにも、あなたにも準備万端です ;)",

@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en" data-theme="auto" data-svg-scale="2">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stair 产品核心</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #dbe3ef;
+      --button: #ffffff;
+      --button-hover: #f1f5f9;
+      --shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+      --zoom: 1;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #0b1020;
+        --panel: #101827;
+        --ink: #e5edf7;
+        --muted: #93a4b8;
+        --line: #233047;
+        --button: #121c2e;
+        --button-hover: #17243a;
+        --shadow: 0 22px 55px rgba(0, 0, 0, 0.38);
+      }
+    }
+
+    :root[data-theme="dark"] {
+      --bg: #0b1020;
+      --panel: #101827;
+      --ink: #e5edf7;
+      --muted: #93a4b8;
+      --line: #233047;
+      --button: #121c2e;
+      --button-hover: #17243a;
+      --shadow: 0 22px 55px rgba(0, 0, 0, 0.38);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .page {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 18px;
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(14px);
+    }
+
+    .toolbar .title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 14px;
+      font-weight: 650;
+      color: var(--ink);
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: none;
+    }
+
+    button {
+      min-width: 36px;
+      height: 32px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--button);
+      color: var(--ink);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    button:hover { background: var(--button-hover); }
+    button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+
+    .viewport {
+      overflow: auto;
+      padding: clamp(16px, 4vw, 44px);
+    }
+
+    .diagram-shell {
+      width: max-content;
+      min-width: min(100%, 1200px);
+      margin: 0 auto;
+      transform: scale(var(--zoom));
+      transform-origin: top center;
+      transition: transform 140ms ease;
+    }
+
+    .diagram-stage {
+      width: min(calc(100vw - clamp(32px, 8vw, 88px)), 1200px);
+      aspect-ratio: 1200 / 1320;
+      min-width: min(100%, 320px);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .diagram-stage > svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    @media (max-width: 640px) {
+      .toolbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .controls {
+        justify-content: space-between;
+      }
+
+      button {
+        flex: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="toolbar" aria-label="Diagram controls">
+      <div class="title" id="diagram-title"></div>
+      <div class="controls">
+        <button type="button" data-action="zoom-out" title="Zoom out" aria-label="Zoom out">-</button>
+        <button type="button" data-action="reset" title="Reset zoom" aria-label="Reset zoom">100%</button>
+        <button type="button" data-action="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+        <button type="button" data-action="download-svg" title="Download SVG" aria-label="Download SVG">SVG</button>
+        <button type="button" data-action="download-svg-hd" title="Download high-resolution SVG" aria-label="Download high-resolution SVG">HD SVG</button>
+      </div>
+    </div>
+    <div class="viewport">
+      <div class="diagram-shell">
+        <div class="diagram-stage">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1320" width="1200" height="1320" role="img" aria-labelledby="title desc">
+  <title id="title">Stair 产品核心一页版</title>
+  <desc id="desc">Stair 在 Craft Project 与 Session 基线上增加学习资料阅读、引用、Side Chat、Artifact 和浏览器工作区的产品核心说明。</desc>
+  <style>
+    text {
+      font-family: "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    .title { fill: #111827; font-size: 36px; font-weight: 700; }
+    .subtitle { fill: #6b7280; font-size: 17px; }
+    .section-title { fill: #111827; font-size: 21px; font-weight: 700; }
+    .card-title { fill: #111827; font-size: 18px; font-weight: 700; }
+    .body { fill: #374151; font-size: 15px; }
+    .small { fill: #6b7280; font-size: 13px; }
+    .label { font-size: 13px; font-weight: 700; }
+  </style>
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="1320" fill="#ffffff"/>
+
+  <text x="60" y="66" class="title">Stair 产品核心</text>
+  <text x="60" y="102" class="subtitle">基于 Craft Project / Session 的个人学习工作区 · 当前实现一页版</text>
+  <rect x="977" y="54" width="163" height="36" rx="18" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="1058.5" y="77" text-anchor="middle" fill="#1d4ed8" class="label">2026-07-27 快照</text>
+
+  <rect x="60" y="140" width="1080" height="130" rx="12" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="88" y="180" class="card-title">一句话定位</text>
+  <text x="88" y="215" class="body">
+    <tspan x="88" dy="0">Stair 不重做 Craft 的 Workspace、Project、Session 与 Agent 能力。</tspan>
+    <tspan x="88" dy="27">它在既有 Project / Session 上增加“阅读资料 → 带原文讨论 → 沉淀学习产物”的完整闭环。</tspan>
+  </text>
+
+  <text x="60" y="324" class="section-title">能力边界</text>
+
+  <rect x="60" y="350" width="520" height="250" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <rect x="82" y="374" width="118" height="32" rx="16" fill="#e5e7eb"/>
+  <text x="141" y="395" text-anchor="middle" fill="#4b5563" class="label">Craft 基线</text>
+  <text x="82" y="438" class="card-title">直接复用，不在 Stair 重复实现</text>
+  <circle cx="91" cy="474" r="4" fill="#9ca3af"/>
+  <text x="108" y="480" class="body">Workspace、Project、Session</text>
+  <circle cx="91" cy="509" r="4" fill="#9ca3af"/>
+  <text x="108" y="515" class="body">Project CRUD、Working Directory、Session 绑定</text>
+  <circle cx="91" cy="544" r="4" fill="#9ca3af"/>
+  <text x="108" y="550" class="body">Agent / Provider、工具执行、权限控制</text>
+  <circle cx="91" cy="579" r="4" fill="#9ca3af"/>
+  <text x="108" y="585" class="body">PanelStack、会话持久化、自动压缩</text>
+
+  <rect x="620" y="350" width="520" height="250" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+  <rect x="642" y="374" width="118" height="32" rx="16" fill="#dbeafe"/>
+  <text x="701" y="395" text-anchor="middle" fill="#1d4ed8" class="label">Stair 增量</text>
+  <text x="642" y="438" class="card-title">产品文档真正需要说明的能力</text>
+  <circle cx="651" cy="474" r="4" fill="#2563eb"/>
+  <text x="668" y="480" class="body">把 Working Directory 变成可阅读的本地资料库</text>
+  <circle cx="651" cy="509" r="4" fill="#2563eb"/>
+  <text x="668" y="515" class="body">EPUB 连续阅读、定位、划线与结构化引用</text>
+  <circle cx="651" cy="544" r="4" fill="#2563eb"/>
+  <text x="668" y="550" class="body">独立 Side Chat 与 Project Artifact</text>
+  <circle cx="651" cy="579" r="4" fill="#2563eb"/>
+  <text x="668" y="585" class="body">内容标签、内嵌浏览器与网页选文</text>
+
+  <text x="60" y="660" class="section-title">核心学习闭环</text>
+
+  <rect x="60" y="690" width="225" height="125" rx="12" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <circle cx="88" cy="720" r="15" fill="#dbeafe"/>
+  <text x="88" y="726" text-anchor="middle" fill="#1d4ed8" class="label">1</text>
+  <text x="112" y="726" class="card-title">Project 资料</text>
+  <text x="82" y="762" class="body">复用既有 Working Directory</text>
+  <text x="82" y="789" class="small">EPUB · PDF · Markdown · 图片 · 代码</text>
+
+  <path d="M 285 752 H 335" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="310" y="739" text-anchor="middle" fill="#6b7280" class="small">打开</text>
+
+  <rect x="335" y="690" width="225" height="125" rx="12" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <circle cx="363" cy="720" r="15" fill="#dcfce7"/>
+  <text x="363" y="726" text-anchor="middle" fill="#15803d" class="label">2</text>
+  <text x="387" y="726" class="card-title">阅读与选择</text>
+  <text x="357" y="762" class="body">保留原文与精确位置</text>
+  <text x="357" y="789" class="small">阅读位置 · EPUB CFI · 页码 · 行号</text>
+
+  <path d="M 560 752 H 610" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="585" y="739" text-anchor="middle" fill="#6b7280" class="small">引用</text>
+
+  <rect x="610" y="690" width="225" height="125" rx="12" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <circle cx="638" cy="720" r="15" fill="#ede9fe"/>
+  <text x="638" y="726" text-anchor="middle" fill="#7e22ce" class="label">3</text>
+  <text x="662" y="726" class="card-title">讨论与追问</text>
+  <text x="632" y="762" class="body">Main Chat 或独立 Side Chat</text>
+  <text x="632" y="789" class="small">Side Chat 不继承主会话历史</text>
+
+  <path d="M 835 752 H 885" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="860" y="739" text-anchor="middle" fill="#6b7280" class="small">沉淀</text>
+
+  <rect x="885" y="690" width="255" height="125" rx="12" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <circle cx="913" cy="720" r="15" fill="#fed7aa"/>
+  <text x="913" y="726" text-anchor="middle" fill="#c2410c" class="label">4</text>
+  <text x="937" y="726" class="card-title">Project Artifact</text>
+  <text x="907" y="762" class="body">保存、编辑、导出学习成果</text>
+  <text x="907" y="789" class="small">正文 + 可信文件引用 + 回跳定位</text>
+
+  <text x="60" y="875" class="section-title">当前交付状态</text>
+
+  <rect x="60" y="905" width="340" height="135" rx="12" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5"/>
+  <text x="84" y="938" fill="#15803d" class="label">[HEAD] 已进入分支基线</text>
+  <text x="84" y="973" class="body">文件预览、EPUB 阅读与划线</text>
+  <text x="84" y="1000" class="body">结构化引用、Side Chat、Artifact</text>
+
+  <rect x="430" y="905" width="340" height="135" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+  <text x="454" y="938" fill="#c2410c" class="label">[WORKTREE] 已实现，待运行时验收</text>
+  <text x="454" y="973" class="body">中间 Content Workspace 标签</text>
+  <text x="454" y="1000" class="body">内嵌浏览器、网页选文与回跳</text>
+
+  <rect x="800" y="905" width="340" height="135" rx="12" fill="#faf5ff" stroke="#d8b4fe" stroke-width="1.5"/>
+  <text x="824" y="938" fill="#7e22ce" class="label">[INFRA] 只有底层能力</text>
+  <text x="824" y="973" class="body">Tutor Prompt 与工具策略仍存在</text>
+  <text x="824" y="1000" class="body">但当前没有完整、可达的产品入口</text>
+
+  <text x="60" y="1100" class="section-title">必须记住的四个约束</text>
+
+  <rect x="60" y="1130" width="250" height="105" rx="10" fill="#f9fafb" stroke="#d1d5db"/>
+  <text x="80" y="1162" class="card-title">双目录语义</text>
+  <text x="80" y="1191" class="small">资料读取 Project 当前目录</text>
+  <text x="80" y="1214" class="small">Agent 可能仍运行在旧快照</text>
+
+  <rect x="337" y="1130" width="250" height="105" rx="10" fill="#f9fafb" stroke="#d1d5db"/>
+  <text x="357" y="1162" class="card-title">Side Chat 独立</text>
+  <text x="357" y="1191" class="small">它是真实持久化 Session</text>
+  <text x="357" y="1214" class="small">只通过显式引用获得上下文</text>
+
+  <rect x="614" y="1130" width="250" height="105" rx="10" fill="#f9fafb" stroke="#d1d5db"/>
+  <text x="634" y="1162" class="card-title">网页内容不可信</text>
+  <text x="634" y="1191" class="small">网页引用可用于讨论</text>
+  <text x="634" y="1214" class="small">不能成为 Artifact 可信来源</text>
+
+  <rect x="891" y="1130" width="249" height="105" rx="10" fill="#f9fafb" stroke="#d1d5db"/>
+  <text x="911" y="1162" class="card-title">不重建 Craft</text>
+  <text x="911" y="1191" class="small">产品只定义 Stair 差异</text>
+  <text x="911" y="1214" class="small">兼容约束必须显式保留</text>
+
+  <line x1="60" y1="1270" x2="1140" y2="1270" stroke="#e5e7eb"/>
+  <text x="60" y="1300" class="small">详细实现、数据约束与验收证据见 STAIR_CURRENT_IMPLEMENTATION_REQUIREMENTS.md</text>
+</svg>
+        </div>
+      </div>
+    </div>
+  </main>
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const stage = document.querySelector('.diagram-stage');
+      const svg = stage.querySelector('svg');
+      const title = document.getElementById('diagram-title');
+      const hdScale = Number.parseFloat(root.dataset.svgScale || '2') || 2;
+      let zoom = 1;
+
+      if (title) title.textContent = document.title;
+      if (svg) {
+        svg.setAttribute('role', 'img');
+        svg.setAttribute('aria-label', document.title);
+      }
+
+      function setZoom(next) {
+        zoom = Math.min(2.5, Math.max(0.4, next));
+        root.style.setProperty('--zoom', zoom.toFixed(2));
+      }
+
+      function svgBaseSize(svgElement) {
+        const viewBox = svgElement.getAttribute('viewBox');
+        if (viewBox) {
+          const parts = viewBox.trim().split(/\s+/).map(Number);
+          if (parts.length === 4 && parts.every(Number.isFinite)) {
+            return { width: parts[2], height: parts[3] };
+          }
+        }
+        const width = Number.parseFloat(svgElement.getAttribute('width'));
+        const height = Number.parseFloat(svgElement.getAttribute('height'));
+        return {
+          width: Number.isFinite(width) ? width : svgElement.getBoundingClientRect().width,
+          height: Number.isFinite(height) ? height : svgElement.getBoundingClientRect().height
+        };
+      }
+
+      function downloadSvg(scale = 1) {
+        if (!svg) return;
+        const clone = svg.cloneNode(true);
+        const size = svgBaseSize(svg);
+        if (scale !== 1) {
+          clone.setAttribute('width', Math.round(size.width * scale));
+          clone.setAttribute('height', Math.round(size.height * scale));
+          if (!clone.getAttribute('viewBox')) {
+            clone.setAttribute('viewBox', `0 0 ${size.width} ${size.height}`);
+          }
+        }
+        clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        const source = new XMLSerializer().serializeToString(clone);
+        const blob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const suffix = scale === 1 ? '' : `@${scale}x`;
+        link.download = (document.title || 'diagram').replace(/[^a-z0-9._-]+/gi, '-').toLowerCase() + suffix + '.svg';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      document.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+        const action = button.dataset.action;
+        if (action === 'zoom-in') setZoom(zoom + 0.1);
+        if (action === 'zoom-out') setZoom(zoom - 0.1);
+        if (action === 'reset') setZoom(1);
+        if (action === 'download-svg') downloadSvg(1);
+        if (action === 'download-svg-hd') downloadSvg(hdScale);
+      });
+    })();
+  </script>
+</body>
+</html>

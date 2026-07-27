@@ -5,7 +5,7 @@ export const RIGHT_WORKSPACE_STATE_VERSION = 1
 
 export const RIGHT_WORKSPACE_DEFAULT_WIDTH = 440
 export const RIGHT_WORKSPACE_MIN_WIDTH = 320
-export const RIGHT_WORKSPACE_MAX_WIDTH = 760
+export const RIGHT_WORKSPACE_MAX_WIDTH = 640
 export const RIGHT_WORKSPACE_DEFAULT_FILE_EXPLORER_WIDTH = 220
 export const RIGHT_WORKSPACE_MIN_FILE_EXPLORER_WIDTH = 160
 export const RIGHT_WORKSPACE_MAX_FILE_EXPLORER_WIDTH = 420
@@ -293,19 +293,19 @@ export function parsePersistedRightWorkspaceSession(value: unknown): RightWorksp
 
   const tabs: RightWorkspaceTab[] = []
   const ids = new Set<string>()
-  const filePaths = new Set<string>()
   for (const rawTab of value.tabs) {
     const tab = parseTab(rawTab)
-    if (!tab || ids.has(tab.id)) continue
-    if (tab.type === 'file') {
-      if (filePaths.has(tab.path)) continue
-      filePaths.add(tab.path)
-    }
+    // File readers now live in the center content workspace. Do not restore
+    // legacy right-sidebar file tabs after upgrading the layout.
+    if (!tab || tab.type === 'file' || ids.has(tab.id)) continue
     ids.add(tab.id)
     tabs.push(tab)
   }
 
-  if (tabs.length === 0) return fallback
+  if (tabs.length === 0) {
+    tabs.push(...fallback.tabs)
+    ids.add(fallback.activeTabId)
+  }
 
   const expandedDirectories = Array.isArray(value.expandedDirectories)
     ? normalizeDirectoryPaths(value.expandedDirectories)
