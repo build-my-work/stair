@@ -3,6 +3,7 @@ import type { PanelStackEntry } from '@/atoms/panel-stack'
 import type { SessionMeta } from '@/atoms/sessions'
 import type { ViewRoute } from '../../../shared/routes'
 import {
+  getProjectFileChatTargetSessionId,
   getProjectFileOwnerSessionId,
   listProjectReferenceTargets,
   resolveProjectFileOpenIntent,
@@ -68,6 +69,36 @@ describe('Project File reference target selection', () => {
 
     expect(getProjectFileOwnerSessionId(stack, 'file', sessions, 'project-1'))
       .toBeNull()
+  })
+
+  test('prefers an explicit chat target and falls back to the physical owner', () => {
+    const owner = panel('owner', 'allSessions/session/session-1')
+    const file = {
+      ...panel('file', 'allSessions/session/session-1', 'owner'),
+      chatTargetSessionId: 'session-2',
+    }
+    const sessions = new Map<string, SessionMeta>([
+      ['session-1', session()],
+      ['session-2', session({ id: 'session-2' })],
+    ])
+
+    expect(getProjectFileChatTargetSessionId(
+      [owner, file],
+      'file',
+      sessions,
+      'project-1',
+    )).toBe('session-2')
+
+    sessions.set('session-2', session({
+      id: 'session-2',
+      isArchived: true,
+    }))
+    expect(getProjectFileChatTargetSessionId(
+      [owner, file],
+      'file',
+      sessions,
+      'project-1',
+    )).toBe('session-1')
   })
 
   test('filters archived and hidden sessions without silently selecting one', () => {

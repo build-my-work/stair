@@ -13,6 +13,7 @@ import {
   parseSessionIdFromRoute,
   pushPanelAtom,
   restorePanelLayoutAtom,
+  setProjectFileChatTargetAtom,
   updateFocusedPanelRouteAtom,
   visibleSessionIdsAtom,
   type PanelStackEntry,
@@ -127,6 +128,11 @@ describe('panel stack content routes', () => {
       '书籍/操作系统导论.epub',
       'projects/project/os/session/s1',
     )
+    const openedFile = getStack(store)[1]
+    store.set(setProjectFileChatTargetAtom, {
+      panelId: openedFile.id,
+      sessionId: 'session-2',
+    })
 
     const stack = getStack(store)
     const focusedPanelId = store.get(focusedPanelIdAtom)
@@ -164,6 +170,7 @@ describe('panel stack content routes', () => {
             contextRoute: 'projects/project/os/session/s1',
           },
           ownerKey: 'p0',
+          chatTargetSessionId: 'session-2',
         },
       ],
       focusedKey: 'p1',
@@ -173,6 +180,7 @@ describe('panel stack content routes', () => {
     restoredStore.set(restorePanelLayoutAtom, layout!)
     const [restoredOwner, restoredFile] = getStack(restoredStore)
     expect(restoredFile.ownerPanelId).toBe(restoredOwner.id)
+    expect(restoredFile.chatTargetSessionId).toBe('session-2')
     expect(restoredStore.get(focusedPanelIdAtom)).toBe(restoredFile.id)
   })
 
@@ -182,6 +190,10 @@ describe('panel stack content routes', () => {
     const owner = getStack(store)[0]
     openProjectFile(store, owner.id, 'src/first.ts')
     const companionId = getStack(store)[1].id
+    store.set(setProjectFileChatTargetAtom, {
+      panelId: companionId,
+      sessionId: 'session-2',
+    })
 
     openProjectFile(store, owner.id, 'src/second.ts')
 
@@ -189,6 +201,7 @@ describe('panel stack content routes', () => {
     expect(stack).toHaveLength(2)
     expect(stack[1].id).toBe(companionId)
     expect(stack[1].route.kind).toBe('projectFile')
+    expect(stack[1].chatTargetSessionId).toBeUndefined()
     expect(viewRoutes(store)[1]).toBe('src/second.ts')
   })
 

@@ -6,6 +6,7 @@ import { isProjectFileRoute } from './project-file-route'
 export const PANEL_LAYOUT_VERSION = 1 as const
 export const MAX_PANEL_LAYOUT_ENTRIES = 8
 export const MAX_ENCODED_PANEL_LAYOUT_BYTES = 64 * 1024
+const MAX_CHAT_TARGET_SESSION_ID_LENGTH = 512
 
 export interface SerializedPanelLayoutV1 {
   version: typeof PANEL_LAYOUT_VERSION
@@ -14,6 +15,7 @@ export interface SerializedPanelLayoutV1 {
     route: PanelContentRoute
     proportion: number
     ownerKey?: string
+    chatTargetSessionId?: string
   }>
   focusedKey: string
 }
@@ -23,6 +25,7 @@ interface RuntimePanelLayoutEntry {
   route: PanelContentRoute
   proportion: number
   ownerPanelId?: string
+  chatTargetSessionId?: string
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -107,7 +110,17 @@ export function serializePanelLayoutV1(
     || entries.length > MAX_PANEL_LAYOUT_ENTRIES
     || !focusedPanelId
     || entries.some(entry => (
-      !Number.isFinite(entry.proportion) || entry.proportion <= 0
+      !Number.isFinite(entry.proportion)
+      || entry.proportion <= 0
+      || (
+        entry.chatTargetSessionId !== undefined
+        && (
+          !isProjectFileRoute(entry.route)
+          || entry.chatTargetSessionId.length === 0
+          || entry.chatTargetSessionId.length
+            > MAX_CHAT_TARGET_SESSION_ID_LENGTH
+        )
+      )
     ))
   ) {
     return null
@@ -141,6 +154,9 @@ export function serializePanelLayoutV1(
         route: entry.route,
         proportion: entry.proportion,
         ...(ownerKey ? { ownerKey } : {}),
+        ...(entry.chatTargetSessionId
+          ? { chatTargetSessionId: entry.chatTargetSessionId }
+          : {}),
       }
     }),
     focusedKey,
@@ -191,7 +207,7 @@ export function deserializePanelLayoutV1(
       !isRecord(candidate)
       || !hasOnlyKeys(
         candidate,
-        ['key', 'route', 'proportion', 'ownerKey'],
+        ['key', 'route', 'proportion', 'ownerKey', 'chatTargetSessionId'],
       )
       || typeof candidate.key !== 'string'
       || candidate.key.length === 0
@@ -208,6 +224,15 @@ export function deserializePanelLayoutV1(
           || candidate.ownerKey.length > 64
         )
       )
+      || (
+        candidate.chatTargetSessionId !== undefined
+        && (
+          typeof candidate.chatTargetSessionId !== 'string'
+          || candidate.chatTargetSessionId.length === 0
+          || candidate.chatTargetSessionId.length
+            > MAX_CHAT_TARGET_SESSION_ID_LENGTH
+        )
+      )
     ) {
       return null
     }
@@ -215,6 +240,12 @@ export function deserializePanelLayoutV1(
     const route = parsePanelContentRoute(candidate.route)
     if (!route) return null
     if (candidate.ownerKey !== undefined && !isProjectFileRoute(route)) {
+      return null
+    }
+    if (
+      candidate.chatTargetSessionId !== undefined
+      && !isProjectFileRoute(route)
+    ) {
       return null
     }
 
@@ -225,6 +256,9 @@ export function deserializePanelLayoutV1(
       proportion: candidate.proportion,
       ...(candidate.ownerKey
         ? { ownerKey: candidate.ownerKey }
+        : {}),
+      ...(candidate.chatTargetSessionId
+        ? { chatTargetSessionId: candidate.chatTargetSessionId }
         : {}),
     })
   }

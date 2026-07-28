@@ -30,6 +30,8 @@ export interface PanelStackEntry {
   proportion: number
   /** Physical navigation panel that owns a reusable Project File companion. */
   ownerPanelId?: string
+  /** Explicit Session that receives references from this Project File panel. */
+  chatTargetSessionId?: string
 }
 
 export const panelStackAtom = atom<PanelStackEntry[]>([])
@@ -72,6 +74,7 @@ function createEntry(
   proportion: number,
   id?: string,
   ownerPanelId?: string,
+  chatTargetSessionId?: string,
 ): PanelStackEntry {
   const route = toPanelContentRoute(input)
   return {
@@ -79,6 +82,9 @@ function createEntry(
     route,
     proportion,
     ...(ownerPanelId ? { ownerPanelId } : {}),
+    ...(isProjectFileRoute(route) && chatTargetSessionId
+      ? { chatTargetSessionId }
+      : {}),
   }
 }
 
@@ -192,6 +198,33 @@ export function getProjectFileOwnerPanelId(
   return owner?.route.kind === 'navigation' ? owner.id : null
 }
 
+export const setProjectFileChatTargetAtom = atom(
+  null,
+  (get, set, {
+    panelId,
+    sessionId,
+  }: {
+    panelId: string
+    sessionId: string
+  }) => {
+    if (!sessionId) return
+    const stack = get(panelStackAtom)
+    const panel = stack.find(entry => entry.id === panelId)
+    if (
+      !panel
+      || !isProjectFileRoute(panel.route)
+      || panel.chatTargetSessionId === sessionId
+    ) {
+      return
+    }
+    set(panelStackAtom, stack.map(entry => (
+      entry.id === panelId
+        ? { ...entry, chatTargetSessionId: sessionId }
+        : entry
+    )))
+  },
+)
+
 /**
  * Open one reusable Project File companion per physical navigation owner.
  * Reference navigation may instead focus an already-open matching file.
@@ -263,11 +296,19 @@ export const openOrReuseProjectFileAtom = atom(
     )
 
     if (existingCompanion) {
+      const keepsChatTarget = (
+        isProjectFileRoute(existingCompanion.route)
+        && existingCompanion.route.projectId === nextRoute.projectId
+        && existingCompanion.route.relativePath === nextRoute.relativePath
+      )
       set(panelStackAtom, stack.map(entry =>
         entry.id === existingCompanion.id
           ? {
               ...entry,
               route: nextRoute,
+              chatTargetSessionId: keepsChatTarget
+                ? existingCompanion.chatTargetSessionId
+                : undefined,
               ...(ownerEntry
                 ? { ownerPanelId: ownerEntry.id }
                 : { ownerPanelId: undefined }),
@@ -389,6 +430,7 @@ export const restorePanelLayoutAtom = atom(
       entry.proportion,
       idByKey.get(entry.key),
       entry.ownerKey ? idByKey.get(entry.ownerKey) : undefined,
+      entry.chatTargetSessionId,
     ))
 
     set(panelStackAtom, normalizeProportions(restored))

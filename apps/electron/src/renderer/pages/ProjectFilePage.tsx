@@ -25,10 +25,11 @@ import {
   panelStackAtom,
   projectFileOpenIntentsAtom,
   pushPanelAtom,
+  setProjectFileChatTargetAtom,
 } from '@/atoms/panel-stack'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
 import {
-  getProjectFileOwnerSessionId,
+  getProjectFileChatTargetSessionId,
   listProjectReferenceTargets,
   resolveProjectFileOpenIntent,
 } from '@/lib/project-file-reference-target'
@@ -36,6 +37,7 @@ import { saveTextFile } from '@/lib/save-text-file'
 import { routes } from '../../shared/routes'
 import type { ProjectFileRoute } from '@/lib/project-file-route'
 import { focusExistingProjectSessionPanel } from '@/components/app-shell/project-session-panel-navigation'
+import { getSessionTitle } from '@/utils/session'
 
 interface ProjectFilePageProps {
   route: ProjectFileRoute
@@ -100,6 +102,7 @@ export default function ProjectFilePage({
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
   const openIntent = useAtomValue(projectFileOpenIntentsAtom).get(panelId)
   const consumeOpenIntent = useSetAtom(consumeProjectFileOpenIntentAtom)
+  const setChatTarget = useSetAtom(setProjectFileChatTargetAtom)
   const store = useStore()
   const project = useMemo(
     () => projects.find(candidate => candidate.config.id === route.projectId),
@@ -128,6 +131,26 @@ export default function ProjectFilePage({
     () => listProjectReferenceTargets(sessionMetaMap, route.projectId),
     [route.projectId, sessionMetaMap],
   )
+  const chatTargetSessionId = useMemo(
+    () => getProjectFileChatTargetSessionId(
+      panelStack,
+      panelId,
+      sessionMetaMap,
+      route.projectId,
+    ),
+    [panelId, panelStack, route.projectId, sessionMetaMap],
+  )
+  const chatTargets = useMemo(
+    () => referenceTargets.map(session => ({
+      id: session.id,
+      title: getSessionTitle(session),
+    })),
+    [referenceTargets],
+  )
+
+  const selectChatTarget = useCallback((sessionId: string) => {
+    setChatTarget({ panelId, sessionId })
+  }, [panelId, setChatTarget])
 
   useEffect(() => {
     setPendingReference(null)
@@ -274,11 +297,13 @@ export default function ProjectFilePage({
   const createSessionWithReference = useCallback(async (
     reference: MessageReference,
   ) => {
-    if (!activeWorkspaceId) return false
+    if (!activeWorkspaceId) return null
     const session = await onCreateSession(activeWorkspaceId, {
       projectId: route.projectId,
     })
     return attachReferenceToSession(session.id, reference)
+      ? session.id
+      : null
   }, [
     activeWorkspaceId,
     attachReferenceToSession,
@@ -293,14 +318,14 @@ export default function ProjectFilePage({
   }, [])
 
   const handleAddChatReference = useCallback((reference: MessageReference) => {
-    const ownerSessionId = getProjectFileOwnerSessionId(
+    const targetSessionId = getProjectFileChatTargetSessionId(
       panelStack,
       panelId,
       sessionMetaMap,
       route.projectId,
     )
-    if (ownerSessionId) {
-      if (!attachReferenceToSession(ownerSessionId, reference)) {
+    if (targetSessionId) {
+      if (!attachReferenceToSession(targetSessionId, reference)) {
         throw new Error('The target chat draft is currently locked.')
       }
       return true
@@ -321,11 +346,13 @@ export default function ProjectFilePage({
   const handleAddNewChatReference = useCallback(async (
     reference: MessageReference,
   ) => {
-    if (!await createSessionWithReference(reference)) {
+    const sessionId = await createSessionWithReference(reference)
+    if (!sessionId) {
       throw new Error('The new chat could not accept this reference.')
     }
+    selectChatTarget(sessionId)
     return true
-  }, [createSessionWithReference])
+  }, [createSessionWithReference, selectChatTarget])
 
   const preview = (() => {
     if (isLoading) {
@@ -378,6 +405,9 @@ export default function ProjectFilePage({
               bytes={bytes}
               sourceFingerprint={sourceFingerprint}
               initialLocator={initialLocator}
+              chatTargetSessionId={chatTargetSessionId}
+              chatTargets={chatTargets}
+              onChatTargetChange={selectChatTarget}
               onAddChatReference={handleAddChatReference}
               onAddNewChatReference={handleAddNewChatReference}
               onExportMarkdown={async ({ suggestedFilename, content }) => {
@@ -461,16 +491,16 @@ export default function ProjectFilePage({
         }}
         onSelect={sessionId => {
           if (pendingReference && attachReferenceToSession(sessionId, pendingReference)) {
+            selectChatTarget(sessionId)
             finishPendingReference(true)
           }
         }}
         onCreate={async () => {
-          if (
-            pendingReference
-            && await createSessionWithReference(pendingReference)
-          ) {
-            finishPendingReference(true)
-          }
+          if (!pendingReference) return
+          const sessionId = await createSessionWithReference(pendingReference)
+          if (!sessionId) return
+          selectChatTarget(sessionId)
+          finishPendingReference(true)
         }}
       />
     </Panel>

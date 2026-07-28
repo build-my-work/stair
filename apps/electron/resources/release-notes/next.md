@@ -4,7 +4,7 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Features
 
-- **EPUB chat-reference underlines** — Add Chat now leaves a persistent blue straight underline on the selected passage, New Chat starts a separate discussion with that reference, and a new References view beside Contents and Highlights lists every referenced passage for quick navigation.
+- **EPUB chat-reference underlines** — Add Chat now leaves a persistent blue straight underline on the selected passage, New Chat starts and targets a separate discussion, a compact header menu switches future references between Project chats, and a new References view beside Contents and Highlights lists every referenced passage for quick navigation.
 
 ## Improvements
 

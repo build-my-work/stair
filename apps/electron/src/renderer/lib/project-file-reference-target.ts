@@ -6,6 +6,18 @@ import type { PanelStackEntry } from '@/atoms/panel-stack'
 import { parseSessionIdFromRoute } from '@/atoms/panel-stack'
 import type { SessionMeta } from '@/atoms/sessions'
 
+function isAvailableProjectSession(
+  session: SessionMeta | undefined,
+  projectId: string,
+): session is SessionMeta {
+  return Boolean(
+    session
+    && session.projectId === projectId
+    && !session.isArchived
+    && !session.hidden,
+  )
+}
+
 export function resolveProjectFileOpenIntent(
   intent: ProjectFileOpenIntent | undefined,
   sourceFingerprint: SourceFingerprint,
@@ -34,15 +46,32 @@ export function getProjectFileOwnerSessionId(
   const sessionId = parseSessionIdFromRoute(owner.route)
   if (!sessionId) return null
   const session = sessions.get(sessionId)
-  if (
-    !session
-    || session.projectId !== projectId
-    || session.isArchived
-    || session.hidden
-  ) {
-    return null
-  }
+  if (!isAvailableProjectSession(session, projectId)) return null
   return sessionId
+}
+
+export function getProjectFileChatTargetSessionId(
+  panelStack: PanelStackEntry[],
+  projectFilePanelId: string,
+  sessions: Map<string, SessionMeta>,
+  projectId: string,
+): string | null {
+  const filePanel = panelStack.find(panel => panel.id === projectFilePanelId)
+  const explicitTargetId = filePanel?.route.kind === 'projectFile'
+    ? filePanel.chatTargetSessionId
+    : undefined
+  if (
+    explicitTargetId
+    && isAvailableProjectSession(sessions.get(explicitTargetId), projectId)
+  ) {
+    return explicitTargetId
+  }
+  return getProjectFileOwnerSessionId(
+    panelStack,
+    projectFilePanelId,
+    sessions,
+    projectId,
+  )
 }
 
 export function listProjectReferenceTargets(
@@ -50,11 +79,7 @@ export function listProjectReferenceTargets(
   projectId: string,
 ): SessionMeta[] {
   return [...sessions.values()]
-    .filter(session => (
-      session.projectId === projectId
-      && !session.isArchived
-      && !session.hidden
-    ))
+    .filter(session => isAvailableProjectSession(session, projectId))
     .sort((left, right) => (
       (right.lastMessageAt ?? right.createdAt ?? 0)
       - (left.lastMessageAt ?? left.createdAt ?? 0)

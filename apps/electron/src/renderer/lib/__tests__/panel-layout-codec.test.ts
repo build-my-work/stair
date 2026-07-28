@@ -38,6 +38,7 @@ describe('PanelLayoutV1 codec', () => {
         },
         proportion: 0.5,
         ownerPanelId: 'owner-a',
+        chatTargetSessionId: 'session-2',
       },
     ], 'owner-b')
 
@@ -57,6 +58,7 @@ describe('PanelLayoutV1 codec', () => {
           },
           proportion: 0.5,
           ownerKey: 'p0',
+          chatTargetSessionId: 'session-2',
         },
       ],
       focusedKey: 'p1',
@@ -173,6 +175,37 @@ describe('PanelLayoutV1 codec', () => {
           key: 'p0',
           route: { kind: 'navigation', viewRoute: 'action/new-session' },
           proportion: 1,
+        }],
+        focusedKey: 'p0',
+      },
+    ],
+    [
+      'chat target on a navigation panel',
+      {
+        version: 1,
+        entries: [{
+          key: 'p0',
+          route: navigation('projects/project/demo'),
+          proportion: 1,
+          chatTargetSessionId: 'session-2',
+        }],
+        focusedKey: 'p0',
+      },
+    ],
+    [
+      'empty chat target',
+      {
+        version: 1,
+        entries: [{
+          key: 'p0',
+          route: {
+            kind: 'projectFile',
+            projectId: 'project-1',
+            relativePath: 'book.epub',
+            contextRoute: 'projects/project/demo',
+          },
+          proportion: 1,
+          chatTargetSessionId: '',
         }],
         focusedKey: 'p0',
       },
