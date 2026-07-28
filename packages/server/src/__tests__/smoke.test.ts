@@ -9,6 +9,8 @@
  */
 
 import { describe, it, expect, afterEach } from 'bun:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Subprocess } from 'bun'
 import WebSocket from 'ws'
@@ -28,11 +30,13 @@ interface SpawnedServer {
 async function spawnTestServer(extraEnv?: Record<string, string>): Promise<SpawnedServer> {
   const token = crypto.randomUUID() + crypto.randomUUID() // 72 chars, well above 16 minimum
   const { CLAUDECODE: _, ...parentEnv } = process.env
+  const configDir = await mkdtemp(join(tmpdir(), 'craft-server-smoke-'))
 
   const proc = Bun.spawn(['bun', 'run', SERVER_ENTRY], {
     env: {
       ...parentEnv,
       ...extraEnv,
+      CRAFT_CONFIG_DIR: configDir,
       CRAFT_SERVER_TOKEN: token,
       CRAFT_RPC_PORT: '0',
       CRAFT_RPC_HOST: '127.0.0.1',
@@ -41,10 +45,12 @@ async function spawnTestServer(extraEnv?: Record<string, string>): Promise<Spawn
     stdout: 'pipe',
     stderr: 'pipe',
   })
+  const stderrPromise = new Response(proc.stderr).text()
 
   return new Promise<SpawnedServer>((resolve, reject) => {
     const timer = setTimeout(() => {
       proc.kill()
+      void proc.exited.finally(() => rm(configDir, { recursive: true, force: true }))
       reject(new Error(`Server did not start within ${STARTUP_TIMEOUT}ms`))
     }, STARTUP_TIMEOUT)
 
@@ -66,8 +72,13 @@ async function spawnTestServer(extraEnv?: Record<string, string>): Promise<Spawn
             healthPort: 0, // health port not printed; we skip health test if 0
             proc,
             stop: async () => {
-              proc.kill('SIGTERM')
-              await proc.exited
+              try {
+                if (proc.exitCode === null) proc.kill('SIGTERM')
+                await proc.exited
+                await stderrPromise
+              } finally {
+                await rm(configDir, { recursive: true, force: true })
+              }
             },
           })
           return
@@ -90,7 +101,12 @@ async function spawnTestServer(extraEnv?: Record<string, string>): Promise<Spawn
       }
       clearTimeout(timer)
       if (!url) {
-        reject(new Error('Server exited before printing CRAFT_SERVER_URL'))
+        const [exitCode, stderr] = await Promise.all([proc.exited, stderrPromise])
+        await rm(configDir, { recursive: true, force: true })
+        reject(new Error(
+          `Server exited with code ${exitCode} before printing CRAFT_SERVER_URL`
+          + (stderr.trim() ? `\n${stderr.trim()}` : ''),
+        ))
       }
     })()
   })
@@ -151,19 +167,29 @@ describe('headless server smoke test', () => {
   it('rejects short token at startup', async () => {
     const token = 'short'
     const { CLAUDECODE: _, ...parentEnv } = process.env
-    const proc = Bun.spawn(['bun', 'run', SERVER_ENTRY], {
-      env: {
-        ...parentEnv,
-        CRAFT_SERVER_TOKEN: token,
-        CRAFT_RPC_PORT: '0',
-        CRAFT_RPC_HOST: '127.0.0.1',
-      },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    })
+    const configDir = await mkdtemp(join(tmpdir(), 'craft-server-smoke-'))
 
-    const exitCode = await proc.exited
-    expect(exitCode).not.toBe(0)
+    try {
+      const proc = Bun.spawn(['bun', 'run', SERVER_ENTRY], {
+        env: {
+          ...parentEnv,
+          CRAFT_CONFIG_DIR: configDir,
+          CRAFT_SERVER_TOKEN: token,
+          CRAFT_RPC_PORT: '0',
+          CRAFT_RPC_HOST: '127.0.0.1',
+        },
+        stdout: 'ignore',
+        stderr: 'pipe',
+      })
+      const stderrPromise = new Response(proc.stderr).text()
+      const exitCode = await proc.exited
+      const stderr = await stderrPromise
+
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toContain('Weak server token')
+    } finally {
+      await rm(configDir, { recursive: true, force: true })
+    }
   }, TEST_TIMEOUT)
 
   it('shuts down cleanly on SIGTERM', async () => {
@@ -178,7 +204,8 @@ describe('headless server smoke test', () => {
     const exitCode = await server.proc.exited
     expect(exitCode).toBe(0)
 
-    // Mark as stopped so afterEach doesn't double-kill
+    // Clean up the isolated config directory, then prevent afterEach from stopping twice.
+    await server.stop()
     server = null
   }, TEST_TIMEOUT)
 })
