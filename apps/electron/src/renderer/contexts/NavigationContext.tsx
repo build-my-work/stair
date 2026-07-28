@@ -584,14 +584,14 @@ export function NavigationProvider({
   // =========================================================================
 
   // Helper: Filter sessions by SessionFilter
-  // The standalone Sessions branch excludes hidden and project-owned sessions.
-  // Project sessions are navigated from the Project tree.
+  // Project sessions normally live in the Project tree; Archived includes
+  // them because that tree intentionally hides archived sessions.
   const filterSessionsByFilter = useCallback(
     (filter: SessionFilter): SessionMeta[] => {
       const visibleSessions = sessionMetas.filter(
         s => (
           !s.hidden
-          && !s.projectId
+          && (filter.kind === 'archived' || !s.projectId)
           && (
             !workspaceId
             || s.workspaceId === workspaceId

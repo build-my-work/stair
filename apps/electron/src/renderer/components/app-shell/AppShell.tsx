@@ -864,12 +864,15 @@ function AppShellContent({
   const [searchActive, setSearchActive] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState('')
 
-  // Grouping mode for chat list: per-view (stored in viewFiltersMap), forced to 'date' for state sub-views
+  // State views group by Date; Archived defaults to Project unless the user chose another mode.
   const isStateSubView = sessionFilter?.kind === 'state'
 
   const chatGroupingMode: ChatGroupingMode = isStateSubView
     ? 'date'
-    : (viewFiltersMap[sessionFilterKey ?? '']?.groupingMode ?? 'date')
+    : (
+        viewFiltersMap[sessionFilterKey ?? '']?.groupingMode
+        ?? (sessionFilter?.kind === 'archived' ? 'project' : 'date')
+      )
 
   const setChatGroupingMode = useCallback((mode: ChatGroupingMode) => {
     setViewFiltersMap(prev => {
@@ -1634,7 +1637,7 @@ function AppShellContent({
   // Count sessions by todo state (scoped to workspace)
   const isMetaDone = (s: SessionMeta) => s.sessionStatus === 'done' || s.sessionStatus === 'cancelled'
   const flaggedCount = standaloneActiveSessionMetas.filter(s => s.isFlagged).length
-  const archivedCount = standaloneSessionMetas.filter(s => s.isArchived).length
+  const archivedCount = workspaceSessionMetas.filter(s => s.isArchived).length
 
   // Compute session counts per label (cumulative: parent includes descendants).
   // Flatten the tree for iteration, use the tree for descendant lookups.
@@ -1719,8 +1722,8 @@ function AppShellContent({
         result = standaloneActiveSessionMetas.filter(s => s.isFlagged)
         break
       case 'archived':
-        // Archived view shows only archived sessions
-        result = standaloneSessionMetas.filter(s => s.isArchived)
+        // Includes Project sessions hidden from the Project tree.
+        result = workspaceSessionMetas.filter(s => s.isArchived)
         break
       case 'state':
         // Filter by specific todo state (excludes archived)
@@ -1796,7 +1799,7 @@ function AppShellContent({
     }
     return result
   }, [
-    standaloneSessionMetas,
+    workspaceSessionMetas,
     standaloneActiveSessionMetas,
     sessionFilter,
     listFilter,
@@ -3766,7 +3769,7 @@ function AppShellContent({
                   key={sessionFilter?.kind}
                   items={
                     searchActive
-                      ? standaloneSessionMetas
+                      ? (sessionFilter?.kind === 'archived' ? workspaceSessionMetas : standaloneSessionMetas)
                       : filteredSessionMetas
                   }
                   onDelete={handleDeleteSession}
