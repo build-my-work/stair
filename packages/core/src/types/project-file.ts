@@ -39,10 +39,15 @@ export interface EpubHighlightV1 {
   chapterTitle?: string;
   tocPath: EpubTocPathEntryV1[];
   spineIndex?: number;
-  style: {
-    type: 'wavy';
-    color: 'red';
-  };
+  style:
+    | {
+        type: 'wavy';
+        color: 'red';
+      }
+    | {
+        type: 'solid';
+        color: 'blue';
+      };
   createdAt: number;
   updatedAt: number;
 }

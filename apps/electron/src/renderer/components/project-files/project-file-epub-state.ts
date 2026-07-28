@@ -179,12 +179,16 @@ export function buildProjectFileReferenceFromSelection(input: {
 export function createOptimisticEpubHighlight(
   selection: EpubSelectionSnapshot,
   id: string,
-  now = Date.now(),
+  options: {
+    style?: EpubHighlightV1['style']
+    now?: number
+  } = {},
 ): EpubHighlightV1 {
+  const now = options.now ?? Date.now()
   return {
     id,
     ...copyEpubSelectionFields(selection),
-    style: { type: 'wavy', color: 'red' },
+    style: options.style ?? { type: 'wavy', color: 'red' },
     createdAt: now,
     updatedAt: now,
   }
@@ -423,11 +427,21 @@ export function getEpubHighlightsSuggestedFilename(
 }
 
 export const EPUB_HIGHLIGHT_REGISTRY_NAME = 'craft-epub-red-wavy'
+export const EPUB_REFERENCE_UNDERLINE_REGISTRY_NAME =
+  'craft-epub-reference-underline'
 export const EPUB_HIGHLIGHT_STYLE_TEXT = `
 ::highlight(${EPUB_HIGHLIGHT_REGISTRY_NAME}) {
   text-decoration-line: underline;
   text-decoration-style: wavy;
   text-decoration-color: #ef4444;
+  text-decoration-thickness: 1.35px;
+  text-underline-offset: 0.12em;
+  text-decoration-skip-ink: none;
+}
+::highlight(${EPUB_REFERENCE_UNDERLINE_REGISTRY_NAME}) {
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: #3b82f6;
   text-decoration-thickness: 1.35px;
   text-underline-offset: 0.12em;
   text-decoration-skip-ink: none;
@@ -480,6 +494,7 @@ export function createEpubCssHighlightManager() {
     if (!cssHighlights) return
 
     const ranges: Range[] = []
+    const referenceRanges: Range[] = []
     for (const highlight of currentHighlights) {
       if (
         highlight.spineIndex !== undefined
@@ -488,20 +503,26 @@ export function createEpubCssHighlightManager() {
         continue
       }
       try {
-        ranges.push(contents.range(highlight.cfiRange))
+        const range = contents.range(highlight.cfiRange)
+        if (highlight.style.type === 'solid') referenceRanges.push(range)
+        else ranges.push(range)
       } catch {
         // A CFI from another spine item or a stale malformed CFI is skipped.
       }
     }
 
-    if (ranges.length === 0) {
-      cssHighlights.registry.delete(EPUB_HIGHLIGHT_REGISTRY_NAME)
-      return
+    const syncRegistry = (name: string, values: Range[]) => {
+      if (values.length === 0) {
+        cssHighlights.registry.delete(name)
+        return
+      }
+      cssHighlights.registry.set(
+        name,
+        new cssHighlights.HighlightConstructor(...values),
+      )
     }
-    cssHighlights.registry.set(
-      EPUB_HIGHLIGHT_REGISTRY_NAME,
-      new cssHighlights.HighlightConstructor(...ranges),
-    )
+    syncRegistry(EPUB_HIGHLIGHT_REGISTRY_NAME, ranges)
+    syncRegistry(EPUB_REFERENCE_UNDERLINE_REGISTRY_NAME, referenceRanges)
   }
 
   return {
@@ -522,6 +543,9 @@ export function createEpubCssHighlightManager() {
         const state = contentStates.get(contents.document)
         if (!state) return
         registryFor(contents)?.registry.delete(EPUB_HIGHLIGHT_REGISTRY_NAME)
+        registryFor(contents)?.registry.delete(
+          EPUB_REFERENCE_UNDERLINE_REGISTRY_NAME,
+        )
         state.styleElement.remove()
         contentStates.delete(contents.document)
       }
@@ -538,6 +562,9 @@ export function createEpubCssHighlightManager() {
       for (const state of contentStates.values()) {
         registryFor(state.contents)?.registry.delete(
           EPUB_HIGHLIGHT_REGISTRY_NAME,
+        )
+        registryFor(state.contents)?.registry.delete(
+          EPUB_REFERENCE_UNDERLINE_REGISTRY_NAME,
         )
         state.styleElement.remove()
       }

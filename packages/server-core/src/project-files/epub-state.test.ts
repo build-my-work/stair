@@ -9,7 +9,11 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { EpubStateMutation, SourceFingerprint } from '@craft-agent/core/types'
+import type {
+  EpubHighlightV1,
+  EpubStateMutation,
+  SourceFingerprint,
+} from '@craft-agent/core/types'
 import { createProject, getProjectPath } from '@craft-agent/shared/projects'
 
 import {
@@ -39,7 +43,10 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-function highlight(id: string): Extract<EpubStateMutation, { type: 'upsert-highlight' }> {
+function highlight(
+  id: string,
+  style: EpubHighlightV1['style'] = { type: 'wavy', color: 'red' },
+): Extract<EpubStateMutation, { type: 'upsert-highlight' }> {
   return {
     type: 'upsert-highlight',
     highlight: {
@@ -48,7 +55,7 @@ function highlight(id: string): Extract<EpubStateMutation, { type: 'upsert-highl
       quote: `quote ${id}`,
       tocPath: [{ key: 'toc:0', title: 'Chapter', orderPath: [0] }],
       spineIndex: 0,
-      style: { type: 'wavy', color: 'red' },
+      style,
     },
   }
 }
@@ -103,6 +110,22 @@ describe('EpubStateStore', () => {
     expect(state?.progress).not.toHaveProperty('injected')
     expect(state?.highlights[0]).not.toHaveProperty('injected')
     expect(state?.highlights[0]?.tocPath[0]).not.toHaveProperty('injected')
+  })
+
+  it('persists solid reference underlines alongside wavy highlights', async () => {
+    const store = new EpubStateStore(() => 100)
+    await store.apply(root, identity, highlight('highlight'))
+    await store.apply(
+      root,
+      identity,
+      highlight('reference', { type: 'solid', color: 'blue' }),
+    )
+
+    expect((await store.get(root, identity))?.highlights.map(mark => mark.style))
+      .toEqual([
+        { type: 'wavy', color: 'red' },
+        { type: 'solid', color: 'blue' },
+      ])
   })
 
   it('does not increment revision for no-op mutations', async () => {
@@ -218,6 +241,13 @@ describe('EpubStateStore', () => {
       highlight: {
         ...highlight('bad-style').highlight,
         style: null,
+      },
+    } as unknown as EpubStateMutation)).rejects.toThrow('INVALID_EPUB_HIGHLIGHT_STYLE')
+    await expect(store.apply(root, identity, {
+      type: 'upsert-highlight',
+      highlight: {
+        ...highlight('bad-style-pair').highlight,
+        style: { type: 'solid', color: 'red' },
       },
     } as unknown as EpubStateMutation)).rejects.toThrow('INVALID_EPUB_HIGHLIGHT_STYLE')
   })

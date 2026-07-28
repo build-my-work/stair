@@ -4,6 +4,7 @@ import {
   Highlighter,
   Loader2,
   MessageSquarePlus,
+  MessageSquareQuote,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -18,18 +19,20 @@ import type { EpubSelectionViewportRect } from './project-file-epub'
 interface EpubSelectionToolbarProps {
   anchorRect: EpubSelectionViewportRect
   collisionBoundary: HTMLElement | null
-  addingReference: boolean
+  addingReferenceTo: 'current' | 'new' | null
   onCreateHighlight: () => void
   onAddChat: () => void
+  onAddNewChat: () => void
   onDismiss: () => void
 }
 
 export function EpubSelectionToolbar({
   anchorRect,
   collisionBoundary,
-  addingReference,
+  addingReferenceTo,
   onCreateHighlight,
   onAddChat,
+  onAddNewChat,
   onDismiss,
 }: EpubSelectionToolbarProps) {
   const virtualAnchor = React.useMemo(() => ({
@@ -51,9 +54,9 @@ export function EpubSelectionToolbar({
         align="center"
         sideOffset={10}
         collisionBoundary={collisionBoundary}
-        collisionPadding={12}
-        arrowPadding={12}
-        className="flex w-auto items-stretch gap-1 p-1.5"
+        collisionPadding={8}
+        arrowPadding={8}
+        className="flex w-auto items-stretch gap-0.5 p-1"
         aria-label="EPUB selection actions"
         onPointerDown={event => event.preventDefault()}
         onOpenAutoFocus={event => event.preventDefault()}
@@ -62,28 +65,41 @@ export function EpubSelectionToolbar({
         <Button
           type="button"
           variant="ghost"
-          className="h-16 min-w-20 flex-col gap-1 rounded-xl px-3 text-[11px] text-red-500 hover:bg-red-500/10 hover:text-red-500"
+          className="h-12 min-w-16 flex-col gap-0.5 rounded-lg px-2 text-[10px] text-red-500 hover:bg-red-500/10 hover:text-red-500"
           onClick={onCreateHighlight}
         >
-          <Highlighter className="size-5" />
+          <Highlighter className="size-4" />
           Red wavy
         </Button>
         <Button
           type="button"
           variant="ghost"
-          className="h-16 min-w-20 flex-col gap-1 rounded-xl px-3 text-[11px]"
-          disabled={addingReference}
+          className="h-12 min-w-16 flex-col gap-0.5 rounded-lg px-2 text-[10px]"
+          disabled={addingReferenceTo !== null}
           title="Add this selection to a chat draft"
           onClick={onAddChat}
         >
-          {addingReference
-            ? <Loader2 className="size-5 animate-spin" />
-            : <MessageSquarePlus className="size-5" />}
+          {addingReferenceTo === 'current'
+            ? <Loader2 className="size-4 animate-spin" />
+            : <MessageSquareQuote className="size-4" />}
           Add Chat
         </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-12 min-w-16 flex-col gap-0.5 rounded-lg px-2 text-[10px]"
+          disabled={addingReferenceTo !== null}
+          title="Start a new chat with this selection"
+          onClick={onAddNewChat}
+        >
+          {addingReferenceTo === 'new'
+            ? <Loader2 className="size-4 animate-spin" />
+            : <MessageSquarePlus className="size-4" />}
+          New Chat
+        </Button>
         <PopoverPrimitive.Arrow
-          width={18}
-          height={9}
+          width={14}
+          height={7}
           className="fill-background"
         />
       </PopoverContent>

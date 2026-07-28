@@ -16,6 +16,7 @@ import {
 import {
   EPUB_HIGHLIGHT_REGISTRY_NAME,
   EPUB_HIGHLIGHT_STYLE_TEXT,
+  EPUB_REFERENCE_UNDERLINE_REGISTRY_NAME,
   buildProjectFileReferenceFromSelection,
   createEpubCssHighlightManager,
   createEpubSelectionSnapshot,
@@ -348,6 +349,24 @@ describe('EPUB state mutation coordination', () => {
 })
 
 describe('optimistic EPUB highlight mutations', () => {
+  it('creates a solid blue underline for a chat reference', () => {
+    const underline = createOptimisticEpubHighlight(
+      createEpubSelectionSnapshot({
+        cfiRange: 'epubcfi(/6/4!/4/2)',
+        quote: 'selected',
+      }),
+      'reference',
+      {
+        style: { type: 'solid', color: 'blue' },
+        now: 10,
+      },
+    )
+
+    expect(underline.style).toEqual({ type: 'solid', color: 'blue' })
+    expect(underline.createdAt).toBe(10)
+    expect(underline.updatedAt).toBe(10)
+  })
+
   it('canonicalizes successful creates and rolls failed creates back', async () => {
     const optimistic = createOptimisticEpubHighlight(
       createEpubSelectionSnapshot({
@@ -355,7 +374,7 @@ describe('optimistic EPUB highlight mutations', () => {
         quote: 'selected',
       }),
       'local',
-      10,
+      { now: 10 },
     )
     let values: EpubHighlightV1[] = []
     let persistedMutation: EpubStateMutation | undefined
@@ -480,20 +499,33 @@ describe('CSS Custom Highlight restoration', () => {
 
     const manager = createEpubCssHighlightManager()
     const unregister = manager.registerContents(contents)
+    const referenceUnderline: EpubHighlightV1 = {
+      ...highlight('reference', { spineIndex: 0 }),
+      style: { type: 'solid', color: 'blue' },
+    }
     manager.sync([
       highlight('shown', { spineIndex: 0 }),
       highlight('other', { spineIndex: 1 }),
+      referenceUnderline,
     ])
 
     expect(styles[0]!.textContent).toContain('text-decoration-style: wavy')
+    expect(styles[0]!.textContent).toContain('text-decoration-style: solid')
     expect(EPUB_HIGHLIGHT_STYLE_TEXT).toContain('#ef4444')
     const rendered = registry.get(EPUB_HIGHLIGHT_REGISTRY_NAME) as FakeHighlight
     expect(rendered.ranges).toEqual([{
       cfiRange: 'epubcfi(/6/4!/4/shown)',
     }])
+    const renderedReference = registry.get(
+      EPUB_REFERENCE_UNDERLINE_REGISTRY_NAME,
+    ) as FakeHighlight
+    expect(renderedReference.ranges).toEqual([{
+      cfiRange: 'epubcfi(/6/4!/4/reference)',
+    }])
 
     manager.sync([])
     expect(registry.has(EPUB_HIGHLIGHT_REGISTRY_NAME)).toBe(false)
+    expect(registry.has(EPUB_REFERENCE_UNDERLINE_REGISTRY_NAME)).toBe(false)
     unregister()
     expect(styles[0]!.removed).toBe(true)
     manager.destroy()

@@ -13,6 +13,7 @@ import {
   Highlighter,
   ListTree,
   Loader2,
+  MessageSquareQuote,
   RotateCcw,
   Trash2,
   X,
@@ -25,6 +26,7 @@ import type {
   SourceFingerprint,
 } from '@craft-agent/core/types'
 import type { ProjectFileMetadata } from '@craft-agent/shared/protocol'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 
 import { useTheme } from '@/context/ThemeContext'
 import {
@@ -79,7 +81,10 @@ interface ProjectFileEpubReaderProps {
   onReady: () => void
   onAddChatReference: (
     reference: ProjectFileReferenceV1,
-  ) => unknown | Promise<unknown>
+  ) => boolean | Promise<boolean>
+  onAddNewChatReference: (
+    reference: ProjectFileReferenceV1,
+  ) => boolean | Promise<boolean>
   onExportMarkdown: (exported: {
     suggestedFilename: string
     content: string
@@ -92,7 +97,7 @@ interface RenderedView {
 }
 
 type ReaderStatus = 'loading' | 'ready' | 'error'
-type ReaderSidebarTab = 'contents' | 'highlights'
+type ReaderSidebarTab = 'contents' | 'highlights' | 'references'
 
 interface PendingEpubSelection {
   snapshot: EpubSelectionSnapshot
@@ -274,6 +279,7 @@ export function ProjectFileEpubReader({
   initialLocator,
   onReady,
   onAddChatReference,
+  onAddNewChatReference,
   onExportMarkdown,
 }: ProjectFileEpubReaderProps) {
   const { isDark } = useTheme()
@@ -325,7 +331,8 @@ export function ProjectFileEpubReader({
     React.useState<PendingEpubSelection | null>(null)
   const [readerNotice, setReaderNotice] = React.useState('')
   const [exporting, setExporting] = React.useState(false)
-  const [addingReference, setAddingReference] = React.useState(false)
+  const [addingReferenceTo, setAddingReferenceTo] =
+    React.useState<'current' | 'new' | null>(null)
   const [compact, setCompact] = React.useState(false)
 
   const dismissSelection = React.useCallback(() => {
@@ -339,9 +346,30 @@ export function ProjectFileEpubReader({
     () => findCurrentEpubTocNode(toc, location.href),
     [location.href, toc],
   )
-  const highlightTree = React.useMemo(
-    () => buildEpubHighlightTree(toc, highlights, compareCfi),
-    [highlights, toc],
+  const wavyHighlights = React.useMemo(
+    () => highlights.filter(highlight => highlight.style.type === 'wavy'),
+    [highlights],
+  )
+  const referenceUnderlines = React.useMemo(
+    () => highlights.filter(highlight => highlight.style.type === 'solid'),
+    [highlights],
+  )
+  const showingReferences = sidebarTab === 'references'
+  const sidebarMarks = showingReferences
+    ? referenceUnderlines
+    : wavyHighlights
+  const sidebarMarkNoun = showingReferences ? 'reference' : 'highlight'
+  const sidebarMarkCount =
+    `${sidebarMarks.length} ${sidebarMarkNoun}${sidebarMarks.length === 1 ? '' : 's'}`
+  const emptySidebarTitle = showingReferences
+    ? 'No chat references yet'
+    : 'No highlights yet'
+  const emptySidebarDescription = showingReferences
+    ? 'Use Add Chat on selected text to add a straight underline.'
+    : 'Select text in the book to add a red wavy underline.'
+  const sidebarMarkTree = React.useMemo(
+    () => buildEpubHighlightTree(toc, sidebarMarks, compareCfi),
+    [sidebarMarks, toc],
   )
 
   React.useLayoutEffect(() => {
@@ -494,7 +522,7 @@ export function ProjectFileEpubReader({
       setPendingSelection(null)
       setReaderNotice('')
       setExporting(false)
-      setAddingReference(false)
+      setAddingReferenceTo(null)
       clearSelectionRef.current = null
 
       try {
@@ -698,7 +726,7 @@ export function ProjectFileEpubReader({
     const selection = pendingSelection?.snapshot
     const coordinator = stateCoordinatorRef.current
     if (!selection || !coordinator) return
-    if (highlights.some(mark => mark.cfiRange === selection.cfiRange)) {
+    if (wavyHighlights.some(mark => mark.cfiRange === selection.cfiRange)) {
       setReaderNotice('This selection is already highlighted.')
       setSidebarTab('highlights')
       dismissSelection()
@@ -739,40 +767,82 @@ export function ProjectFileEpubReader({
     }
   }, [
     dismissSelection,
-    highlights,
     pendingSelection,
+    wavyHighlights,
   ])
 
-  const addSelectionToChat = React.useCallback(async () => {
+  const addSelectionToChat = React.useCallback(async (
+    target: 'current' | 'new',
+  ) => {
     const selection = pendingSelection?.snapshot
-    if (!selection || addingReference) return
+    if (!selection || addingReferenceTo) return
 
-    setAddingReference(true)
+    let attached = false
+    setAddingReferenceTo(target)
     try {
-      await onAddChatReference(buildProjectFileReferenceFromSelection({
-        identity,
-        sourceFingerprint,
-        fileName: metadata.name,
-        selection,
-      }))
+      const addReference = target === 'new'
+        ? onAddNewChatReference
+        : onAddChatReference
+      attached = await addReference(
+        buildProjectFileReferenceFromSelection({
+          identity,
+          sourceFingerprint,
+          fileName: metadata.name,
+          selection,
+        }),
+      )
       dismissSelection()
+      if (!attached) {
+        setReaderNotice('')
+        return
+      }
+
+      setSidebarTab('references')
+      if (referenceUnderlines.some(
+        mark => mark.cfiRange === selection.cfiRange,
+      )) {
+        setReaderNotice('')
+        return
+      }
+
+      const coordinator = stateCoordinatorRef.current
+      if (!coordinator) throw new Error('EPUB state coordinator is unavailable')
+      const optimistic = createOptimisticEpubHighlight(
+        selection,
+        globalThis.crypto.randomUUID(),
+        { style: { type: 'solid', color: 'blue' } },
+      )
+      const response = await persistOptimisticEpubHighlight({
+        highlight: optimistic,
+        mutate: mutation => coordinator.mutate(mutation),
+        updateHighlights: setHighlights,
+      })
+      if (!response.applied && !response.canonicalHighlight) {
+        await coordinator.refresh()
+      }
       setReaderNotice('')
     } catch (error) {
       console.error(
-        '[ProjectFileEpubReader] Failed to add EPUB reference:',
+        attached
+          ? '[ProjectFileEpubReader] Failed to save EPUB reference underline:'
+          : '[ProjectFileEpubReader] Failed to add EPUB reference:',
         error,
       )
-      setReaderNotice('The selection could not be added to chat.')
+      setReaderNotice(attached
+        ? 'The selection was added to chat, but its underline could not be saved.'
+        : 'The selection could not be added to chat.')
     } finally {
-      setAddingReference(false)
+      setAddingReferenceTo(null)
     }
   }, [
-    addingReference,
+    addingReferenceTo,
     dismissSelection,
     identity,
     metadata.name,
     onAddChatReference,
+    onAddNewChatReference,
     pendingSelection,
+    referenceUnderlines,
     sourceFingerprint,
   ])
 
@@ -819,12 +889,12 @@ export function ProjectFileEpubReader({
   }, [])
 
   const exportHighlights = React.useCallback(async () => {
-    if (highlights.length === 0 || exporting) return
+    if (wavyHighlights.length === 0 || exporting) return
     const content = buildEpubHighlightsMarkdown({
       bookTitle,
       fileName: metadata.name,
       toc,
-      highlights,
+      highlights: wavyHighlights,
       compareCfi,
     })
     if (!content) return
@@ -851,10 +921,10 @@ export function ProjectFileEpubReader({
   }, [
     bookTitle,
     exporting,
-    highlights,
     metadata.name,
     onExportMarkdown,
     toc,
+    wavyHighlights,
   ])
 
   const chapterLabel = currentChapter?.title || bookTitle || metadata.name
@@ -868,18 +938,23 @@ export function ProjectFileEpubReader({
       className="flex h-full min-h-0 flex-col overflow-hidden bg-background"
     >
       <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border/60 px-3">
-        <Button
-          type="button"
-          variant={tocOpen ? 'secondary' : 'ghost'}
-          size="sm"
-          className="shrink-0 text-muted-foreground"
-          aria-expanded={tocOpen}
-          aria-controls={tocId}
-          onClick={() => setTocOpen(open => !open)}
-        >
-          <ListTree />
-          <span className="hidden sm:inline">Contents</span>
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant={tocOpen ? 'secondary' : 'ghost'}
+              size="icon"
+              className="size-8 shrink-0 text-muted-foreground"
+              aria-label="Contents"
+              aria-expanded={tocOpen}
+              aria-controls={tocId}
+              onClick={() => setTocOpen(open => !open)}
+            >
+              <ListTree />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Contents</TooltipContent>
+        </Tooltip>
 
         <div className="h-7 w-px bg-border/60" aria-hidden="true" />
         <div className="min-w-0 flex-1">
@@ -907,7 +982,7 @@ export function ProjectFileEpubReader({
       <div className={cn(
         'relative grid min-h-0 flex-1',
         tocOpen && !compact
-          ? 'grid-cols-[minmax(190px,250px)_minmax(0,1fr)]'
+          ? 'grid-cols-[minmax(240px,280px)_minmax(0,1fr)]'
           : 'grid-cols-1',
       )}>
         {tocOpen && compact && (
@@ -970,14 +1045,39 @@ export function ProjectFileEpubReader({
                 onClick={() => setSidebarTab('highlights')}
               >
                 Highlights
-                {highlights.length > 0 && (
+                {wavyHighlights.length > 0 && (
                   <span className="ml-1 font-mono text-[10px] text-muted-foreground">
-                    {highlights.length}
+                    {wavyHighlights.length}
                   </span>
                 )}
                 {sidebarTab === 'highlights' && (
                   <span
                     className="absolute inset-x-2 bottom-0 h-0.5 rounded-t bg-red-500/80"
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sidebarTab === 'references'}
+                className={cn(
+                  'relative h-10 flex-1 px-1 text-[11px] font-medium',
+                  sidebarTab === 'references'
+                    ? 'text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+                onClick={() => setSidebarTab('references')}
+              >
+                References
+                {referenceUnderlines.length > 0 && (
+                  <span className="ml-1 font-mono text-[10px] text-muted-foreground">
+                    {referenceUnderlines.length}
+                  </span>
+                )}
+                {sidebarTab === 'references' && (
+                  <span
+                    className="absolute inset-x-2 bottom-0 h-0.5 rounded-t bg-blue-500/80"
                     aria-hidden="true"
                   />
                 )}
@@ -1003,41 +1103,43 @@ export function ProjectFileEpubReader({
               <div className="flex min-h-0 flex-1 flex-col">
                 <div className="flex h-11 shrink-0 items-center justify-between border-b border-border/50 px-3">
                   <span className="text-[11px] text-muted-foreground">
-                    {highlights.length === 1
-                      ? '1 highlight'
-                      : `${highlights.length} highlights`}
+                    {sidebarMarkCount}
                   </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    disabled={highlights.length === 0 || exporting}
-                    title="Export highlights as Markdown"
-                    onClick={() => void exportHighlights()}
-                  >
-                    {exporting
-                      ? <Loader2 className="animate-spin" />
-                      : <Download />}
-                    Export
-                  </Button>
+                  {!showingReferences && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={sidebarMarks.length === 0 || exporting}
+                      title="Export highlights as Markdown"
+                      onClick={() => void exportHighlights()}
+                    >
+                      {exporting
+                        ? <Loader2 className="animate-spin" />
+                        : <Download />}
+                      Export
+                    </Button>
+                  )}
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto">
-                  {highlights.length > 0 ? (
+                  {sidebarMarks.length > 0 ? (
                     <EpubHighlightTreeView
-                      tree={highlightTree}
+                      tree={sidebarMarkTree}
                       moving={moving}
                       onSelect={displayHighlight}
                       onDelete={deleteHighlight}
                     />
                   ) : (
                     <div className="px-5 py-10 text-center">
-                      <Highlighter className="mx-auto size-5 text-red-400/80" />
+                      {showingReferences
+                        ? <MessageSquareQuote className="mx-auto size-5 text-blue-400/80" />
+                        : <Highlighter className="mx-auto size-5 text-red-400/80" />}
                       <p className="mt-3 text-xs font-medium text-foreground">
-                        No highlights yet
+                        {emptySidebarTitle}
                       </p>
                       <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                        Select text in the book to add a red wavy underline.
+                        {emptySidebarDescription}
                       </p>
                     </div>
                   )}
@@ -1061,9 +1163,10 @@ export function ProjectFileEpubReader({
             <EpubSelectionToolbar
               anchorRect={pendingSelection.anchorRect}
               collisionBoundary={readerViewportRef.current}
-              addingReference={addingReference}
+              addingReferenceTo={addingReferenceTo}
               onCreateHighlight={() => void createRedWavyHighlight()}
-              onAddChat={() => void addSelectionToChat()}
+              onAddChat={() => void addSelectionToChat('current')}
+              onAddNewChat={() => void addSelectionToChat('new')}
               onDismiss={dismissSelection}
             />
           )}
@@ -1223,37 +1326,52 @@ function EpubHighlightRows({
 }) {
   return (
     <>
-      {highlights.map(highlight => (
-        <div
-          key={highlight.id}
-          className="group relative flex min-h-10 items-start gap-1 pr-1 hover:bg-foreground/[0.025]"
-          style={{ paddingLeft: `${19 + depth * 12}px` }}
-        >
-          <span
-            className="mt-3.5 size-1.5 shrink-0 rounded-full bg-red-500/80"
-            aria-hidden="true"
-          />
-          <button
-            type="button"
-            className="min-w-0 flex-1 py-2 text-left"
-            disabled={moving}
-            title={highlight.quote}
-            onClick={() => onSelect(highlight)}
+      {highlights.map(highlight => {
+        const isReference = highlight.style.type === 'solid'
+        return (
+          <div
+            key={highlight.id}
+            className="group relative flex min-h-10 items-start gap-1 pr-1 hover:bg-foreground/[0.025]"
+            style={{ paddingLeft: `${19 + depth * 12}px` }}
           >
-            <span className="line-clamp-2 text-xs leading-relaxed text-foreground/85">
-              {highlight.quote}
-            </span>
-          </button>
-          <button
-            type="button"
-            className="mt-1.5 grid size-7 shrink-0 place-items-center rounded text-muted-foreground opacity-0 hover:bg-red-500/10 hover:text-red-500 focus:opacity-100 group-hover:opacity-100"
-            aria-label={`Delete highlight: ${highlight.quote}`}
-            onClick={() => onDelete(highlight)}
-          >
-            <Trash2 className="size-3.5" />
-          </button>
-        </div>
-      ))}
+            <span
+              className={cn(
+                'mt-3.5 size-1.5 shrink-0 rounded-full',
+                isReference ? 'bg-blue-500/80' : 'bg-red-500/80',
+              )}
+              aria-hidden="true"
+            />
+            <button
+              type="button"
+              className="min-w-0 flex-1 py-2 text-left"
+              disabled={moving}
+              title={highlight.quote}
+              onClick={() => onSelect(highlight)}
+            >
+              <span className="line-clamp-2 text-xs leading-relaxed text-foreground/85">
+                {highlight.quote}
+              </span>
+            </button>
+            <button
+              type="button"
+              className={cn(
+                'mt-1.5 grid size-7 shrink-0 place-items-center rounded text-muted-foreground opacity-0 focus:opacity-100 group-hover:opacity-100',
+                isReference
+                  ? 'hover:bg-blue-500/10 hover:text-blue-500'
+                  : 'hover:bg-red-500/10 hover:text-red-500',
+              )}
+              aria-label={
+                isReference
+                  ? `Remove reference underline: ${highlight.quote}`
+                  : `Delete highlight: ${highlight.quote}`
+              }
+              onClick={() => onDelete(highlight)}
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          </div>
+        )
+      })}
     </>
   )
 }

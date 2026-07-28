@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAtomValue, useSetAtom, useStore } from 'jotai'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, FileQuestion } from 'lucide-react'
@@ -120,12 +120,22 @@ export default function ProjectFilePage({
   const [initialLocator, setInitialLocator] = useState<MessageReference['locator']>()
   const [staleReference, setStaleReference] = useState(false)
   const [pendingReference, setPendingReference] = useState<MessageReference | null>(null)
+  const pendingReferenceResolutionRef =
+    useRef<((attached: boolean) => void) | null>(null)
   const fileName = relativePath.split(/[\\/]/).pop() || t('filesSidebar.previewTitle')
   const fileIdentity = `${route.projectId}\0${relativePath}`
   const referenceTargets = useMemo(
     () => listProjectReferenceTargets(sessionMetaMap, route.projectId),
     [route.projectId, sessionMetaMap],
   )
+
+  useEffect(() => {
+    setPendingReference(null)
+    return () => {
+      pendingReferenceResolutionRef.current?.(false)
+      pendingReferenceResolutionRef.current = null
+    }
+  }, [fileIdentity])
 
   useEffect(() => {
     let cancelled = false
@@ -261,6 +271,27 @@ export default function ProjectFilePage({
     return true
   }, [focusSession, onAddDraftReference])
 
+  const createSessionWithReference = useCallback(async (
+    reference: MessageReference,
+  ) => {
+    if (!activeWorkspaceId) return false
+    const session = await onCreateSession(activeWorkspaceId, {
+      projectId: route.projectId,
+    })
+    return attachReferenceToSession(session.id, reference)
+  }, [
+    activeWorkspaceId,
+    attachReferenceToSession,
+    onCreateSession,
+    route.projectId,
+  ])
+
+  const finishPendingReference = useCallback((attached: boolean) => {
+    pendingReferenceResolutionRef.current?.(attached)
+    pendingReferenceResolutionRef.current = null
+    setPendingReference(null)
+  }, [])
+
   const handleAddChatReference = useCallback((reference: MessageReference) => {
     const ownerSessionId = getProjectFileOwnerSessionId(
       panelStack,
@@ -272,9 +303,13 @@ export default function ProjectFilePage({
       if (!attachReferenceToSession(ownerSessionId, reference)) {
         throw new Error('The target chat draft is currently locked.')
       }
-      return
+      return true
     }
-    setPendingReference(reference)
+    return new Promise<boolean>(resolve => {
+      pendingReferenceResolutionRef.current?.(false)
+      pendingReferenceResolutionRef.current = resolve
+      setPendingReference(reference)
+    })
   }, [
     attachReferenceToSession,
     panelId,
@@ -282,6 +317,15 @@ export default function ProjectFilePage({
     route.projectId,
     sessionMetaMap,
   ])
+
+  const handleAddNewChatReference = useCallback(async (
+    reference: MessageReference,
+  ) => {
+    if (!await createSessionWithReference(reference)) {
+      throw new Error('The new chat could not accept this reference.')
+    }
+    return true
+  }, [createSessionWithReference])
 
   const preview = (() => {
     if (isLoading) {
@@ -335,6 +379,7 @@ export default function ProjectFilePage({
               sourceFingerprint={sourceFingerprint}
               initialLocator={initialLocator}
               onAddChatReference={handleAddChatReference}
+              onAddNewChatReference={handleAddNewChatReference}
               onExportMarkdown={async ({ suggestedFilename, content }) => {
                 await saveTextFile({
                   suggestedName: suggestedFilename,
@@ -412,20 +457,19 @@ export default function ProjectFilePage({
         reference={pendingReference}
         sessions={referenceTargets}
         onOpenChange={open => {
-          if (!open) setPendingReference(null)
+          if (!open) finishPendingReference(false)
         }}
         onSelect={sessionId => {
           if (pendingReference && attachReferenceToSession(sessionId, pendingReference)) {
-            setPendingReference(null)
+            finishPendingReference(true)
           }
         }}
         onCreate={async () => {
-          if (!pendingReference || !activeWorkspaceId) return
-          const session = await onCreateSession(activeWorkspaceId, {
-            projectId: route.projectId,
-          })
-          if (attachReferenceToSession(session.id, pendingReference)) {
-            setPendingReference(null)
+          if (
+            pendingReference
+            && await createSessionWithReference(pendingReference)
+          ) {
+            finishPendingReference(true)
           }
         }}
       />

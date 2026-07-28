@@ -113,13 +113,15 @@ function assertHighlight(
   if (!Array.isArray(candidate.tocPath) || candidate.tocPath.length > MAX_EPUB_TOC_PATH_DEPTH) {
     throw new Error('INVALID_EPUB_TOC_PATH')
   }
-  if (
-    !candidate.style
-    || typeof candidate.style !== 'object'
-    || Array.isArray(candidate.style)
-    || (candidate.style as Record<string, unknown>).type !== 'wavy'
-    || (candidate.style as Record<string, unknown>).color !== 'red'
-  ) {
+  const style = candidate.style
+  if (!style || typeof style !== 'object' || Array.isArray(style)) {
+    throw new Error('INVALID_EPUB_HIGHLIGHT_STYLE')
+  }
+  const styleRecord = style as Record<string, unknown>
+  const validStyle =
+    (styleRecord.type === 'wavy' && styleRecord.color === 'red')
+    || (styleRecord.type === 'solid' && styleRecord.color === 'blue')
+  if (!validStyle) {
     throw new Error('INVALID_EPUB_HIGHLIGHT_STYLE')
   }
   for (const entry of candidate.tocPath) {
@@ -196,7 +198,9 @@ export function normalizeEpubStateMutation(
           ...(highlight.spineIndex !== undefined
             ? { spineIndex: highlight.spineIndex }
             : {}),
-          style: { type: 'wavy', color: 'red' },
+          style: highlight.style.type === 'wavy'
+            ? { type: 'wavy', color: 'red' }
+            : { type: 'solid', color: 'blue' },
         },
       }
     }
