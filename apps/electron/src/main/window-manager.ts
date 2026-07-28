@@ -199,6 +199,9 @@ export class WindowManager {
     // In packaged app, resources are at dist/resources/ (same level as __dirname)
     // In dev, resources are at ../resources/ (sibling of dist/)
     const getIconPath = () => {
+      const iconOverride = process.env.CRAFT_APP_ICON
+      if (iconOverride && existsSync(iconOverride)) return iconOverride
+
       const iconName = process.platform === 'darwin' ? 'icon.icns'
         : process.platform === 'win32' ? 'icon.ico'
         : 'icon.png'

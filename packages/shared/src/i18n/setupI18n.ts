@@ -1,12 +1,13 @@
 import i18n, { type i18n as I18nInstance, type InitOptions } from "i18next";
 import { LOCALE_REGISTRY } from "./registry";
 import { SUPPORTED_LANGUAGE_CODES } from "./languages";
+import { applyStairBrandingToMessages } from "../stair-branding";
 
 // Build i18next resources from the locale registry.
 const resources = Object.fromEntries(
   Object.entries(LOCALE_REGISTRY).map(([code, entry]) => [
     code,
-    { translation: entry.messages },
+    { translation: applyStairBrandingToMessages(entry.messages) },
   ]),
 );
 

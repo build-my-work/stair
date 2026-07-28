@@ -8,6 +8,8 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Improvements
 
+- **Stair product identity** — Ship the desktop application as Stair with independent packaging, icons, and update behavior while preserving upstream-compatible internal identifiers.
+
 ## Bug Fixes
 
 ## Breaking Changes

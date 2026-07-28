@@ -431,10 +431,13 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin' && app.dock) {
     // In packaged app, resources are at dist/resources/ (same level as __dirname)
     // In dev, resources are at ../resources/ (sibling of dist/)
-    const dockIconPath = [
-      join(__dirname, 'resources/icon.png'),
-      join(__dirname, '../resources/icon.png'),
-    ].find(p => existsSync(p))
+    const iconOverride = process.env.CRAFT_APP_ICON
+    const dockIconPath = iconOverride && existsSync(iconOverride)
+      ? iconOverride
+      : [
+          join(__dirname, 'resources/icon.png'),
+          join(__dirname, '../resources/icon.png'),
+        ].find(p => existsSync(p))
 
     if (dockIconPath) {
       app.dock.setIcon(dockIconPath)

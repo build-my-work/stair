@@ -33,6 +33,7 @@ import type { EventSink } from '@craft-agent/server-core/transport'
 const PLATFORM = platform()
 const IS_MAC = PLATFORM === 'darwin'
 const IS_WINDOWS = PLATFORM === 'win32'
+const AUTO_UPDATE_DISABLED = process.env.CRAFT_DISABLE_AUTO_UPDATE === '1'
 
 // Get the update cache directory path (for file watcher fallback on macOS)
 // electron-updater uses these paths:
@@ -357,6 +358,11 @@ function checkForExistingDownload(): { exists: boolean; version?: string } {
  * @param options.autoDownload - If false, only checks without downloading (for manual "Check Now")
  */
 export async function checkForUpdates(options: CheckOptions = {}): Promise<UpdateInfo> {
+  if (AUTO_UPDATE_DISABLED) {
+    mainLog.info('[auto-update] Disabled for this build')
+    return getUpdateInfo()
+  }
+
   const { autoDownload = true } = options
 
   // Temporarily override autoDownload for this check if needed

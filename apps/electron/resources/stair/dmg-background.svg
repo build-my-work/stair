@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="540" height="380" viewBox="0 0 540 380" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="background" x1="40" y1="20" x2="500" y2="360" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#17142B"/>
+      <stop offset="1" stop-color="#4C1D95"/>
+    </linearGradient>
+  </defs>
+  <rect width="540" height="380" fill="url(#background)"/>
+  <text x="270" y="72" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="34" font-weight="700" text-anchor="middle">Stair</text>
+  <path d="M220 205H318" stroke="#C4B5FD" stroke-width="4" stroke-linecap="round"/>
+  <path d="M304 191L320 205L304 219" fill="none" stroke="#C4B5FD" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="270" y="315" fill="#DDD6FE" font-family="Arial, sans-serif" font-size="15" text-anchor="middle">Drag Stair to Applications</text>
+</svg>
