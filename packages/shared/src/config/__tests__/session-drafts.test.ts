@@ -67,6 +67,117 @@ describe('session draft storage', () => {
     })
   })
 
+  it('round-trips a structured Project File reference without modifying draft text', () => {
+    const configDir = makeConfigDir()
+    const reference = {
+      version: 1,
+      kind: 'project-file',
+      projectId: 'project-1',
+      relativePath: 'books/os.epub',
+      sourceFingerprint: `sha256:${'a'.repeat(64)}`,
+      fileName: 'os.epub',
+      quote: 'selected text',
+      contextBefore: 'before',
+      contextAfter: 'after',
+      tocPath: [{ key: 'toc:0', title: 'Chapter 1', orderPath: [0] }],
+      locator: { type: 'epub-cfi', cfiRange: 'epubcfi(/6/4!/4/2:0)' },
+    }
+    runEval(configDir, `setSessionDraft('s1', ${JSON.stringify({ text: '', references: [reference] })})`)
+    const output = runEval(configDir, "console.log(JSON.stringify(getSessionDraft('s1')))")
+    expect(JSON.parse(output)).toEqual({ text: '', references: [reference] })
+  })
+
+  it('drops malformed Project File references on load', () => {
+    const configDir = makeConfigDir()
+    const draftsPath = join(configDir, 'drafts.json')
+    writeFileSync(draftsPath, JSON.stringify({
+      drafts: {
+        s1: {
+          text: 'keep me only if the reference is valid',
+          references: [{
+            version: 1,
+            kind: 'project-file',
+            projectId: 'project-1',
+            relativePath: '../escape.epub',
+            sourceFingerprint: `sha256:${'a'.repeat(64)}`,
+            fileName: 'escape.epub',
+            quote: 'bad',
+            tocPath: [],
+            locator: { type: 'epub-cfi', cfiRange: 'epubcfi(/6/4)' },
+          }],
+        },
+      },
+      updatedAt: 0,
+    }), 'utf-8')
+    const output = runEval(configDir, "console.log(JSON.stringify(getAllSessionDrafts()))")
+    expect(JSON.parse(output)).toEqual({})
+  })
+
+  it('rejects malformed Project File references at the SET boundary', () => {
+    const configDir = makeConfigDir()
+    const output = runEval(configDir, `
+      try {
+        setSessionDraft('s1', {
+          text: 'must not be stored',
+          references: [{
+            version: 1,
+            kind: 'project-file',
+            projectId: 'project-1',
+            relativePath: '../escape.epub',
+            sourceFingerprint: 'sha256:${'a'.repeat(64)}',
+            fileName: 'escape.epub',
+            quote: 'bad',
+            tocPath: [],
+            locator: { type: 'epub-cfi', cfiRange: 'epubcfi(/6/4)' },
+          }],
+        })
+      } catch (error) {
+        console.log(error.message)
+      }
+    `)
+    expect(output).toStartWith('INVALID_SESSION_DRAFT:')
+    expect(runEval(
+      configDir,
+      "console.log(JSON.stringify(getSessionDraft('s1')))",
+    )).toBe('null')
+  })
+
+  it('enforces reference count and UTF-8 byte limits at the Draft SET boundary', () => {
+    const configDir = makeConfigDir()
+    const baseReference = {
+      version: 1,
+      kind: 'project-file',
+      projectId: 'project-1',
+      relativePath: 'books/os.epub',
+      sourceFingerprint: `sha256:${'a'.repeat(64)}`,
+      fileName: 'os.epub',
+      quote: 'selected text',
+      tocPath: [],
+      locator: { type: 'epub-cfi', cfiRange: 'epubcfi(/6/4)' },
+    }
+    const tooMany = Array.from({ length: 33 }, () => baseReference)
+    const multibyteOversized = [{
+      ...baseReference,
+      chapterTitle: '界'.repeat(6_000),
+    }]
+    const aggregateOversized = Array.from({ length: 12 }, (_, index) => ({
+      ...baseReference,
+      chapterTitle: `${index}-${'x'.repeat(11_000)}`,
+      locator: { type: 'epub-cfi', cfiRange: `epubcfi(/6/${index + 2})` },
+    }))
+
+    for (const references of [tooMany, multibyteOversized, aggregateOversized]) {
+      const output = runEval(configDir, `
+        try {
+          setSessionDraft('s1', ${JSON.stringify({ text: '', references })})
+        } catch (error) {
+          console.log(error.message)
+        }
+      `)
+      expect(output).toStartWith('INVALID_SESSION_DRAFT:')
+    }
+  })
+
   it('removes the entry when draft is fully empty', () => {
     const configDir = makeConfigDir()
     runEval(configDir, "setSessionDraft('s1', { text: 'typed' })")

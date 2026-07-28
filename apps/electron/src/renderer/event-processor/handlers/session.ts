@@ -44,6 +44,7 @@ import type {
   Effect,
 } from '../types'
 import type { Message } from '../../../shared/types'
+import { projectFileReferenceKey, type MessageReference } from '@craft-agent/core'
 import { generateMessageId, appendMessage } from '../helpers'
 
 /**
@@ -333,13 +334,24 @@ export function handleInterrupted(
     ? [...updatedMessages, event.message]
     : updatedMessages
 
-  // Restore queued message text to the input field — only on user-initiated
+  // Restore queued drafts to the input field — only on user-initiated
   // stops. Silent redirects keep the bubble in chat and rely on the backend's
   // auto-replay (#616).
-  if (isUserInitiated && event.queuedMessages && event.queuedMessages.length > 0) {
+  if (isUserInitiated && event.queuedDrafts && event.queuedDrafts.length > 0) {
+    const references: MessageReference[] = []
+    const seen = new Set<string>()
+    for (const draft of event.queuedDrafts) {
+      for (const reference of draft.references ?? []) {
+        const key = projectFileReferenceKey(reference)
+        if (seen.has(key)) continue
+        seen.add(key)
+        references.push(reference)
+      }
+    }
     effects.push({
       type: 'restore_input',
-      text: event.queuedMessages.join('\n\n'),
+      text: event.queuedDrafts.map(draft => draft.text).filter(Boolean).join('\n\n'),
+      ...(references.length > 0 ? { references } : {}),
     })
   }
 
@@ -994,4 +1006,3 @@ export function handleUsageUpdate(
     effects: [],
   }
 }
-

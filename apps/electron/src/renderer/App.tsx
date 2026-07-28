@@ -4,7 +4,8 @@ import { useTheme } from '@/hooks/useTheme'
 import type { ThemeOverrides } from '@config/theme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
 import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
-import type { SessionDraft, DraftAttachmentRef } from '@craft-agent/shared/config'
+import type { DraftAttachmentRef } from '@craft-agent/shared/config'
+import type { MessageReference } from '@craft-agent/core'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
 import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
 import { generateMessageId } from '../shared/types'
@@ -28,8 +29,17 @@ import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { NavigationProvider } from '@/contexts/NavigationContext'
 import { navigate, routes } from './lib/navigate'
 import { attachmentFromContentRef, toDraftRef } from './lib/drafts'
+import {
+  DraftLockedError,
+  SessionDraftUpdater,
+} from './lib/session-draft-updater'
+import {
+  addDraftReference,
+  mergeDraftReferences,
+} from './lib/session-draft-references'
 import { stripMarkdown } from './utils/text'
 import { coerceInputText } from './lib/input-text'
+import { buildSendFailureUpdate } from './lib/chat-message-state'
 import { getSessionsToRefreshAfterStaleReconnect } from './lib/reconnect-recovery'
 import { formatSessionLoadFailure, shouldTreatSessionLoadFailureAsTransportFallback } from './lib/session-load'
 import { extractWorkspaceSlugFromPath } from '@craft-agent/shared/utils/workspace-slug'
@@ -360,11 +370,67 @@ export default function App() {
   const [pendingPermissions, setPendingPermissions] = useState<Map<string, PermissionRequest[]>>(new Map())
   // Credential requests per session (queue to handle multiple concurrent requests)
   const [pendingCredentials, setPendingCredentials] = useState<Map<string, CredentialRequest[]>>(new Map())
-  // Draft composer state per session (text + attachment refs), preserved across mode
-  // switches, conversation changes, and app restarts. Using a ref avoids re-renders
-  // during typing; attachments are stored as lightweight refs (path + name) and
-  // hydrated via readFileAttachment() on session switch.
-  const sessionDraftsRef = useRef<Map<string, SessionDraft>>(new Map())
+  // Draft state lives outside React to avoid re-rendering the app while typing.
+  const draftUpdaterRef = useRef<SessionDraftUpdater | null>(null)
+  if (!draftUpdaterRef.current) {
+    draftUpdaterRef.current = new SessionDraftUpdater(
+      new Map(),
+      (sessionId, draft) => window.electronAPI.setDraft(sessionId, draft),
+    )
+  }
+  const pendingDraftRestoresRef = useRef(new Map<string, Array<{
+    text: string
+    references: MessageReference[]
+  }>>())
+  const restoreDraftInput = useCallback((
+    sessionId: string,
+    text: string,
+    references: MessageReference[],
+  ) => {
+    const existingDraft = draftUpdaterRef.current?.get(sessionId)
+    const existingText = coerceInputText(existingDraft?.text)
+    const restoredText = coerceInputText(text)
+    const restored = existingText && restoredText
+      ? `${existingText}\n\n${restoredText}`
+      : existingText || restoredText
+    const next = draftUpdaterRef.current!.update(sessionId, current => {
+      return mergeDraftReferences({ ...current, text: restored }, references)
+    })
+    void window.electronAPI.setDraft(sessionId, next).catch(error => {
+      console.error('[drafts] Failed to persist restored input:', error)
+    })
+    window.dispatchEvent(new CustomEvent('craft:restore-input', {
+      detail: { sessionId, text: restored },
+    }))
+  }, [])
+  const queueOrRestoreDraftInput = useCallback((
+    sessionId: string,
+    text: string,
+    references: MessageReference[],
+  ) => {
+    try {
+      restoreDraftInput(sessionId, text, references)
+    } catch (error) {
+      if (!(error instanceof DraftLockedError)) throw error
+      const pending = pendingDraftRestoresRef.current.get(sessionId) ?? []
+      pending.push({ text, references })
+      pendingDraftRestoresRef.current.set(sessionId, pending)
+    }
+  }, [restoreDraftInput])
+  const flushPendingDraftRestores = useCallback((sessionId: string) => {
+    if (draftUpdaterRef.current?.isLocked(sessionId)) return
+    const pending = pendingDraftRestoresRef.current.get(sessionId)
+    if (!pending?.length) return
+    pendingDraftRestoresRef.current.delete(sessionId)
+    try {
+      for (const restore of pending) {
+        restoreDraftInput(sessionId, restore.text, restore.references)
+      }
+    } catch (error) {
+      console.error('[drafts] Failed to apply queued input restoration:', error)
+      toast.error('A stopped queued message could not be restored to the draft')
+    }
+  }, [restoreDraftInput])
   // Unified session options for all session-scoped settings
   const [sessionOptions, setSessionOptions] = useState<Map<string, SessionOptions>>(new Map())
 
@@ -787,7 +853,7 @@ export default function App() {
     // is opened so app startup isn't delayed by reading potentially large files.
     window.electronAPI.getAllDrafts().then((drafts) => {
       if (Object.keys(drafts).length > 0) {
-        sessionDraftsRef.current = new Map(Object.entries(drafts))
+        draftUpdaterRef.current?.replaceAll(drafts)
       }
     })
     // Load app-level theme
@@ -889,20 +955,11 @@ export default function App() {
             break
           }
           case 'restore_input': {
-            // Queued messages were removed from chat on abort — restore their text to the input field.
-            // Append to existing draft (user may have started typing) rather than overwrite.
-            const existingDraft = sessionDraftsRef.current.get(sessionId)
-            const existingText = coerceInputText(existingDraft?.text)
-            const restoredText = coerceInputText(effect.text)
-            const restored = existingText
-              ? `${existingText}\n\n${restoredText}`
-              : restoredText
-            handleInputChange(sessionId, restored)
-            // handleInputChange updates the ref but ChatPage has local state.
-            // Dispatch a custom event so ChatPage re-reads the draft.
-            window.dispatchEvent(new CustomEvent('craft:restore-input', {
-              detail: { sessionId, text: restored },
-            }))
+            queueOrRestoreDraftInput(
+              sessionId,
+              effect.text,
+              effect.references ?? [],
+            )
             break
           }
           case 'toast_error': {
@@ -1086,6 +1143,7 @@ export default function App() {
     syncSessionOptionsFromSession,
     applyPermissionModeState,
     reconcilePermissionModeState,
+    queueOrRestoreDraftInput,
   ])
 
   // Transport reconnect recovery — refresh session metadata plus active/processing
@@ -1264,12 +1322,40 @@ export default function App() {
     window.electronAPI.sessionCommand(sessionId, { type: 'rename', name })
   }, [updateSessionById])
 
-  const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[]) => {
+  const handleSendMessage = useCallback(async (
+    sessionId: string,
+    message: string,
+    attachments?: FileAttachment[],
+    skillSlugs?: string[],
+    externalBadges?: ContentBadge[],
+    delivery?: {
+      consumeDraft?: boolean
+      references?: MessageReference[]
+    },
+  ) => {
+    let draftLocked = false
+    let optimisticMessageId: string | undefined
+    let references = delivery?.references
+    // Preserve an already-running turn if this send is synchronously rejected.
+    // The same snapshot also controls the optimistic queued badge.
+    const wasProcessingBeforeSend =
+      store.get(sessionAtomFamily(sessionId))?.isProcessing === true
     try {
-      // Capture pre-send processing state so we can flag mid-stream sends
-      // for the queued badge (#616 follow-up — covers Pi steer path which
-      // returns status 'accepted', not 'queued').
-      const sendingMidStream = store.get(sessionAtomFamily(sessionId))?.isProcessing === true
+      if (delivery?.consumeDraft) {
+        const attachmentRefs = attachments
+          ?.map(toDraftRef)
+          .filter((reference): reference is DraftAttachmentRef => reference !== null)
+        draftUpdaterRef.current!.update(sessionId, current => ({
+          ...current,
+          text: message,
+          ...(attachmentRefs && attachmentRefs.length > 0
+            ? { attachments: attachmentRefs }
+            : { attachments: undefined }),
+        }))
+        const draft = draftUpdaterRef.current!.beginSend(sessionId)
+        draftLocked = true
+        references = draft.references
+      }
 
       // Step 1: Store attachments and get persistent metadata
       let storedAttachments: StoredAttachment[] | undefined
@@ -1396,9 +1482,11 @@ export default function App() {
         timestamp: Date.now(),
         attachments: storedAttachments,
         badges: badges.length > 0 ? badges : undefined,
+        references,
         isPending: true,  // Optimistic - will be confirmed by backend
-        isQueued: sendingMidStream,
+        isQueued: wasProcessingBeforeSend,
       }
+      optimisticMessageId = userMessage.id
 
       // Optimistic UI update - add user message and set processing state
       updateSessionById(sessionId, (s) => ({
@@ -1411,24 +1499,45 @@ export default function App() {
       await window.electronAPI.sendMessage(sessionId, message, processedAttachments, storedAttachments, {
         skillSlugs,
         badges: badges.length > 0 ? badges : undefined,
+        references,
         optimisticMessageId: userMessage.id,
       })
+
+      if (draftLocked) {
+        try {
+          await draftUpdaterRef.current!.finishSend(sessionId)
+        } catch (cleanupError) {
+          console.error('[drafts] Message sent but draft cleanup failed:', cleanupError)
+          toast.warning('Message sent, but the draft could not be cleared from disk')
+        } finally {
+          flushPendingDraftRestores(sessionId)
+        }
+      }
     } catch (error) {
+      if (draftLocked && draftUpdaterRef.current?.isLocked(sessionId)) {
+        draftUpdaterRef.current.abortSend(sessionId)
+      }
+      flushPendingDraftRestores(sessionId)
       console.error('Failed to send message:', error)
-      updateSessionById(sessionId, (s) => ({
-        isProcessing: false,
-        messages: [
-          ...s.messages,
-          {
-            id: generateMessageId(),
-            role: 'error' as const,
-            content: `Failed to send message: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            timestamp: Date.now()
-          }
-        ]
+      updateSessionById(sessionId, s => buildSendFailureUpdate({
+        messages: s.messages,
+        optimisticMessageId,
+        wasProcessingBeforeSend,
+        errorContent: `Failed to send message: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        errorMessageId: generateMessageId(),
+        timestamp: Date.now(),
+        retryDraft: delivery?.consumeDraft === true,
       }))
+      throw error
     }
-  }, [sessionOptions, updateSessionById, skills, sources, windowWorkspaceId])
+  }, [
+    flushPendingDraftRestores,
+    store,
+    updateSessionById,
+    skills,
+    sources,
+    windowWorkspaceSlug,
+  ])
 
   /**
    * Unified handler for all session option changes.
@@ -1451,7 +1560,7 @@ export default function App() {
       // Sync thinking level change with backend (session-level, persisted)
       window.electronAPI.sessionCommand(sessionId, { type: 'setThinkingLevel', level: updates.thinkingLevel })
     }
-  }, [sessionOptions])
+  }, [])
 
   // Handle input draft changes per session with debounced persistence
   const draftSaveTimeoutRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
@@ -1466,18 +1575,24 @@ export default function App() {
 
   // Getter for draft text - reads from ref without triggering re-renders
   const getDraft = useCallback((sessionId: string): string => {
-    const draft = sessionDraftsRef.current.get(sessionId) as unknown
-    const text = draft && typeof draft === 'object'
-      ? (draft as { text?: unknown }).text
-      : draft
-    return coerceInputText(text)
+    return coerceInputText(draftUpdaterRef.current?.get(sessionId)?.text)
   }, [])
 
   // Getter for persisted attachment refs (path + name only — not hydrated files).
   // Consumers that need FileAttachment objects should call hydrateDraftAttachments.
   const getDraftAttachmentRefs = useCallback((sessionId: string): DraftAttachmentRef[] => {
-    const attachments = sessionDraftsRef.current.get(sessionId)?.attachments
-    return Array.isArray(attachments) ? attachments : []
+    return draftUpdaterRef.current?.get(sessionId)?.attachments ?? []
+  }, [])
+
+  const getDraftReferences = useCallback((sessionId: string): MessageReference[] => {
+    return draftUpdaterRef.current?.getReferences(sessionId) ?? []
+  }, [])
+
+  const subscribeDraftReferences = useCallback((
+    sessionId: string,
+    listener: (references: MessageReference[]) => void,
+  ): (() => void) => {
+    return draftUpdaterRef.current!.subscribeReferences(sessionId, listener)
   }, [])
 
   // Hydrate persisted attachment refs into full FileAttachment objects.
@@ -1486,8 +1601,7 @@ export default function App() {
   // Missing/moved files on Track P are silently dropped with a console warn — same
   // UX as any other editor draft restore when the backing file is gone.
   const hydrateDraftAttachments = useCallback(async (sessionId: string): Promise<FileAttachment[]> => {
-    const attachments = sessionDraftsRef.current.get(sessionId)?.attachments
-    const refs = Array.isArray(attachments) ? attachments : []
+    const refs = draftUpdaterRef.current?.get(sessionId)?.attachments ?? []
     if (refs.length === 0) return []
     const results = await Promise.all(
       refs.map(async (ref) => {
@@ -1517,34 +1631,64 @@ export default function App() {
       clearTimeout(existingTimeout)
     }
     const timeout = setTimeout(() => {
-      const draft = sessionDraftsRef.current.get(sessionId) ?? { text: '' }
+      const draft = draftUpdaterRef.current?.get(sessionId) ?? { text: '' }
       window.electronAPI.setDraft(sessionId, draft)
       draftSaveTimeoutRef.current.delete(sessionId)
     }, DRAFT_SAVE_DEBOUNCE_MS)
     draftSaveTimeoutRef.current.set(sessionId, timeout)
   }, [])
 
+  const handleDraftReferencesChange = useCallback((
+    sessionId: string,
+    references: MessageReference[],
+  ): void => {
+    try {
+      draftUpdaterRef.current!.update(sessionId, existing => ({
+        ...existing,
+        ...(references.length > 0 ? { references } : { references: undefined }),
+      }))
+      schedulePersistDraft(sessionId)
+    } catch (error) {
+      if (!(error instanceof DraftLockedError)) throw error
+      toast.warning('Wait for the current message to finish sending before changing references')
+    }
+  }, [schedulePersistDraft])
+
+  const handleAddDraftReference = useCallback((
+    sessionId: string,
+    reference: MessageReference,
+  ): boolean => {
+    try {
+      draftUpdaterRef.current!.update(
+        sessionId,
+        existing => addDraftReference(existing, reference),
+      )
+      schedulePersistDraft(sessionId)
+      return true
+    } catch (error) {
+      if (error instanceof DraftLockedError) {
+        toast.warning('Wait for the current message to finish sending before adding a reference')
+        return false
+      }
+      toast.error(error instanceof Error ? error.message : 'Could not add reference')
+      return false
+    }
+  }, [schedulePersistDraft])
+
   const handleInputChange = useCallback((sessionId: string, value: string) => {
     const text = coerceInputText(value)
-    const existing = sessionDraftsRef.current.get(sessionId)
-    const existingAttachments = Array.isArray(existing?.attachments) ? existing.attachments : []
-    const nextDraft: SessionDraft = {
-      text,
-      ...(existingAttachments.length > 0
-        ? { attachments: existingAttachments }
-        : {}),
+    try {
+      draftUpdaterRef.current!.update(sessionId, existing => ({
+        ...existing,
+        text,
+      }))
+      schedulePersistDraft(sessionId)
+    } catch (error) {
+      if (!(error instanceof DraftLockedError)) throw error
     }
-    const isEmpty = !nextDraft.text && (!nextDraft.attachments || nextDraft.attachments.length === 0)
-    if (isEmpty) {
-      sessionDraftsRef.current.delete(sessionId)
-    } else {
-      sessionDraftsRef.current.set(sessionId, nextDraft)
-    }
-    schedulePersistDraft(sessionId)
   }, [schedulePersistDraft])
 
   const handleAttachmentsChange = useCallback((sessionId: string, attachments: FileAttachment[]) => {
-    const existing = sessionDraftsRef.current.get(sessionId)
     const refs: DraftAttachmentRef[] = []
     for (const a of attachments) {
       const ref = toDraftRef(a)
@@ -1554,17 +1698,15 @@ export default function App() {
         console.warn('[drafts] attachment exceeds per-draft size cap, not persisted:', a.name, a.size)
       }
     }
-    const nextDraft: SessionDraft = {
-      text: coerceInputText(existing?.text),
-      ...(refs.length > 0 ? { attachments: refs } : {}),
+    try {
+      draftUpdaterRef.current!.update(sessionId, existing => ({
+        ...existing,
+        ...(refs.length > 0 ? { attachments: refs } : { attachments: undefined }),
+      }))
+      schedulePersistDraft(sessionId)
+    } catch (error) {
+      if (!(error instanceof DraftLockedError)) throw error
     }
-    const isEmpty = !nextDraft.text && (!nextDraft.attachments || nextDraft.attachments.length === 0)
-    if (isEmpty) {
-      sessionDraftsRef.current.delete(sessionId)
-    } else {
-      sessionDraftsRef.current.set(sessionId, nextDraft)
-    }
-    schedulePersistDraft(sessionId)
   }, [schedulePersistDraft])
 
   // Open new chat - creates session and selects it
@@ -1801,7 +1943,7 @@ export default function App() {
 
       // 6. Clear message drafts from previous workspace
       // (prevents memory growth on repeated workspace switches)
-      sessionDraftsRef.current.clear()
+      draftUpdaterRef.current?.clearUnlocked()
 
       // 7. Reset sources and skills atoms to empty
       // (prevents stale data flash during workspace switch - AppShell will reload)
@@ -1856,6 +1998,10 @@ export default function App() {
     getDraft,
     getDraftAttachmentRefs,
     hydrateDraftAttachments,
+    getDraftReferences,
+    subscribeDraftReferences,
+    onDraftReferencesChange: handleDraftReferencesChange,
+    onAddDraftReference: handleAddDraftReference,
     sessionOptions,
     // Session callbacks
     onCreateSession: handleCreateSession,
@@ -1902,6 +2048,10 @@ export default function App() {
     getDraft,
     getDraftAttachmentRefs,
     hydrateDraftAttachments,
+    getDraftReferences,
+    subscribeDraftReferences,
+    handleDraftReferencesChange,
+    handleAddDraftReference,
     sessionOptions,
     handleCreateSession,
     handleSendMessage,

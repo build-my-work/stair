@@ -1,3 +1,6 @@
+import type { PanelContentRoute } from '../../shared/routes'
+import { serializePanelLayoutV1 } from '@/lib/panel-layout-codec'
+
 interface SemanticHistoryKeyInput {
   workspaceSlug: string | null
   panelRoutes: string[]
@@ -12,6 +15,30 @@ interface InitialRestoreGateInput {
   initialRouteRestored: boolean
 }
 
+interface PanelLayoutUrlEntry {
+  id: string
+  route: PanelContentRoute
+  proportion: number
+  ownerPanelId?: string
+}
+
+/**
+ * Keep the versioned physical panel layout in the current navigation URL.
+ */
+export function updatePanelLayoutSearchParam(
+  searchParams: URLSearchParams,
+  panels: readonly PanelLayoutUrlEntry[],
+  focusedPanelId: string | null,
+): string | null {
+  const layout = serializePanelLayoutV1(panels, focusedPanelId)
+  if (layout) {
+    searchParams.set('layout', layout)
+  } else {
+    searchParams.delete('layout')
+  }
+  return layout
+}
+
 /**
  * Builds a semantic history key used to dedupe pushState entries.
  *
@@ -24,12 +51,12 @@ export function buildSemanticHistoryKey({
   focusedPanelIndex,
   sidebarParam,
 }: SemanticHistoryKeyInput): string {
-  return [
+  return JSON.stringify([
     workspaceSlug ?? '',
-    panelRoutes.join('|'),
-    String(focusedPanelIndex),
+    panelRoutes,
+    focusedPanelIndex,
     sidebarParam,
-  ].join('::')
+  ])
 }
 
 /**

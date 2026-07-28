@@ -1,0 +1,434 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useAtomValue, useSetAtom, useStore } from 'jotai'
+import { useTranslation } from 'react-i18next'
+import { AlertTriangle, FileQuestion } from 'lucide-react'
+import { toast } from 'sonner'
+import { Markdown, ShikiCodeViewer, Spinner, classifyFile } from '@craft-agent/ui'
+import { Panel } from '@/components/app-shell/Panel'
+import { PanelHeader } from '@/components/app-shell/PanelHeader'
+import { useAppShellContext } from '@/context/AppShellContext'
+import { useTheme } from '@/context/ThemeContext'
+import { projectsAtom } from '@/atoms/projects'
+import type {
+  ProjectFileMetadata,
+  ProjectFileRequest,
+} from '@craft-agent/shared/protocol'
+import {
+  isCanonicalProjectRelativePath,
+  type MessageReference,
+  type SourceFingerprint,
+} from '@craft-agent/core'
+import { ProjectFileEpubReader } from '@/components/project-files/ProjectFileEpubReader'
+import { ProjectFileReferenceTargetDialog } from '@/components/project-files/ProjectFileReferenceTargetDialog'
+import {
+  consumeProjectFileOpenIntentAtom,
+  panelStackAtom,
+  projectFileOpenIntentsAtom,
+  pushPanelAtom,
+} from '@/atoms/panel-stack'
+import { sessionMetaMapAtom } from '@/atoms/sessions'
+import {
+  getProjectFileOwnerSessionId,
+  listProjectReferenceTargets,
+  resolveProjectFileOpenIntent,
+} from '@/lib/project-file-reference-target'
+import { saveTextFile } from '@/lib/save-text-file'
+import { routes } from '../../shared/routes'
+import type { ProjectFileRoute } from '@/lib/project-file-route'
+import { focusExistingProjectSessionPanel } from '@/components/app-shell/project-session-panel-navigation'
+
+interface ProjectFilePageProps {
+  route: ProjectFileRoute
+  panelId: string
+}
+
+export type ProjectFileKind =
+  | 'epub'
+  | 'pdf'
+  | 'image'
+  | 'markdown'
+  | 'code'
+  | 'json'
+  | 'text'
+  | 'unknown'
+
+export function getProjectFileKind(relativePath: string): ProjectFileKind {
+  if (relativePath.toLowerCase().endsWith('.epub')) return 'epub'
+  return classifyFile(relativePath).type ?? 'unknown'
+}
+
+type ProjectFilePreviewApi = Pick<
+  Window['electronAPI'],
+  'readProjectFileBinary' | 'readProjectFileText'
+>
+
+export async function loadProjectFilePreview(
+  request: ProjectFileRequest,
+  kind: ProjectFileKind,
+  canPreview: boolean,
+  api: ProjectFilePreviewApi = window.electronAPI,
+) {
+  if (kind === 'image' || kind === 'pdf' || kind === 'epub') {
+    return {
+      type: 'binary' as const,
+      response: await api.readProjectFileBinary(request),
+    }
+  }
+  if (!canPreview) {
+    return { type: 'unsupported' as const }
+  }
+  return {
+    type: 'text' as const,
+    response: await api.readProjectFileText(request),
+  }
+}
+
+export default function ProjectFilePage({
+  route,
+  panelId,
+}: ProjectFilePageProps) {
+  const { t } = useTranslation()
+  const {
+    activeWorkspaceId,
+    onAddDraftReference,
+    onCreateSession,
+    rightSidebarButton,
+  } = useAppShellContext()
+  const { resolvedMode, shikiTheme } = useTheme()
+  const projects = useAtomValue(projectsAtom)
+  const panelStack = useAtomValue(panelStackAtom)
+  const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
+  const openIntent = useAtomValue(projectFileOpenIntentsAtom).get(panelId)
+  const consumeOpenIntent = useSetAtom(consumeProjectFileOpenIntentAtom)
+  const store = useStore()
+  const project = useMemo(
+    () => projects.find(candidate => candidate.config.id === route.projectId),
+    [projects, route.projectId],
+  )
+  const relativePath = route.relativePath
+  const safePath = isCanonicalProjectRelativePath(relativePath)
+  const kind = getProjectFileKind(relativePath)
+  const classification = classifyFile(relativePath)
+  const [content, setContent] = useState<string | null>(null)
+  const [bytes, setBytes] = useState<Uint8Array | null>(null)
+  const [metadata, setMetadata] = useState<ProjectFileMetadata | null>(null)
+  const [sourceFingerprint, setSourceFingerprint] = useState<SourceFingerprint | null>(null)
+  const [binaryUrl, setBinaryUrl] = useState<string | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [reloadToken, setReloadToken] = useState(0)
+  const [initialLocator, setInitialLocator] = useState<MessageReference['locator']>()
+  const [staleReference, setStaleReference] = useState(false)
+  const [pendingReference, setPendingReference] = useState<MessageReference | null>(null)
+  const fileName = relativePath.split(/[\\/]/).pop() || t('filesSidebar.previewTitle')
+  const fileIdentity = `${route.projectId}\0${relativePath}`
+  const referenceTargets = useMemo(
+    () => listProjectReferenceTargets(sessionMetaMap, route.projectId),
+    [route.projectId, sessionMetaMap],
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    let nextBinaryUrl: string | null = null
+
+    setContent(null)
+    setBytes(null)
+    setMetadata(null)
+    setSourceFingerprint(null)
+    setBinaryUrl(null)
+    setError(null)
+    setIsLoading(false)
+    setInitialLocator(undefined)
+    setStaleReference(false)
+
+    if (!safePath) {
+      setError(t('filesSidebar.invalidPath'))
+      return
+    }
+
+    setIsLoading(true)
+    const load = async () => {
+      try {
+        const request = {
+          projectId: route.projectId,
+          relativePath,
+        }
+        const result = await loadProjectFilePreview(
+          request,
+          kind,
+          classification.canPreview && !!classification.type,
+        )
+        if (result.type === 'binary') {
+          const response = result.response
+          if (cancelled) return
+          setMetadata(response.metadata)
+          setBytes(response.bytes)
+          setSourceFingerprint(response.sourceFingerprint)
+
+          if (kind !== 'image' && kind !== 'pdf') return
+          const data = response.bytes
+          const buffer = data.buffer.slice(
+            data.byteOffset,
+            data.byteOffset + data.byteLength,
+          ) as ArrayBuffer
+          nextBinaryUrl = URL.createObjectURL(new Blob(
+            [buffer],
+            { type: response.metadata.mimeType },
+          ))
+          if (cancelled) {
+            URL.revokeObjectURL(nextBinaryUrl)
+            nextBinaryUrl = null
+          } else {
+            setBinaryUrl(nextBinaryUrl)
+          }
+          return
+        }
+        if (result.type === 'unsupported') return
+        const response = result.response
+        if (!cancelled) {
+          setContent(response.text)
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : t('fileViewer.errorLoading'))
+        }
+      } finally {
+        if (!cancelled) setIsLoading(false)
+      }
+    }
+
+    void load()
+    return () => {
+      cancelled = true
+      if (nextBinaryUrl) URL.revokeObjectURL(nextBinaryUrl)
+    }
+  }, [
+    classification.canPreview,
+    classification.type,
+    kind,
+    relativePath,
+    reloadToken,
+    route.projectId,
+    safePath,
+    t,
+  ])
+
+  useEffect(() => {
+    if (!openIntent) {
+      setInitialLocator(undefined)
+      return
+    }
+    if (!sourceFingerprint || kind !== 'epub') return
+    const resolution = resolveProjectFileOpenIntent(
+      openIntent,
+      sourceFingerprint,
+    )
+    if (resolution.stale) {
+      setInitialLocator(undefined)
+      setStaleReference(true)
+      consumeOpenIntent(panelId)
+      return
+    }
+    setStaleReference(false)
+    setInitialLocator(resolution.locator)
+  }, [
+    consumeOpenIntent,
+    kind,
+    openIntent,
+    panelId,
+    sourceFingerprint,
+  ])
+
+  const focusSession = useCallback((sessionId: string) => {
+    const projectSlug = project?.config.slug
+    if (!projectSlug) return
+    if (focusExistingProjectSessionPanel(store, projectSlug, sessionId)) return
+
+    const filePanelIndex = panelStack.findIndex(entry => entry.id === panelId)
+    store.set(pushPanelAtom, {
+      route: routes.view.projectSession(projectSlug, sessionId),
+      afterIndex: filePanelIndex >= 0 ? filePanelIndex : undefined,
+    })
+  }, [panelId, panelStack, project?.config.slug, store])
+
+  const attachReferenceToSession = useCallback((
+    sessionId: string,
+    reference: MessageReference,
+  ) => {
+    if (!onAddDraftReference(sessionId, reference)) return false
+    toast.success('EPUB selection added to the chat draft')
+    focusSession(sessionId)
+    return true
+  }, [focusSession, onAddDraftReference])
+
+  const handleAddChatReference = useCallback((reference: MessageReference) => {
+    const ownerSessionId = getProjectFileOwnerSessionId(
+      panelStack,
+      panelId,
+      sessionMetaMap,
+      route.projectId,
+    )
+    if (ownerSessionId) {
+      if (!attachReferenceToSession(ownerSessionId, reference)) {
+        throw new Error('The target chat draft is currently locked.')
+      }
+      return
+    }
+    setPendingReference(reference)
+  }, [
+    attachReferenceToSession,
+    panelId,
+    panelStack,
+    route.projectId,
+    sessionMetaMap,
+  ])
+
+  const preview = (() => {
+    if (isLoading) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+          <Spinner />
+          <span className="text-sm">{t('fileViewer.loadingContent')}</span>
+        </div>
+      )
+    }
+    if (error) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
+          <FileQuestion className="h-8 w-8 text-destructive/55" />
+          <p className="text-sm font-medium text-destructive">{t('fileViewer.errorLoading')}</p>
+          <p className="max-w-xl text-xs text-muted-foreground">{error}</p>
+          <button
+            type="button"
+            onClick={() => setReloadToken(token => token + 1)}
+            className="rounded-[7px] bg-background px-3 py-1.5 text-xs shadow-minimal hover:bg-foreground/[0.04]"
+          >
+            {t('common.retry')}
+          </button>
+        </div>
+      )
+    }
+    if (
+      kind === 'epub'
+      && bytes
+      && metadata
+      && sourceFingerprint
+    ) {
+      return (
+        <div className="flex h-full min-h-0 flex-col">
+          {staleReference && (
+            <div className="flex shrink-0 items-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              This reference belongs to an older version of the EPUB. The current
+              file is open without jumping to the saved location.
+            </div>
+          )}
+          <div className="min-h-0 flex-1">
+            <ProjectFileEpubReader
+              key={`${fileIdentity}\0${sourceFingerprint}`}
+              identity={{
+                projectId: route.projectId,
+                relativePath,
+              }}
+              metadata={metadata}
+              bytes={bytes}
+              sourceFingerprint={sourceFingerprint}
+              initialLocator={initialLocator}
+              onAddChatReference={handleAddChatReference}
+              onExportMarkdown={async ({ suggestedFilename, content }) => {
+                await saveTextFile({
+                  suggestedName: suggestedFilename,
+                  content,
+                })
+              }}
+              onReady={() => {
+                if (openIntent?.expectedFingerprint === sourceFingerprint) {
+                  consumeOpenIntent(panelId)
+                }
+              }}
+            />
+          </div>
+        </div>
+      )
+    }
+    if (!classification.canPreview || !classification.type) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
+          <FileQuestion className="h-8 w-8 text-muted-foreground/45" />
+          <p className="text-sm font-medium">{t('filesSidebar.previewUnavailable')}</p>
+        </div>
+      )
+    }
+    if (classification.type === 'image' && binaryUrl) {
+      return (
+        <div className="flex h-full items-center justify-center overflow-auto p-6">
+          <img src={binaryUrl} alt={fileName} className="max-h-full max-w-full rounded-[6px] object-contain shadow-minimal" />
+        </div>
+      )
+    }
+    if (classification.type === 'pdf' && binaryUrl) {
+      return <iframe title={fileName} src={binaryUrl} className="h-full w-full border-0 bg-background" />
+    }
+    if (classification.type === 'markdown') {
+      return (
+        <div className="h-full overflow-y-auto px-8 py-8">
+          <div className="mx-auto max-w-[900px] rounded-[12px] bg-background px-8 py-7 shadow-minimal">
+            <Markdown mode="minimal">{content ?? ''}</Markdown>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="h-full overflow-auto bg-background">
+        <ShikiCodeViewer
+          code={content ?? ''}
+          filePath={relativePath}
+          language={classification.type === 'json' ? 'json' : undefined}
+          theme={resolvedMode}
+          shikiTheme={shikiTheme}
+          className="min-h-full"
+        />
+      </div>
+    )
+  })()
+
+  return (
+    <Panel
+      variant="grow"
+      className="bg-foreground-3"
+      data-content-panel-id={panelId}
+    >
+      <PanelHeader
+        title={fileName}
+        badge={(
+          <span className="max-w-[min(34vw,360px)] truncate font-mono text-[10px] font-normal text-muted-foreground/60">
+            {relativePath}
+          </span>
+        )}
+        rightSidebarButton={rightSidebarButton}
+      />
+      <div key={fileIdentity} className="min-h-0 flex-1">{preview}</div>
+      <ProjectFileReferenceTargetDialog
+        reference={pendingReference}
+        sessions={referenceTargets}
+        onOpenChange={open => {
+          if (!open) setPendingReference(null)
+        }}
+        onSelect={sessionId => {
+          if (pendingReference && attachReferenceToSession(sessionId, pendingReference)) {
+            setPendingReference(null)
+          }
+        }}
+        onCreate={async () => {
+          if (!pendingReference || !activeWorkspaceId) return
+          const session = await onCreateSession(activeWorkspaceId, {
+            projectId: route.projectId,
+          })
+          if (attachReferenceToSession(session.id, pendingReference)) {
+            setPendingReference(null)
+          }
+        }}
+      />
+    </Panel>
+  )
+}

@@ -218,7 +218,20 @@ import type {
   TestAutomationPayload,
   TestAutomationResult,
   WindowCloseRequest,
+  ProjectDirectoryEntriesResult,
   DirectoryListingResult,
+  ProjectFileBinaryResponse,
+  ProjectFileRequest,
+  ProjectDirectoryEntriesRequest,
+  ProjectFileSearchRequest,
+  ProjectFileSearchResult,
+  ProjectFileTextResponse,
+  ApplyEpubStateMutationRequest,
+  ApplyEpubStateMutationResponse,
+  EpubStateRequest,
+  GetEpubStateResponse,
+  SaveTextFileRequest,
+  SaveTextFileResponse,
   RemoteSessionTransferPayload,
   ImportRemoteSessionTransferResult,
 } from '@craft-agent/shared/protocol'
@@ -341,11 +354,25 @@ export interface ElectronAPI {
   /** Returns the absolute filesystem path for a File (only works for file-picker / OS-drag Files). */
   getFilePath(file: File): string | null
 
+  // Project-scoped file operations. These never accept absolute paths.
+  readProjectFileText(request: ProjectFileRequest): Promise<ProjectFileTextResponse>
+  readProjectFileBinary(request: ProjectFileRequest): Promise<ProjectFileBinaryResponse>
+  getEpubDocumentState(
+    request: EpubStateRequest,
+  ): Promise<GetEpubStateResponse>
+  applyEpubStateMutation(
+    request: ApplyEpubStateMutationRequest,
+  ): Promise<ApplyEpubStateMutationResponse>
+
   // Filesystem search (for @ mention file selection)
   searchFiles(basePath: string, query: string): Promise<FileSearchResult[]>
 
   // Server filesystem browsing (remote mode)
   listServerDirectory(dirPath: string): Promise<DirectoryListingResult>
+  /** Search within a Project root resolved by the active server workspace. */
+  searchProjectFiles(request: ProjectFileSearchRequest): Promise<ProjectFileSearchResult[]>
+  /** List one Project directory level, including files, for lazy workspace trees. */
+  listProjectDirectoryEntries(request: ProjectDirectoryEntriesRequest): Promise<ProjectDirectoryEntriesResult>
   // Debug: send renderer logs to main process log file
   debugLog(...args: unknown[]): void
 
@@ -454,6 +481,7 @@ export interface ElectronAPI {
 
   // Folder dialog
   openFolderDialog(): Promise<string | null>
+  saveTextFile(request: SaveTextFileRequest): Promise<SaveTextFileResponse>
 
   // User Preferences
   readPreferences(): Promise<{ content: string; exists: boolean; path: string }>
@@ -898,7 +926,12 @@ export interface AutomationsNavigationState {
  */
 export interface ProjectsNavigationState {
   navigator: 'projects'
-  details: { type: 'project'; projectSlug: string } | null
+  details: {
+    type: 'project'
+    projectSlug: string
+    /** Session currently open inside this project. */
+    sessionId?: string
+  } | null
   rightSidebar?: RightSidebarPanel
 }
 
@@ -964,7 +997,11 @@ export const getNavigationStateKey = (state: NavigationState): string => {
   }
   if (state.navigator === 'projects') {
     if (state.details?.type === 'project') {
-      return `projects/project/${state.details.projectSlug}`
+      const base = `projects/project/${state.details.projectSlug}`
+      if (state.details.sessionId) {
+        return `${base}/session/${state.details.sessionId}`
+      }
+      return base
     }
     return 'projects'
   }
@@ -1019,11 +1056,28 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
   // Handle projects
   if (key === 'projects') return { navigator: 'projects', details: null }
   if (key.startsWith('projects/project/')) {
-    const projectSlug = key.slice(17)
-    if (projectSlug) {
-      return { navigator: 'projects', details: { type: 'project', projectSlug } }
+    const segments = key.split('/')
+    const projectSlug = segments[2]
+    if (!projectSlug) {
+      return { navigator: 'projects', details: null }
     }
-    return { navigator: 'projects', details: null }
+    if (segments.length === 3) {
+      return {
+        navigator: 'projects',
+        details: { type: 'project', projectSlug },
+      }
+    }
+    if (segments.length === 5 && segments[3] === 'session' && segments[4]) {
+      return {
+        navigator: 'projects',
+        details: {
+          type: 'project',
+          projectSlug,
+          sessionId: segments[4],
+        },
+      }
+    }
+    return null
   }
 
   // Handle settings

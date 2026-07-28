@@ -190,6 +190,10 @@ export const routes = {
         ? `projects/project/${projectSlug}` as const
         : 'projects' as const,
 
+    /** Session opened within a project, preserving project navigation context */
+    projectSession: (projectSlug: string, sessionId: string) =>
+      `projects/project/${projectSlug}/session/${sessionId}` as const,
+
     /** Kanban board view (sessions navigator, board view mode, all sessions) */
     board: () => 'board' as const,
   },
@@ -201,3 +205,21 @@ export const routes = {
 export type ActionRoute = ReturnType<(typeof routes.action)[keyof typeof routes.action]>
 export type ViewRoute = ReturnType<(typeof routes.view)[keyof typeof routes.view]>
 export type Route = ActionRoute | ViewRoute
+
+/**
+ * Content rendered by a physical panel.
+ *
+ * Navigation remains a normal ViewRoute. Project files are panel content in
+ * their own right rather than query parameters bolted onto a navigation route.
+ */
+export type PanelContentRoute =
+  | {
+      kind: 'navigation'
+      viewRoute: ViewRoute
+    }
+  | {
+      kind: 'projectFile'
+      projectId: string
+      relativePath: string
+      contextRoute: ViewRoute
+    }

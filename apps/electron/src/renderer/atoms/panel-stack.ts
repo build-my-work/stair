@@ -5,46 +5,36 @@
  */
 
 import { atom } from 'jotai'
+import type { ProjectFileOpenIntent } from '@craft-agent/core'
 import { parseRouteToNavigationState } from '../../shared/route-parser'
-import type { ViewRoute } from '../../shared/routes'
+import type { PanelContentRoute, ViewRoute } from '../../shared/routes'
+import {
+  MAX_PANEL_LAYOUT_ENTRIES,
+  type SerializedPanelLayoutV1,
+} from '@/lib/panel-layout-codec'
+import {
+  buildNavigationPanelRoute,
+  buildProjectFileRoute,
+  getPanelContextRoute,
+  isProjectFileRoute,
+} from '@/lib/project-file-route'
 
 let nextPanelId = 0
 function generatePanelId(): string {
   return `panel-${++nextPanelId}-${Date.now()}`
 }
 
-export type PanelType = 'session' | 'source' | 'settings' | 'skills' | 'other'
-export type PanelLaneId = 'main'
-export type OpenIntent = 'implicit' | 'explicit'
-
-export interface PanelLanePolicy {
-  id: PanelLaneId
-  order: number
-  allowedTypes: PanelType[]
-  locked: boolean
-  singleton: boolean
-}
-
-export const PANEL_LANE_POLICIES: Record<PanelLaneId, PanelLanePolicy> = {
-  main: {
-    id: 'main',
-    order: 0,
-    allowedTypes: ['session', 'source', 'settings', 'skills', 'other'],
-    locked: false,
-    singleton: false,
-  },
-}
-
 export interface PanelStackEntry {
   id: string
-  route: ViewRoute
+  route: PanelContentRoute
   proportion: number
-  panelType: PanelType
-  laneId: PanelLaneId
+  /** Physical navigation panel that owns a reusable Project File companion. */
+  ownerPanelId?: string
 }
 
 export const panelStackAtom = atom<PanelStackEntry[]>([])
 export const focusedPanelIdAtom = atom<string | null>(null)
+export const projectFileOpenIntentsAtom = atom<Map<string, ProjectFileOpenIntent>>(new Map())
 
 export const panelCountAtom = atom((get) => get(panelStackAtom).length)
 
@@ -52,67 +42,64 @@ export const focusedPanelIndexAtom = atom((get) => {
   const stack = get(panelStackAtom)
   const focusedId = get(focusedPanelIdAtom)
   if (!focusedId) return 0
-  const idx = stack.findIndex(p => p.id === focusedId)
+  const idx = stack.findIndex(panel => panel.id === focusedId)
   return idx === -1 ? 0 : idx
 })
 
-export const focusedPanelRouteAtom = atom((get) => {
+export const focusedPanelContentRouteAtom = atom((get) => {
   const stack = get(panelStackAtom)
   const idx = get(focusedPanelIndexAtom)
   return stack[idx]?.route ?? null
 })
 
-export function getPanelTypeFromRoute(route: ViewRoute): PanelType {
-  const navState = parseRouteToNavigationState(route)
-  if (!navState) return 'other'
+/**
+ * Logical navigation context for sidebar and Session selection.
+ *
+ * A Project File panel keeps its own content route while exposing the
+ * navigation context from which it was opened.
+ */
+export const focusedPanelRouteAtom = atom((get) => {
+  const route = get(focusedPanelContentRouteAtom)
+  return route ? getPanelContextRoute(route) : null
+})
 
-  switch (navState.navigator) {
-    case 'sessions':
-      return 'session'
-    case 'sources':
-      return 'source'
-    case 'settings':
-      return 'settings'
-    case 'skills':
-      return 'skills'
-    default:
-      return 'other'
-  }
+function toPanelContentRoute(route: ViewRoute | PanelContentRoute): PanelContentRoute {
+  return typeof route === 'string' ? buildNavigationPanelRoute(route) : route
 }
 
-export function getDefaultLaneForType(_type: PanelType): PanelLaneId {
-  return 'main'
-}
-
-function createEntry(route: ViewRoute, proportion: number, id?: string): PanelStackEntry {
-  const panelType = getPanelTypeFromRoute(route)
+function createEntry(
+  input: ViewRoute | PanelContentRoute,
+  proportion: number,
+  id?: string,
+  ownerPanelId?: string,
+): PanelStackEntry {
+  const route = toPanelContentRoute(input)
   return {
     id: id ?? generatePanelId(),
     route,
     proportion,
-    panelType,
-    laneId: 'main',
+    ...(ownerPanelId ? { ownerPanelId } : {}),
   }
 }
 
 function normalizeProportions(stack: PanelStackEntry[]): PanelStackEntry[] {
   if (stack.length === 0) return stack
-  const total = stack.reduce((sum, p) => sum + p.proportion, 0)
+  const total = stack.reduce((sum, panel) => sum + panel.proportion, 0)
   if (total <= 0) {
     const equal = 1 / stack.length
-    return stack.map(p => ({ ...p, proportion: equal }))
+    return stack.map(panel => ({ ...panel, proportion: equal }))
   }
-  return stack.map(p => ({ ...p, proportion: p.proportion / total }))
+  return stack.map(panel => ({ ...panel, proportion: panel.proportion / total }))
 }
 
-export function parseSessionIdFromRoute(route: ViewRoute): string | null {
-  // Strip any query string first — a `?x=y` tail on the last segment would otherwise
-  // leak into the extracted session id and poison every focused-session consumer.
-  const segments = route.split('?')[0].split('/')
-  const idx = segments.indexOf('session')
-  if (idx >= 0 && idx + 1 < segments.length) {
-    return segments[idx + 1]
-  }
+export function parseSessionIdFromRoute(
+  input: ViewRoute | PanelContentRoute,
+): string | null {
+  const route = toPanelContentRoute(input)
+  const navState = parseRouteToNavigationState(getPanelContextRoute(route))
+  if (!navState) return null
+  if (navState.navigator === 'sessions') return navState.details?.sessionId ?? null
+  if (navState.navigator === 'projects') return navState.details?.sessionId ?? null
   return null
 }
 
@@ -123,13 +110,13 @@ export const focusedSessionIdAtom = atom((get) => {
 })
 
 /**
- * Session ids currently on screen across all open panels (the focused panel
- * plus any split-view siblings). Used to decide whether a session is "in the
- * background" — a session shown in any panel is not.
+ * Session ids rendered by navigation panels. Project File panels are views of
+ * files, not duplicate visible chats, even when their context is a Session.
  */
 export const visibleSessionIdsAtom = atom((get) => {
   const ids = new Set<string>()
   for (const entry of get(panelStackAtom)) {
+    if (isProjectFileRoute(entry.route)) continue
     const id = parseSessionIdFromRoute(entry.route)
     if (id) ids.add(id)
   }
@@ -138,124 +125,285 @@ export const visibleSessionIdsAtom = atom((get) => {
 
 export const pushPanelAtom = atom(
   null,
-  (get, set, { route, afterIndex }: {
-    route: ViewRoute
+  (get, set, { route, afterIndex, ownerPanelId }: {
+    route: ViewRoute | PanelContentRoute
     afterIndex?: number
-    targetLaneId?: PanelLaneId
-    intent?: OpenIntent
+    ownerPanelId?: string
   }) => {
     const stack = get(panelStackAtom)
+    if (stack.length >= MAX_PANEL_LAYOUT_ENTRIES) return
     let insertAt = stack.length
     if (afterIndex !== undefined && afterIndex >= 0 && afterIndex < stack.length) {
       insertAt = afterIndex + 1
     }
 
-    const newEntry = createEntry(route, 0)
+    const contentRoute = toPanelContentRoute(route)
+    const validOwnerId = isProjectFileRoute(contentRoute)
+      && ownerPanelId
+      && stack.some(
+        entry => entry.id === ownerPanelId && entry.route.kind === 'navigation',
+      )
+      ? ownerPanelId
+      : undefined
+    // The persisted layout requires every physical panel to have a positive
+    // proportion. Give a newly inserted panel the current average share before
+    // normalizing; using zero makes the whole layout impossible to serialize.
+    const currentTotal = stack.reduce(
+      (total, entry) => total + entry.proportion,
+      0,
+    )
+    const newProportion = stack.length > 0 && currentTotal > 0
+      ? currentTotal / stack.length
+      : 1
+    const newEntry = createEntry(
+      contentRoute,
+      newProportion,
+      undefined,
+      validOwnerId,
+    )
     const newStack = [
       ...stack.slice(0, insertAt),
       newEntry,
       ...stack.slice(insertAt),
     ]
 
-    const normalized = normalizeProportions(newStack)
-    set(panelStackAtom, normalized)
+    set(panelStackAtom, normalizeProportions(newStack))
     set(focusedPanelIdAtom, newEntry.id)
-  }
+    return newEntry.id
+  },
+)
+
+/**
+ * Resolve the physical owner of a panel.
+ *
+ * Owner is an explicit runtime instance relationship. It is never inferred
+ * from route equality or panel position.
+ */
+export function getProjectFileOwnerPanelId(
+  stack: PanelStackEntry[],
+  panelId: string,
+): string | null {
+  const panel = stack.find(entry => entry.id === panelId)
+  if (!panel) return null
+  if (!isProjectFileRoute(panel.route)) return panel.id
+  if (!panel.ownerPanelId) return null
+
+  const owner = stack.find(entry => entry.id === panel.ownerPanelId)
+  return owner?.route.kind === 'navigation' ? owner.id : null
+}
+
+/**
+ * Open one reusable Project File companion per physical navigation owner.
+ * Reference navigation may instead focus an already-open matching file.
+ */
+export const openOrReuseProjectFileAtom = atom(
+  null,
+  (get, set, input: {
+    ownerPanelId?: string
+    projectId: string
+    relativePath: string
+    contextRoute: ViewRoute
+    /** Keep reference navigation on an already-open copy of this file. */
+    preferExistingFile?: boolean
+    intent?: ProjectFileOpenIntent
+  }) => {
+    const stack = get(panelStackAtom)
+    const focusedId = get(focusedPanelIdAtom)
+    const focusedPanel = stack.find(entry => entry.id === focusedId)
+    const explicitOwner = input.ownerPanelId
+      ? stack.find(
+          entry => entry.id === input.ownerPanelId && entry.route.kind === 'navigation',
+        )
+      : undefined
+    const focusedOwnerId = focusedPanel
+      ? getProjectFileOwnerPanelId(stack, focusedPanel.id)
+      : null
+    const focusedOwner = focusedOwnerId
+      ? stack.find(entry => entry.id === focusedOwnerId)
+      : undefined
+    const ownerEntry = explicitOwner ?? focusedOwner
+    const nextRoute = buildProjectFileRoute({
+      projectId: input.projectId,
+      relativePath: input.relativePath,
+      contextRoute: input.contextRoute,
+    })
+    const existingFile = input.preferExistingFile
+      ? stack.find(entry => (
+          isProjectFileRoute(entry.route)
+          && entry.route.projectId === input.projectId
+          && entry.route.relativePath === input.relativePath
+        ))
+      : undefined
+
+    if (existingFile) {
+      set(focusedPanelIdAtom, existingFile.id)
+      set(projectFileOpenIntentsAtom, current => {
+        const next = new Map(current)
+        if (input.intent) next.set(existingFile.id, input.intent)
+        else next.delete(existingFile.id)
+        return next
+      })
+      return
+    }
+
+    const focusedOrphan = focusedPanel
+      && isProjectFileRoute(focusedPanel.route)
+      && focusedOwnerId === null
+      ? focusedPanel
+      : undefined
+    const existingCompanion = focusedOrphan ?? (
+      ownerEntry
+        ? stack.find(
+            entry => (
+              isProjectFileRoute(entry.route)
+              && entry.ownerPanelId === ownerEntry.id
+            ),
+          )
+        : undefined
+    )
+
+    if (existingCompanion) {
+      set(panelStackAtom, stack.map(entry =>
+        entry.id === existingCompanion.id
+          ? {
+              ...entry,
+              route: nextRoute,
+              ...(ownerEntry
+                ? { ownerPanelId: ownerEntry.id }
+                : { ownerPanelId: undefined }),
+            }
+          : entry
+      ))
+      set(focusedPanelIdAtom, existingCompanion.id)
+      set(projectFileOpenIntentsAtom, current => {
+        const next = new Map(current)
+        if (input.intent) next.set(existingCompanion.id, input.intent)
+        else next.delete(existingCompanion.id)
+        return next
+      })
+      return
+    }
+
+    const ownerIndex = ownerEntry
+      ? stack.findIndex(entry => entry.id === ownerEntry.id)
+      : -1
+    const panelId = set(pushPanelAtom, {
+      route: nextRoute,
+      afterIndex: ownerIndex >= 0 ? ownerIndex : get(focusedPanelIndexAtom),
+      ownerPanelId: ownerEntry?.id,
+    })
+    if (panelId && input.intent) {
+      set(projectFileOpenIntentsAtom, current => {
+        const next = new Map(current)
+        next.set(panelId, input.intent!)
+        return next
+      })
+    }
+  },
+)
+
+export const consumeProjectFileOpenIntentAtom = atom(
+  null,
+  (get, set, panelId: string): ProjectFileOpenIntent | undefined => {
+    const intent = get(projectFileOpenIntentsAtom).get(panelId)
+    if (!intent) return undefined
+    set(projectFileOpenIntentsAtom, current => {
+      const next = new Map(current)
+      next.delete(panelId)
+      return next
+    })
+    return intent
+  },
 )
 
 export const closePanelAtom = atom(
   null,
   (get, set, id: string) => {
     const stack = get(panelStackAtom)
-    const idx = stack.findIndex(p => p.id === id)
-    if (idx === -1) return
-    const remaining = [...stack.slice(0, idx), ...stack.slice(idx + 1)]
+    const index = stack.findIndex(panel => panel.id === id)
+    if (index === -1) return
+
+    const remaining = stack
+      .filter(panel => panel.id !== id)
+      .map(entry => (
+        entry.ownerPanelId === id
+          ? { ...entry, ownerPanelId: undefined }
+          : entry
+      ))
 
     set(panelStackAtom, normalizeProportions(remaining))
-
-    if (get(focusedPanelIdAtom) === id) {
-      const newIdx = Math.min(idx, remaining.length - 1)
-      set(focusedPanelIdAtom, remaining[newIdx]?.id ?? null)
-    }
-  }
-)
-
-export const reconcilePanelStackAtom = atom(
-  null,
-  (get, set, { entries, focusedIndex }: {
-    entries: { route: ViewRoute; proportion: number }[]
-    focusedIndex?: number
-  }): boolean => {
-    if (entries.length === 0) return false
-
-    const current = get(panelStackAtom)
-    const used = new Set<string>()
-
-    const requestedFocusIndex = Math.min(focusedIndex ?? 0, entries.length - 1)
-    const requestedFocusRoute = entries[requestedFocusIndex]?.route ?? entries[0].route
-
-    const newStack = entries.map((target, i) => {
-      const positional = current[i]
-
-      if (positional && positional.route === target.route && !used.has(positional.id)) {
-        used.add(positional.id)
-        const updated = createEntry(target.route, target.proportion, positional.id)
-        return { ...updated, proportion: target.proportion }
-      }
-
-      const any = current.find(c => c.route === target.route && !used.has(c.id))
-      if (any) {
-        used.add(any.id)
-        const updated = createEntry(target.route, target.proportion, any.id)
-        return { ...updated, proportion: target.proportion }
-      }
-
-      if (positional && !used.has(positional.id)) {
-        used.add(positional.id)
-        const updated = createEntry(target.route, target.proportion, positional.id)
-        return { ...updated, proportion: target.proportion }
-      }
-
-      return createEntry(target.route, target.proportion)
+    set(projectFileOpenIntentsAtom, current => {
+      if (!current.has(id)) return current
+      const next = new Map(current)
+      next.delete(id)
+      return next
     })
 
-    const normalized = normalizeProportions(newStack)
+    if (get(focusedPanelIdAtom) === id) {
+      const nextIndex = Math.min(index, remaining.length - 1)
+      set(focusedPanelIdAtom, remaining[nextIndex]?.id ?? null)
+    }
+  },
+)
 
-    if (
-      normalized.length === current.length &&
-      normalized.every((p, i) =>
-        p.id === current[i].id &&
-        p.route === current[i].route &&
-        p.laneId === current[i].laneId &&
-        p.panelType === current[i].panelType &&
-        Math.abs(p.proportion - current[i].proportion) < 0.001
-      )
-    ) {
-      const targetFocusId =
-        normalized[Math.min(requestedFocusIndex, normalized.length - 1)]?.id ??
-        normalized.find((p) => p.route === requestedFocusRoute)?.id ??
-        null
-      if (get(focusedPanelIdAtom) !== targetFocusId) {
-        set(focusedPanelIdAtom, targetFocusId)
-      }
-      return false
+/**
+ * Compact Project File Back behavior differs from the desktop close button.
+ */
+export const backFromProjectFilePanelAtom = atom(
+  null,
+  (get, set, panelId: string) => {
+    const stack = get(panelStackAtom)
+    const panel = stack.find(entry => entry.id === panelId)
+    if (!panel || !isProjectFileRoute(panel.route)) return
+
+    const ownerId = getProjectFileOwnerPanelId(stack, panelId)
+    if (ownerId) {
+      set(closePanelAtom, panelId)
+      set(focusedPanelIdAtom, ownerId)
+      return
     }
 
-    set(panelStackAtom, normalized)
+    const replacement = createEntry(
+      buildNavigationPanelRoute(panel.route.contextRoute),
+      panel.proportion,
+      panel.id,
+    )
+    set(panelStackAtom, stack.map(entry => (
+      entry.id === panelId ? replacement : entry
+    )))
+    set(focusedPanelIdAtom, panelId)
+  },
+)
 
-    const focusId =
-      normalized[Math.min(requestedFocusIndex, normalized.length - 1)]?.id ??
-      normalized.find((p) => p.route === requestedFocusRoute)?.id ??
-      null
-    set(focusedPanelIdAtom, focusId)
+/**
+ * Restore a validated V1 snapshot in one atom transaction.
+ */
+export const restorePanelLayoutAtom = atom(
+  null,
+  (_get, set, layout: SerializedPanelLayoutV1) => {
+    const idByKey = new Map(
+      layout.entries.map(entry => [entry.key, generatePanelId()]),
+    )
+    const restored = layout.entries.map(entry => createEntry(
+      entry.route,
+      entry.proportion,
+      idByKey.get(entry.key),
+      entry.ownerKey ? idByKey.get(entry.ownerKey) : undefined,
+    ))
 
-    return true
-  }
+    set(panelStackAtom, normalizeProportions(restored))
+    set(focusedPanelIdAtom, idByKey.get(layout.focusedKey) ?? null)
+  },
 )
 
 export const resizePanelsAtom = atom(
   null,
-  (get, set, { leftIndex, rightIndex, leftProportion, rightProportion }: {
+  (get, set, {
+    leftIndex,
+    rightIndex,
+    leftProportion,
+    rightProportion,
+  }: {
     leftIndex: number
     rightIndex: number
     leftProportion: number
@@ -263,39 +411,42 @@ export const resizePanelsAtom = atom(
   }) => {
     const stack = get(panelStackAtom)
     if (leftIndex < 0 || rightIndex >= stack.length) return
-    const newStack = stack.map((p, i) => {
-      if (i === leftIndex) return { ...p, proportion: leftProportion }
-      if (i === rightIndex) return { ...p, proportion: rightProportion }
-      return p
-    })
-    set(panelStackAtom, newStack)
-  }
+    set(panelStackAtom, stack.map((panel, index) => {
+      if (index === leftIndex) {
+        return { ...panel, proportion: leftProportion }
+      }
+      if (index === rightIndex) {
+        return { ...panel, proportion: rightProportion }
+      }
+      return panel
+    }))
+  },
 )
 
 export const updateFocusedPanelRouteAtom = atom(
   null,
   (get, set, route: ViewRoute) => {
     const stack = get(panelStackAtom)
+    const contentRoute = buildNavigationPanelRoute(route)
 
     if (stack.length === 0) {
-      const newEntry = createEntry(route, 1)
+      const newEntry = createEntry(contentRoute, 1)
       set(panelStackAtom, [newEntry])
       set(focusedPanelIdAtom, newEntry.id)
       return
     }
 
     const focusedId = get(focusedPanelIdAtom)
-    const focused = stack.find(p => p.id === focusedId) ?? stack[0]
-
-    const updated = stack.map((p) =>
-      p.id === focused.id
-        ? { ...createEntry(route, p.proportion, p.id), proportion: p.proportion }
-        : p
+    const focused = stack.find(panel => panel.id === focusedId) ?? stack[0]
+    const updated = stack.map(panel =>
+      panel.id === focused.id
+        ? createEntry(contentRoute, panel.proportion, panel.id)
+        : panel
     )
 
     set(panelStackAtom, updated)
     set(focusedPanelIdAtom, focused.id)
-  }
+  },
 )
 
 export const focusNextPanelAtom = atom(
@@ -303,10 +454,10 @@ export const focusNextPanelAtom = atom(
   (get, set) => {
     const stack = get(panelStackAtom)
     if (stack.length <= 1) return
-    const currentIdx = get(focusedPanelIndexAtom)
-    const nextIdx = (currentIdx + 1) % stack.length
-    set(focusedPanelIdAtom, stack[nextIdx].id)
-  }
+    const currentIndex = get(focusedPanelIndexAtom)
+    const nextIndex = (currentIndex + 1) % stack.length
+    set(focusedPanelIdAtom, stack[nextIndex].id)
+  },
 )
 
 export const focusPrevPanelAtom = atom(
@@ -314,8 +465,8 @@ export const focusPrevPanelAtom = atom(
   (get, set) => {
     const stack = get(panelStackAtom)
     if (stack.length <= 1) return
-    const currentIdx = get(focusedPanelIndexAtom)
-    const prevIdx = (currentIdx - 1 + stack.length) % stack.length
-    set(focusedPanelIdAtom, stack[prevIdx].id)
-  }
+    const currentIndex = get(focusedPanelIndexAtom)
+    const previousIndex = (currentIndex - 1 + stack.length) % stack.length
+    set(focusedPanelIdAtom, stack[previousIndex].id)
+  },
 )

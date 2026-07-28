@@ -7,7 +7,6 @@ import {
   Archive,
   Settings,
   ChevronRight,
-  ChevronDown,
   MoreHorizontal,
   RotateCw,
   Flag,
@@ -33,6 +32,7 @@ import {
   Info,
   MailOpen,
   FolderKanban,
+  Pencil,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -90,10 +90,22 @@ import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
 import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
+import type { MessageReference } from "@craft-agent/core"
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
-import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
+import {
+  panelStackAtom,
+  panelCountAtom,
+  focusedPanelIdAtom,
+  focusedPanelRouteAtom,
+  focusedSessionIdAtom,
+  focusNextPanelAtom,
+  focusPrevPanelAtom,
+  getProjectFileOwnerPanelId,
+  openOrReuseProjectFileAtom,
+  parseSessionIdFromRoute,
+} from "@/atoms/panel-stack"
 import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuses } from "@/config/session-status-config"
 import { useStatuses } from "@/hooks/useStatuses"
 import { useLabels } from "@/hooks/useLabels"
@@ -132,6 +144,8 @@ import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
+import { ProjectSettingsDialog } from "../projects/ProjectSettingsDialog"
+import { RenameDialog } from "@/components/ui/rename-dialog"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
 import SettingsNavigator from "@/pages/settings/SettingsNavigator"
@@ -148,6 +162,10 @@ import {
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
+import { WorkspaceFilesSidebar } from "@/components/right-sidebar/WorkspaceFilesSidebar"
+import { getProjectForRoute } from "@/lib/project-working-directory"
+import type { LoadedProject } from "@craft-agent/shared/projects/types"
+import { focusExistingProjectSessionPanel } from "./project-session-panel-navigation"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -181,6 +199,81 @@ function AltExcludeTooltip({ show, children }: { show: boolean; children: React.
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent side="right" className="text-xs">{altClickTooltipLabel}</TooltipContent>
     </Tooltip>
+  )
+}
+
+function SidebarIconAction({
+  label,
+  onClick,
+  children,
+}: {
+  label: string
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick()
+      }}
+      className="inline-flex h-5 w-5 items-center justify-center rounded-[5px] text-foreground/45 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      {children}
+    </button>
+  )
+}
+
+function ProjectSidebarRowActions({
+  projectName,
+  onNewSession,
+  onOpenSettings,
+}: {
+  projectName: string
+  onNewSession: () => void
+  onOpenSettings: () => void
+}) {
+  const { t } = useTranslation()
+  const newSessionLabel = t('projectInfo.newSessionButton', { name: projectName })
+  const settingsLabel = t('projectSettings.menuItem', {
+    defaultValue: 'Project settings…',
+  })
+
+  return (
+    <>
+      <SidebarIconAction label={newSessionLabel} onClick={onNewSession}>
+        <SquarePenRounded className="h-3.5 w-3.5" />
+      </SidebarIconAction>
+      <DropdownMenu modal={true}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={t('projectSettings.moreActions', {
+              defaultValue: `More actions for ${projectName}`,
+              name: projectName,
+            })}
+            title={settingsLabel}
+            onClick={(event) => event.stopPropagation()}
+            className="inline-flex h-5 w-5 items-center justify-center rounded-[5px] text-foreground/45 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </button>
+        </DropdownMenuTrigger>
+        <StyledDropdownMenuContent side="right" align="start" sideOffset={4}>
+          <StyledDropdownMenuItem
+            onClick={() => {
+              window.setTimeout(onOpenSettings, 0)
+            }}
+          >
+            <Settings className="h-3.5 w-3.5" />
+            <span>{settingsLabel}</span>
+          </StyledDropdownMenuItem>
+        </StyledDropdownMenuContent>
+      </DropdownMenu>
+    </>
   )
 }
 
@@ -522,6 +615,7 @@ function AppShellContent({
     onMarkSessionUnread,
     onSessionStatusChange,
     onRenameSession,
+    onCreateSession,
     onOpenSettings,
     onOpenKeyboardShortcuts,
     onOpenStoredUserPreferences,
@@ -545,6 +639,9 @@ function AppShellContent({
   // Session list width in pixels (min 240, max 480)
   const [sessionListWidth, setSessionListWidth] = React.useState(() => {
     return storage.get(storage.KEYS.sessionListWidth, 300)
+  })
+  const [rightSidebarWidth, setRightSidebarWidth] = React.useState(() => {
+    return storage.get(storage.KEYS.rightSidebarWidth, 320)
   })
 
   // Hides both sidebar and navigator (CMD+. toggle)
@@ -577,14 +674,24 @@ function AppShellContent({
     })
   }, [])
 
-  const [isResizing, setIsResizing] = React.useState<'sidebar' | 'session-list' | null>(null)
+  const [isResizing, setIsResizing] = React.useState<'sidebar' | 'session-list' | 'right-sidebar' | null>(null)
   const [sidebarHandleY, setSidebarHandleY] = React.useState<number | null>(null)
   const [sessionListHandleY, setSessionListHandleY] = React.useState<number | null>(null)
+  const [rightSidebarHandleY, setRightSidebarHandleY] = React.useState<number | null>(null)
   const resizeHandleRef = React.useRef<HTMLDivElement>(null)
   const sessionListHandleRef = React.useRef<HTMLDivElement>(null)
+  const rightSidebarHandleRef = React.useRef<HTMLDivElement>(null)
   const [session, setSession] = useSession()
   const { resolvedMode, isDark, setMode } = useTheme()
-  const { canGoBack, canGoForward, goBack, goForward, navigateToSource, navigateToSession } = useNavigation()
+  const {
+    canGoBack,
+    canGoForward,
+    goBack,
+    goForward,
+    navigateToSource,
+    navigateToSession,
+    updateRightSidebar,
+  } = useNavigation()
 
   // Double-Esc interrupt feature: first Esc shows warning, second Esc interrupts
   const { handleEscapePress } = useEscapeInterrupt()
@@ -596,7 +703,10 @@ function AppShellContent({
   const store = useStore()
   const panelStack = useAtomValue(panelStackAtom)
   const panelCount = useAtomValue(panelCountAtom)
+  const focusedPanelId = useAtomValue(focusedPanelIdAtom)
+  const focusedPanelRoute = useAtomValue(focusedPanelRouteAtom)
   const focusedSessionId = useAtomValue(focusedSessionIdAtom)
+  const openProjectFile = useSetAtom(openOrReuseProjectFileAtom)
 
   // Navigate the focused panel to a session.
   // If the session is already open in another panel, focus that panel instead.
@@ -605,7 +715,10 @@ function AppShellContent({
     // Check if the session is already open in any panel — focus it instead of navigating
     const stack = store.get(panelStackAtom)
     for (const entry of stack) {
-      if (parseSessionIdFromRoute(entry.route) === sessionId) {
+      if (
+        entry.route.kind === 'navigation'
+        && parseSessionIdFromRoute(entry.route) === sessionId
+      ) {
         setFocusedPanel(entry.id)
         return
       }
@@ -614,6 +727,15 @@ function AppShellContent({
     // Not open in any panel — navigate() updates the focused panel
     navigateToSession(sessionId)
   }, [store, setFocusedPanel, navigateToSession])
+
+  const navigateToProjectSessionInPanel = useCallback((
+    projectSlug: string,
+    sessionId: string,
+  ) => {
+    if (focusExistingProjectSessionPanel(store, projectSlug, sessionId)) return
+
+    navigate(routes.view.projectSession(projectSlug, sessionId))
+  }, [store])
 
   const sessionsContext = React.useMemo(() => {
     if (isSessionsNavigation(navState)) {
@@ -630,6 +752,9 @@ function AppShellContent({
   // Board view replaces the session-list navigator with the full-width Kanban panel,
   // so the navigator (and its resize handle) collapse to zero width while it's active.
   const isBoardView = isSessionsNavigation(navState) && navState.viewMode === 'board'
+  // Projects are already fully navigable from the visible left tree on desktop.
+  // Keep the navigator only as a fallback when that tree is unavailable.
+  const hideProjectsNavigator = isProjectsNavigation(navState) && !isAutoCompact
 
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
@@ -641,7 +766,11 @@ function AppShellContent({
   // has its own independent set of status and label filters.
   // Each filter entry stores a mode ('include' or 'exclude') for tri-state filtering.
   type FilterEntry = Record<string, FilterMode> // id → mode
-  type ViewFiltersMap = Record<string, { statuses: FilterEntry, labels: FilterEntry, projects?: FilterEntry, groupingMode?: ChatGroupingMode }>
+  type ViewFiltersMap = Record<string, {
+    statuses: FilterEntry
+    labels: FilterEntry
+    groupingMode?: ChatGroupingMode
+  }>
 
   // Compute a stable key for the current chat filter view
   const sessionFilterKey = useMemo(() => {
@@ -658,34 +787,7 @@ function AppShellContent({
   }, [sessionFilter])
 
   const [viewFiltersMap, setViewFiltersMap] = React.useState<ViewFiltersMap>(() => {
-    const saved = storage.get<ViewFiltersMap>(storage.KEYS.viewFilters, {})
-    // Backward compat: migrate old format (arrays) into new format (Record<string, FilterMode>)
-    if (saved.allSessions && Array.isArray((saved.allSessions as any).statuses)) {
-      // Old format: { statuses: string[], labels: string[] } → new: { statuses: Record, labels: Record }
-      for (const key of Object.keys(saved)) {
-        const entry = saved[key] as any
-        if (Array.isArray(entry.statuses)) {
-          const newStatuses: FilterEntry = {}
-          for (const id of entry.statuses) newStatuses[id] = 'include'
-          const newLabels: FilterEntry = {}
-          for (const id of entry.labels) newLabels[id] = 'include'
-          saved[key] = { statuses: newStatuses, labels: newLabels }
-        }
-      }
-    }
-    // Also migrate legacy global filters if no allSessions entry exists
-    if (!saved.allSessions) {
-      const oldStatuses = storage.get<SessionStatusId[]>(storage.KEYS.listFilter, [])
-      const oldLabels = storage.get<string[]>(storage.KEYS.labelFilter, [])
-      if (oldStatuses.length > 0 || oldLabels.length > 0) {
-        const statuses: FilterEntry = {}
-        for (const id of oldStatuses) statuses[id] = 'include'
-        const labels: FilterEntry = {}
-        for (const id of oldLabels) labels[id] = 'include'
-        saved.allSessions = { statuses, labels }
-      }
-    }
-    return saved
+    return storage.get<ViewFiltersMap>(storage.KEYS.viewFilters, {})
   })
 
   // Derive current view's status filter as a Map<SessionStatusId, FilterMode>
@@ -702,13 +804,6 @@ function AppShellContent({
     return new Map<string, FilterMode>(Object.entries(entry) as [string, FilterMode][])
   }, [viewFiltersMap, sessionFilterKey])
 
-  // Derive current view's project filter as a Map<projectId, FilterMode>
-  const projectFilter = useMemo(() => {
-    if (!sessionFilterKey) return new Map<string, FilterMode>()
-    const entry = viewFiltersMap[sessionFilterKey]?.projects ?? {}
-    return new Map<string, FilterMode>(Object.entries(entry) as [string, FilterMode][])
-  }, [viewFiltersMap, sessionFilterKey])
-
   // Setter for status filter — updates only the current view's entry in the map
   const setListFilter = useCallback((updater: Map<SessionStatusId, FilterMode> | ((prev: Map<SessionStatusId, FilterMode>) => Map<SessionStatusId, FilterMode>)) => {
     setViewFiltersMap(prev => {
@@ -721,7 +816,6 @@ function AppShellContent({
         [sessionFilterKey]: {
           statuses: Object.fromEntries(next),
           labels: existing?.labels ?? {},
-          projects: existing?.projects ?? {},
           groupingMode: existing?.groupingMode,
         }
       }
@@ -740,58 +834,16 @@ function AppShellContent({
         [sessionFilterKey]: {
           statuses: existing?.statuses ?? {},
           labels: Object.fromEntries(next),
-          projects: existing?.projects ?? {},
           groupingMode: existing?.groupingMode,
         }
       }
     })
   }, [sessionFilterKey])
 
-  // Setter for project filter — updates only the current view's entry in the map
-  const setProjectFilter = useCallback((updater: Map<string, FilterMode> | ((prev: Map<string, FilterMode>) => Map<string, FilterMode>)) => {
-    setViewFiltersMap(prev => {
-      if (!sessionFilterKey) return prev
-      const current = new Map<string, FilterMode>(Object.entries(prev[sessionFilterKey]?.projects ?? {}) as [string, FilterMode][])
-      const next = typeof updater === 'function' ? updater(current) : updater
-      const existing = prev[sessionFilterKey]
-      return {
-        ...prev,
-        [sessionFilterKey]: {
-          statuses: existing?.statuses ?? {},
-          labels: existing?.labels ?? {},
-          projects: Object.fromEntries(next),
-          groupingMode: existing?.groupingMode,
-        }
-      }
-    })
-  }, [sessionFilterKey])
-
-  // Jump to All Sessions filtered by a single project. Used by the Projects list
-  // context menu — sets the allSessions view's project filter (preserving its
-  // other filters), then navigates.
-  const handleJumpToProjectSessions = useCallback((projectId: string) => {
-    setViewFiltersMap(prev => {
-      const existing = prev['allSessions']
-      return {
-        ...prev,
-        allSessions: {
-          statuses: existing?.statuses ?? {},
-          labels: existing?.labels ?? {},
-          projects: { [projectId]: 'include' },
-          groupingMode: existing?.groupingMode,
-        }
-      }
-    })
-    navigate(routes.view.allSessions())
-  }, [])
-
-  // Jump to All Sessions scoped to a task: replace the allSessions view's label filter
-  // (and project filter, when the task is bound to one) with the task's scope, then open
-  // the session. These are the SAME user-clearable filters the list-header chips edit —
-  // clearing them afterwards works exactly like any hand-set filter. Mirrors
-  // handleJumpToProjectSessions; used by kanban tile/subtask clicks and post-create.
+  // Jump to All Sessions scoped to a task using the same user-clearable label
+  // filter exposed by the list header.
   const handleJumpToTaskSessions = useCallback(
-    (sessionId: string, scope: { labelId: string; projectId?: string }) => {
+    (sessionId: string, scope: { labelId: string }) => {
       setViewFiltersMap(prev => {
         const existing = prev['allSessions']
         return {
@@ -799,7 +851,6 @@ function AppShellContent({
           allSessions: {
             statuses: existing?.statuses ?? {},
             labels: { [scope.labelId]: 'include' },
-            projects: scope.projectId ? { [scope.projectId]: 'include' } : {},
             groupingMode: existing?.groupingMode,
           }
         }
@@ -1347,6 +1398,14 @@ function AppShellContent({
           const rect = sessionListHandleRef.current.getBoundingClientRect()
           setSessionListHandleY(e.clientY - rect.top)
         }
+      } else if (isResizing === 'right-sidebar') {
+        const shellRight = shellRef.current?.getBoundingClientRect().right ?? window.innerWidth
+        const newWidth = Math.min(Math.max(shellRight - e.clientX, 260), 480)
+        setRightSidebarWidth(newWidth)
+        if (rightSidebarHandleRef.current) {
+          const rect = rightSidebarHandleRef.current.getBoundingClientRect()
+          setRightSidebarHandleY(e.clientY - rect.top)
+        }
       }
     }
 
@@ -1357,6 +1416,9 @@ function AppShellContent({
       } else if (isResizing === 'session-list') {
         storage.set(storage.KEYS.sessionListWidth, sessionListWidth)
         setSessionListHandleY(null)
+      } else if (isResizing === 'right-sidebar') {
+        storage.set(storage.KEYS.rightSidebarWidth, rightSidebarWidth)
+        setRightSidebarHandleY(null)
       }
       setIsResizing(null)
     }
@@ -1372,6 +1434,7 @@ function AppShellContent({
     isResizing,
     sidebarWidth,
     sessionListWidth,
+    rightSidebarWidth,
     isSidebarVisible,
   ])
 
@@ -1400,6 +1463,61 @@ function AppShellContent({
   const activeSessionWorkingDirectory = session.selected
     ? sessionMetaMap.get(session.selected)?.workingDirectory
     : undefined
+  const rightSidebarOwnerRoute = focusedPanelRoute ?? undefined
+  const rightSidebarProject = React.useMemo(
+    () => rightSidebarOwnerRoute
+      ? getProjectForRoute(rightSidebarOwnerRoute, sessionMetaMap, projects)
+      : undefined,
+    [rightSidebarOwnerRoute, sessionMetaMap, projects],
+  )
+  const projectFileOwnerPanelId = focusedPanelId
+    ? getProjectFileOwnerPanelId(panelStack, focusedPanelId) ?? undefined
+    : undefined
+  const isRightSidebarVisible = navState.rightSidebar?.type === 'files'
+  const handleToggleRightSidebar = React.useCallback(() => {
+    updateRightSidebar(isRightSidebarVisible ? undefined : { type: 'files' })
+  }, [isRightSidebarVisible, updateRightSidebar])
+  const handleOpenProjectFile = React.useCallback((relativePath: string) => {
+    if (!rightSidebarOwnerRoute || !rightSidebarProject?.config.workingDirectory) return
+    openProjectFile({
+      ownerPanelId: projectFileOwnerPanelId,
+      projectId: rightSidebarProject.config.id,
+      contextRoute: rightSidebarOwnerRoute,
+      relativePath,
+    })
+    if (isAutoCompact) updateRightSidebar(undefined)
+  }, [
+    isAutoCompact,
+    openProjectFile,
+    projectFileOwnerPanelId,
+    rightSidebarOwnerRoute,
+    rightSidebarProject?.config.id,
+    rightSidebarProject?.config.workingDirectory,
+    updateRightSidebar,
+  ])
+  const handleOpenProjectFileReference = React.useCallback((
+    reference: MessageReference,
+  ) => {
+    if (!focusedPanelRoute) return
+    openProjectFile({
+      ownerPanelId: projectFileOwnerPanelId,
+      projectId: reference.projectId,
+      relativePath: reference.relativePath,
+      contextRoute: focusedPanelRoute,
+      preferExistingFile: true,
+      intent: {
+        expectedFingerprint: reference.sourceFingerprint,
+        locator: reference.locator,
+      },
+    })
+    if (isAutoCompact) updateRightSidebar(undefined)
+  }, [
+    focusedPanelRoute,
+    isAutoCompact,
+    openProjectFile,
+    projectFileOwnerPanelId,
+    updateRightSidebar,
+  ])
   React.useEffect(() => {
     if (!activeWorkspaceId) return
     window.electronAPI.getSkills(activeWorkspaceId, activeSessionWorkingDirectory).then((loaded) => {
@@ -1409,8 +1527,9 @@ function AppShellContent({
     })
   }, [activeWorkspaceId, activeSessionWorkingDirectory])
 
-  // Filter session metadata by active workspace
-  // Also exclude hidden sessions (mini-agent sessions) from all counts and lists
+  // Filter session metadata by active workspace.
+  // Hidden runtime sessions remain addressable by ID, but never appear in
+  // primary navigation.
   // For remote workspaces, sessions have the remote workspace ID (not the local one),
   // so we match against both the local and remote workspace IDs.
   const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId
@@ -1426,6 +1545,49 @@ function AppShellContent({
   const activeSessionMetas = useMemo(() => {
     return workspaceSessionMetas.filter(s => !s.isArchived)
   }, [workspaceSessionMetas])
+
+  // Project-owned sessions live only under their Project in the primary sidebar.
+  // The standalone Sessions branch therefore excludes them.
+  const standaloneSessionMetas = useMemo(() => {
+    return workspaceSessionMetas.filter(session => !session.projectId)
+  }, [workspaceSessionMetas])
+  const standaloneActiveSessionMetas = useMemo(() => {
+    return standaloneSessionMetas.filter(session => !session.isArchived)
+  }, [standaloneSessionMetas])
+
+  const projectSessionsByProjectId = useMemo(() => {
+    const grouped = new Map<string, SessionMeta[]>()
+    for (const projectSession of activeSessionMetas) {
+      if (!projectSession.projectId) continue
+      const sessions = grouped.get(projectSession.projectId) ?? []
+      sessions.push(projectSession)
+      grouped.set(projectSession.projectId, sessions)
+    }
+    for (const projectSessions of grouped.values()) {
+      projectSessions.sort(
+        (left, right) => (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0),
+      )
+    }
+    return grouped
+  }, [activeSessionMetas])
+
+  // Deep links and history restoration must reveal the owning project/session
+  // instead of leaving the selected item hidden in a collapsed tree.
+  useEffect(() => {
+    if (!isProjectsNavigation(navState) || !navState.details) return
+    const selectedProject = projects.find(
+      project => project.config.slug === navState.details?.projectSlug,
+    )
+    if (!selectedProject) return
+    setCollapsedItems(prev => {
+      const projectItemId = `nav:projects:${selectedProject.config.id}`
+      if (!prev.has('nav:projects') && !prev.has(projectItemId)) return prev
+      const next = new Set(prev)
+      next.delete('nav:projects')
+      next.delete(projectItemId)
+      return next
+    })
+  }, [navState, projects])
 
   const refreshWorkspaceUnreadMap = useCallback(async () => {
     try {
@@ -1450,9 +1612,11 @@ function AppShellContent({
   // Keep active workspace unread indicator in sync with live metadata updates
   useEffect(() => {
     if (!activeWorkspaceId) return
-    const activeHasUnread = activeSessionMetas.some((session) => !!session.hasUnread)
+    const activeHasUnread = workspaceSessionMetas.some(
+      session => !session.isArchived && !!session.hasUnread,
+    )
     setWorkspaceUnreadMap((prev) => ({ ...prev, [activeWorkspaceId]: activeHasUnread }))
-  }, [activeWorkspaceId, activeSessionMetas])
+  }, [activeWorkspaceId, workspaceSessionMetas])
 
   // Keep cross-workspace indicators in sync with global unread updates from main process
   useEffect(() => {
@@ -1469,8 +1633,8 @@ function AppShellContent({
 
   // Count sessions by todo state (scoped to workspace)
   const isMetaDone = (s: SessionMeta) => s.sessionStatus === 'done' || s.sessionStatus === 'cancelled'
-  const flaggedCount = activeSessionMetas.filter(s => s.isFlagged).length
-  const archivedCount = workspaceSessionMetas.filter(s => s.isArchived).length
+  const flaggedCount = standaloneActiveSessionMetas.filter(s => s.isFlagged).length
+  const archivedCount = standaloneSessionMetas.filter(s => s.isArchived).length
 
   // Compute session counts per label (cumulative: parent includes descendants).
   // Flatten the tree for iteration, use the tree for descendant lookups.
@@ -1480,7 +1644,7 @@ function AppShellContent({
     const counts: Record<string, number> = {}
     for (const label of allLabels) {
       // Direct count: sessions explicitly tagged with this label (handles valued entries like "priority::3")
-      const directCount = activeSessionMetas.filter(
+      const directCount = standaloneActiveSessionMetas.filter(
         s => s.labels?.some(l => extractLabelId(l) === label.id)
       ).length
       counts[label.id] = directCount
@@ -1489,14 +1653,14 @@ function AppShellContent({
     for (const label of allLabels) {
       const descendants = getDescendantIds(labelConfigs, label.id)
       if (descendants.length > 0) {
-        const descendantCount = activeSessionMetas.filter(
+        const descendantCount = standaloneActiveSessionMetas.filter(
           s => s.labels?.some(l => descendants.includes(extractLabelId(l)))
         ).length
         counts[label.id] = (counts[label.id] || 0) + descendantCount
       }
     }
     return counts
-  }, [activeSessionMetas, labelConfigs])
+  }, [standaloneActiveSessionMetas, labelConfigs])
 
   // Count sessions by individual todo state (dynamic based on effectiveSessionStatuses)
   // Uses activeSessionMetas to exclude archived sessions from counts.
@@ -1507,13 +1671,13 @@ function AppShellContent({
       counts[state.id] = 0
     }
     // Count sessions
-    for (const s of activeSessionMetas) {
+    for (const s of standaloneActiveSessionMetas) {
       const state = (s.sessionStatus || 'todo') as SessionStatusId
       // Increment count (initialize to 0 if status not in effectiveSessionStatuses yet)
       counts[state] = (counts[state] || 0) + 1
     }
     return counts
-  }, [activeSessionMetas, effectiveSessionStatuses])
+  }, [standaloneActiveSessionMetas, effectiveSessionStatuses])
 
   // Count sources by type for the Sources dropdown subcategories
   const sourceTypeCounts = useMemo(() => {
@@ -1549,31 +1713,33 @@ function AppShellContent({
 
     switch (sessionFilter.kind) {
       case 'allSessions':
-        // "All Sessions" - shows active (non-archived) sessions
-        result = activeSessionMetas
+        result = standaloneActiveSessionMetas
         break
       case 'flagged':
-        result = activeSessionMetas.filter(s => s.isFlagged)
+        result = standaloneActiveSessionMetas.filter(s => s.isFlagged)
         break
       case 'archived':
         // Archived view shows only archived sessions
-        result = workspaceSessionMetas.filter(s => s.isArchived)
+        result = standaloneSessionMetas.filter(s => s.isArchived)
         break
       case 'state':
         // Filter by specific todo state (excludes archived)
-        result = activeSessionMetas.filter(s => (s.sessionStatus || 'todo') === sessionFilter.stateId)
+        result = standaloneActiveSessionMetas.filter(
+          s => (s.sessionStatus || 'todo') === sessionFilter.stateId,
+        )
         break
       case 'label': {
-        // Shared predicate (handles '__all__', descendant labels, and the optional
-        // project scope) — the same implementation the session list filters with,
-        // so the two stay aligned by construction.
-        result = activeSessionMetas.filter(s => matchesLabelFilter(s, sessionFilter, labelConfigs))
+        // Shared predicate handles '__all__' and descendant labels, matching the
+        // Session list's filter semantics.
+        result = standaloneActiveSessionMetas.filter(
+          s => matchesLabelFilter(s, sessionFilter, labelConfigs),
+        )
         break
       }
       case 'view': {
         // Filter by view: __all__ shows any session matched by any view,
         // otherwise filter to the specific view (excludes archived)
-        result = activeSessionMetas.filter(s => {
+        result = standaloneActiveSessionMetas.filter(s => {
           const matched = evaluateViews(s)
           if (sessionFilter.viewId === '__all__') {
             return matched.length > 0
@@ -1583,7 +1749,7 @@ function AppShellContent({
         break
       }
       default:
-        result = activeSessionMetas
+        result = standaloneActiveSessionMetas
     }
 
     // Apply secondary filters (status + labels, AND-ed together) in ALL views.
@@ -1628,30 +1794,16 @@ function AppShellContent({
         )
       }
     }
-    // Filter by project — supports include/exclude on session.projectId
-    if (projectFilter.size > 0) {
-      const projectIncludes = new Set<string>()
-      const projectExcludes = new Set<string>()
-      for (const [id, mode] of projectFilter) {
-        if (mode === 'include') projectIncludes.add(id)
-        else projectExcludes.add(id)
-      }
-      if (projectIncludes.size > 0) {
-        result = result.filter(s => {
-          const pid = (s as { projectId?: string }).projectId
-          return pid !== undefined && projectIncludes.has(pid)
-        })
-      }
-      if (projectExcludes.size > 0) {
-        result = result.filter(s => {
-          const pid = (s as { projectId?: string }).projectId
-          return pid === undefined || !projectExcludes.has(pid)
-        })
-      }
-    }
-
     return result
-  }, [workspaceSessionMetas, activeSessionMetas, sessionFilter, listFilter, labelFilter, projectFilter, labelConfigs])
+  }, [
+    standaloneSessionMetas,
+    standaloneActiveSessionMetas,
+    sessionFilter,
+    listFilter,
+    labelFilter,
+    labelConfigs,
+    evaluateViews,
+  ])
 
   // Derive "pinned" (non-removable) filters from the current sessionFilter path.
   // These represent filters that are implicit in the current deeplink/route and
@@ -1701,6 +1853,7 @@ function AppShellContent({
     sessionStatuses: effectiveSessionStatuses,
     onSessionSourcesChange: handleSessionSourcesChange,
     onJumpToTaskSessions: handleJumpToTaskSessions,
+    onOpenProjectFileReference: handleOpenProjectFileReference,
     rightSidebarButton: null,
     isCompactMode: isAutoCompact,
     // Search state for ChatDisplay highlighting
@@ -1715,7 +1868,7 @@ function AppShellContent({
     automationTestResults,
     getAutomationHistory,
     onReplayAutomation: handleReplayAutomation,
-  }), [contextValue, handleDeleteSession, sources, skills, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
+  }), [contextValue, handleDeleteSession, sources, skills, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, handleOpenProjectFileReference, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {
@@ -1823,10 +1976,15 @@ function AppShellContent({
     navigate(routes.view.automations())
   }, [])
 
-  // Handler for projects view
+  // The Projects label is a grouping control while the left tree is visible.
+  // When the tree is unavailable, it remains a real route into the compact fallback.
   const handleProjectsClick = useCallback(() => {
-    navigate(routes.view.projects())
-  }, [])
+    if (isAutoCompact || !isSidebarVisible) {
+      navigate(routes.view.projects())
+      return
+    }
+    toggleExpanded('nav:projects')
+  }, [isAutoCompact, isSidebarVisible, toggleExpanded])
 
   const handleAutomationsScheduledClick = useCallback(() => {
     navigate(routes.view.automationsScheduled())
@@ -1990,15 +2148,53 @@ function AppShellContent({
   // The previous flow auto-created with the default name and produced ugly
   // permanent slugs (new-project, new-project-1, …).
   const [createProjectDialogOpen, setCreateProjectDialogOpen] = useState(false)
+  const [projectSettingsProjectId, setProjectSettingsProjectId] = useState<string | null>(null)
+  const [sidebarRenameSessionId, setSidebarRenameSessionId] = useState<string | null>(null)
+  const [sidebarRenameSessionName, setSidebarRenameSessionName] = useState("")
+  const [sidebarRenameDialogOpen, setSidebarRenameDialogOpen] = useState(false)
+  const projectSettingsProject = useMemo(
+    () => projects.find(project => project.config.id === projectSettingsProjectId) ?? null,
+    [projectSettingsProjectId, projects],
+  )
   const openAddProject = useCallback(() => {
     if (!activeWorkspace?.id) return
     setCreateProjectDialogOpen(true)
   }, [activeWorkspace?.id])
+  const openProjectSettings = useCallback((project: LoadedProject) => {
+    setProjectSettingsProjectId(project.config.id)
+  }, [])
+  const openSidebarSessionRename = useCallback((sessionId: string, currentName: string) => {
+    setSidebarRenameSessionId(sessionId)
+    setSidebarRenameSessionName(currentName)
+    requestAnimationFrame(() => setSidebarRenameDialogOpen(true))
+  }, [])
+  const handleSidebarSessionRename = useCallback(() => {
+    const name = sidebarRenameSessionName.trim()
+    if (sidebarRenameSessionId && name) {
+      onRenameSession(sidebarRenameSessionId, name)
+    }
+    setSidebarRenameDialogOpen(false)
+    setSidebarRenameSessionId(null)
+    setSidebarRenameSessionName("")
+  }, [onRenameSession, sidebarRenameSessionId, sidebarRenameSessionName])
+  const handleSidebarRenameDialogOpenChange = useCallback((open: boolean) => {
+    setSidebarRenameDialogOpen(open)
+    if (!open) {
+      setSidebarRenameSessionId(null)
+      setSidebarRenameSessionName("")
+    }
+  }, [])
   const handleCreateProjectSubmit = useCallback(async (name: string) => {
     if (!activeWorkspace?.id) return
     setCreateProjectDialogOpen(false)
     try {
       const project = await window.electronAPI.createProject(activeWorkspace.id, { name })
+      setCollapsedItems(prev => {
+        const next = new Set(prev)
+        next.delete('nav:projects')
+        next.delete(`nav:projects:${project.id}`)
+        return next
+      })
       navigate(routes.view.projects(project.slug))
     } catch (err) {
       console.error('[AppShell] Failed to create project:', err)
@@ -2008,12 +2204,12 @@ function AppShellContent({
 
   /**
    * Resolve the "inherit sole active filter" rule for new sessions. Only
-   * include-mode filters are candidates — an excluded status/label/project must
+   * include-mode filters are candidates — an excluded status/label must
    * never be inherited (#970). See resolveInheritedFilterParams.
    */
   const resolveInheritedNewSessionParams = useCallback(
-    () => resolveInheritedFilterParams(listFilter, labelFilter, projectFilter),
-    [listFilter, labelFilter, projectFilter]
+    () => resolveInheritedFilterParams(listFilter, labelFilter, new Map<string, FilterMode>()),
+    [listFilter, labelFilter]
   )
 
   // Create a new chat and select it
@@ -2030,12 +2226,34 @@ function AppShellContent({
     // Delegate to NavigationContext which handles session creation
     navigate(
       routes.action.newSession(inherited ?? undefined),
-      newPanel ? { newPanel: true, targetLaneId: 'main' } : undefined
+      newPanel ? { newPanel: true } : undefined
     )
 
     // Focus the chat input after navigation completes
     setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
   }, [activeWorkspace, focusZone, navigate, resolveInheritedNewSessionParams])
+
+  const handleNewProjectSession = useCallback(async (
+    projectId: string,
+    projectSlug: string,
+  ) => {
+    if (!activeWorkspaceId) return
+    try {
+      const created = await onCreateSession(activeWorkspaceId, { projectId })
+      if (!created?.id) return
+      setCollapsedItems(prev => {
+        const next = new Set(prev)
+        next.delete('nav:projects')
+        next.delete(`nav:projects:${projectId}`)
+        return next
+      })
+      navigate(routes.view.projectSession(projectSlug, created.id))
+      setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
+    } catch (error) {
+      console.error('[AppShell] Failed to create project session:', error)
+      toast.error(t('projectInfo.newSessionFailed'))
+    }
+  }, [activeWorkspaceId, focusZone, onCreateSession, t])
 
   // Create a brand new dedicated browser window and focus it.
   // Intentionally unbound: this action should always create a NEW window.
@@ -2115,15 +2333,60 @@ function AppShellContent({
     }
     flattenTree(labelTree)
 
-    // 3. Sources, Skills, Settings
+    // 3. Sources, Skills, Projects, Automations, Settings
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
+    result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
+    if (isExpanded('nav:projects')) {
+      for (const project of projects) {
+        const projectItemId = `nav:projects:${project.config.id}`
+        const projectSessions = projectSessionsByProjectId.get(project.config.id) ?? []
+        result.push({
+          id: projectItemId,
+          type: 'nav',
+          action: projectSessions.length > 0
+            ? () => toggleExpanded(projectItemId)
+            : undefined,
+        })
+        if (!isExpanded(projectItemId)) continue
+
+        for (const projectSession of projectSessions) {
+          result.push({
+            id: `nav:project-session:${projectSession.id}`,
+            type: 'nav',
+            action: () => navigateToProjectSessionInPanel(
+              project.config.slug,
+              projectSession.id,
+            ),
+          })
+        }
+      }
+    }
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleAutomationsClick, handleSettingsClick, handleWhatsNewClick])
+  }, [
+    handleAllSessionsClick,
+    handleFlaggedClick,
+    handleArchivedClick,
+    handleSessionStatusClick,
+    effectiveSessionStatuses,
+    handleLabelClick,
+    labelTree,
+    handleSourcesClick,
+    handleSkillsClick,
+    handleProjectsClick,
+    projects,
+    isExpanded,
+    toggleExpanded,
+    projectSessionsByProjectId,
+    navigateToProjectSessionInPanel,
+    handleAutomationsClick,
+    handleSettingsClick,
+    handleWhatsNewClick,
+  ])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2358,6 +2621,8 @@ function AppShellContent({
           canGoBack={canGoBack}
           canGoForward={canGoForward}
           onToggleSidebar={handleToggleSidebar}
+          onToggleRightSidebar={handleToggleRightSidebar}
+          isRightSidebarVisible={isRightSidebarVisible}
           onToggleFocusMode={() => setIsSidebarAndNavigatorHidden(prev => !prev)}
           onAddSessionPanel={() => handleNewChat(true)}
           onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
@@ -2430,7 +2695,7 @@ function AppShellContent({
                     {
                       id: "nav:allSessions",
                       title: t("sidebar.allSessions"),
-                      label: String(workspaceSessionMetas.length),
+                      label: String(standaloneSessionMetas.length),
                       icon: Inbox,
                       variant: sessionFilter?.kind === 'allSessions' ? "default" : "ghost",
                       onClick: handleAllSessionsClick,
@@ -2592,24 +2857,97 @@ function AppShellContent({
                       title: t("sidebar.projects"),
                       label: String(projects.length),
                       icon: FolderKanban,
-                      // Highlight only when on Projects view itself, not when a child is "active" (jumped-to filter)
+                      // Project selection and sessions live entirely in this tree on desktop.
                       variant: isProjectsNavigation(navState) ? "default" : "ghost",
                       onClick: handleProjectsClick,
                       expandable: projects.length > 0,
                       expanded: isExpanded('nav:projects'),
                       onToggle: () => toggleExpanded('nav:projects'),
+                      actionCount: 1 as const,
+                      actions: (
+                        <SidebarIconAction
+                          label={t('sidebarMenu.addProject')}
+                          onClick={openAddProject}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                        </SidebarIconAction>
+                      ),
                       contextMenu: {
                         type: 'projects' as const,
                         onAddProject: openAddProject,
                       },
-                      items: projects.map(p => ({
-                        id: `nav:projects:${p.config.id}`,
-                        title: p.config.name,
-                        icon: FolderKanban,
-                        // Highlight when on allSessions view AND filter includes this project (the jump-to state)
-                        variant: (sessionFilter?.kind === 'allSessions' && projectFilter.get(p.config.id) === 'include') ? "default" as const : "ghost" as const,
-                        onClick: () => handleJumpToProjectSessions(p.config.id),
-                      })),
+                      items: projects.map(project => {
+                        const projectItemId = `nav:projects:${project.config.id}`
+                        const allProjectSessions = projectSessionsByProjectId.get(project.config.id) ?? []
+                        const selectedProjectSessionId = (
+                          isProjectsNavigation(navState)
+                          && navState.details?.projectSlug === project.config.slug
+                        )
+                          ? navState.details.sessionId
+                          : undefined
+
+                        return {
+                          id: projectItemId,
+                          title: project.config.name,
+                          variant: (
+                            isProjectsNavigation(navState)
+                            && navState.details?.projectSlug === project.config.slug
+                          ) ? "default" as const : "ghost" as const,
+                          onClick: allProjectSessions.length > 0
+                            ? () => toggleExpanded(projectItemId)
+                            : undefined,
+                          expandable: allProjectSessions.length > 0,
+                          expanded: isExpanded(projectItemId),
+                          onToggle: () => toggleExpanded(projectItemId),
+                          actionCount: 2 as const,
+                          actions: (
+                            <ProjectSidebarRowActions
+                              projectName={project.config.name}
+                              onNewSession={() => {
+                                void handleNewProjectSession(
+                                  project.config.id,
+                                  project.config.slug,
+                                )
+                              }}
+                              onOpenSettings={() => openProjectSettings(project)}
+                            />
+                          ),
+                          items: [
+                            ...allProjectSessions.map(projectSession => {
+                              const title = getSessionTitle(projectSession)
+                              const onRename = () => openSidebarSessionRename(
+                                projectSession.id,
+                                title,
+                              )
+                              return {
+                                  id: `nav:project-session:${projectSession.id}`,
+                                  title,
+                                  compact: true,
+                                  variant: (
+                                    selectedProjectSessionId === projectSession.id
+                                  ) ? "default" as const : "ghost" as const,
+                                  onClick: () => navigateToProjectSessionInPanel(
+                                    project.config.slug,
+                                    projectSession.id,
+                                  ),
+                                  contextMenu: {
+                                    type: 'session' as const,
+                                    onRename,
+                                  },
+                                  actionCount: 1 as const,
+                                  actions: (
+                                    <SidebarIconAction
+                                      label={t('session.renameSession')}
+                                      onClick={onRename}
+                                    >
+                                      <Pencil className="h-3.5 w-3.5" />
+                                    </SidebarIconAction>
+                                  ),
+                              }
+                            }),
+                          ],
+                        }
+                      }),
                     },
                     {
                       id: "nav:automations",
@@ -2745,8 +3083,8 @@ function AppShellContent({
                       <DropdownMenuTrigger asChild>
                         <HeaderIconButton
                           icon={<ListFilter className="h-4 w-4" />}
-                          className={(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0) ? "bg-accent/5 text-accent rounded-[8px] shadow-tinted" : "rounded-[8px]"}
-                          style={(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0) ? { '--shadow-color': 'var(--accent-rgb)' } as React.CSSProperties : undefined}
+                          className={(listFilter.size > 0 || labelFilter.size > 0) ? "bg-accent/5 text-accent rounded-[8px] shadow-tinted" : "rounded-[8px]"}
+                          style={(listFilter.size > 0 || labelFilter.size > 0) ? { '--shadow-color': 'var(--accent-rgb)' } as React.CSSProperties : undefined}
                         />
                       </DropdownMenuTrigger>
                       <StyledDropdownMenuContent
@@ -2773,13 +3111,12 @@ function AppShellContent({
                         {/* Header with title and clear button (only clears user-added filters, never pinned) */}
                         <div className="flex items-center justify-between px-2 py-1.5">
                           <span className="text-xs font-medium text-muted-foreground">{t("sidebar.filterChats")}</span>
-                          {(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0) && (
+                          {(listFilter.size > 0 || labelFilter.size > 0) && (
                             <button
                               onClick={(e) => {
                                 e.preventDefault()
                                 setListFilter(new Map())
                                 setLabelFilter(new Map())
-                                setProjectFilter(new Map())
                               }}
                               className="text-xs text-muted-foreground hover:text-foreground"
                             >
@@ -2866,7 +3203,7 @@ function AppShellContent({
                             {/* === HIERARCHICAL MODE (default) === */}
 
                             {/* Active filter chips: pinned (non-removable) + user-added (removable) */}
-                            {(pinnedFilters.pinnedFlagged || pinnedFilters.pinnedStatusId || pinnedFilters.pinnedLabelId || listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0) && (
+                            {(pinnedFilters.pinnedFlagged || pinnedFilters.pinnedStatusId || pinnedFilters.pinnedLabelId || listFilter.size > 0 || labelFilter.size > 0) && (
                               <>
                                 {/* Pinned: flagged */}
                                 {pinnedFilters.pinnedFlagged && (
@@ -2974,37 +3311,6 @@ function AppShellContent({
                                     </DropdownMenuSub>
                                   )
                                 })}
-                                {/* User-added: selected projects with mode pill (include/exclude) */}
-                                {Array.from(projectFilter).map(([projectId, mode]) => {
-                                  const project = projectMenuOptions.find(p => p.id === projectId)
-                                  if (!project) return null
-                                  return (
-                                    <DropdownMenuSub key={`sel-project-${projectId}`}>
-                                      <StyledDropdownMenuSubTrigger onClick={(e) => { e.preventDefault(); setProjectFilter(prev => { const next = new Map(prev); next.delete(projectId); return next }) }}>
-                                        <FilterMenuRow
-                                          icon={<FolderKanban className="h-3.5 w-3.5" />}
-                                          label={project.name}
-                                          accessory={<FilterModeBadge mode={mode} />}
-                                        />
-                                      </StyledDropdownMenuSubTrigger>
-                                      <StyledDropdownMenuSubContent minWidth="min-w-[140px]">
-                                        <FilterModeSubMenuItems
-                                          mode={mode}
-                                          onChangeMode={(newMode) => setProjectFilter(prev => {
-                                            const next = new Map(prev)
-                                            next.set(projectId, newMode)
-                                            return next
-                                          })}
-                                          onRemove={() => setProjectFilter(prev => {
-                                            const next = new Map(prev)
-                                            next.delete(projectId)
-                                            return next
-                                          })}
-                                        />
-                                      </StyledDropdownMenuSubContent>
-                                    </DropdownMenuSub>
-                                  )
-                                })}
                                 <StyledDropdownMenuSeparator />
                               </>
                             )}
@@ -3104,70 +3410,6 @@ function AppShellContent({
                                 )}
                               </StyledDropdownMenuSubContent>
                             </DropdownMenuSub>
-
-                            {/* Projects submenu - flat list of workspace projects */}
-                            {projectMenuOptions.length > 0 && (
-                              <DropdownMenuSub>
-                                <StyledDropdownMenuSubTrigger>
-                                  <FolderKanban className="h-3.5 w-3.5" />
-                                  <span className="flex-1">{t("sidebar.projects")}</span>
-                                </StyledDropdownMenuSubTrigger>
-                                <StyledDropdownMenuSubContent minWidth="min-w-[180px]">
-                                  {projectMenuOptions.map(project => {
-                                    const currentMode = projectFilter.get(project.id)
-                                    const isActive = !!currentMode
-                                    if (isActive) {
-                                      return (
-                                        <DropdownMenuSub key={project.id}>
-                                          <StyledDropdownMenuSubTrigger onClick={(e) => { e.preventDefault(); setProjectFilter(prev => { const next = new Map(prev); next.delete(project.id); return next }) }}>
-                                            <FilterMenuRow
-                                              icon={<FolderKanban className="h-3.5 w-3.5" />}
-                                              label={project.name}
-                                              accessory={<FilterModeBadge mode={currentMode} />}
-                                            />
-                                          </StyledDropdownMenuSubTrigger>
-                                          <StyledDropdownMenuSubContent minWidth="min-w-[140px]">
-                                            <FilterModeSubMenuItems
-                                              mode={currentMode}
-                                              onChangeMode={(newMode) => setProjectFilter(prev => {
-                                                const next = new Map(prev)
-                                                next.set(project.id, newMode)
-                                                return next
-                                              })}
-                                              onRemove={() => setProjectFilter(prev => {
-                                                const next = new Map(prev)
-                                                next.delete(project.id)
-                                                return next
-                                              })}
-                                            />
-                                          </StyledDropdownMenuSubContent>
-                                        </DropdownMenuSub>
-                                      )
-                                    }
-                                    return (
-                                      <AltExcludeTooltip key={project.id} show={filterAltHeld}>
-                                        <StyledDropdownMenuItem
-                                          onClick={(e) => {
-                                            e.preventDefault()
-                                            setProjectFilter(prev => {
-                                              const next = new Map(prev)
-                                              if (next.has(project.id)) next.delete(project.id)
-                                              else next.set(project.id, e.altKey ? 'exclude' : 'include')
-                                              return next
-                                            })
-                                          }}
-                                        >
-                                          <FilterMenuRow
-                                            icon={<FolderKanban className="h-3.5 w-3.5" />}
-                                            label={project.name}
-                                          />
-                                        </StyledDropdownMenuItem>
-                                      </AltExcludeTooltip>
-                                    )
-                                  })}
-                                </StyledDropdownMenuSubContent>
-                              </DropdownMenuSub>
-                            )}
 
                             {/* Group by submenu - hidden in state sub-views (always date there) */}
                             {!isStateSubView && (
@@ -3488,10 +3730,9 @@ function AppShellContent({
               /* Projects List */
               <ProjectsListPanel
                 projects={projects}
-                workspaceId={activeWorkspaceId}
                 onProjectClick={(slug) => navigate(routes.view.projects(slug))}
                 onAddProject={openAddProject}
-                onJumpToSessions={handleJumpToProjectSessions}
+                onProjectSettings={openProjectSettings}
                 selectedProjectSlug={isProjectsNavigation(navState) ? navState.details?.projectSlug ?? null : null}
               />
             )}
@@ -3523,7 +3764,11 @@ function AppShellContent({
                 {/* Key on sidebarMode forces full remount when switching views, skipping animations */}
                 <SessionList
                   key={sessionFilter?.kind}
-                  items={searchActive ? workspaceSessionMetas : filteredSessionMetas}
+                  items={
+                    searchActive
+                      ? standaloneSessionMetas
+                      : filteredSessionMetas
+                  }
                   onDelete={handleDeleteSession}
                   onFlag={onFlagSession}
                   onUnflag={onUnflagSession}
@@ -3583,12 +3828,115 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView ? 0 : sessionListWidth)}
+          navigatorWidth={isAutoCompact
+            ? sessionListWidth
+            : (
+                effectiveSidebarAndNavigatorHidden
+                || isBoardView
+                || hideProjectsNavigator
+                  ? 0
+                  : sessionListWidth
+              )}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
-          isRightSidebarVisible={false}
+          isRightSidebarVisible={!isAutoCompact && isRightSidebarVisible}
           isCompact={isAutoCompact}
           isResizing={!!isResizing}
         />
+
+        <AnimatePresence initial={false}>
+          {isRightSidebarVisible && !isAutoCompact && (
+            <motion.div
+              key="project-files-sidebar"
+              initial={{ width: 0, opacity: 0, x: 18 }}
+              animate={{ width: rightSidebarWidth, opacity: 1, x: 0 }}
+              exit={{ width: 0, opacity: 0, x: 18 }}
+              transition={isResizing === 'right-sidebar' ? { duration: 0 } : springTransition}
+              className="relative h-full shrink-0 overflow-visible"
+            >
+              <div
+                className="h-full overflow-hidden bg-foreground-2 shadow-middle"
+                style={{
+                  width: rightSidebarWidth,
+                  borderTopLeftRadius: RADIUS_INNER,
+                  borderBottomLeftRadius: RADIUS_INNER,
+                  borderTopRightRadius: RADIUS_INNER,
+                  borderBottomRightRadius: RADIUS_EDGE,
+                }}
+              >
+                <WorkspaceFilesSidebar
+                  projectId={rightSidebarProject?.config.id}
+                  projectName={rightSidebarProject?.config.name}
+                  rootPath={rightSidebarProject?.config.workingDirectory}
+                  onClose={() => updateRightSidebar(undefined)}
+                  onOpenFile={handleOpenProjectFile}
+                />
+              </div>
+
+              <div
+                ref={rightSidebarHandleRef}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  setIsResizing('right-sidebar')
+                }}
+                onMouseMove={(event) => {
+                  if (rightSidebarHandleRef.current) {
+                    const rect = rightSidebarHandleRef.current.getBoundingClientRect()
+                    setRightSidebarHandleY(event.clientY - rect.top)
+                  }
+                }}
+                onMouseLeave={() => {
+                  if (isResizing !== 'right-sidebar') setRightSidebarHandleY(null)
+                }}
+                className="absolute bottom-0 left-0 top-0 z-panel flex -translate-x-1/2 cursor-col-resize justify-center"
+                style={{ width: PANEL_SASH_HIT_WIDTH }}
+              >
+                <div
+                  className="h-full"
+                  style={{
+                    ...getResizeGradientStyle(
+                      rightSidebarHandleY,
+                      rightSidebarHandleRef.current?.clientHeight ?? null,
+                    ),
+                    width: PANEL_SASH_LINE_WIDTH,
+                  }}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isRightSidebarVisible && isAutoCompact && (
+            <>
+              <motion.button
+                key="project-files-backdrop"
+                type="button"
+                aria-label={t('common.close')}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => updateRightSidebar(undefined)}
+                className="absolute inset-0 z-overlay bg-black/20"
+              />
+              <motion.div
+                key="project-files-drawer"
+                initial={{ x: '100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '100%' }}
+                transition={springTransition}
+                className="absolute bottom-0 right-0 top-0 z-overlay w-[min(88vw,360px)] overflow-hidden bg-foreground-2 shadow-strong"
+              >
+                <WorkspaceFilesSidebar
+                  projectId={rightSidebarProject?.config.id}
+                  projectName={rightSidebarProject?.config.name}
+                  rootPath={rightSidebarProject?.config.workingDirectory}
+                  onClose={() => updateRightSidebar(undefined)}
+                  onOpenFile={handleOpenProjectFile}
+                />
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
 
         {/* Sidebar Resize Handle (absolute, hidden in focused mode) */}
         {!effectiveSidebarAndNavigatorHidden && (
@@ -3624,7 +3972,7 @@ function AppShellContent({
         )}
 
         {/* Session List Resize Handle (absolute, hidden in focused mode and board view) */}
-        {!effectiveSidebarAndNavigatorHidden && !isBoardView && (
+        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !hideProjectsNavigator && (
         <div
           ref={sessionListHandleRef}
           onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}
@@ -3882,6 +4230,33 @@ function AppShellContent({
         open={createProjectDialogOpen}
         onCancel={() => setCreateProjectDialogOpen(false)}
         onSubmit={handleCreateProjectSubmit}
+      />
+
+      <RenameDialog
+        open={sidebarRenameDialogOpen}
+        onOpenChange={handleSidebarRenameDialogOpenChange}
+        title={t('session.renameSession')}
+        value={sidebarRenameSessionName}
+        onValueChange={setSidebarRenameSessionName}
+        onSubmit={handleSidebarSessionRename}
+      />
+
+      <ProjectSettingsDialog
+        open={!!projectSettingsProject}
+        workspaceId={activeWorkspaceId}
+        project={projectSettingsProject}
+        onOpenChange={(open) => {
+          if (!open) setProjectSettingsProjectId(null)
+        }}
+        onDeleted={(projectSlug) => {
+          setProjectSettingsProjectId(null)
+          if (
+            isProjectsNavigation(navState)
+            && navState.details?.projectSlug === projectSlug
+          ) {
+            navigate(routes.view.projects())
+          }
+        }}
       />
 
       {/* Messaging dialogs (pairing-code + WA connect) — driven by messagingDialogAtom.

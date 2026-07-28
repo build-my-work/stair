@@ -1,6 +1,10 @@
 import * as React from "react"
-import { X, Image as ImageIcon } from "lucide-react"
+import { X, Image as ImageIcon, BookOpenText } from "lucide-react"
 import { Spinner, FileTypeIcon, getFileTypeLabel } from "@craft-agent/ui"
+import {
+  projectFileReferenceKey,
+  type MessageReference,
+} from "@craft-agent/core"
 import { cn } from "@/lib/utils"
 import type { FileAttachment } from "../../../shared/types"
 
@@ -12,6 +16,9 @@ interface AttachmentPreviewProps {
   onRemove: (index: number) => void
   disabled?: boolean
   loadingCount?: number
+  references?: readonly MessageReference[]
+  onRemoveReference?: (reference: MessageReference) => void
+  referenceError?: { relativePath?: string } | null
 }
 
 /**
@@ -24,8 +31,20 @@ interface AttachmentPreviewProps {
  * - Horizontally scrollable when many files
  * - Loading placeholders while files are being read
  */
-export function AttachmentPreview({ attachments, onRemove, disabled, loadingCount = 0 }: AttachmentPreviewProps) {
-  if (attachments.length === 0 && loadingCount === 0) return null
+export function AttachmentPreview({
+  attachments,
+  onRemove,
+  disabled,
+  loadingCount = 0,
+  references = [],
+  onRemoveReference,
+  referenceError,
+}: AttachmentPreviewProps) {
+  if (
+    attachments.length === 0
+    && references.length === 0
+    && loadingCount === 0
+  ) return null
 
   return (
     <div className="flex gap-2 px-4 py-3 border-b border-border/50 overflow-x-auto">
@@ -37,10 +56,90 @@ export function AttachmentPreview({ attachments, onRemove, disabled, loadingCoun
           disabled={disabled}
         />
       ))}
+      {references.map(reference => (
+        <ReferenceBubble
+          key={projectFileReferenceKey(reference)}
+          reference={reference}
+          onRemove={
+            onRemoveReference
+              ? () => onRemoveReference(reference)
+              : undefined
+          }
+          disabled={disabled}
+          invalid={
+            !!referenceError
+            && (
+              !referenceError.relativePath
+              || referenceError.relativePath === reference.relativePath
+            )
+          }
+        />
+      ))}
       {/* Loading placeholders */}
       {Array.from({ length: loadingCount }).map((_, i) => (
         <LoadingBubble key={`loading-${i}`} />
       ))}
+    </div>
+  )
+}
+
+function ReferenceBubble({
+  reference,
+  onRemove,
+  disabled,
+  invalid,
+}: {
+  reference: MessageReference
+  onRemove?: () => void
+  disabled?: boolean
+  invalid?: boolean
+}) {
+  const chapter = reference.chapterTitle
+    || reference.tocPath.at(-1)?.title
+  const detail = [chapter, `“${reference.quote}”`]
+    .filter(Boolean)
+    .join(' · ')
+
+  return (
+    <div className="relative group shrink-0 select-none">
+      {!disabled && onRemove && (
+        <button
+          type="button"
+          aria-label={`Remove reference from ${reference.fileName}`}
+          onClick={onRemove}
+          data-touch-reveal="true"
+          className={cn(
+            "absolute -top-1.5 -right-1.5 z-10",
+            "h-5 w-5 rounded-full",
+            "bg-muted-foreground/90 text-background",
+            "flex items-center justify-center",
+            "opacity-0 group-hover:opacity-100 transition-opacity",
+            "hover:bg-muted-foreground"
+          )}
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+
+      <div
+        className={cn(
+          "h-16 flex items-center gap-2.5 rounded-[8px] bg-foreground/5 pl-1.5 pr-3",
+          invalid && "ring-1 ring-red-500/35",
+        )}
+        title={detail}
+      >
+        <div className="h-12 w-9 rounded-[6px] bg-background shadow-minimal flex items-center justify-center shrink-0">
+          <BookOpenText className="h-5 w-5 text-muted-foreground" />
+        </div>
+        <div className="flex min-w-0 max-w-[180px] flex-col">
+          <span className="truncate text-xs font-medium">
+            {reference.fileName}
+          </span>
+          <span className="truncate text-[10px] text-muted-foreground">
+            {detail}
+          </span>
+        </div>
+      </div>
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { handleInterrupted } from '../session'
 import type { SessionState, InterruptedEvent } from '../../types'
+import type { MessageReference } from '@craft-agent/core'
 
 function makeState(messages: any[]): SessionState {
   return {
@@ -27,7 +28,7 @@ describe('handleInterrupted (#616)', () => {
         type: 'interrupted',
         sessionId: 'session-1',
         message: { id: 'info-1', role: 'info', content: 'Response interrupted', timestamp: 0 } as any,
-        queuedMessages: ['queued one', 'queued two'],
+        queuedDrafts: [{ text: 'queued one' }, { text: 'queued two' }],
       }
 
       const next = handleInterrupted(state, event)
@@ -60,6 +61,40 @@ describe('handleInterrupted (#616)', () => {
       expect(next.effects).toEqual([])
       expect(next.state.session.messages.map(m => m.id)).toContain('info-1')
     })
+
+    it('restores structured queued draft references', () => {
+      const state = makeState([
+        { id: 'msg-1', role: 'user', content: 'queued', isQueued: true },
+      ])
+      const reference: MessageReference = {
+        version: 1,
+        kind: 'project-file',
+        projectId: 'project-1',
+        relativePath: 'book.epub',
+        sourceFingerprint: `sha256:${'a'.repeat(64)}`,
+        fileName: 'book.epub',
+        quote: 'quote',
+        tocPath: [],
+        locator: { type: 'epub-cfi', cfiRange: 'epubcfi(/6/2!/4/2:0)' },
+      }
+      const event: InterruptedEvent = {
+        type: 'interrupted',
+        sessionId: 'session-1',
+        message: { id: 'info-1', role: 'info', content: 'Response interrupted', timestamp: 0 } as any,
+        queuedDrafts: [
+          { text: 'first', references: [reference] },
+          { text: 'second', references: [reference] },
+        ],
+      }
+
+      const next = handleInterrupted(state, event)
+
+      expect(next.effects).toEqual([{
+        type: 'restore_input',
+        text: 'first\n\nsecond',
+        references: [reference],
+      }])
+    })
   })
 
   describe('silent redirect (event.message absent)', () => {
@@ -73,7 +108,7 @@ describe('handleInterrupted (#616)', () => {
         type: 'interrupted',
         sessionId: 'session-1',
         // no message field — silent redirect
-        queuedMessages: ['queued during run'],
+        queuedDrafts: [{ text: 'queued during run' }],
       }
 
       const next = handleInterrupted(state, event)

@@ -977,7 +977,7 @@ export function EditPopover({
     // Send message via App context (includes optimistic user message update)
     // Pass badges to hide the <edit_request> XML metadata in the user message bubble
     if (sessionId) {
-      onSendMessage(sessionId, prompt, undefined, undefined, badges)
+      await onSendMessage(sessionId, prompt, undefined, undefined, badges)
     }
   }, [context, displayLabel, inlineSessionId, workspace?.id, model, systemPromptPreset, permissionMode, workingDirectory, onCreateSession, onSendMessage])
 

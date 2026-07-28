@@ -19,10 +19,13 @@ import * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAtomValue } from 'jotai'
 import { useTranslation } from 'react-i18next'
+import { FolderKanban, Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import { Panel } from './Panel'
 import { MultiSelectPanel } from './MultiSelectPanel'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { sessionMetaMapAtom, type SessionMeta } from '@/atoms/sessions'
+import { projectsAtom } from '@/atoms/projects'
 import { StoplightProvider } from '@/context/StoplightContext'
 import {
   useNavigationState,
@@ -41,11 +44,13 @@ import { SourceInfoPage, ChatPage } from '@/pages'
 import SkillInfoPage from '@/pages/SkillInfoPage'
 import { getSettingsPageComponent } from '@/pages/settings/settings-pages'
 import { AutomationInfoPage } from '../automations/AutomationInfoPage'
-import ProjectInfoPage from '@/pages/ProjectInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
+import { Button } from '@/components/ui/button'
+import { navigate, routes } from '@/lib/navigate'
+import { getSessionTitle } from '@/utils/session'
 
 export interface MainContentPanelProps {
   /** Whether both sidebar and navigator are hidden (focus mode / CMD+.) */
@@ -84,6 +89,8 @@ export function MainContentPanel({
     automationTestResults,
     getAutomationHistory,
     activeSessionWorkingDirectory,
+    isCompactMode,
+    onCreateSession,
   } = useAppShellContext()
 
   // Session multi-select state
@@ -93,6 +100,8 @@ export function MainContentPanel({
   const { clearMultiSelect } = useSessionSelection()
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
   const automations = useAtomValue(automationsAtom)
+  const projects = useAtomValue(projectsAtom)
+  const [creatingProjectSession, setCreatingProjectSession] = useState(false)
 
   // Execution history for the selected automation
   const selectedAutomationId = isAutomationsNavigation(navState) ? navState.details?.automationId : undefined
@@ -358,13 +367,103 @@ export function MainContentPanel({
     )
   }
 
-  // Projects navigator - show project detail page or empty state
+  // Projects navigator - project sessions render as chats. The project root is
+  // intentionally a lightweight handoff state; settings live in the sidebar menu
+  // and files live in the right sidebar.
   if (isProjectsNavigation(navState)) {
     const projectDetails = navState.details
     if (projectDetails && projectDetails.type === 'project') {
+      if (projectDetails.sessionId && sessionMetaMap.has(projectDetails.sessionId)) {
+        return wrapWithStoplight(
+          <Panel variant="grow" className={className}>
+            <ChatPage sessionId={projectDetails.sessionId} />
+          </Panel>
+        )
+      }
+
+      const selectedProject = projects.find(
+        project => project.config.slug === projectDetails.projectSlug,
+      )
+      const projectSessions = selectedProject
+        ? [...sessionMetaMap.values()]
+          .filter(session => (
+            !session.hidden
+            && !session.isArchived
+            && session.projectId === selectedProject.config.id
+          ))
+          .sort((left, right) => (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0))
+        : []
+
+      const handleCreateProjectSession = async () => {
+        if (!activeWorkspaceId || !selectedProject || creatingProjectSession) return
+        setCreatingProjectSession(true)
+        try {
+          const created = await onCreateSession(activeWorkspaceId, {
+            projectId: selectedProject.config.id,
+          })
+          navigate(routes.view.projectSession(selectedProject.config.slug, created.id))
+        } catch (error) {
+          console.error('[MainContentPanel] Failed to create project session:', error)
+          toast.error(t('projectInfo.newSessionFailed'))
+        } finally {
+          setCreatingProjectSession(false)
+        }
+      }
+
       return wrapWithStoplight(
         <Panel variant="grow" className={className}>
-          <ProjectInfoPage projectSlug={projectDetails.projectSlug} />
+          <div className="flex h-full items-center justify-center px-6">
+            <div className="w-full max-w-md text-center">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-[12px] bg-foreground/[0.05]">
+                <FolderKanban className="h-5 w-5 text-foreground/55" />
+              </div>
+              <h2 className="mt-4 text-base font-semibold text-foreground">
+                {selectedProject?.config.name ?? t('projectInfo.notFound')}
+              </h2>
+              <p className="mt-1.5 text-sm leading-5 text-muted-foreground">
+                {t('projectInfo.selectSessionHint', {
+                  defaultValue: 'Choose a session from this project in the sidebar, or start a new one.',
+                })}
+              </p>
+              {selectedProject?.config.workingDirectory && (
+                <p className="mx-auto mt-3 max-w-sm break-all font-mono text-[11px] leading-4 text-foreground/45">
+                  {selectedProject.config.workingDirectory}
+                </p>
+              )}
+              {selectedProject && (
+                <Button
+                  className="mt-5"
+                  disabled={creatingProjectSession}
+                  onClick={() => { void handleCreateProjectSession() }}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {t('projectInfo.newSessionButton', { name: selectedProject.config.name })}
+                </Button>
+              )}
+
+              {isCompactMode && projectSessions.length > 0 && (
+                <div className="mt-7 border-t border-border/60 pt-4 text-left">
+                  <div className="mb-2 px-1 text-xs font-medium text-foreground/55">
+                    {t('projectInfo.tabSessions')}
+                  </div>
+                  <div className="space-y-1">
+                    {projectSessions.map(projectSession => (
+                      <button
+                        key={projectSession.id}
+                        type="button"
+                        onClick={() => navigate(
+                          routes.view.projectSession(projectDetails.projectSlug, projectSession.id),
+                        )}
+                        className="w-full truncate rounded-[7px] px-3 py-2 text-left text-sm text-foreground/80 transition-colors hover:bg-foreground/[0.05] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      >
+                        {getSessionTitle(projectSession)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </Panel>
       )
     }

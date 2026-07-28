@@ -35,6 +35,23 @@ describe('buildSemanticHistoryKey', () => {
 
     expect(keyA).toBe(keyB)
   })
+
+  it('does not collide when values contain separators', () => {
+    const keyA = buildSemanticHistoryKey({
+      workspaceSlug: 'ws',
+      panelRoutes: ['a|b', 'c'],
+      focusedPanelIndex: 0,
+      sidebarParam: '',
+    })
+    const keyB = buildSemanticHistoryKey({
+      workspaceSlug: 'ws',
+      panelRoutes: ['a', 'b|c'],
+      focusedPanelIndex: 0,
+      sidebarParam: '',
+    })
+
+    expect(keyA).not.toBe(keyB)
+  })
 })
 
 describe('canRunInitialRestore', () => {

@@ -3,13 +3,22 @@ import { isAbsolute, join, resolve, dirname, parse as parsePath } from 'path'
 import { homedir } from 'os'
 import { validatePathFormat } from '../../utils/path-validation'
 import { randomUUID } from 'crypto'
-import { RPC_CHANNELS, type FileAttachment, type DirectoryListingResult } from '@craft-agent/shared/protocol'
+import {
+  RPC_CHANNELS,
+  type DirectoryListingResult,
+  type FileAttachment,
+  type FileSearchResult,
+} from '@craft-agent/shared/protocol'
 import type { StoredAttachment } from '@craft-agent/core/types'
 import { readFileAttachment, validateImageForClaudeAPI, IMAGE_LIMITS } from '@craft-agent/shared/utils'
 import { getSessionAttachmentsPath, validateSessionId } from '@craft-agent/shared/sessions'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { resizeImageForAPI, inspectImageBuffer } from '@craft-agent/server-core/services'
-import { sanitizeFilename, validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
+import {
+  getWorkspaceAllowedDirs,
+  sanitizeFilename,
+  validateFilePath,
+} from '@craft-agent/server-core/handlers'
 import { MarkItDown } from 'markitdown-js'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -28,6 +37,88 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.fs.SEARCH,
   RPC_CHANNELS.fs.LIST_DIRECTORY,
 ] as const
+
+const MAX_FILE_SEARCH_RESULTS = 50
+const SKIPPED_SEARCH_DIRECTORIES = new Set([
+  'node_modules', '.git', '.svn', '.hg', 'dist', 'build',
+  '.next', '.nuxt', '.cache', '__pycache__', 'vendor',
+  '.idea', '.vscode', 'coverage', '.nyc_output', '.turbo', 'out',
+])
+
+export async function searchFilesWithinRoot(
+  basePath: string,
+  query: string,
+  options: {
+    includeHidden?: boolean
+    skipSymlinks?: boolean
+    filesOnly?: boolean
+  } = {},
+): Promise<FileSearchResult[]> {
+  const lowerQuery = query.toLowerCase()
+  const results: FileSearchResult[] = []
+  let queue = ['']
+
+  while (queue.length > 0 && results.length < MAX_FILE_SEARCH_RESULTS) {
+    const nextQueue: string[] = []
+    const directoryResults = await Promise.all(
+      queue.map(async relativeDirectory => {
+        const absoluteDirectory = relativeDirectory
+          ? join(basePath, relativeDirectory)
+          : basePath
+        try {
+          return {
+            relativeDirectory,
+            entries: await readdir(absoluteDirectory, { withFileTypes: true }),
+          }
+        } catch {
+          return {
+            relativeDirectory,
+            entries: [] as import('fs').Dirent[],
+          }
+        }
+      }),
+    )
+
+    for (const { relativeDirectory, entries } of directoryResults) {
+      for (const entry of entries) {
+        if (results.length >= MAX_FILE_SEARCH_RESULTS) break
+        if (
+          (!options.includeHidden && entry.name.startsWith('.'))
+          || SKIPPED_SEARCH_DIRECTORIES.has(entry.name)
+          || (options.skipSymlinks && entry.isSymbolicLink())
+        ) {
+          continue
+        }
+
+        const relativePath = relativeDirectory
+          ? `${relativeDirectory}/${entry.name}`
+          : entry.name
+        const isDirectory = entry.isDirectory()
+        if (isDirectory) nextQueue.push(relativePath)
+        if (options.filesOnly && isDirectory) continue
+
+        if (
+          entry.name.toLowerCase().includes(lowerQuery)
+          || relativePath.toLowerCase().includes(lowerQuery)
+        ) {
+          results.push({
+            name: entry.name,
+            path: join(basePath, relativePath),
+            type: isDirectory ? 'directory' : 'file',
+            relativePath,
+          })
+        }
+      }
+    }
+
+    queue = nextQueue
+  }
+
+  return results.sort((left, right) => {
+    if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
+    return left.name.length - right.name.length
+  })
+}
 
 export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): void {
   // Read a file (with path validation to prevent traversal attacks)
@@ -441,81 +532,14 @@ export function registerFilesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // Parallel BFS walk that skips ignored directories BEFORE entering them,
   // avoiding reading node_modules/etc. contents entirely. Uses withFileTypes
   // to get entry types without separate stat calls.
-  server.handle(RPC_CHANNELS.fs.SEARCH, async (_ctx, basePath: string, query: string) => {
+  server.handle(RPC_CHANNELS.fs.SEARCH, async (
+    _ctx,
+    basePath: string,
+    query: string,
+  ) => {
     deps.platform.logger.info('[FS_SEARCH] called:', basePath, query)
-    const MAX_RESULTS = 50
-
-    // Directories to never recurse into
-    const SKIP_DIRS = new Set([
-      'node_modules', '.git', '.svn', '.hg', 'dist', 'build',
-      '.next', '.nuxt', '.cache', '__pycache__', 'vendor',
-      '.idea', '.vscode', 'coverage', '.nyc_output', '.turbo', 'out',
-    ])
-
-    const lowerQuery = query.toLowerCase()
-    const results: Array<{ name: string; path: string; type: 'file' | 'directory'; relativePath: string }> = []
-
     try {
-      // BFS queue: each entry is a relative path prefix ('' for root)
-      let queue = ['']
-
-      while (queue.length > 0 && results.length < MAX_RESULTS) {
-        // Process current level: read all directories in parallel
-        const nextQueue: string[] = []
-
-        const dirResults = await Promise.all(
-          queue.map(async (relDir) => {
-            const absDir = relDir ? join(basePath, relDir) : basePath
-            try {
-              return { relDir, entries: await readdir(absDir, { withFileTypes: true }) }
-            } catch {
-              // Skip dirs we can't read (permissions, broken symlinks, etc.)
-              return { relDir, entries: [] as import('fs').Dirent[] }
-            }
-          })
-        )
-
-        for (const { relDir, entries } of dirResults) {
-          if (results.length >= MAX_RESULTS) break
-
-          for (const entry of entries) {
-            if (results.length >= MAX_RESULTS) break
-
-            const name = entry.name
-            // Skip hidden files/dirs and ignored directories
-            if (name.startsWith('.') || SKIP_DIRS.has(name)) continue
-
-            const relativePath = relDir ? `${relDir}/${name}` : name
-            const isDir = entry.isDirectory()
-
-            // Queue subdirectories for next BFS level
-            if (isDir) {
-              nextQueue.push(relativePath)
-            }
-
-            // Check if name or path matches the query
-            const lowerName = name.toLowerCase()
-            const lowerRelative = relativePath.toLowerCase()
-            if (lowerName.includes(lowerQuery) || lowerRelative.includes(lowerQuery)) {
-              results.push({
-                name,
-                path: join(basePath, relativePath),
-                type: isDir ? 'directory' : 'file',
-                relativePath,
-              })
-            }
-          }
-        }
-
-        queue = nextQueue
-      }
-
-      // Sort: directories first, then by name length (shorter = better match)
-      results.sort((a, b) => {
-        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
-        return a.name.length - b.name.length
-      })
-
+      const results = await searchFilesWithinRoot(basePath, query)
       deps.platform.logger.info('[FS_SEARCH] returning', results.length, 'results')
       return results
     } catch (err) {

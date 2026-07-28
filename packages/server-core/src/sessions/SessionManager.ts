@@ -101,6 +101,10 @@ import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
 import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
 import { validateArchiveTarget } from './archive-guards'
+import {
+  formatMessageWithProjectFileReferences,
+  validateProjectFileReferencesForSend,
+} from './project-file-references'
 
 // Import from server-core domain utilities
 import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
@@ -1188,6 +1192,25 @@ export interface MidStreamDeliveryOutcome {
   wasInterrupted: boolean
 }
 
+interface PendingSteerMessage {
+  modelInput: string
+  message: string
+  attachments?: FileAttachment[]
+  storedAttachments?: StoredAttachment[]
+  options?: SendMessageOptions
+  messageId: string
+  optimisticMessageId?: string
+}
+
+function recoverQueuedMessageOptions(message: Message): SendMessageOptions | undefined {
+  const options: SendMessageOptions = {
+    ...(message.badges?.length ? { badges: message.badges } : {}),
+    ...(message.references?.length ? { references: message.references } : {}),
+    ...(message.hidden ? { hidden: true } : {}),
+  }
+  return Object.keys(options).length > 0 ? options : undefined
+}
+
 /**
  * Translate backend delivery into queue/interruption semantics. Queue mode never
  * aborts the active turn; a failed steer does, and must annotate the replay.
@@ -1204,6 +1227,7 @@ export function resolveMidStreamDeliveryOutcome(
 
 export class SessionManager implements ISessionManager {
   private sessions: Map<string, ManagedSession> = new Map()
+  private pendingSteerMessages = new Map<string, PendingSteerMessage[]>()
   // Delta batching for performance - reduces IPC events from 50+/sec to ~20/sec
   private pendingDeltas: Map<string, PendingDelta> = new Map()
   private deltaFlushTimers: Map<string, NodeJS.Timeout> = new Map()
@@ -2084,7 +2108,7 @@ export class SessionManager implements ISessionManager {
             messageId: msg.id,
             attachments: undefined,
             storedAttachments: msg.attachments,
-            options: undefined,
+            options: recoverQueuedMessageOptions(msg),
           })
         }
         if (!managed.isProcessing && managed.messageQueue.length > 0) {
@@ -2564,7 +2588,7 @@ export class SessionManager implements ISessionManager {
             messageId: msg.id,
             attachments: undefined,  // Attachments already stored on disk
             storedAttachments: msg.attachments,
-            options: undefined,
+            options: recoverQueuedMessageOptions(msg),
           })
         }
         // Process queue when session becomes active (will be triggered by first message or interaction)
@@ -5713,6 +5737,7 @@ export class SessionManager implements ISessionManager {
       this.deltaFlushTimers.delete(sessionId)
     }
     this.pendingDeltas.delete(sessionId)
+    this.pendingSteerMessages.delete(sessionId)
     this.clearAdminRememberApprovalsForSession(sessionId)
     this.clearPendingPermissionRequestsForSession(sessionId)
 
@@ -5791,11 +5816,30 @@ export class SessionManager implements ISessionManager {
      * that should host this session's browser tools. Pass undefined when calling
      * directly (tests, intra-server flows) to leave the existing pin in place.
      */
-    rpcContext?: { callerClientId?: string },
+    rpcContext?: { callerClientId?: string; workspaceId?: string | null },
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
+    }
+    if (
+      rpcContext
+      && (
+        !rpcContext.workspaceId
+        || rpcContext.workspaceId !== managed.workspace.id
+      )
+    ) {
+      throw new Error(
+        'SESSION_WORKSPACE_MISMATCH: Session is not in the active workspace',
+      )
+    }
+
+    if (options?.references !== undefined) {
+      const references = await validateProjectFileReferencesForSend({
+        workspaceRootPath: managed.workspace.rootPath,
+        sessionProjectId: managed.projectId,
+      }, options.references)
+      options = { ...options, references }
     }
     this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
 
@@ -5835,9 +5879,13 @@ export class SessionManager implements ISessionManager {
       const behavior = connection ? resolveMidStreamBehavior(connection) : 'steer'
 
       const agent = managed.agent
+      const modelInput = formatMessageWithProjectFileReferences(
+        message,
+        options?.references,
+      )
       let steered = false
       if (behavior === 'steer') {
-        steered = agent?.redirect(message) ?? false
+        steered = agent?.redirect(modelInput) ?? false
       }
       // For 'queue': skip redirect entirely. The current turn is undisturbed.
 
@@ -5858,6 +5906,9 @@ export class SessionManager implements ISessionManager {
         timestamp: this.monotonic(),
         attachments: storedAttachments,
         badges: options?.badges,
+        ...(options?.references?.length
+          ? { references: options.references }
+          : {}),
         // Hidden system-generated messages reach the model but never render as a
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
@@ -5877,6 +5928,7 @@ export class SessionManager implements ISessionManager {
       }, managed.workspace.id)
 
       if (delivery.shouldQueue) {
+        userMessage.isQueued = true
         // Push for FIFO replay on next onProcessingStopped tick. Same shape
         // for both queue-direct (current turn still running) and
         // queue-after-abort (backend already aborted) — the replay path in
@@ -5888,6 +5940,18 @@ export class SessionManager implements ISessionManager {
         // was interrupted" reminder (it would falsely tell the model its own
         // complete answer was cut off → confusion).
         if (delivery.wasInterrupted) managed.wasInterrupted = true
+      } else {
+        const pending = this.pendingSteerMessages.get(sessionId) ?? []
+        pending.push({
+          modelInput,
+          message,
+          attachments,
+          storedAttachments,
+          options,
+          messageId: userMessage.id,
+          optimisticMessageId: options?.optimisticMessageId,
+        })
+        this.pendingSteerMessages.set(sessionId, pending)
       }
 
       this.persistSession(managed)
@@ -5917,6 +5981,9 @@ export class SessionManager implements ISessionManager {
         timestamp: this.monotonic(),
         attachments: storedAttachments, // Include for persistence (has thumbnailBase64)
         badges: options?.badges,  // Include content badges (sources, skills with embedded icons)
+        ...(options?.references?.length
+          ? { references: options.references }
+          : {}),
         // Hidden system-generated messages reach the model but never render as a
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
@@ -5952,7 +6019,11 @@ export class SessionManager implements ISessionManager {
       if (isFirstUserMessage && !managed.name && !managed.triggeredBy) {
         // Replace bracket mentions with their display labels (e.g. [skill:ws:commit] -> "Commit")
         // so titles show human-readable names instead of raw IDs
+        const firstReference = options?.references?.[0]
         let titleSource = message
+          || firstReference?.chapterTitle?.trim()
+          || firstReference?.fileName
+          || ''
         if (options?.badges) {
           for (const badge of options.badges) {
             if (badge.rawText && badge.label) {
@@ -5975,7 +6046,7 @@ export class SessionManager implements ISessionManager {
 
         // Generate AI title asynchronously using agent's SDK
         // (waits briefly for agent creation if needed)
-        this.generateTitle(managed, message)
+        this.generateTitle(managed, titleSource)
       }
     }
 
@@ -6173,9 +6244,12 @@ export class SessionManager implements ISessionManager {
       // Uses <system-reminder> tags so the LLM treats it as transient system guidance
       // rather than part of the user's message content. The original message is stored
       // in session JSONL (line ~3952); this only affects the SDK's in-process context.
-      let effectiveMessage = message
+      let effectiveMessage = formatMessageWithProjectFileReferences(
+        message,
+        options?.references,
+      )
       if (managed.wasInterrupted) {
-        effectiveMessage = `${message}\n\n<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>`
+        effectiveMessage = `${effectiveMessage}\n\n<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>`
         managed.wasInterrupted = false
       }
 
@@ -6397,8 +6471,13 @@ export class SessionManager implements ISessionManager {
 
     sessionLog.info('Cancelling processing for session:', sessionId, silent ? '(silent)' : '')
 
-    // Collect queued message text for input restoration before clearing
-    const queuedTexts = managed.messageQueue.map(q => q.message)
+    // Collect queued input for Draft restoration before clearing.
+    const queuedDrafts = managed.messageQueue.map(queued => ({
+      text: queued.message,
+      ...(queued.options?.references?.length
+        ? { references: queued.options.references }
+        : {}),
+    }))
 
     // Collect queued message IDs so we can remove them from the messages array
     // (they were added when sendMessage was called during processing)
@@ -6441,16 +6520,14 @@ export class SessionManager implements ISessionManager {
         type: 'interrupted',
         sessionId,
         message: interruptedMessage,
-        // Include queued texts so the UI can restore them to the input field
-        ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
+        ...(queuedDrafts.length > 0 ? { queuedDrafts } : {}),
       }, managed.workspace.id)
     } else {
       // Still send interrupted event but without the message (for UI state update)
       this.sendEvent({
         type: 'interrupted',
         sessionId,
-        // Include queued texts so the UI can restore them to the input field
-        ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
+        ...(queuedDrafts.length > 0 ? { queuedDrafts } : {}),
       }, managed.workspace.id)
     }
 
@@ -6606,6 +6683,7 @@ export class SessionManager implements ISessionManager {
     // 1. Cleanup state
     this.setProcessing(managed, false)
     managed.stopRequested = false  // Reset for next turn
+    this.pendingSteerMessages.delete(sessionId)
 
     // 1b. Orphan backstop: with the default per-turn subprocess model, any
     // background sub-agent still marked `running` dies when this turn's
@@ -8398,7 +8476,37 @@ export class SessionManager implements ISessionManager {
         // Steer message was not delivered (no PreToolUse fired before turn ended).
         // Re-queue it so it's sent as a normal message on the next turn.
         sessionLog.info(`Steer message undelivered, re-queuing for session ${sessionId}`)
-        managed.messageQueue.push({ message: event.message })
+        {
+          const pending = this.pendingSteerMessages.get(sessionId) ?? []
+          const pendingIndex = pending.findIndex(item => item.modelInput === event.message)
+          const undelivered = pendingIndex >= 0
+            ? pending.splice(pendingIndex, 1)[0]
+            : undefined
+          if (pending.length > 0) {
+            this.pendingSteerMessages.set(sessionId, pending)
+          } else {
+            this.pendingSteerMessages.delete(sessionId)
+          }
+
+          if (undelivered) {
+            const existingMessage = managed.messages.find(
+              message => message.id === undelivered.messageId,
+            )
+            if (existingMessage) existingMessage.isQueued = true
+            managed.messageQueue.push({
+              message: undelivered.message,
+              attachments: undelivered.attachments,
+              storedAttachments: undelivered.storedAttachments,
+              options: undelivered.options,
+              messageId: undelivered.messageId,
+              optimisticMessageId: undelivered.optimisticMessageId,
+            })
+          } else {
+            // Defensive fallback for a provider event not associated with a
+            // SessionManager redirect. No structured reference can be inferred.
+            managed.messageQueue.push({ message: event.message })
+          }
+        }
         managed.wasInterrupted = true
         break
 

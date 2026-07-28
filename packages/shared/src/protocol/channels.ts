@@ -103,6 +103,14 @@ export const RPC_CHANNELS = {
     STORE_ATTACHMENT: 'file:storeAttachment',
     GENERATE_THUMBNAIL: 'file:generateThumbnail',
   },
+  projectFiles: {
+    READ_TEXT: 'projectFiles:readText',
+    READ_BINARY: 'projectFiles:readBinary',
+    SEARCH: 'projectFiles:search',
+    LIST_DIRECTORY_ENTRIES: 'projectFiles:listDirectoryEntries',
+    GET_EPUB_STATE: 'projectFiles:getEpubState',
+    APPLY_EPUB_STATE_MUTATION: 'projectFiles:applyEpubStateMutation',
+  },
   fs: {
     SEARCH: 'fs:search',
     LIST_DIRECTORY: 'fs:listDirectory',
@@ -233,6 +241,7 @@ export const RPC_CHANNELS = {
   },
   dialog: {
     OPEN_FOLDER: 'dialog:openFolder',
+    SAVE_TEXT_FILE: 'dialog:saveTextFile',
   },
   preferences: {
     READ: 'preferences:read',

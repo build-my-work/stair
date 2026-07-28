@@ -4,6 +4,20 @@ export interface ScopedInputEventTarget {
   targetSessionId?: string
 }
 
+export function hasDraftSubmissionContent(input: {
+  text: string
+  attachmentCount: number
+  followUpCount: number
+  referenceCount: number
+}): boolean {
+  return Boolean(
+    input.text.trim()
+    || input.attachmentCount > 0
+    || input.followUpCount > 0
+    || input.referenceCount > 0,
+  )
+}
+
 /**
  * Decide whether an input-affecting custom event should be handled by
  * this FreeFormInput instance.

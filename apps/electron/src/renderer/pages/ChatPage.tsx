@@ -57,8 +57,11 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     onSetActiveViewingSession,
     getDraft,
     hydrateDraftAttachments,
+    getDraftReferences,
+    subscribeDraftReferences,
     onInputChange,
     onAttachmentsChange,
+    onDraftReferencesChange,
     enabledSources,
     skills,
     labels,
@@ -281,6 +284,21 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     setAttachmentsValue(attachments)
     onAttachmentsChange(sessionId, attachments)
   }, [sessionId, onAttachmentsChange])
+
+  const [referencesValue, setReferencesValue] = React.useState(
+    () => getDraftReferences(sessionId),
+  )
+
+  React.useEffect(() => {
+    setReferencesValue(getDraftReferences(sessionId))
+    return subscribeDraftReferences(sessionId, setReferencesValue)
+  }, [getDraftReferences, sessionId, subscribeDraftReferences])
+
+  const handleReferencesChange = React.useCallback((
+    references: import('@craft-agent/core').MessageReference[],
+  ) => {
+    onDraftReferencesChange(sessionId, references)
+  }, [onDraftReferencesChange, sessionId])
 
   // Session model change handler - persists per-session model and connection
   const handleModelChange = React.useCallback((model: string, connection?: string) => {
@@ -819,9 +837,22 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
           <ChatDisplay
             ref={chatDisplayRef}
             session={session}
-            onSendMessage={(message, attachments, skillSlugs) => {
-              if (session) {
-                onSendMessage(session.id, message, attachments, skillSlugs)
+            onSendMessage={async (message, attachments, skillSlugs, delivery) => {
+              if (!session) return
+              await onSendMessage(
+                session.id,
+                message,
+                attachments,
+                skillSlugs,
+                undefined,
+                delivery,
+              )
+              if (delivery?.consumeDraft) {
+                // Keep ChatPage's lifted UI state aligned with the central
+                // Draft cleanup without writing the cleared values again.
+                setInputValue('')
+                inputValueRef.current = ''
+                setAttachmentsValue([])
               }
             }}
             onOpenFile={handleOpenFile}
@@ -842,6 +873,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             onInputChange={handleInputChange}
             attachmentsValue={attachmentsValue}
             onAttachmentsChange={handleAttachmentsChange}
+            referencesValue={referencesValue}
+            onReferencesChange={handleReferencesChange}
             sources={enabledSources}
             skills={skills}
             labels={labels}

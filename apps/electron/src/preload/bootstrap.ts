@@ -30,10 +30,12 @@ import {
   CLIENT_SHOW_IN_FOLDER,
   CLIENT_CONFIRM_DIALOG,
   CLIENT_OPEN_FILE_DIALOG,
+  CLIENT_SAVE_TEXT_FILE,
   CLIENT_BROWSER_INVOKE,
   LOCAL_CLIENT_CAPABILITIES,
 } from '@craft-agent/server-core/transport'
 import type { ConfirmDialogSpec, FileDialogSpec, BrowserCapabilityRequest } from '@craft-agent/server-core/transport'
+import type { SaveTextFileRequest } from '@craft-agent/shared/protocol'
 import type { RpcClient } from '@craft-agent/server-core/transport'
 import type { RemoteServerConfig } from '@craft-agent/core/types'
 import type { ElectronAPI } from '../shared/types'
@@ -175,6 +177,10 @@ client.handleCapability(CLIENT_CONFIRM_DIALOG, async (spec: ConfirmDialogSpec) =
 
 client.handleCapability(CLIENT_OPEN_FILE_DIALOG, async (spec: FileDialogSpec) => {
   return await ipcRenderer.invoke('__dialog:showOpenDialog', spec)
+})
+
+client.handleCapability(CLIENT_SAVE_TEXT_FILE, async (request: SaveTextFileRequest) => {
+  return ipcRenderer.invoke('__dialog:saveTextFile', request)
 })
 
 // Browser pane invocation. The remote server packages an IBrowserPaneManager

@@ -285,6 +285,17 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.file.STORE_ATTACHMENT,
   RPC_CHANNELS.file.GENERATE_THUMBNAIL,
 
+  // projectFiles — Project-authorized, root-relative file reads
+  RPC_CHANNELS.projectFiles.READ_TEXT,
+  RPC_CHANNELS.projectFiles.READ_BINARY,
+  RPC_CHANNELS.projectFiles.SEARCH,
+  RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
+  RPC_CHANNELS.projectFiles.GET_EPUB_STATE,
+  RPC_CHANNELS.projectFiles.APPLY_EPUB_STATE_MUTATION,
+
+  // dialog — workspace-server request completed by a local client capability
+  RPC_CHANNELS.dialog.SAVE_TEXT_FILE,
+
   // fs — workspace filesystem
   RPC_CHANNELS.fs.SEARCH,
   RPC_CHANNELS.fs.LIST_DIRECTORY,

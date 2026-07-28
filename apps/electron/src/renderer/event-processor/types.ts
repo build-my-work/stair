@@ -6,6 +6,7 @@
  */
 
 import type { Session, Message, PermissionRequest, CredentialRequest, TypedError, PermissionMode, SessionStatus, AuthRequest, ToolDisplayMeta } from '../../shared/types'
+import type { MessageReference } from '@craft-agent/core'
 
 /**
  * Streaming state for a session - replaces streamingTextRef
@@ -262,8 +263,8 @@ export interface InterruptedEvent {
   type: 'interrupted'
   sessionId: string
   message?: Message
-  /** Messages that were queued but not processed — should be restored to input field */
-  queuedMessages?: string[]
+  /** Queued drafts that should be restored after a user-initiated stop. */
+  queuedDrafts?: Array<{ text: string; references?: MessageReference[] }>
 }
 
 /**
@@ -568,7 +569,7 @@ export type Effect =
   | { type: 'credential_request'; request: CredentialRequest }
   | { type: 'generate_title'; sessionId: string; userMessage: string }
   | { type: 'permission_mode_changed'; sessionId: string; permissionMode: PermissionMode; previousPermissionMode?: PermissionMode; transitionDisplay?: string; modeVersion?: number; changedAt?: string; changedBy?: 'user' | 'system' | 'restore' | 'automation' | 'unknown' }
-  | { type: 'restore_input'; text: string }
+  | { type: 'restore_input'; text: string; references?: MessageReference[] }
   | { type: 'toast_error'; message: string }
 
 /**

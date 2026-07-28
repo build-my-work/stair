@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import type { ElectronAPI } from '../../shared/types'
+import { RPC_CHANNELS } from '../../shared/types'
 import { CHANNEL_MAP } from '../channel-map'
 
 type AnyFn = (...args: any[]) => any
@@ -58,5 +59,24 @@ describe('CHANNEL_MAP runtime contract', () => {
     const values = Object.values(CHANNEL_MAP)
     expect(values.some((entry) => entry.type === 'listener')).toBe(true)
     expect(values.some((entry) => entry.type === 'invoke')).toBe(true)
+  })
+
+  it('maps Project File methods to the Project-scoped channels', () => {
+    expect(CHANNEL_MAP.readProjectFileText).toEqual({
+      type: 'invoke',
+      channel: RPC_CHANNELS.projectFiles.READ_TEXT,
+    })
+    expect(CHANNEL_MAP.readProjectFileBinary).toEqual({
+      type: 'invoke',
+      channel: RPC_CHANNELS.projectFiles.READ_BINARY,
+    })
+    expect(CHANNEL_MAP.searchProjectFiles).toEqual({
+      type: 'invoke',
+      channel: RPC_CHANNELS.projectFiles.SEARCH,
+    })
+    expect(CHANNEL_MAP.listProjectDirectoryEntries).toEqual({
+      type: 'invoke',
+      channel: RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
+    })
   })
 })

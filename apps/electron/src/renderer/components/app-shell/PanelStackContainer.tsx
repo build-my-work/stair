@@ -72,8 +72,6 @@ export function PanelStackContainer({
   const focusedPanelId = useAtomValue(focusedPanelIdAtom)
   const focusedRoute = useAtomValue(focusedPanelRouteAtom)
 
-  const contentPanels = panelStack
-
   // Compact mode: drill-in is "detail focused", not just "session selected".
   // For sessions: a session is selected. For settings: a subpage is selected.
   // For sources/skills/automations: a detail entity is selected.
@@ -82,33 +80,58 @@ export function PanelStackContainer({
   const hasSelectedContent = isCompact && isDetailFocused
 
   const visiblePanels = isCompact
-    ? contentPanels.filter(e => e.id === focusedPanelId).slice(0, 1)
-    : contentPanels
+    ? panelStack.filter(entry => entry.id === focusedPanelId)
+    : panelStack
 
   const scrollRef = useRef<HTMLDivElement>(null)
-  const prevCountRef = useRef(contentPanels.length)
 
   const hasSidebar = sidebarWidth > 0
   // Desktop: navigator is shown when AppShell asks for it. Compact: navigator
   // is always mounted (transform-hidden when detail-focused) so the slide can
   // animate both slots in lockstep.
-  const hasNavigator = isCompact ? navigatorWidth > 0 : navigatorWidth > 0
+  const hasNavigator = navigatorWidth > 0
   const isMultiPanel = visiblePanels.length > 1
   const isLeftEdge = !hasSidebar && !hasNavigator
 
-  // Auto-scroll to newly pushed content panel (desktop multi-panel only).
-  // Compact mode is single-panel so there's nothing to scroll into view.
+  // Keep the focused panel fully visible. A fixed right sidebar can reduce the
+  // available lane after a companion is inserted, so measure after layout
+  // settles instead of relying only on the panel-count transition.
   useEffect(() => {
-    if (contentPanels.length > prevCountRef.current && scrollRef.current && !isCompact) {
-      requestAnimationFrame(() => {
-        scrollRef.current?.scrollTo({
-          left: scrollRef.current.scrollWidth,
-          behavior: 'smooth',
-        })
+    if (isCompact || !focusedPanelId) return
+
+    let secondFrame = 0
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        const container = scrollRef.current
+        const panel = container?.querySelector<HTMLElement>(
+          `[data-panel-id="${focusedPanelId}"]`,
+        )
+        if (!container || !panel) return
+
+        const containerRect = container.getBoundingClientRect()
+        const panelRect = panel.getBoundingClientRect()
+        const rightOverflow = panelRect.right - containerRect.right
+        const leftOverflow = containerRect.left - panelRect.left
+
+        if (rightOverflow > 1) {
+          container.scrollTo({
+            left: container.scrollLeft + rightOverflow + PANEL_GAP,
+            behavior: 'smooth',
+          })
+        } else if (leftOverflow > 1) {
+          container.scrollTo({
+            left: Math.max(0, container.scrollLeft - leftOverflow - PANEL_GAP),
+            behavior: 'smooth',
+          })
+        }
       })
+    })
+
+    return () => {
+      cancelAnimationFrame(firstFrame)
+      cancelAnimationFrame(secondFrame)
     }
-    prevCountRef.current = contentPanels.length
-  }, [contentPanels.length, isCompact])
+  }, [panelStack.length, focusedPanelId, focusedRoute, isCompact, isRightSidebarVisible])
 
   const transition = (isResizing || isCompact) ? { duration: 0 } : PANEL_SPRING
 
@@ -240,7 +263,10 @@ export function PanelStackContainer({
           }}
         >
           <div className="h-full" style={{ width: navigatorWidth }}>
-            {navigatorSlot}
+            {/* A zero-width desktop navigator is absent, not merely clipped.
+                Keeping its controls mounted leaves hidden rows keyboard- and
+                screen-reader-accessible (notably the retired Projects list). */}
+            {hasNavigator ? navigatorSlot : null}
           </div>
         </motion.div>
 

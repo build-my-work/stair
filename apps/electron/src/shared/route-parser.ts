@@ -17,6 +17,7 @@ import type {
   RightSidebarPanel,
 } from './types'
 import { isValidSettingsSubpage, type SettingsSubpage } from './settings-registry'
+import type { ViewRoute } from './routes'
 
 // =============================================================================
 // Route Types
@@ -52,6 +53,8 @@ export interface ParsedCompoundRoute {
   details: {
     type: string
     id: string
+    /** Selected session within a project detail route. */
+    sessionId?: string
   } | null
 }
 
@@ -184,10 +187,23 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
       return { navigator: 'projects', details: null }
     }
     if (segments[1] === 'project' && segments[2]) {
-      return {
-        navigator: 'projects',
-        details: { type: 'project', id: segments[2] },
+      if (segments.length === 3) {
+        return {
+          navigator: 'projects',
+          details: { type: 'project', id: segments[2] },
+        }
       }
+      if (segments.length === 5 && segments[3] === 'session' && segments[4]) {
+        return {
+          navigator: 'projects',
+          details: {
+            type: 'project',
+            id: segments[2],
+            sessionId: segments[4],
+          },
+        }
+      }
+      return null
     }
     return null
   }
@@ -322,7 +338,11 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
 
   if (parsed.navigator === 'projects') {
     if (!parsed.details) return 'projects'
-    return `projects/project/${parsed.details.id}`
+    const base = `projects/project/${parsed.details.id}`
+    if (parsed.details.sessionId) {
+      return `${base}/session/${parsed.details.sessionId}`
+    }
+    return base
   }
 
   // Sessions navigator
@@ -456,7 +476,14 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
     if (!compound.details) {
       return { type: 'view', name: 'projects', params: {} }
     }
-    return { type: 'view', name: 'project-info', id: compound.details.id, params: {} }
+    return {
+      type: 'view',
+      name: 'project-info',
+      id: compound.details.id,
+      params: compound.details.sessionId
+        ? { sessionId: compound.details.sessionId }
+        : {},
+    }
   }
 
   // Sessions
@@ -506,37 +533,39 @@ export function parseRouteToNavigationState(
   route: string,
   sidebarParam?: string
 ): NavigationState | null {
-  // Parse compound routes
+  let state: NavigationState | null
+
   if (isCompoundRoute(route)) {
     const compound = parseCompoundRoute(route)
-    if (compound) {
-      const state = convertCompoundToNavigationState(compound)
-      // Add rightSidebar if param provided
-      const rightSidebar = parseRightSidebarParam(sidebarParam)
-      if (rightSidebar) {
-        return { ...state, rightSidebar }
-      }
-      return state
-    }
+    state = compound ? convertCompoundToNavigationState(compound) : null
+  } else {
+    const parsed = parseRoute(route)
+    state = parsed?.type === 'view'
+      ? convertParsedRouteToNavigationState(parsed)
+      : null
   }
 
-  // Parse as route (may be action or view)
-  const parsed = parseRoute(route)
-  if (!parsed) return null
+  if (!state) return null
+  const rightSidebar = parseRightSidebarParam(sidebarParam)
+  return rightSidebar ? { ...state, rightSidebar } : state
+}
 
-  // Actions don't map to navigation state
-  if (parsed.type === 'action') return null
-
-  // Convert view routes to NavigationState
-  const state = convertParsedRouteToNavigationState(parsed)
-  if (state) {
-    // Add rightSidebar if param provided
-    const rightSidebar = parseRightSidebarParam(sidebarParam)
-    if (rightSidebar) {
-      return { ...state, rightSidebar }
-    }
+/**
+ * Runtime validator used for persisted panel layouts.
+ *
+ * Persisted navigation routes are query-free. Project-file state has its own
+ * discriminated route and must never be smuggled through a query parameter.
+ */
+export function isValidViewRoute(value: unknown): value is ViewRoute {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.includes('?')
+  ) {
+    return false
   }
-  return state
+  const state = parseRouteToNavigationState(value)
+  return state !== null && buildRouteFromNavigationState(state) === value
 }
 
 /**
@@ -601,7 +630,13 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     }
     return {
       navigator: 'projects',
-      details: { type: 'project', projectSlug: compound.details.id },
+      details: {
+        type: 'project',
+        projectSlug: compound.details.id,
+        ...(compound.details.sessionId
+          ? { sessionId: compound.details.sessionId }
+          : {}),
+      },
     }
   }
 
@@ -689,7 +724,13 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
       if (parsed.id) {
         return {
           navigator: 'projects',
-          details: { type: 'project', projectSlug: parsed.id },
+          details: {
+            type: 'project',
+            projectSlug: parsed.id,
+            ...(parsed.params.sessionId
+              ? { sessionId: parsed.params.sessionId }
+              : {}),
+          },
         }
       }
       return { navigator: 'projects', details: null }
@@ -804,7 +845,13 @@ function navigationStateToCompoundRoute(state: NavigationState): ParsedCompoundR
   if (state.navigator === 'projects') {
     return {
       navigator: 'projects',
-      details: state.details ? { type: 'project', id: state.details.projectSlug } : null,
+      details: state.details
+        ? {
+            type: 'project',
+            id: state.details.projectSlug,
+            sessionId: state.details.sessionId,
+          }
+        : null,
     }
   }
 

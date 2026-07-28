@@ -11,6 +11,7 @@ import { useTranslation } from "react-i18next"
 import * as Icons from "lucide-react"
 import { Tooltip, TooltipTrigger, TooltipContent } from "@craft-agent/ui"
 import { PanelLeftRounded } from "../icons/PanelLeftRounded"
+import { PanelRightRounded } from "../icons/PanelRightRounded"
 import { TopBarButton } from "../ui/TopBarButton"
 import { cn } from "@/lib/utils"
 import { isMac, isWebUI } from "@/lib/platform"
@@ -54,6 +55,8 @@ interface TopBarProps {
   canGoBack: boolean
   canGoForward: boolean
   onToggleSidebar: () => void
+  onToggleRightSidebar: () => void
+  isRightSidebarVisible: boolean
   onToggleFocusMode: () => void
   onAddSessionPanel: () => void
   onAddBrowserPanel: () => void
@@ -80,6 +83,8 @@ export function TopBar({
   canGoBack,
   canGoForward,
   onToggleSidebar,
+  onToggleRightSidebar,
+  isRightSidebarVisible,
   onToggleFocusMode,
   onAddSessionPanel,
   onAddBrowserPanel,
@@ -221,9 +226,10 @@ export function TopBar({
         </div>
       </div>
 
-      {/* === RIGHT: Browser strip + add + help === */}
-      {!isCompact && (
+      {/* === RIGHT: Browser strip + add + help + project files === */}
       <div ref={rightSlotRef} className="flex min-w-0 shrink-0 items-center justify-end gap-1" style={{ paddingRight: 12 }}>
+        {!isCompact && (
+        <>
         <div className="min-w-0">
           <BrowserTabStrip activeSessionId={activeSessionId} maxVisibleBadges={maxVisibleBrowserBadges} />
         </div>
@@ -290,8 +296,26 @@ export function TopBar({
             </StyledDropdownMenuItem>
           </StyledDropdownMenuContent>
         </DropdownMenu>
+        </>
+        )}
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <TopBarButton
+              onClick={onToggleRightSidebar}
+              aria-label={t('filesSidebar.toggle')}
+              aria-pressed={isRightSidebarVisible}
+              className={cn(
+                'h-[26px] w-[26px] rounded-lg',
+                isRightSidebarVisible && 'bg-foreground/[0.07] text-foreground',
+              )}
+            >
+              <PanelRightRounded className="h-[18px] w-[18px] text-foreground/70" />
+            </TopBarButton>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{t('filesSidebar.toggle')}</TooltipContent>
+        </Tooltip>
       </div>
-      )}
       </div>
     </div>
   )

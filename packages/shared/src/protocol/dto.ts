@@ -12,7 +12,12 @@ import type {
   ContentBadge,
   ToolDisplayMeta,
   AnnotationV1,
+  MessageReference,
   PermissionRequest as BasePermissionRequest,
+  SourceFingerprint,
+  EpubDocumentStateV1,
+  EpubHighlightV1,
+  EpubStateMutation,
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
@@ -379,7 +384,13 @@ export type SessionEvent =
   | { type: 'error'; sessionId: string; error: string; timestamp?: number }
   | { type: 'typed_error'; sessionId: string; error: TypedError; timestamp?: number }
   | { type: 'complete'; sessionId: string; tokenUsage?: Session['tokenUsage']; hasUnread?: boolean; backgroundTasksAlive?: boolean }
-  | { type: 'interrupted'; sessionId: string; message?: Message; queuedMessages?: string[] }
+  | {
+      type: 'interrupted'
+      sessionId: string
+      message?: Message
+      /** Structured queue snapshots used when Stop restores composer drafts. */
+      queuedDrafts?: Array<{ text: string; references?: MessageReference[] }>
+    }
   | { type: 'status'; sessionId: string; message: string; statusType?: 'compacting' }
   | { type: 'info'; sessionId: string; message: string; statusType?: 'compaction_complete'; level?: 'info' | 'warning' | 'error' | 'success'; timestamp?: number }
   | { type: 'title_generated'; sessionId: string; title: string }
@@ -424,6 +435,8 @@ export interface SendMessageOptions {
   skillSlugs?: string[]
   badges?: ContentBadge[]
   optimisticMessageId?: string
+  /** Structured Project File context attached to this user turn. */
+  references?: MessageReference[]
   /**
    * When true, the message drives a turn (reaches the model) but is marked
    * `hidden` on the persisted `Message` so it never renders as a transcript
@@ -525,6 +538,106 @@ export interface DirectoryListingResult {
   totalEntries: number
   /** Child directory entries. */
   entries: Array<{ name: string; path: string; isSymlink: boolean }>
+}
+
+/** One direct child of a Project directory. */
+export interface ProjectDirectoryEntry {
+  name: string
+  /** Path relative to the requested project root. */
+  relativePath: string
+  type: 'file' | 'directory'
+  isSymlink: boolean
+}
+
+/** Lazy, single-level directory listing used by workspace file trees. */
+export interface ProjectDirectoryEntriesResult {
+  /** Whether the result was capped for safety/performance. */
+  truncated: boolean
+  /** Direct children, sorted with directories first. */
+  entries: ProjectDirectoryEntry[]
+}
+
+/** Server-resolved Project directory request. Paths are always root-relative. */
+export interface ProjectDirectoryEntriesRequest {
+  projectId: string
+  relativePath?: string
+}
+
+/** Server-resolved Project file search request. */
+export interface ProjectFileSearchRequest {
+  projectId: string
+  query: string
+}
+
+/** One file matched within a Project root. */
+export interface ProjectFileSearchResult {
+  name: string
+  relativePath: string
+}
+
+// ---------------------------------------------------------------------------
+// Project File reading
+// ---------------------------------------------------------------------------
+
+/**
+ * Identifies a file through its workspace-scoped Project. The renderer never
+ * sends an absolute filesystem path to these APIs.
+ */
+export interface ProjectFileRequest {
+  projectId: string
+  /** Canonical POSIX path relative to the Project working directory. */
+  relativePath: string
+}
+
+export interface ProjectFileMetadata extends ProjectFileRequest {
+  name: string
+  mimeType: string
+  byteLength: number
+  lastModifiedMs: number
+}
+
+export interface ProjectFileBinaryResponse {
+  metadata: ProjectFileMetadata
+  bytes: Uint8Array
+  /** SHA-256 of exactly `bytes`. */
+  sourceFingerprint: SourceFingerprint
+}
+
+export interface ProjectFileTextResponse {
+  text: string
+}
+
+export interface EpubStateRequest extends ProjectFileRequest {
+  sourceFingerprint: SourceFingerprint
+}
+
+export interface ApplyEpubStateMutationRequest extends EpubStateRequest {
+  mutation: EpubStateMutation
+}
+
+export interface ApplyEpubStateMutationResponse {
+  revision: number
+  applied: boolean
+  canonicalHighlight?: EpubHighlightV1
+}
+
+export type GetEpubStateResponse = EpubDocumentStateV1 | null
+
+// ---------------------------------------------------------------------------
+// Native text save dialog
+// ---------------------------------------------------------------------------
+
+/**
+ * Text exported through a native Save dialog. The renderer supplies only a
+ * basename suggestion; the user-selected destination never crosses this RPC.
+ */
+export interface SaveTextFileRequest {
+  suggestedName: string
+  content: string
+}
+
+export interface SaveTextFileResponse {
+  saved: boolean
 }
 
 // ---------------------------------------------------------------------------

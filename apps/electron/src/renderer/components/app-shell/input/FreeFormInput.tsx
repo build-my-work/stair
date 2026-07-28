@@ -11,6 +11,7 @@ import {
   ChevronUp,
   AlertCircle,
   Image as ImageIcon,
+  X,
 } from 'lucide-react'
 import { Icon_Home, Spinner } from '@craft-agent/ui'
 
@@ -50,6 +51,7 @@ import {
 } from '@/components/ui/styled-dropdown'
 import { cn } from '@/lib/utils'
 import { coerceInputText } from '@/lib/input-text'
+import { getProjectFileReferenceSendError } from '@/lib/session-draft-references'
 import { isMac } from '@/lib/platform'
 import { applySmartTypography } from '@/lib/smart-typography'
 import { AttachmentPreview } from '../AttachmentPreview'
@@ -76,7 +78,16 @@ import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
 import { hasOpenOverlay } from '@/lib/overlay-detection'
 import { ToolbarStatusSlot } from './ToolbarStatusSlot'
 import { buildPlanApprovalMessage } from '../plan-approval-message'
-import { shouldHandleScopedInputEvent, shouldRecallPromptOnArrowUp } from './input-event-guards'
+import {
+  hasDraftSubmissionContent,
+  shouldHandleScopedInputEvent,
+  shouldRecallPromptOnArrowUp,
+} from './input-event-guards'
+import {
+  isCompactCommand,
+  submitCompactCommand,
+  type InputSubmitHandler,
+} from './compact-submit'
 import { clearPendingFocusForSession, consumePendingFocusForSession } from './focus-input-events'
 import {
   getRecentWorkingDirs,
@@ -91,6 +102,10 @@ import {
   stripPiPrefixForDisplay,
 } from './model-picker-helpers'
 import { useModelVisionToggle } from './useModelVisionToggle'
+import {
+  projectFileReferenceKey,
+  type MessageReference,
+} from '@craft-agent/core'
 
 function formatFollowUpChipText(text: string, fallback: string, maxLength = 50): string {
   const normalized = text.replace(/\s+/g, ' ').trim()
@@ -135,7 +150,7 @@ export interface FreeFormInputProps {
   /** Whether the session is currently processing */
   isProcessing?: boolean
   /** Callback when message is submitted (skillSlugs from @mentions) */
-  onSubmit: (message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => void
+  onSubmit: InputSubmitHandler
   /** Callback to stop processing. Pass silent=true to skip "Response interrupted" message */
   onStop?: (silent?: boolean) => void
   /** External ref for the input */
@@ -163,6 +178,9 @@ export interface FreeFormInputProps {
   attachmentsValue?: FileAttachment[]
   /** Callback when attachment list changes (add, remove, clear on send) */
   onAttachmentsChange?: (attachments: FileAttachment[]) => void
+  /** Structured Project File references; rendered independently from input text. */
+  referencesValue?: MessageReference[]
+  onReferencesChange?: (references: MessageReference[]) => void
   /** When true, removes container styling (shadow, bg, rounded) - used when wrapped by InputContainer */
   unstyled?: boolean
   /** Callback when component height changes (for external animation sync) */
@@ -276,6 +294,8 @@ export function FreeFormInput({
   onInputChange,
   attachmentsValue,
   onAttachmentsChange,
+  referencesValue = [],
+  onReferencesChange,
   unstyled = false,
   onHeightChange,
   onFocusChange,
@@ -566,6 +586,20 @@ export function FreeFormInput({
   const [isFocused, setIsFocused] = React.useState(false)
   const [inputMaxHeight, setInputMaxHeight] = React.useState(540)
   const [modelDropdownOpen, setModelDropdownOpen] = React.useState(false)
+  const [isSubmitting, setIsSubmitting] = React.useState(false)
+  const [referenceError, setReferenceError] = React.useState<{
+    code?: string
+    message: string
+    relativePath?: string
+  } | null>(null)
+  const inputDisabled = disabled || isSubmitting
+  const referenceRevision = referencesValue
+    .map(projectFileReferenceKey)
+    .join('\n')
+
+  React.useEffect(() => {
+    setReferenceError(null)
+  }, [referenceRevision])
 
   // Input settings (loaded from config)
   const [autoCapitalisation, setAutoCapitalisation] = React.useState(true)
@@ -685,7 +719,9 @@ export function FreeFormInput({
         onPermissionModeChange?.('allow-all')
       }
 
-      onSubmit(text, undefined)
+      void Promise.resolve(onSubmit(text, undefined)).catch(error => {
+        console.error('[FreeFormInput] Failed to submit approved plan:', error)
+      })
     }
 
     window.addEventListener('craft:approve-plan', handleApprovePlan as EventListener)
@@ -721,8 +757,13 @@ export function FreeFormInput({
         })
       }
 
-      // Send /compact to trigger compaction
-      onSubmit('/compact', undefined)
+      // Compaction is a control message. Keep structured draft references for
+      // the actual plan execution message that follows.
+      try {
+        await submitCompactCommand(onSubmit)
+      } catch {
+        return
+      }
 
       // Set up a one-time listener for compaction complete.
       // This handles the normal case (no reload during compaction).
@@ -739,13 +780,17 @@ export function FreeFormInput({
           planPath,
           draftInput: draftInputSnapshot,
         })
-        onSubmit(executionMessage, undefined)
+        try {
+          await onSubmit(executionMessage, undefined)
 
-        // Clear the pending state since we just sent the execution message
-        if (sessionId) {
-          await window.electronAPI.sessionCommand(sessionId, {
-            type: 'clearPendingPlanExecution',
-          })
+          // Clear the pending state since we just sent the execution message
+          if (sessionId) {
+            await window.electronAPI.sessionCommand(sessionId, {
+              type: 'clearPendingPlanExecution',
+            })
+          }
+        } catch (error) {
+          console.error('[FreeFormInput] Failed to submit compacted plan:', error)
         }
       }
 
@@ -793,7 +838,7 @@ export function FreeFormInput({
           planPath: pending.planPath,
           draftInput: pending.draftInputSnapshot,
         })
-        onSubmit(executionMessage, undefined)
+        await onSubmit(executionMessage, undefined)
 
         await window.electronAPI.sessionCommand(sessionId, {
           type: 'clearPendingPlanExecution',
@@ -877,7 +922,7 @@ export function FreeFormInput({
   // Listen for craft:paste-files events (for global paste when input not focused)
   React.useEffect(() => {
     const handlePasteFiles = async (e: CustomEvent<{ files: File[]; sessionId?: string }>) => {
-      if (disabled) return
+      if (inputDisabled) return
 
       const targetSessionId = e.detail?.sessionId
       if (!shouldHandleScopedInputEvent({ sessionId, isFocusedPanel, targetSessionId })) return
@@ -915,7 +960,7 @@ export function FreeFormInput({
 
     window.addEventListener('craft:paste-files', handlePasteFiles as unknown as EventListener)
     return () => window.removeEventListener('craft:paste-files', handlePasteFiles as unknown as EventListener)
-  }, [disabled, sessionId, isFocusedPanel, richInputRef])
+  }, [inputDisabled, sessionId, isFocusedPanel, richInputRef])
 
   // Build active commands list for slash command menu
   const activeCommands = React.useMemo(() => {
@@ -932,7 +977,11 @@ export function FreeFormInput({
     if (commandId === 'safe') onPermissionModeChange?.('safe')
     else if (commandId === 'ask') onPermissionModeChange?.('ask')
     else if (commandId === 'allow-all') onPermissionModeChange?.('allow-all')
-    else if (commandId === 'compact' && !isProcessing) onSubmit('/compact', undefined)
+    else if (commandId === 'compact' && !isProcessing) {
+      void Promise.resolve(submitCompactCommand(onSubmit)).catch(error => {
+        console.error('[FreeFormInput] Failed to compact conversation:', error)
+      })
+    }
   }, [onPermissionModeChange, isProcessing, onSubmit])
 
   // Handle folder selection from slash command menu
@@ -1076,7 +1125,7 @@ export function FreeFormInput({
 
   // File attachment handlers
   const handleAttachClick = () => {
-    if (disabled) return
+    if (inputDisabled) return
     fileInputRef.current?.click()
   }
 
@@ -1187,7 +1236,7 @@ export function FreeFormInput({
 
   // Clipboard paste handler for files/images
   const handlePaste = async (e: React.ClipboardEvent) => {
-    if (disabled) return
+    if (inputDisabled) return
 
     const clipboardItems = e.clipboardData?.files
     if (!clipboardItems || clipboardItems.length === 0) return
@@ -1235,7 +1284,7 @@ export function FreeFormInput({
     e.stopPropagation()
     dragCounterRef.current = 0
     setIsDraggingOver(false)
-    if (disabled) return
+    if (inputDisabled) return
 
     const files = Array.from(e.dataTransfer.files)
     setLoadingCount(files.length)
@@ -1246,9 +1295,14 @@ export function FreeFormInput({
   }
 
   // Submit message - backend handles queueing and interruption
-  const submitMessage = React.useCallback(() => {
-    const hasContent = input.trim() || attachments.length > 0 || followUpItems.length > 0
-    if (!hasContent || disabled) return false
+  const submitMessage = React.useCallback(async () => {
+    const hasContent = hasDraftSubmissionContent({
+      text: input,
+      attachmentCount: attachments.length,
+      followUpCount: followUpItems.length,
+      referenceCount: referencesValue.length,
+    })
+    if (!hasContent || inputDisabled) return false
 
     // Tutorial may disable sending to guide user through specific steps
     if (disableSend) return false
@@ -1267,28 +1321,54 @@ export function FreeFormInput({
       }
     }
 
+    const trimmedInput = input.trim()
+    const compactCommand = isCompactCommand(trimmedInput)
     const attachmentSnapshot = attachments
 
-    onSubmit(
-      input.trim(),
-      attachmentSnapshot.length > 0 ? attachmentSnapshot : undefined,
-      mentions.skills.length > 0 ? mentions.skills : undefined
-    )
-    setInput('')
-    setAttachments([])
-    // Clear draft immediately (cancel any pending debounced sync)
-    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
-    onInputChange?.('')
-    onAttachmentsChange?.([])
-    prevInputValueRef.current = ''
+    setIsSubmitting(true)
+    try {
+      if (compactCommand) {
+        await submitCompactCommand(onSubmit, trimmedInput)
+      } else {
+        await onSubmit(
+          trimmedInput,
+          attachmentSnapshot.length > 0 ? attachmentSnapshot : undefined,
+          mentions.skills.length > 0 ? mentions.skills : undefined
+        )
+      }
+      setInput('')
+      if (!compactCommand && attachmentsRef.current.length > 0) {
+        // finishSend() already cleared the parent Draft. Suppress the
+        // attachment persistence effect while clearing only this local UI.
+        skipPersistRef.current = true
+        setAttachments([])
+      }
+      // Cancel pending text persistence and clear only this local UI. For
+      // ordinary messages finishSend() owns parent Draft cleanup; compact
+      // deliberately keeps staged attachments and references.
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
+      if (compactCommand) {
+        // Compact retains the Draft, so remove only the submitted control
+        // command from its text while preserving attachments and references.
+        onInputChange?.('')
+      }
+      prevInputValueRef.current = ''
 
-    // Restore focus after state updates
-    requestAnimationFrame(() => {
-      richInputRef.current?.focus()
-    })
-
-    return true
-  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
+      requestAnimationFrame(() => {
+        richInputRef.current?.focus()
+      })
+      return true
+    } catch (error) {
+      const nextReferenceError = getProjectFileReferenceSendError(
+        error,
+        referencesValue,
+      )
+      if (nextReferenceError) setReferenceError(nextReferenceError)
+      return false
+    } finally {
+      setIsSubmitting(false)
+    }
+  }, [input, attachments, followUpItems, referencesValue, inputDisabled, disableSend, onInputChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
 
   // Listen for craft:submit-input events (simulate pressing the Send button)
   React.useEffect(() => {
@@ -1304,7 +1384,7 @@ export function FreeFormInput({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    submitMessage()
+    await submitMessage()
   }
 
   const handleStop = (silent = false) => {
@@ -1374,7 +1454,7 @@ export function FreeFormInput({
       loadingAttachmentCount: loadingCount,
       followUpItemCount: followUpItems.length,
       inlineMenuOpen: inlineMention.isOpen || inlineSlash.isOpen || inlineLabel.isOpen,
-      disabled,
+      disabled: inputDisabled,
       disableSend,
     })) {
       e.preventDefault()
@@ -1556,7 +1636,10 @@ export function FreeFormInput({
     return () => window.clearTimeout(timer)
   }, [followUpLayoutKey])
 
-  const hasContent = input.trim() || attachments.length > 0 || followUpItems.length > 0
+  const hasContent = input.trim()
+    || attachments.length > 0
+    || followUpItems.length > 0
+    || referencesValue.length > 0
 
   // Pre-flight image-support check: warn when staged images would be silently
   // stripped by Pi SDK because the active custom-endpoint model is text-only.
@@ -1658,12 +1741,36 @@ export function FreeFormInput({
           />
         )}
 
-        {/* Attachment Preview */}
+        {referenceError && referencesValue.length > 0 && (
+          <div
+            role="alert"
+            className="mx-3 mt-3 flex items-start gap-2 rounded-[7px] border border-red-500/30 bg-red-500/10 px-2.5 py-2 text-[11px] leading-4 text-red-600 dark:text-red-300"
+          >
+            <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              {referenceError.message}{' '}
+              {referenceError.code === 'PROJECT_FILE_REFERENCE_STALE'
+                ? 'Remove the stale reference or select it again.'
+                : 'Review or remove the affected reference and try again.'}
+            </span>
+          </div>
+        )}
+
+        {/* Attachment and Project File reference preview */}
         <AttachmentPreview
           attachments={attachments}
           onRemove={handleRemoveAttachment}
-          disabled={disabled}
+          disabled={inputDisabled}
           loadingCount={loadingCount}
+          references={referencesValue}
+          referenceError={referenceError}
+          onRemoveReference={reference => onReferencesChange?.(
+            referencesValue.filter(
+              item =>
+                projectFileReferenceKey(item)
+                !== projectFileReferenceKey(reference),
+            ),
+          )}
         />
 
         {/* Follow-up context chips */}
@@ -1770,7 +1877,7 @@ export function FreeFormInput({
             onFocusChange?.(false)
           }}
           placeholder={effectivePlaceholder}
-          disabled={disabled}
+          disabled={inputDisabled}
           skills={skills}
           sources={sources}
           workspaceId={workspaceSlug}
@@ -1835,7 +1942,7 @@ export function FreeFormInput({
             showChevron={false}
             onClick={handleAttachClick}
             tooltip={t("chat.attachFilesTooltip")}
-            disabled={disabled}
+            disabled={inputDisabled}
           />
           {onSourcesChange && (
             <div className="relative shrink min-w-0">
@@ -1888,7 +1995,7 @@ export function FreeFormInput({
                 hasSelection={optimisticSourceSlugs.length > 0}
                 showChevron={false}
                 isOpen={sourceDropdownOpen}
-                disabled={disabled}
+                disabled={inputDisabled}
                 onClick={() => setSourceDropdownOpen(prev => !prev)}
                 tooltip={t("chat.sourcesTooltip")}
               />
@@ -1935,7 +2042,7 @@ export function FreeFormInput({
             showChevron={false}
             onClick={handleAttachClick}
             tooltip={t("chat.attachFilesTooltip")}
-            disabled={disabled}
+            disabled={inputDisabled}
           />
 
           {/* 2. Source Selector Badge - only show if onSourcesChange is provided */}
@@ -1991,7 +2098,7 @@ export function FreeFormInput({
                 hasSelection={optimisticSourceSlugs.length > 0}
                 showChevron={true}
                 isOpen={sourceDropdownOpen}
-                disabled={disabled}
+                disabled={inputDisabled}
                 data-tutorial="source-selector-button"
                 onClick={() => setSourceDropdownOpen(prev => !prev)}
                 tooltip={t("chat.sourcesTooltip")}
@@ -2422,7 +2529,9 @@ export function FreeFormInput({
 
             const handleCompactClick = () => {
               if (!isProcessing) {
-                onSubmit('/compact', [])
+                void Promise.resolve(submitCompactCommand(onSubmit)).catch(error => {
+                  console.error('[FreeFormInput] Failed to compact conversation:', error)
+                })
               }
             }
 
@@ -2470,7 +2579,7 @@ export function FreeFormInput({
               size="icon"
               aria-label={t('shortcuts.sendMessage')}
               className="send-btn h-7 w-7 rounded-full shrink-0 ml-2"
-              disabled={!hasContent || disabled || disableSend}
+              disabled={!hasContent || inputDisabled || disableSend}
               data-tutorial="send-button"
             >
               <ArrowUp className="h-4 w-4" />

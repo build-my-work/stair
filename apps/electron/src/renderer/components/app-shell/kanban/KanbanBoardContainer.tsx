@@ -354,7 +354,12 @@ export function KanbanBoardContainer() {
         if (deriveRunState(child, statusesById) !== 'pending') continue
         const prompt = child.name?.trim()
         if (!prompt) continue
-        onSendMessage(child.id, prompt)
+        void Promise.resolve(onSendMessage(child.id, prompt)).catch((error: unknown) => {
+          updateSessionMeta(child.id, { isProcessing: false })
+          toast.error(t('tasks.toastRunFailed'), {
+            description: error instanceof Error ? error.message : String(error),
+          })
+        })
         updateSessionMeta(child.id, { isProcessing: true })
       }
     },
@@ -486,22 +491,14 @@ export function KanbanBoardContainer() {
     [editingProject, handleUpdateColumn, setColumnStatus]
   )
 
-  // Board clicks land on All Sessions with the task's scope applied as the NORMAL,
-  // user-clearable header-chip filters: label filter = the session's per-task item
-  // label (`TASK-<slug>-<N>` — exactly this task's family; legacy root-only sessions
-  // fall back to the Task root), project filter = the task's project (when bound).
-  // Sessions without any task label (plain chats) fall back to plain navigation.
-  // `projectFallbackId` lets subtask rows inherit the parent tile's project when
-  // the child session itself carries none (older quick-add subtasks).
+  // Board clicks land on All Sessions with the task's label applied as the
+  // normal user-clearable header filter. Plain chats fall back to navigation.
   const openSessionScoped = React.useCallback(
-    (sessionId: string, projectFallbackId?: string) => {
+    (sessionId: string) => {
       const meta = metaMap.get(sessionId)
       const scopeLabelId = resolveTaskScopeLabelId(meta?.labels, labelConfigs)
       if (scopeLabelId && onJumpToTaskSessions) {
-        onJumpToTaskSessions(sessionId, {
-          labelId: scopeLabelId,
-          projectId: meta?.projectId ?? projectFallbackId,
-        })
+        onJumpToTaskSessions(sessionId, { labelId: scopeLabelId })
         return
       }
       navigateToSession(sessionId)
@@ -541,10 +538,10 @@ export function KanbanBoardContainer() {
           setEditorTarget(null)
           navigateToSession(sessionId)
         }}
-        onCreated={({ sessionId, taskLabelId, projectId: createdProjectId }) => {
+        onCreated={({ sessionId, taskLabelId }) => {
           // Same human-clearable scope as a tile click; no label (fail-soft) → plain open.
           if (taskLabelId && onJumpToTaskSessions) {
-            onJumpToTaskSessions(sessionId, { labelId: taskLabelId, projectId: createdProjectId })
+            onJumpToTaskSessions(sessionId, { labelId: taskLabelId })
           } else {
             navigateToSession(sessionId)
           }
@@ -600,7 +597,7 @@ export function KanbanBoardContainer() {
           onTaskClick={openSessionScoped}
           onEditTask={handleEditTask}
           onToggleSubtasks={handleToggleSubtasks}
-          onSubtaskClick={(taskId, subtaskId) => openSessionScoped(subtaskId, metaMap.get(taskId)?.projectId)}
+          onSubtaskClick={(_taskId, subtaskId) => openSessionScoped(subtaskId)}
           onAddSubtask={handleAddSubtask}
           onRunSubtasks={handleRunSubtasks}
           subtaskModelGroups={subtaskModelGroups}

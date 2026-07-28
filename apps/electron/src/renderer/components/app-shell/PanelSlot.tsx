@@ -19,11 +19,39 @@ import { useSetAtom } from 'jotai'
 import { cn } from '@/lib/utils'
 import { X, ChevronLeft } from 'lucide-react'
 import { parseRouteToNavigationState } from '../../../shared/route-parser'
-import { closePanelAtom, focusedPanelIdAtom, type PanelStackEntry } from '@/atoms/panel-stack'
+import type { ViewRoute } from '../../../shared/routes'
+import {
+  backFromProjectFilePanelAtom,
+  closePanelAtom,
+  focusedPanelIdAtom,
+  type PanelStackEntry,
+} from '@/atoms/panel-stack'
 import { useAppShellContext, AppShellProvider } from '@/context/AppShellContext'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
-import { MainContentPanel } from './MainContentPanel'
 import { PANEL_MIN_WIDTH, RADIUS_EDGE, RADIUS_INNER } from './panel-constants'
+import { isProjectFileRoute } from '@/lib/project-file-route'
+import { navigate, routes } from '@/lib/navigate'
+import { PanelContentRouter } from './PanelContentRouter'
+
+/**
+ * Compact Project navigation has two drill-in levels:
+ * Projects → Project → Session. A session's Back action must therefore return
+ * to its Project root instead of removing the whole panel and skipping a level.
+ */
+export function getCompactProjectBackRoute(
+  route: PanelStackEntry['route'],
+): ViewRoute | null {
+  if (isProjectFileRoute(route)) return null
+
+  const navigationState = parseRouteToNavigationState(route.viewRoute)
+  if (
+    navigationState?.navigator === 'projects'
+    && navigationState.details?.sessionId
+  ) {
+    return routes.view.projects(navigationState.details.projectSlug)
+  }
+  return null
+}
 
 interface PanelSlotProps {
   entry: PanelStackEntry
@@ -56,13 +84,32 @@ export function PanelSlot({
 }: PanelSlotProps) {
   const { t } = useTranslation()
   const closePanel = useSetAtom(closePanelAtom)
+  const backFromProjectFile = useSetAtom(backFromProjectFilePanelAtom)
   const setFocusedPanel = useSetAtom(focusedPanelIdAtom)
   const parentContext = useAppShellContext()
-  const navState = parseRouteToNavigationState(entry.route)
+  const compactProjectBackRoute = getCompactProjectBackRoute(entry.route)
 
   const handleClose = useCallback(() => {
     closePanel(entry.id)
   }, [closePanel, entry.id])
+
+  const handleBack = useCallback(() => {
+    if (isProjectFileRoute(entry.route)) {
+      backFromProjectFile(entry.id)
+      return
+    }
+    if (compactProjectBackRoute) {
+      navigate(compactProjectBackRoute)
+      return
+    }
+    handleClose()
+  }, [
+    backFromProjectFile,
+    compactProjectBackRoute,
+    entry.id,
+    entry.route,
+    handleClose,
+  ])
 
   // Build close button for PanelHeader (via context override)
   const closeButton = useMemo(() => {
@@ -73,7 +120,7 @@ export function PanelSlot({
         tooltip={t("common.close")}
       />
     )
-  }, [handleClose])
+  }, [handleClose, t])
 
   // Build back button for compact mode — closes the panel to reveal the session list.
   // Same PanelHeaderCenterButton style as X and share, just on the left side.
@@ -82,11 +129,11 @@ export function PanelSlot({
     return (
       <PanelHeaderCenterButton
         icon={<ChevronLeft className="h-4 w-4" />}
-        onClick={handleClose}
+        onClick={handleBack}
         tooltip={t("common.backToList")}
       />
     )
-  }, [isCompact, handleClose])
+  }, [isCompact, handleBack, t])
 
   // Override AppShellContext so ChatPage/PanelHeader gets our per-panel close button,
   // back button (compact mode), and isFocusedPanel for input field appearance
@@ -109,6 +156,7 @@ export function PanelSlot({
       <div
         onPointerDown={handlePointerDown}
         data-panel-role="content"
+        data-panel-id={entry.id}
         data-compact={isCompact || undefined}
         className={cn(
           'h-full overflow-hidden relative @container/panel',
@@ -140,8 +188,8 @@ export function PanelSlot({
       >
         <div className="h-full flex flex-col">
           <AppShellProvider value={contextOverride}>
-            <MainContentPanel
-              navStateOverride={navState}
+            <PanelContentRouter
+              entry={entry}
               isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
             />
           </AppShellProvider>

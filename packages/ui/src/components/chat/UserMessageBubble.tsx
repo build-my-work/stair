@@ -12,8 +12,14 @@
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Clock } from 'lucide-react'
-import type { StoredAttachment, ContentBadge } from '@craft-agent/core'
+import { BookOpenText, Clock } from 'lucide-react'
+import {
+  isProjectFileReferenceV1,
+  projectFileReferenceKey,
+  type ContentBadge,
+  type MessageReference,
+  type StoredAttachment,
+} from '@craft-agent/core'
 import { normalizePath } from '@craft-agent/core/utils'
 import { cn } from '../../lib/utils'
 import { Markdown } from '../markdown'
@@ -315,6 +321,10 @@ export interface UserMessageBubbleProps {
   attachments?: StoredAttachment[]
   /** Content badges for inline display (sources, skills) */
   badges?: ContentBadge[]
+  /** Structured Project File references shown with the existing file preview row. */
+  references?: MessageReference[]
+  /** Opens a structured Project File reference in the host application. */
+  onReferenceClick?: (reference: MessageReference) => void
   /** Whether the message is awaiting backend confirmation. User bubbles stay visually stable. */
   isPending?: boolean
   /** Whether the message is queued (badge shown) */
@@ -336,11 +346,15 @@ export function UserMessageBubble({
   onFileClick,
   attachments,
   badges,
+  references,
+  onReferenceClick,
   isQueued,
   compactMode,
 }: UserMessageBubbleProps) {
   const { t } = useTranslation()
   const hasAttachments = attachments && attachments.length > 0
+  const validReferences = references?.filter(isProjectFileReferenceV1)
+  const hasReferences = validReferences && validReferences.length > 0
 
   // Show the queued chip while `isQueued` is true AND for at least
   // QUEUED_MIN_VISIBLE_MS after it first became true — even if the backend
@@ -408,13 +422,18 @@ export function UserMessageBubble({
     }
     displayContent = displayContent.trim()
   }
+  const showMessageContent =
+    !hasReferences
+    || displayContent.trim().length > 0
+    || hasInlineBadges
+    || showQueued
 
   return (
     <div className={cn("flex flex-col items-end gap-3 w-full", className)}>
-      {/* Attachment preview row - stored attachments with thumbnails */}
-      {hasAttachments && (
+      {/* Existing file preview row - attachments and structured references */}
+      {(hasAttachments || hasReferences) && (
         <div className="flex gap-2 justify-end max-w-[80%] flex-wrap">
-          {attachments!.map((att, i) => {
+          {attachments?.map((att, i) => {
             const isImage = att.type === 'image'
             const hasThumbnail = !!att.thumbnailBase64
 
@@ -467,6 +486,41 @@ export function UserMessageBubble({
               </div>
             )
           })}
+          {validReferences?.map(reference => {
+            const chapter = reference.chapterTitle
+              || reference.tocPath.at(-1)?.title
+            const detail = [chapter, `“${reference.quote}”`]
+              .filter(Boolean)
+              .join(' · ')
+            const clickable = !!onReferenceClick
+
+            return (
+              <button
+                key={projectFileReferenceKey(reference)}
+                type="button"
+                disabled={!clickable}
+                aria-label={`Open reference from ${reference.fileName}`}
+                title={detail}
+                onClick={() => onReferenceClick?.(reference)}
+                className={cn(
+                  "flex min-w-0 shrink-0 items-center gap-2.5 rounded-[8px] bg-user-message-bubble py-1.5 pl-1.5 pr-3 text-left",
+                  clickable && "transition-opacity hover:opacity-80",
+                )}
+              >
+                <span className="flex h-11 w-8 shrink-0 items-center justify-center rounded-[6px] bg-background shadow-minimal">
+                  <BookOpenText className="h-5 w-5 text-muted-foreground" />
+                </span>
+                <span className="flex min-w-0 max-w-[180px] flex-col">
+                  <span className="truncate text-xs font-medium">
+                    {reference.fileName}
+                  </span>
+                  <span className="truncate text-[10px] text-muted-foreground">
+                    {detail}
+                  </span>
+                </span>
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -484,36 +538,38 @@ export function UserMessageBubble({
           separate pill below — keeps the chat to one bubble per message
           while the chip and pulsing icon make the waiting state obvious
           (#616 follow-up). */}
-      <div
-        className={cn(
-          "max-w-[80%] bg-user-message-bubble rounded-[16px] break-words min-w-0 select-text [&_p]:m-0",
-          compactMode ? "px-4 py-2" : "px-5 py-3.5"
-        )}
-      >
-        {showQueued && (
-          <div
-            className="flex items-center gap-1.5 text-foreground/55 mb-1.5"
-            role="status"
-            aria-live="polite"
-          >
-            <Clock className="h-3 w-3 animate-pulse" aria-hidden="true" />
-            <span className="text-[11px] italic">{t('chat.queuedBadge')}</span>
-          </div>
-        )}
-        {hasInlineBadges
-          ? renderContentWithBadges(displayContent, inlineBadges, onUrlClick, onFileClick)
-          : (
-            <Markdown
-              mode="minimal"
-              onUrlClick={onUrlClick}
-              onFileClick={onFileClick}
-              className="text-sm [&_a]:underline [&_code]:bg-foreground/10 [&_p]:whitespace-pre-wrap"
+      {showMessageContent && (
+        <div
+          className={cn(
+            "max-w-[80%] bg-user-message-bubble rounded-[16px] break-words min-w-0 select-text [&_p]:m-0",
+            compactMode ? "px-4 py-2" : "px-5 py-3.5"
+          )}
+        >
+          {showQueued && (
+            <div
+              className="flex items-center gap-1.5 text-foreground/55 mb-1.5"
+              role="status"
+              aria-live="polite"
             >
-              {displayContent}
-            </Markdown>
-          )
-        }
-      </div>
+              <Clock className="h-3 w-3 animate-pulse" aria-hidden="true" />
+              <span className="text-[11px] italic">{t('chat.queuedBadge')}</span>
+            </div>
+          )}
+          {hasInlineBadges
+            ? renderContentWithBadges(displayContent, inlineBadges, onUrlClick, onFileClick)
+            : (
+              <Markdown
+                mode="minimal"
+                onUrlClick={onUrlClick}
+                onFileClick={onFileClick}
+                className="text-sm [&_a]:underline [&_code]:bg-foreground/10 [&_p]:whitespace-pre-wrap"
+              >
+                {displayContent}
+              </Markdown>
+            )
+          }
+        </div>
+      )}
     </div>
   )
 }

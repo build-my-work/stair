@@ -30,6 +30,11 @@ import type { SessionOptions, SessionOptionUpdates } from '../hooks/useSessionOp
 import { defaultSessionOptions } from '../hooks/useSessionOptions'
 import { sessionAtomFamily } from '../atoms/sessions'
 
+export interface SendMessageDeliveryOptions {
+  consumeDraft?: boolean
+  references?: import('@craft-agent/core').MessageReference[]
+}
+
 export interface AppShellContextType {
   // Data
   // NOTE: sessions is NOT included here - use sessionMetaMapAtom for listing
@@ -53,6 +58,24 @@ export interface AppShellContextType {
   getDraftAttachmentRefs: (sessionId: string) => import('@craft-agent/shared/config').DraftAttachmentRef[]
   /** Hydrate persisted attachment refs into full FileAttachment objects (async, reads files) */
   hydrateDraftAttachments: (sessionId: string) => Promise<FileAttachment[]>
+  /** Structured Project File references attached to the current composer draft. */
+  getDraftReferences: (sessionId: string) => import('@craft-agent/core').MessageReference[]
+  /** Subscribe only to structured reference changes for one Session Draft. */
+  subscribeDraftReferences: (
+    sessionId: string,
+    listener: (references: import('@craft-agent/core').MessageReference[]) => void,
+  ) => () => void
+  onDraftReferencesChange: (
+    sessionId: string,
+    references: import('@craft-agent/core').MessageReference[],
+  ) => void
+  onAddDraftReference: (
+    sessionId: string,
+    reference: import('@craft-agent/core').MessageReference,
+  ) => boolean
+  onOpenProjectFileReference?: (
+    reference: import('@craft-agent/core').MessageReference,
+  ) => void
   /** All enabled sources for this workspace - provided by AppShell component */
   enabledSources?: LoadedSource[]
   /** All skills for this workspace - provided by AppShell component (for @mentions) */
@@ -64,11 +87,10 @@ export interface AppShellContextType {
   /** Callback when session labels change */
   onSessionLabelsChange?: (sessionId: string, labels: string[]) => void
   /**
-   * Open All Sessions scoped to a task: replaces the view's label filter (and project
-   * filter when given) with the task's scope — the same user-clearable header-chip
-   * filters — and selects the session. Used by kanban tile/subtask clicks + post-create.
+   * Open All Sessions with the task's label as the normal user-clearable
+   * header filter, then select the session.
    */
-  onJumpToTaskSessions?: (sessionId: string, scope: { labelId: string; projectId?: string }) => void
+  onJumpToTaskSessions?: (sessionId: string, scope: { labelId: string }) => void
   /** Enabled permission modes for Shift+Tab cycling */
   enabledModes?: PermissionMode[]
   /** Dynamic todo states from workspace config (provided by AppShell, defaults to empty) */
@@ -80,7 +102,14 @@ export interface AppShellContextType {
 
   // Session callbacks
   onCreateSession: (workspaceId: string, options?: import('../../shared/types').CreateSessionOptions) => Promise<Session>
-  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], badges?: import('@craft-agent/core').ContentBadge[]) => void
+  onSendMessage: (
+    sessionId: string,
+    message: string,
+    attachments?: FileAttachment[],
+    skillSlugs?: string[],
+    badges?: import('@craft-agent/core').ContentBadge[],
+    delivery?: SendMessageDeliveryOptions,
+  ) => Promise<void> | void
   onRenameSession: (sessionId: string, name: string) => void
   onFlagSession: (sessionId: string) => void
   onUnflagSession: (sessionId: string) => void

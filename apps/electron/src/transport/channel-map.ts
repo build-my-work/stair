@@ -92,6 +92,14 @@ export const CHANNEL_MAP = {
   storeAttachment: invoke(RPC_CHANNELS.file.STORE_ATTACHMENT),
   generateThumbnail: invoke(RPC_CHANNELS.file.GENERATE_THUMBNAIL),
 
+  // Project-scoped file operations
+  readProjectFileText: invoke(RPC_CHANNELS.projectFiles.READ_TEXT),
+  readProjectFileBinary: invoke(RPC_CHANNELS.projectFiles.READ_BINARY),
+  searchProjectFiles: invoke(RPC_CHANNELS.projectFiles.SEARCH),
+  listProjectDirectoryEntries: invoke(RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES),
+  getEpubDocumentState: invoke(RPC_CHANNELS.projectFiles.GET_EPUB_STATE),
+  applyEpubStateMutation: invoke(RPC_CHANNELS.projectFiles.APPLY_EPUB_STATE_MUTATION),
+
   // Theme
   getSystemTheme: invoke(RPC_CHANNELS.theme.GET_SYSTEM_PREFERENCE),
   onSystemThemeChange: listener(RPC_CHANNELS.theme.SYSTEM_CHANGED),
@@ -189,6 +197,7 @@ export const CHANNEL_MAP = {
 
   // Folder dialog
   openFolderDialog: invoke(RPC_CHANNELS.dialog.OPEN_FOLDER),
+  saveTextFile: invoke(RPC_CHANNELS.dialog.SAVE_TEXT_FILE),
 
   // Filesystem search
   searchFiles: invoke(RPC_CHANNELS.fs.SEARCH),

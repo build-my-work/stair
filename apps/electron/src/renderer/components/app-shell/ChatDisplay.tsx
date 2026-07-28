@@ -17,7 +17,10 @@ import { toast } from "sonner"
 
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
-import { coerceInputText, appendRestoredInput } from "@/lib/input-text"
+import {
+  areMemoizedMessagesEqual,
+  restoreStoppedMessageDraft,
+} from "@/lib/chat-message-state"
 import { Markdown, CollapsibleMarkdownProvider, StreamingMarkdown, type RenderMode } from "@/components/markdown"
 import { AnimatedCollapsibleContent } from "@/components/ui/collapsible"
 import {
@@ -75,6 +78,8 @@ import { CHAT_LAYOUT } from "@/config/layout"
 import { collectFileChangesFromActivities, getFirstFileChangeIdForActivity } from "@/lib/file-changes"
 import { resolveBranchNewPanelOption } from "./branching"
 import { handleErrorMessageAction } from "./error-message-actions"
+import type { MessageReference } from "@craft-agent/core"
+import type { SendMessageDeliveryOptions } from "@/context/AppShellContext"
 
 // ============================================================================
 // CSS Custom Highlight API helper
@@ -131,7 +136,12 @@ function getTurnKey(turn: Turn): string {
 
 interface ChatDisplayProps {
   session: Session | null
-  onSendMessage: (message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => void
+  onSendMessage: (
+    message: string,
+    attachments?: FileAttachment[],
+    skillSlugs?: string[],
+    delivery?: SendMessageDeliveryOptions,
+  ) => Promise<void> | void
   onOpenFile: (path: string) => void
   onOpenUrl: (url: string) => void
   // Model selection
@@ -178,6 +188,9 @@ interface ChatDisplayProps {
   attachmentsValue?: FileAttachment[]
   /** Callback when attachment draft changes (add, remove, clear on send) */
   onAttachmentsChange?: (attachments: FileAttachment[]) => void
+  /** Structured Project File references attached independently of input text. */
+  referencesValue?: MessageReference[]
+  onReferencesChange?: (references: MessageReference[]) => void
   // Source selection
   /** Available sources (enabled only) */
   sources?: LoadedSource[]
@@ -461,6 +474,8 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   onInputChange,
   attachmentsValue,
   onAttachmentsChange,
+  referencesValue,
+  onReferencesChange,
   // Sources
   sources,
   onSourcesChange,
@@ -1221,7 +1236,12 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
   // Handle message submission from InputContainer
   // Backend handles interruption and queueing if currently processing
-  const handleSubmit = (message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => {
+  const handleSubmit = async (
+    message: string,
+    attachments?: FileAttachment[],
+    skillSlugs?: string[],
+    delivery: SendMessageDeliveryOptions = { consumeDraft: true },
+  ) => {
     const hasBaseMessage = message.trim().length > 0
     const followUpSection = formatFollowUpSection(pendingFollowUpAnnotations, {
       includeTopSeparator: hasBaseMessage,
@@ -1233,7 +1253,12 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
     // Force stick-to-bottom when user sends a message
     isStickToBottomRef.current = true
-    onSendMessage(normalizedMessage, attachments, skillSlugs)
+    await onSendMessage(
+      normalizedMessage,
+      attachments,
+      skillSlugs,
+      delivery,
+    )
 
     // Persist sent marker on follow-up annotations so TurnCard can distinguish
     // sent vs pending follow-ups. If user edits a follow-up later, TurnCard
@@ -1306,9 +1331,14 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     // `restore_input` effect (App.tsx) and would otherwise double up here.
     if (!silent) {
       const lastUserMsg = [...session.messages].reverse().find(m => m.role === 'user' && !m.isQueued)
-      const restoredText = coerceInputText(lastUserMsg?.content)
-      if (restoredText) {
-        onInputChange?.(appendRestoredInput(inputValue, restoredText))
+      const restored = restoreStoppedMessageDraft({
+        currentText: inputValue,
+        currentReferences: referencesValue ?? [],
+        stoppedMessage: lastUserMsg,
+      })
+      if (restored.textChanged) onInputChange?.(restored.text)
+      if (restored.referencesChanged) {
+        onReferencesChange?.(restored.references)
       }
     }
 
@@ -1628,6 +1658,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             message={turn.message}
                             onOpenFile={onOpenFile}
                             onOpenUrl={onOpenUrl}
+                            onOpenProjectFileReference={appShellContext.onOpenProjectFileReference}
                             sessionId={session?.id}
                             compactMode={compactMode}
                           />
@@ -1651,14 +1682,30 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             message={turn.message}
                             onOpenFile={onOpenFile}
                             onOpenUrl={onOpenUrl}
+                            onOpenProjectFileReference={appShellContext.onOpenProjectFileReference}
                             sessionId={session?.id}
                             onRetry={turn.message.role === 'error' ? () => {
+                              if (turn.message.errorActions?.some(
+                                action => action.key === 'retry-draft',
+                              )) {
+                                window.dispatchEvent(new CustomEvent('craft:submit-input', {
+                                  detail: { sessionId: session?.id },
+                                }))
+                                return
+                              }
                               const msgs = session?.messages
                               if (!msgs) return
                               const errorIdx = msgs.findIndex(m => m.id === turn.message.id)
                               const lastUserMsg = msgs.slice(0, errorIdx).findLast(m => m.role === 'user')
                               if (lastUserMsg) {
-                                onSendMessage(lastUserMsg.content)
+                                void Promise.resolve(onSendMessage(
+                                  lastUserMsg.content,
+                                  undefined,
+                                  undefined,
+                                  { references: lastUserMsg.references },
+                                )).catch(error => {
+                                  console.error('[ChatDisplay] Retry failed:', error)
+                                })
                               }
                             } : undefined}
                           />
@@ -1948,6 +1995,8 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               onInputChange,
               attachmentsValue,
               onAttachmentsChange,
+              referencesValue,
+              onReferencesChange,
               sources,
               enabledSourceSlugs: session.enabledSourceSlugs,
               onSourcesChange,
@@ -2126,6 +2175,7 @@ interface MessageBubbleProps {
   message: Message
   onOpenFile: (path: string) => void
   onOpenUrl: (url: string) => void
+  onOpenProjectFileReference?: (reference: MessageReference) => void
   sessionId?: string
   /**
    * Markdown render mode for assistant messages
@@ -2222,6 +2272,7 @@ function MessageBubble({
   message,
   onOpenFile,
   onOpenUrl,
+  onOpenProjectFileReference,
   sessionId,
   renderMode = 'minimal',
   onPopOut,
@@ -2233,16 +2284,35 @@ function MessageBubble({
   // === USER MESSAGE: Right-aligned bubble with attachments above ===
   if (message.role === 'user') {
     return (
-      <UserMessageBubble
-        content={message.content}
-        attachments={message.attachments}
-        badges={message.badges}
-        isPending={message.isPending}
-        isQueued={message.isQueued}
-        onUrlClick={onOpenUrl}
-        onFileClick={onOpenFile}
-        compactMode={compactMode}
-      />
+      <div className={cn(
+        'flex flex-col items-end gap-1.5',
+        message.isError && 'rounded-[9px] p-1 ring-1 ring-destructive/35',
+      )}>
+        {message.isError && (
+          <span className="px-1 text-[10px] font-medium text-destructive">
+            Send failed
+          </span>
+        )}
+        {(
+          message.content
+          || message.attachments?.length
+          || message.badges?.length
+          || message.references?.length
+        ) && (
+          <UserMessageBubble
+            content={message.content}
+            attachments={message.attachments}
+            badges={message.badges}
+            references={message.references}
+            onReferenceClick={onOpenProjectFileReference}
+            isPending={message.isPending}
+            isQueued={message.isQueued}
+            onUrlClick={onOpenUrl}
+            onFileClick={onOpenFile}
+            compactMode={compactMode}
+          />
+        )}
+      </div>
     )
   }
 
@@ -2368,16 +2438,11 @@ function MessageBubble({
  * significantly improving performance for long conversations.
  */
 const MemoizedMessageBubble = React.memo(MessageBubble, (prev, next) => {
-  // Always re-render streaming messages (content is changing)
-  if (prev.message.isStreaming || next.message.isStreaming) {
-    return false
-  }
   // Skip re-render if key props unchanged
   return (
-    prev.message.id === next.message.id &&
-    prev.message.content === next.message.content &&
-    prev.message.role === next.message.role &&
+    areMemoizedMessagesEqual(prev.message, next.message) &&
     prev.sessionId === next.sessionId &&
+    prev.onOpenProjectFileReference === next.onOpenProjectFileReference &&
     prev.compactMode === next.compactMode
   )
 })

@@ -1,7 +1,8 @@
 import type { LucideIcon } from "lucide-react"
 import * as React from "react"
 import { AnimatePresence, motion, type Variants } from "motion/react"
-import { ChevronRight } from "lucide-react"
+import { ChevronRight, Pencil } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
 import {
@@ -9,14 +10,16 @@ import {
   ContextMenuTrigger,
   StyledContextMenuContent,
 } from '@/components/ui/styled-context-menu'
-import { ContextMenuProvider } from '@/components/ui/menu-context'
+import { ContextMenuProvider, useMenuComponents } from '@/components/ui/menu-context'
 import { SidebarMenu, type SidebarMenuType } from './SidebarMenu'
 import { SortableList, type SortableItemData } from '@/components/ui/sortable-list'
+
+type LeftSidebarMenuType = SidebarMenuType | 'session'
 
 /** Context menu configuration for sidebar items */
 export interface SidebarContextMenuConfig {
   /** Type of sidebar item (determines available menu items) */
-  type: SidebarMenuType
+  type: LeftSidebarMenuType
   /** Status ID for status items (e.g., 'todo', 'done') - not currently used but kept for future */
   statusId?: string
   /** Label ID — when set, this is an individual label (enables Delete Label) */
@@ -47,6 +50,8 @@ export interface SidebarContextMenuConfig {
   viewId?: string
   /** Handler for "Delete View" action */
   onDeleteView?: (id: string) => void
+  /** Handler for renaming an individual session */
+  onRename?: () => void
 }
 
 /**
@@ -62,7 +67,7 @@ export interface LinkItem {
   id: string            // Unique ID for navigation (e.g., 'nav:allSessions')
   title: string
   label?: string        // Optional badge (e.g., count)
-  icon: LucideIcon | React.ReactNode  // LucideIcon or custom React element
+  icon?: LucideIcon | React.ReactNode  // LucideIcon or custom React element
   iconColor?: string    // Optional color class for the icon
   /** Whether the icon responds to color (uses currentColor). Default true for Lucide icons. */
   iconColorable?: boolean
@@ -83,6 +88,10 @@ export interface LinkItem {
   sortable?: SortableConfig
   // Optional element rendered after the title (e.g., label type icon), revealed on hover
   afterTitle?: React.ReactNode
+  // Optional interactive controls rendered outside the row button (e.g., add/settings)
+  actions?: React.ReactNode
+  // Number of row actions; controls how much title space is reserved
+  actionCount?: 1 | 2
 }
 
 export interface SeparatorItem {
@@ -94,6 +103,43 @@ export type SidebarItem = LinkItem | SeparatorItem
 
 export const isSeparatorItem = (item: SidebarItem): item is SeparatorItem =>
   'type' in item && item.type === 'separator'
+
+function SidebarContextMenuItems({ config }: { config: SidebarContextMenuConfig }) {
+  const { t } = useTranslation()
+  const { MenuItem } = useMenuComponents()
+
+  if (config.type === 'session') {
+    if (!config.onRename) return null
+
+    return (
+      <MenuItem onClick={config.onRename}>
+        <Pencil className="h-3.5 w-3.5" />
+        <span className="flex-1">{t("common.rename")}</span>
+      </MenuItem>
+    )
+  }
+
+  return (
+    <SidebarMenu
+      type={config.type}
+      statusId={config.statusId}
+      labelId={config.labelId}
+      onConfigureStatuses={config.onConfigureStatuses}
+      onMarkAllRead={config.onMarkAllRead}
+      onConfigureLabels={config.onConfigureLabels}
+      onAddLabel={config.onAddLabel}
+      onDeleteLabel={config.onDeleteLabel}
+      onAddSource={config.onAddSource}
+      onAddSkill={config.onAddSkill}
+      onAddAutomation={config.onAddAutomation}
+      onAddProject={config.onAddProject}
+      sourceType={config.sourceType}
+      onConfigureViews={config.onConfigureViews}
+      viewId={config.viewId}
+      onDeleteView={config.onDeleteView}
+    />
+  )
+}
 
 interface LeftSidebarProps {
   isCollapsed: boolean
@@ -181,7 +227,7 @@ export function LeftSidebar({ links, isCollapsed, getItemProps, focusedItemId, i
     <div className={cn("flex flex-col select-none", !isNested && "py-1")}>
       <NavWrapper
         className={cn(
-          "grid gap-0.5",
+          "grid grid-cols-[minmax(0,1fr)] gap-0.5",
           isNested ? "pl-5 pr-0 relative" : "px-2"
         )}
         role="navigation"
@@ -226,38 +272,24 @@ export function LeftSidebar({ links, isCollapsed, getItemProps, focusedItemId, i
           // ContextMenuTrigger with asChild sets data-state="open" on the button
           // so only the clicked item highlights, not the entire section.
           const content = (
-            <div className="group/section">
-              {link.contextMenu ? (
-                <ContextMenu modal={true}>
-                  <ContextMenuTrigger asChild>
-                    {buttonElement}
-                  </ContextMenuTrigger>
-                  <StyledContextMenuContent>
-                    <ContextMenuProvider>
-                      <SidebarMenu
-                        type={link.contextMenu.type}
-                        statusId={link.contextMenu.statusId}
-                        labelId={link.contextMenu.labelId}
-                        onConfigureStatuses={link.contextMenu.onConfigureStatuses}
-                        onMarkAllRead={link.contextMenu.onMarkAllRead}
-                        onConfigureLabels={link.contextMenu.onConfigureLabels}
-                        onAddLabel={link.contextMenu.onAddLabel}
-                        onDeleteLabel={link.contextMenu.onDeleteLabel}
-                        onAddSource={link.contextMenu.onAddSource}
-                        onAddSkill={link.contextMenu.onAddSkill}
-                        onAddAutomation={link.contextMenu.onAddAutomation}
-                        onAddProject={link.contextMenu.onAddProject}
-                        sourceType={link.contextMenu.sourceType}
-                        onConfigureViews={link.contextMenu.onConfigureViews}
-                        viewId={link.contextMenu.viewId}
-                        onDeleteView={link.contextMenu.onDeleteView}
-                      />
-                    </ContextMenuProvider>
-                  </StyledContextMenuContent>
-                </ContextMenu>
-              ) : (
-                buttonElement
-              )}
+            <div className="group/section min-w-0">
+              <div className="group/row relative min-w-0">
+                {link.contextMenu ? (
+                  <ContextMenu modal={true}>
+                    <ContextMenuTrigger asChild>
+                      {buttonElement}
+                    </ContextMenuTrigger>
+                    <StyledContextMenuContent>
+                      <ContextMenuProvider>
+                        <SidebarContextMenuItems config={link.contextMenu} />
+                      </ContextMenuProvider>
+                    </StyledContextMenuContent>
+                  </ContextMenu>
+                ) : (
+                  buttonElement
+                )}
+                <SidebarRowActions actions={link.actions} />
+              </div>
               {/* Expandable subitems — outside context menu scope so only the
                 * clicked button gets data-state="open", not nested children */}
               {link.expandable && link.items && (
@@ -280,7 +312,7 @@ export function LeftSidebar({ links, isCollapsed, getItemProps, focusedItemId, i
 
           // For nested items, wrap in motion.div for stagger animation
           return isNested ? (
-            <motion.div key={link.id} variants={itemVariants}>
+            <motion.div key={link.id} variants={itemVariants} className="min-w-0">
               {content}
             </motion.div>
           ) : (
@@ -383,43 +415,30 @@ function SortableStatusList({ items, onReorder, getItemProps, focusedItemId, tra
           onReorder={handleReorder}
           className="grid gap-0.5"
           renderItem={(item) => (
-            <div className="group/section">
-              {item.contextMenu ? (
-                <ContextMenu modal={true}>
-                  <ContextMenuTrigger asChild>
-                    <SidebarButton
-                      link={item}
-                      itemProps={getItemProps?.(item.id)}
-                    />
-                  </ContextMenuTrigger>
-                  <StyledContextMenuContent>
-                    <ContextMenuProvider>
-                      <SidebarMenu
-                        type={item.contextMenu.type}
-                        statusId={item.contextMenu.statusId}
-                        labelId={item.contextMenu.labelId}
-                        onConfigureStatuses={item.contextMenu.onConfigureStatuses}
-                        onMarkAllRead={item.contextMenu.onMarkAllRead}
-                        onConfigureLabels={item.contextMenu.onConfigureLabels}
-                        onAddLabel={item.contextMenu.onAddLabel}
-                        onDeleteLabel={item.contextMenu.onDeleteLabel}
-                        onAddSource={item.contextMenu.onAddSource}
-                        onAddSkill={item.contextMenu.onAddSkill}
-                        onAddAutomation={item.contextMenu.onAddAutomation}
-                        sourceType={item.contextMenu.sourceType}
-                        onConfigureViews={item.contextMenu.onConfigureViews}
-                        viewId={item.contextMenu.viewId}
-                        onDeleteView={item.contextMenu.onDeleteView}
+            <div className="group/section min-w-0">
+              <div className="group/row relative min-w-0">
+                {item.contextMenu ? (
+                  <ContextMenu modal={true}>
+                    <ContextMenuTrigger asChild>
+                      <SidebarButton
+                        link={item}
+                        itemProps={getItemProps?.(item.id)}
                       />
-                    </ContextMenuProvider>
-                  </StyledContextMenuContent>
-                </ContextMenu>
-              ) : (
-                <SidebarButton
-                  link={item}
-                  itemProps={getItemProps?.(item.id)}
-                />
-              )}
+                    </ContextMenuTrigger>
+                    <StyledContextMenuContent>
+                      <ContextMenuProvider>
+                        <SidebarContextMenuItems config={item.contextMenu} />
+                      </ContextMenuProvider>
+                    </StyledContextMenuContent>
+                  </ContextMenu>
+                ) : (
+                  <SidebarButton
+                    link={item}
+                    itemProps={getItemProps?.(item.id)}
+                  />
+                )}
+                <SidebarRowActions actions={item.actions} />
+              </div>
             </div>
           )}
           renderOverlay={(item) => (
@@ -437,11 +456,14 @@ function SortableStatusList({ items, onReorder, getItemProps, focusedItemId, tra
             </div>
             <div className="grid gap-0.5">
               {trailingItems.map(item => (
-                <div key={item.id} className="group/section">
-                  <SidebarButton
-                    link={item}
-                    itemProps={getItemProps?.(item.id)}
-                  />
+                <div key={item.id} className="group/section min-w-0">
+                  <div className="group/row relative min-w-0">
+                    <SidebarButton
+                      link={item}
+                      itemProps={getItemProps?.(item.id)}
+                    />
+                    <SidebarRowActions actions={item.actions} />
+                  </div>
                 </div>
               ))}
             </div>
@@ -489,11 +511,12 @@ const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps & R
         onClick={isOverlay ? undefined : link.onClick}
         data-tutorial={link.dataTutorial}
         className={cn(
-          "group flex w-full items-center gap-2 rounded-[6px] text-[13px] select-none outline-none",
+          "group flex min-w-0 w-full items-center gap-2 overflow-hidden rounded-[6px] text-[13px] select-none outline-none",
           "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
           // Compact mode: 4px less total height (py-[3px] vs py-[5px])
           link.compact ? "py-[3px]" : "py-[5px]",
           "px-2",
+          link.actions && (link.actionCount === 2 ? "pr-14" : "pr-8"),
           link.variant === "default"
             ? "bg-foreground/[0.07]"
             // Highlight on hover, context menu open (data-state), or EditPopover active (data-edit-active)
@@ -501,17 +524,13 @@ const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps & R
           extraClassName,
         )}
       >
-        {/* Icon container with hover toggle for expandable items */}
-        <span className="relative h-3.5 w-3.5 shrink-0 flex items-center justify-center">
-          {link.expandable && !isOverlay ? (
-            <>
-              {/* Main icon - hidden on hover */}
-              <span className="absolute inset-0 flex items-center justify-center group-hover:opacity-0 transition-opacity duration-150">
-                {renderIcon(link)}
-              </span>
-              {/* Toggle chevron - shown on hover. data-no-dnd prevents drag activation on click. */}
+        {/* Entity icon, or a disclosure-only affordance for expandable rows
+            that intentionally have no decorative icon. */}
+        {(link.icon || link.expandable) && (
+          <span className="relative h-3.5 w-3.5 shrink-0 flex items-center justify-center">
+            {link.expandable && !link.icon && !isOverlay ? (
               <span
-                className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer"
+                className="absolute inset-0 flex cursor-pointer items-center justify-center"
                 data-no-dnd="true"
                 data-touch-reveal="true"
                 onClick={(e) => {
@@ -526,12 +545,38 @@ const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps & R
                   )}
                 />
               </span>
-            </>
-          ) : (
-            renderIcon(link)
-          )}
+            ) : link.expandable && !isOverlay ? (
+              <>
+                {/* Main icon - hidden on hover */}
+                <span className="absolute inset-0 flex items-center justify-center group-hover:opacity-0 transition-opacity duration-150">
+                  {renderIcon(link)}
+                </span>
+                {/* Toggle chevron - shown on hover. data-no-dnd prevents drag activation on click. */}
+                <span
+                  className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer"
+                  data-no-dnd="true"
+                  data-touch-reveal="true"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    link.onToggle?.()
+                  }}
+                >
+                  <ChevronRight
+                    className={cn(
+                      "h-3.5 w-3.5 text-muted-foreground transition-transform duration-200",
+                      link.expanded && "rotate-90"
+                    )}
+                  />
+                </span>
+              </>
+            ) : (
+              renderIcon(link)
+            )}
+          </span>
+        )}
+        <span className="min-w-0 flex-1 truncate text-left">
+          {link.title}
         </span>
-        {link.title}
         {/* After-title element: type indicator icon, right-aligned before count badge, revealed on hover */}
         {link.afterTitle && (
           <span data-touch-reveal="true" className="ml-auto opacity-0 group-hover/section:opacity-100 group-data-[state=open]:opacity-100 group-data-[edit-active=true]:opacity-100 transition-opacity">
@@ -548,6 +593,27 @@ const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps & R
     )
   }
 )
+
+function SidebarRowActions({ actions }: { actions?: React.ReactNode }) {
+  if (!actions) return null
+
+  return (
+    <div
+      data-no-dnd="true"
+      data-touch-reveal="true"
+      className={cn(
+        "absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5",
+        "pointer-events-none opacity-0 transition-opacity",
+        "group-hover/row:pointer-events-auto group-hover/row:opacity-100",
+        "group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100",
+        "group-has-[[data-state=open]]/row:pointer-events-auto group-has-[[data-state=open]]/row:opacity-100",
+      )}
+      onClick={(event) => event.stopPropagation()}
+    >
+      {actions}
+    </div>
+  )
+}
 
 /**
  * Helper to render icon - either component (function/forwardRef) or React element.
