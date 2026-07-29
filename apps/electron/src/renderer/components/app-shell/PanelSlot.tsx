@@ -26,7 +26,11 @@ import {
   focusedPanelIdAtom,
   type PanelStackEntry,
 } from '@/atoms/panel-stack'
-import { useAppShellContext, AppShellProvider } from '@/context/AppShellContext'
+import {
+  useAppShellContext,
+  AppShellProvider,
+  type AppShellContextType,
+} from '@/context/AppShellContext'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
 import { RADIUS_EDGE, RADIUS_INNER } from './panel-constants'
 import { isCompanionPanelRoute } from '@/lib/project-file-route'
@@ -73,6 +77,7 @@ interface PanelSlotProps {
   panelDragHandle?: React.ReactNode
   dropIndicator?: 'before' | 'after'
   isDragging?: boolean
+  isDropConfirmed?: boolean
 }
 
 export function PanelSlot({
@@ -88,6 +93,7 @@ export function PanelSlot({
   panelDragHandle,
   dropIndicator,
   isDragging,
+  isDropConfirmed,
 }: PanelSlotProps) {
   const { t } = useTranslation()
   const closePanel = useSetAtom(closePanelAtom)
@@ -96,6 +102,15 @@ export function PanelSlot({
   const parentContext = useAppShellContext()
   const compactProjectBackRoute = getCompactProjectBackRoute(entry.route)
   const { minWidthPx } = getPanelSizePolicy(entry.route)
+  const isDropTarget = dropIndicator !== undefined
+  let panelDragState: AppShellContextType['panelDragState']
+  if (isDropTarget) {
+    panelDragState = 'target'
+  } else if (isDropConfirmed) {
+    panelDragState = 'confirmed'
+  } else if (isDragging) {
+    panelDragState = 'dragging'
+  }
 
   const handleClose = useCallback(() => {
     closePanel(entry.id)
@@ -150,12 +165,14 @@ export function PanelSlot({
     rightSidebarButton: closeButton,
     leadingAction: backButton,
     panelDragHandle,
+    panelDragState,
     isFocusedPanel,
   }), [
     parentContext,
     closeButton,
     backButton,
     panelDragHandle,
+    panelDragState,
     isFocusedPanel,
   ])
 
@@ -173,10 +190,13 @@ export function PanelSlot({
       data-panel-id={entry.id}
       data-compact={isCompact || undefined}
       data-panel-dragging={isDragging || undefined}
+      data-panel-drop-target={isDropTarget || undefined}
+      data-panel-drop-confirmed={isDropConfirmed || undefined}
       className={cn(
-        'h-full overflow-hidden relative @container/panel',
+        'h-full overflow-hidden relative @container/panel transition-shadow motion-reduce:transition-none',
         !isOnly && isFocusedPanel ? 'shadow-panel-focused z-[1]' : 'shadow-middle z-0',
-        isDragging && 'ring-2 ring-inset ring-foreground/20',
+        isDragging && 'ring-2 ring-inset ring-accent/40',
+        (isDropTarget || isDropConfirmed) && 'ring-2 ring-inset ring-accent/60',
         'bg-foreground-2',
       )}
       style={{
@@ -214,10 +234,17 @@ export function PanelSlot({
         <div
           data-panel-drop-indicator={dropIndicator}
           className={cn(
-            'pointer-events-none absolute inset-y-1 z-dropdown w-0.5 rounded-full bg-foreground/70 shadow-minimal',
+            'pointer-events-none absolute inset-y-1 z-dropdown w-3 bg-accent/10',
             dropIndicator === 'before' ? 'left-0' : 'right-0',
           )}
-        />
+        >
+          <div
+            className={cn(
+              'absolute inset-y-0 w-1 rounded-full bg-accent shadow-minimal',
+              dropIndicator === 'before' ? 'left-0' : 'right-0',
+            )}
+          />
+        </div>
       )}
       <div className="h-full flex flex-col">
         <AppShellProvider value={contextOverride}>

@@ -123,6 +123,7 @@ export function PanelHeader({
     leadingAction: contextLeadingAction,
     isCompactMode,
     panelDragHandle,
+    panelDragState,
   } = useAppShellContext()
   const leadingAction = explicitLeadingAction ?? contextLeadingAction
 
@@ -151,10 +152,15 @@ export function PanelHeader({
       transition={{ duration: 0.15 }}
       className="flex items-center gap-1"
     >
-      <h1 className={cn(
-        "text-sm font-semibold truncate font-sans leading-tight",
-        isRegeneratingTitle && "animate-shimmer-text"
-      )}>{title}</h1>
+      <h1
+        data-panel-drag-title="true"
+        className={cn(
+          "text-sm font-semibold truncate font-sans leading-tight",
+          isRegeneratingTitle && "animate-shimmer-text"
+        )}
+      >
+        {title}
+      </h1>
       {badge}
     </motion.div>
   )
@@ -276,6 +282,11 @@ export function PanelHeader({
 
   const baseClassName = cn(
     'flex shrink-0 items-center pr-2 min-w-0 gap-1.5 relative z-panel h-[42px]',
+    'after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-transparent',
+    'transition-colors after:transition-colors motion-reduce:transition-none motion-reduce:after:transition-none',
+    panelDragState === 'dragging' && 'bg-accent/[0.04] after:bg-accent/40',
+    (panelDragState === 'target' || panelDragState === 'confirmed')
+      && 'bg-accent/[0.09] after:bg-accent',
     // Only use static paddingLeft class when not animating
     !shouldCompensate && (paddingLeft || (leadingAction ? 'pl-2' : 'pl-4')),
     className
@@ -287,6 +298,7 @@ export function PanelHeader({
       initial={false}
       animate={{ paddingLeft: shouldCompensate ? STOPLIGHT_PADDING : basePadding }}
       transition={springTransition}
+      data-panel-header-drag-state={panelDragState}
       className={baseClassName}
     >
       {content}

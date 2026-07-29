@@ -36,6 +36,7 @@ import { motion } from 'motion/react'
 import {
   AutoScrollActivator,
   DndContext,
+  DragOverlay,
   MeasuringStrategy,
   PointerSensor,
   closestCenter,
@@ -52,7 +53,12 @@ import {
   horizontalListSortingStrategy,
   useSortable,
 } from '@dnd-kit/sortable'
-import { GripHorizontal } from 'lucide-react'
+import {
+  FileText,
+  Globe2,
+  GripHorizontal,
+  MessageSquareText,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   panelStackAtom,
@@ -61,6 +67,7 @@ import {
   focusedPanelRouteAtom,
   focusedPanelContentRouteAtom,
   reorderPanelAtom,
+  type PanelStackEntry,
 } from '@/atoms/panel-stack'
 import { parseRouteToNavigationState } from '../../../shared/route-parser'
 import { isDetailNavState } from '@/lib/nav-helpers'
@@ -81,6 +88,12 @@ const PANEL_SPRING = { type: 'spring' as const, stiffness: 600, damping: 49 }
 
 /** Visual breathing room between the fixed compact TopBar and the first panel. */
 const COMPACT_PANEL_TOP_GAP = 8
+const PANEL_DROP_CONFIRMATION_MS = 240
+const PANEL_DRAG_ICONS = {
+  browser: Globe2,
+  navigation: MessageSquareText,
+  projectFile: FileText,
+}
 
 const PANEL_DND_MEASURING: MeasuringConfiguration = {
   droppable: {
@@ -106,6 +119,7 @@ type SortablePanelSlotProps = Omit<
 function SortablePanelSlot(panelSlotProps: SortablePanelSlotProps) {
   const { t } = useTranslation()
   const isDragEnabled = !panelSlotProps.isOnly
+  const dragLabel = t('common.dragToReorder')
   // The destination indicator moves during drag; the keyed Panel DOM moves
   // only on drop so native Browser surfaces do not churn or flicker.
   const {
@@ -134,11 +148,13 @@ function SortablePanelSlot(panelSlotProps: SortablePanelSlotProps) {
         activateDrag?.(event)
       }}
       icon={<GripHorizontal className="h-4 w-4" />}
-      tooltip={t('common.dragToReorder')}
+      aria-label={dragLabel}
+      tooltip={isDragging ? undefined : dragLabel}
       data-panel-drag-handle="true"
+      aria-pressed={isDragging}
       className={cn(
-        'cursor-grab touch-none',
-        isDragging && 'cursor-grabbing opacity-100',
+        'cursor-grab touch-none active:scale-95 active:bg-accent/10 active:text-accent',
+        isDragging && 'cursor-grabbing bg-accent/10 text-accent opacity-100',
       )}
     />
   ) : undefined
@@ -163,6 +179,56 @@ function getPanelDropIndicator(
   return activeIndex < overIndex ? 'after' : 'before'
 }
 
+function getPanelDragTitle(
+  container: HTMLElement | null,
+  panelId: string,
+): string | undefined {
+  const panel = Array.from(
+    container?.querySelectorAll<HTMLElement>('[data-panel-id]') ?? [],
+  ).find(node => node.dataset.panelId === panelId)
+
+  const title = panel
+    ?.querySelector<HTMLElement>('[data-panel-drag-title="true"]')
+    ?.textContent
+    ?.trim()
+  return title || undefined
+}
+
+function getFallbackPanelDragTitle(
+  entry: PanelStackEntry,
+  sessionTitle: string,
+): string {
+  if (entry.route.kind === 'browser') return 'Browser'
+  if (entry.route.kind === 'navigation') return sessionTitle
+  return entry.route.relativePath.split('/').pop() || entry.route.relativePath
+}
+
+function PanelDragPreview({
+  entry,
+  title,
+}: {
+  entry: PanelStackEntry
+  title: string
+}) {
+  const Icon = PANEL_DRAG_ICONS[entry.route.kind]
+
+  return (
+    <div
+      data-panel-drag-overlay="true"
+      className={cn(
+        'flex max-w-60 cursor-grabbing items-center gap-2 rounded-[9px] border border-foreground/10',
+        'bg-background/95 px-2.5 py-2 text-foreground shadow-modal-small backdrop-blur-sm',
+        'animate-in fade-in-0 zoom-in-95 duration-100 motion-reduce:animate-none',
+      )}
+    >
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent/10 text-accent">
+        <Icon className="h-3.5 w-3.5" />
+      </span>
+      <span className="min-w-0 truncate text-xs font-medium">{title}</span>
+    </div>
+  )
+}
+
 interface PanelStackContainerProps {
   sidebarSlot: React.ReactNode
   sidebarWidth: number
@@ -175,6 +241,11 @@ interface PanelStackContainerProps {
   isResizing?: boolean
 }
 
+interface ActivePanelDrag {
+  id: string
+  title: string
+}
+
 export function PanelStackContainer({
   sidebarSlot,
   sidebarWidth,
@@ -185,6 +256,7 @@ export function PanelStackContainer({
   isCompact = false,
   isResizing,
 }: PanelStackContainerProps) {
+  const { t } = useTranslation()
   const panelStack = useAtomValue(panelStackAtom)
   const focusedPanelId = useAtomValue(focusedPanelIdAtom)
   const focusedRoute = useAtomValue(focusedPanelRouteAtom)
@@ -192,8 +264,10 @@ export function PanelStackContainer({
   const panelViewportWidth = useAtomValue(panelViewportWidthAtom)
   const setPanelViewportWidth = useSetAtom(panelViewportWidthAtom)
   const reorderPanel = useSetAtom(reorderPanelAtom)
-  const [activePanelId, setActivePanelId] = useState<string | null>(null)
+  const [activePanelDrag, setActivePanelDrag] = useState<ActivePanelDrag | null>(null)
   const [overPanelId, setOverPanelId] = useState<string | null>(null)
+  const [confirmedPanelId, setConfirmedPanelId] = useState<string | null>(null)
+  const dropConfirmationTimerRef = useRef<number | null>(null)
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
@@ -219,15 +293,27 @@ export function PanelStackContainer({
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const clearDragState = useCallback(() => {
-    setActivePanelId(null)
+    setActivePanelDrag(null)
     setOverPanelId(null)
   }, [])
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     const panelId = String(event.active.id)
-    setActivePanelId(panelId)
+    const entry = visiblePanels.find(panel => panel.id === panelId)
+    if (!entry) return
+
+    if (dropConfirmationTimerRef.current !== null) {
+      window.clearTimeout(dropConfirmationTimerRef.current)
+      dropConfirmationTimerRef.current = null
+    }
+    setConfirmedPanelId(null)
+    setActivePanelDrag({
+      id: panelId,
+      title: getPanelDragTitle(scrollRef.current, panelId)
+        ?? getFallbackPanelDragTitle(entry, t('chat.session')),
+    })
     setOverPanelId(panelId)
-  }, [])
+  }, [t, visiblePanels])
 
   const handleDragOver = useCallback((event: DragOverEvent) => {
     setOverPanelId(event.over ? String(event.over.id) : null)
@@ -237,11 +323,25 @@ export function PanelStackContainer({
     const { active, over } = event
     clearDragState()
     if (!over) return
-    reorderPanel({
-      panelId: String(active.id),
+    const panelId = String(active.id)
+    const moved = reorderPanel({
+      panelId,
       overPanelId: String(over.id),
     })
+    if (!moved) return
+
+    setConfirmedPanelId(panelId)
+    dropConfirmationTimerRef.current = window.setTimeout(() => {
+      setConfirmedPanelId(null)
+      dropConfirmationTimerRef.current = null
+    }, PANEL_DROP_CONFIRMATION_MS)
   }, [clearDragState, reorderPanel])
+
+  useEffect(() => () => {
+    if (dropConfirmationTimerRef.current !== null) {
+      window.clearTimeout(dropConfirmationTimerRef.current)
+    }
+  }, [])
 
   useLayoutEffect(() => {
     const container = scrollRef.current
@@ -389,8 +489,8 @@ export function PanelStackContainer({
   }
 
   const panelIds = visiblePanels.map(entry => entry.id)
-  const activePanelIndex = activePanelId
-    ? panelIds.indexOf(activePanelId)
+  const activePanelIndex = activePanelDrag
+    ? panelIds.indexOf(activePanelDrag.id)
     : -1
   const overPanelIndex = overPanelId
     ? panelIds.indexOf(overPanelId)
@@ -399,6 +499,9 @@ export function PanelStackContainer({
     activePanelIndex,
     overPanelIndex,
   )
+  const activePanel = activePanelDrag
+    ? visiblePanels.find(entry => entry.id === activePanelDrag.id)
+    : undefined
 
   // === DESKTOP BRANCH ===
   // Independent-ratio horizontal panel track.
@@ -507,6 +610,7 @@ export function PanelStackContainer({
                         ? overDropIndicator
                         : undefined
                     }
+                    isDropConfirmed={entry.id === confirmedPanelId}
                   />
                   {isMultiPanel && (
                     <PanelResizeSash
@@ -517,6 +621,18 @@ export function PanelStackContainer({
                 </Fragment>
               ))}
             </SortableContext>
+            <DragOverlay
+              adjustScale={false}
+              dropAnimation={null}
+              style={{ zIndex: 'var(--z-floating-menu, 400)' }}
+            >
+              {activePanel && activePanelDrag ? (
+                <PanelDragPreview
+                  entry={activePanel}
+                  title={activePanelDrag.title}
+                />
+              ) : null}
+            </DragOverlay>
           </DndContext>
         )}
       </motion.div>

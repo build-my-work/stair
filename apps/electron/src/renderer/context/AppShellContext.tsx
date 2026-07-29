@@ -176,6 +176,9 @@ export interface AppShellContextType {
   // Drag handle injected into desktop content-panel headers
   panelDragHandle?: React.ReactNode
 
+  /** Drag-and-drop feedback for the current desktop content panel */
+  panelDragState?: 'dragging' | 'target' | 'confirmed'
+
   /** Whether this panel is the focused panel (for multi-panel visual differentiation) */
   isFocusedPanel?: boolean
 
