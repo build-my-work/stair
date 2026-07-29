@@ -3,19 +3,22 @@ import { isCanonicalProjectRelativePath } from '@craft-agent/core'
 import { isValidViewRoute } from '../../shared/route-parser'
 import { isCompanionPanelRoute } from './project-file-route'
 
-export const PANEL_LAYOUT_VERSION = 1 as const
+export const PANEL_LAYOUT_VERSION = 2 as const
 export const MAX_PANEL_LAYOUT_ENTRIES = 8
 export const MAX_ENCODED_PANEL_LAYOUT_BYTES = 64 * 1024
 const MAX_CHAT_TARGET_SESSION_ID_LENGTH = 512
 
-export interface SerializedPanelLayoutV1 {
+interface SerializedPanelLayoutEntryBase {
+  key: string
+  route: PanelContentRoute
+  ownerKey?: string
+  chatTargetSessionId?: string
+}
+
+export interface SerializedPanelLayoutV2 {
   version: typeof PANEL_LAYOUT_VERSION
-  entries: Array<{
-    key: string
-    route: PanelContentRoute
-    proportion: number
-    ownerKey?: string
-    chatTargetSessionId?: string
+  entries: Array<SerializedPanelLayoutEntryBase & {
+    widthRatio: number
   }>
   focusedKey: string
 }
@@ -23,7 +26,7 @@ export interface SerializedPanelLayoutV1 {
 interface RuntimePanelLayoutEntry {
   id: string
   route: PanelContentRoute
-  proportion: number
+  widthRatio: number
   ownerPanelId?: string
   chatTargetSessionId?: string
 }
@@ -118,7 +121,51 @@ function parsePanelContentRoute(value: unknown): PanelContentRoute | null {
   return null
 }
 
-export function serializePanelLayoutV1(
+function isValidChatTarget(
+  route: PanelContentRoute,
+  value: unknown,
+): value is string | undefined {
+  if (value === undefined) return true
+  return (
+    isCompanionPanelRoute(route)
+    && typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_CHAT_TARGET_SESSION_ID_LENGTH
+  )
+}
+
+function isValidSerializedKey(value: unknown): value is string {
+  return (
+    typeof value === 'string'
+    && value.length > 0
+    && value.length <= 64
+  )
+}
+
+function isValidPanelWidthRatio(value: unknown): value is number {
+  return (
+    typeof value === 'number'
+    && Number.isFinite(value)
+    && value > 0
+  )
+}
+
+function validateLayoutRelationships(
+  entries: readonly SerializedPanelLayoutEntryBase[],
+  focusedKey: string,
+): boolean {
+  const entryByKey = new Map(entries.map(entry => [entry.key, entry]))
+  if (entryByKey.size !== entries.length || !entryByKey.has(focusedKey)) {
+    return false
+  }
+
+  return entries.every(entry => {
+    if (!entry.ownerKey) return true
+    return entryByKey.get(entry.ownerKey)?.route.kind === 'navigation'
+  })
+}
+
+export function serializePanelLayout(
   entries: readonly RuntimePanelLayoutEntry[],
   focusedPanelId: string | null,
 ): string | null {
@@ -127,26 +174,12 @@ export function serializePanelLayoutV1(
     || entries.length > MAX_PANEL_LAYOUT_ENTRIES
     || !focusedPanelId
     || entries.some(entry => (
-      !Number.isFinite(entry.proportion)
-      || entry.proportion <= 0
-      || (
-        entry.chatTargetSessionId !== undefined
-        && (
-          !isCompanionPanelRoute(entry.route)
-          || entry.chatTargetSessionId.length === 0
-          || entry.chatTargetSessionId.length
-            > MAX_CHAT_TARGET_SESSION_ID_LENGTH
-        )
-      )
+      !isValidPanelWidthRatio(entry.widthRatio)
+      || !isValidChatTarget(entry.route, entry.chatTargetSessionId)
     ))
   ) {
     return null
   }
-  const runtimeTotalProportion = entries.reduce(
-    (total, entry) => total + entry.proportion,
-    0,
-  )
-  if (!Number.isFinite(runtimeTotalProportion)) return null
 
   const keyById = new Map(
     entries.map((entry, index) => [entry.id, `p${index}`]),
@@ -156,7 +189,7 @@ export function serializePanelLayoutV1(
   if (!focusedKey) return null
   const runtimeEntryById = new Map(entries.map(entry => [entry.id, entry]))
 
-  const layout: SerializedPanelLayoutV1 = {
+  const layout: SerializedPanelLayoutV2 = {
     version: PANEL_LAYOUT_VERSION,
     entries: entries.map((entry, index) => {
       const owner = entry.ownerPanelId
@@ -169,7 +202,7 @@ export function serializePanelLayoutV1(
       return {
         key: `p${index}`,
         route: entry.route,
-        proportion: entry.proportion,
+        widthRatio: entry.widthRatio,
         ...(ownerKey ? { ownerKey } : {}),
         ...(entry.chatTargetSessionId
           ? { chatTargetSessionId: entry.chatTargetSessionId }
@@ -184,9 +217,63 @@ export function serializePanelLayoutV1(
   return encoded.length <= MAX_ENCODED_PANEL_LAYOUT_BYTES ? encoded : null
 }
 
-export function deserializePanelLayoutV1(
+function parseLayoutV2(
+  serializedEntries: unknown[],
+  focusedKey: string,
+): SerializedPanelLayoutV2 | null {
+  const entries: SerializedPanelLayoutV2['entries'] = []
+  const keys = new Set<string>()
+
+  for (const candidate of serializedEntries) {
+    if (
+      !isRecord(candidate)
+      || !hasOnlyKeys(
+        candidate,
+        ['key', 'route', 'widthRatio', 'ownerKey', 'chatTargetSessionId'],
+      )
+      || !isValidSerializedKey(candidate.key)
+      || keys.has(candidate.key)
+      || !isValidPanelWidthRatio(candidate.widthRatio)
+      || (
+        candidate.ownerKey !== undefined
+        && !isValidSerializedKey(candidate.ownerKey)
+      )
+    ) {
+      return null
+    }
+
+    const route = parsePanelContentRoute(candidate.route)
+    if (!route || !isValidChatTarget(route, candidate.chatTargetSessionId)) {
+      return null
+    }
+    if (candidate.ownerKey !== undefined && !isCompanionPanelRoute(route)) {
+      return null
+    }
+
+    keys.add(candidate.key)
+    entries.push({
+      key: candidate.key,
+      route,
+      widthRatio: candidate.widthRatio,
+      ...(candidate.ownerKey ? { ownerKey: candidate.ownerKey } : {}),
+      ...(candidate.chatTargetSessionId
+        ? { chatTargetSessionId: candidate.chatTargetSessionId }
+        : {}),
+    })
+  }
+
+  if (!validateLayoutRelationships(entries, focusedKey)) return null
+
+  return {
+    version: PANEL_LAYOUT_VERSION,
+    entries,
+    focusedKey,
+  }
+}
+
+export function deserializePanelLayout(
   encoded: string,
-): SerializedPanelLayoutV1 | null {
+): SerializedPanelLayoutV2 | null {
   if (
     encoded.length === 0
     || encoded.length > MAX_ENCODED_PANEL_LAYOUT_BYTES
@@ -208,7 +295,6 @@ export function deserializePanelLayoutV1(
   if (
     !isRecord(value)
     || !hasOnlyKeys(value, ['version', 'entries', 'focusedKey'])
-    || value.version !== PANEL_LAYOUT_VERSION
     || !Array.isArray(value.entries)
     || value.entries.length === 0
     || value.entries.length > MAX_PANEL_LAYOUT_ENTRIES
@@ -217,87 +303,6 @@ export function deserializePanelLayoutV1(
     return null
   }
 
-  const entries: SerializedPanelLayoutV1['entries'] = []
-  const keys = new Set<string>()
-  for (const candidate of value.entries) {
-    if (
-      !isRecord(candidate)
-      || !hasOnlyKeys(
-        candidate,
-        ['key', 'route', 'proportion', 'ownerKey', 'chatTargetSessionId'],
-      )
-      || typeof candidate.key !== 'string'
-      || candidate.key.length === 0
-      || candidate.key.length > 64
-      || keys.has(candidate.key)
-      || typeof candidate.proportion !== 'number'
-      || !Number.isFinite(candidate.proportion)
-      || candidate.proportion <= 0
-      || (
-        candidate.ownerKey !== undefined
-        && (
-          typeof candidate.ownerKey !== 'string'
-          || candidate.ownerKey.length === 0
-          || candidate.ownerKey.length > 64
-        )
-      )
-      || (
-        candidate.chatTargetSessionId !== undefined
-        && (
-          typeof candidate.chatTargetSessionId !== 'string'
-          || candidate.chatTargetSessionId.length === 0
-          || candidate.chatTargetSessionId.length
-            > MAX_CHAT_TARGET_SESSION_ID_LENGTH
-        )
-      )
-    ) {
-      return null
-    }
-
-    const route = parsePanelContentRoute(candidate.route)
-    if (!route) return null
-    if (
-      (
-        candidate.ownerKey !== undefined
-        || candidate.chatTargetSessionId !== undefined
-      )
-      && !isCompanionPanelRoute(route)
-    ) {
-      return null
-    }
-
-    keys.add(candidate.key)
-    entries.push({
-      key: candidate.key,
-      route,
-      proportion: candidate.proportion,
-      ...(candidate.ownerKey
-        ? { ownerKey: candidate.ownerKey }
-        : {}),
-      ...(candidate.chatTargetSessionId
-        ? { chatTargetSessionId: candidate.chatTargetSessionId }
-        : {}),
-    })
-  }
-
-  if (!keys.has(value.focusedKey)) return null
-
-  const entryByKey = new Map(entries.map(entry => [entry.key, entry]))
-  for (const entry of entries) {
-    if (!entry.ownerKey) continue
-    const owner = entryByKey.get(entry.ownerKey)
-    if (!owner || owner.route.kind !== 'navigation') return null
-  }
-
-  const totalProportion = entries.reduce(
-    (total, entry) => total + entry.proportion,
-    0,
-  )
-  if (!Number.isFinite(totalProportion) || totalProportion <= 0) return null
-
-  return {
-    version: PANEL_LAYOUT_VERSION,
-    entries,
-    focusedKey: value.focusedKey,
-  }
+  if (value.version !== PANEL_LAYOUT_VERSION) return null
+  return parseLayoutV2(value.entries, value.focusedKey)
 }

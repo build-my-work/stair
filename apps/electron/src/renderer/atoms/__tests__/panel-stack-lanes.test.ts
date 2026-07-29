@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { createStore } from 'jotai'
+import { createStore as createJotaiStore } from 'jotai'
 import {
   backFromCompanionPanelAtom,
   closePanelAtom,
@@ -10,9 +10,11 @@ import {
   openOrFocusBrowserPanelAtom,
   openOrReuseProjectFileAtom,
   panelStackAtom,
+  panelViewportWidthAtom,
   projectFileOpenIntentsAtom,
   parseSessionIdFromRoute,
   pushPanelAtom,
+  resizePanelAtom,
   restorePanelLayoutAtom,
   setCompanionChatTargetAtom,
   updateFocusedPanelRouteAtom,
@@ -20,11 +22,21 @@ import {
   type PanelStackEntry,
 } from '../panel-stack'
 import {
-  deserializePanelLayoutV1,
-  serializePanelLayoutV1,
+  deserializePanelLayout,
+  serializePanelLayout,
 } from '../../lib/panel-layout-codec'
 import { updatePanelLayoutSearchParam } from '../../contexts/navigation-history'
 import type { ViewRoute } from '../../../shared/routes'
+
+const PANEL_VIEWPORT_WIDTH = 1_200
+const DEFAULT_WIDTH_RATIO = 560 / PANEL_VIEWPORT_WIDTH
+const EPUB_WIDTH_RATIO = 840 / PANEL_VIEWPORT_WIDTH
+
+function createStore() {
+  const store = createJotaiStore()
+  store.set(panelViewportWidthAtom, PANEL_VIEWPORT_WIDTH)
+  return store
+}
 
 function getStack(store: ReturnType<typeof createStore>): PanelStackEntry[] {
   return store.get(panelStackAtom)
@@ -82,6 +94,49 @@ describe('panel stack content routes', () => {
       { kind: 'navigation', viewRoute: 'sources/source/github' },
       { kind: 'navigation', viewRoute: 'settings' },
     ])
+  })
+
+  it('assigns independent defaults without resizing existing panels', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    const owner = getStack(store)[0]
+
+    openProjectFile(store, owner.id, 'book.epub')
+
+    expect(getStack(store).map(panel => panel.widthRatio)).toEqual([
+      DEFAULT_WIDTH_RATIO,
+      EPUB_WIDTH_RATIO,
+    ])
+  })
+
+  it('resizes only the target Panel without normalizing its neighbors', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    const owner = getStack(store)[0]
+    openProjectFile(store, owner.id, 'book.epub')
+
+    store.set(resizePanelAtom, {
+      panelId: owner.id,
+      widthRatio: 0.75,
+    })
+
+    expect(getStack(store).map(panel => panel.widthRatio)).toEqual([
+      0.75,
+      EPUB_WIDTH_RATIO,
+    ])
+    expect(
+      getStack(store).reduce((sum, panel) => sum + panel.widthRatio, 0),
+    ).toBeGreaterThan(1)
+  })
+
+  it('does not rewrite ratios when the PanelStack viewport changes', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    const before = getStack(store).map(panel => panel.widthRatio)
+
+    store.set(panelViewportWidthAtom, 1_600)
+
+    expect(getStack(store).map(panel => panel.widthRatio)).toEqual(before)
   })
 
   it('updates the focused panel with a navigation route', () => {
@@ -142,23 +197,26 @@ describe('panel stack content routes', () => {
 
     const stack = getStack(store)
     const focusedPanelId = store.get(focusedPanelIdAtom)
-    const encoded = serializePanelLayoutV1(stack, focusedPanelId)
+    const encoded = serializePanelLayout(stack, focusedPanelId)
     const searchParams = new URLSearchParams('ws=my-workspace')
     const urlLayout = updatePanelLayoutSearchParam(
       searchParams,
       stack,
       focusedPanelId,
     )
-    const layout = deserializePanelLayoutV1(
+    const layout = deserializePanelLayout(
       searchParams.get('layout')!,
     )
 
-    expect(stack.every(panel => panel.proportion > 0)).toBe(true)
+    expect(stack.map(panel => panel.widthRatio)).toEqual([
+      DEFAULT_WIDTH_RATIO,
+      EPUB_WIDTH_RATIO,
+    ])
     expect(encoded).not.toBeNull()
     expect(urlLayout).toBe(encoded)
     expect(searchParams.get('ws')).toBe('my-workspace')
     expect(layout).toMatchObject({
-      version: 1,
+      version: 2,
       entries: [
         {
           key: 'p0',
@@ -403,7 +461,7 @@ describe('panel stack content routes', () => {
       {
         id: 'owner',
         route: { kind: 'navigation', viewRoute: 'allSessions/session/s1' },
-        proportion: 0.5,
+        widthRatio: DEFAULT_WIDTH_RATIO,
       },
       {
         id: 'file',
@@ -413,7 +471,7 @@ describe('panel stack content routes', () => {
           relativePath: 'book.epub',
           contextRoute: 'allSessions/session/s1',
         },
-        proportion: 0.5,
+        widthRatio: EPUB_WIDTH_RATIO,
       },
     ])
 
@@ -471,7 +529,7 @@ describe('panel stack content routes', () => {
   it('Compact Back replaces an orphan with its navigation context', () => {
     const store = createStore()
     store.set(restorePanelLayoutAtom, {
-      version: 1,
+      version: 2,
       entries: [{
         key: 'p0',
         route: {
@@ -480,7 +538,7 @@ describe('panel stack content routes', () => {
           relativePath: 'README.md',
           contextRoute: 'projects/project/demo',
         },
-        proportion: 1,
+        widthRatio: DEFAULT_WIDTH_RATIO,
       }],
       focusedKey: 'p0',
     })
@@ -498,20 +556,20 @@ describe('panel stack content routes', () => {
     expect(store.get(focusedPanelIdAtom)).toBe(fileId)
   })
 
-  it('restores duplicate routes, owner, focus, and normalized proportions from V1', () => {
+  it('restores duplicate routes, owner, focus, and independent V2 ratios', () => {
     const store = createStore()
     store.set(restorePanelLayoutAtom, {
-      version: 1,
+      version: 2,
       entries: [
         {
           key: 'p0',
           route: { kind: 'navigation', viewRoute: 'allSessions/session/s1' },
-          proportion: 2,
+          widthRatio: 0.47,
         },
         {
           key: 'p1',
           route: { kind: 'navigation', viewRoute: 'allSessions/session/s1' },
-          proportion: 3,
+          widthRatio: 0.60,
         },
         {
           key: 'p2',
@@ -521,7 +579,7 @@ describe('panel stack content routes', () => {
             relativePath: 'book.epub',
             contextRoute: 'allSessions/session/s1',
           },
-          proportion: 5,
+          widthRatio: 0.77,
           ownerKey: 'p0',
         },
       ],
@@ -532,7 +590,11 @@ describe('panel stack content routes', () => {
     expect(firstOwner.id).not.toBe(secondOwner.id)
     expect(file.ownerPanelId).toBe(firstOwner.id)
     expect(store.get(focusedPanelIdAtom)).toBe(secondOwner.id)
-    expect(getStack(store).map(panel => panel.proportion)).toEqual([0.2, 0.3, 0.5])
+    expect(getStack(store).map(panel => panel.widthRatio)).toEqual([
+      0.47,
+      0.60,
+      0.77,
+    ])
   })
 
   it('does not create more than eight panels', () => {
@@ -612,11 +674,11 @@ describe('panel stack content routes', () => {
       panelId: browser.id,
       sessionId: 'session-2',
     })
-    const encoded = serializePanelLayoutV1(
+    const encoded = serializePanelLayout(
       getStack(store),
       store.get(focusedPanelIdAtom),
     )
-    const layout = deserializePanelLayoutV1(encoded!)
+    const layout = deserializePanelLayout(encoded!)
     const restoredStore = createStore()
     restoredStore.set(restorePanelLayoutAtom, layout!)
 

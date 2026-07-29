@@ -8,6 +8,7 @@ import {
   EPUB_DOCUMENT_CSP,
   createIdempotentEpubCleanup,
   createProjectFileEpubViewerKey,
+  createEpubResizeScheduler,
   findCurrentEpubTocNode,
   getEpubReaderTheme,
   getEpubRenditionOptions,
@@ -274,5 +275,33 @@ describe('EPUB theme and cleanup', () => {
     cleanup()
     cleanup()
     expect(calls).toEqual(['listeners', 'third-party', 'observer'])
+  })
+
+  it('trails continuous rendition resizes and skips equal integer sizes', async () => {
+    const calls: Array<[number, number]> = []
+    let resolveFirstResize: (() => void) | null = null
+    const firstResize = new Promise<void>(resolve => {
+      resolveFirstResize = resolve
+    })
+    const scheduler = createEpubResizeScheduler(
+      (width, height) => {
+        calls.push([width, height])
+        resolveFirstResize?.()
+      },
+      { width: 800.9, height: 600.9 },
+      10,
+    )
+
+    scheduler.schedule(800.2, 600.4)
+    scheduler.schedule(820.8, 600.4)
+    scheduler.schedule(840.9, 600.9)
+    await firstResize
+
+    expect(calls).toEqual([[840, 600]])
+
+    scheduler.schedule(840.1, 600.1)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(calls).toEqual([[840, 600]])
+    scheduler.cancel()
   })
 })

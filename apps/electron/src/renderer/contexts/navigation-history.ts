@@ -1,5 +1,5 @@
 import type { PanelContentRoute } from '../../shared/routes'
-import { serializePanelLayoutV1 } from '@/lib/panel-layout-codec'
+import { serializePanelLayout } from '@/lib/panel-layout-codec'
 
 interface SemanticHistoryKeyInput {
   workspaceSlug: string | null
@@ -18,8 +18,9 @@ interface InitialRestoreGateInput {
 interface PanelLayoutUrlEntry {
   id: string
   route: PanelContentRoute
-  proportion: number
+  widthRatio: number
   ownerPanelId?: string
+  chatTargetSessionId?: string
 }
 
 /**
@@ -30,7 +31,7 @@ export function updatePanelLayoutSearchParam(
   panels: readonly PanelLayoutUrlEntry[],
   focusedPanelId: string | null,
 ): string | null {
-  const layout = serializePanelLayoutV1(panels, focusedPanelId)
+  const layout = serializePanelLayout(panels, focusedPanelId)
   if (layout) {
     searchParams.set('layout', layout)
   } else {

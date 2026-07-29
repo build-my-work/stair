@@ -58,7 +58,7 @@ import {
   updatePanelLayoutSearchParam,
 } from './navigation-history'
 import * as storage from '@/lib/local-storage'
-import { deserializePanelLayoutV1 } from '@/lib/panel-layout-codec'
+import { deserializePanelLayout } from '@/lib/panel-layout-codec'
 import {
   getPanelContentRouteKey,
   panelContentRoutesEqual,
@@ -297,7 +297,7 @@ export function NavigationProvider({
   const initialRouteRestoredRef = useRef(false)
 
   // Semantic key for the last history entry we intentionally pushed/reconciled.
-  // Excludes layout-only values (like panel proportions) so resize does not create history entries.
+  // Excludes layout-only values (like panel widths) so resize does not create history entries.
   const lastSemanticHistoryKeyRef = useRef('')
 
   const updateCanGoBackForward = useCallback(() => {
@@ -456,7 +456,7 @@ export function NavigationProvider({
 
   /**
    * Parse URL search params and replace the panel stack + sidebar.
-   * Invalid or absent V1 state enters one safe navigation panel.
+   * Invalid or absent layout state enters one safe navigation panel.
    */
   const reconcileFromUrlParams = useCallback(
     (params: URLSearchParams) => {
@@ -476,7 +476,7 @@ export function NavigationProvider({
 
       const layoutParam = params.get('layout')
       const layout = layoutParam
-        ? deserializePanelLayoutV1(layoutParam)
+        ? deserializePanelLayout(layoutParam)
         : null
       if (layout) {
         store.set(restorePanelLayoutAtom, layout)

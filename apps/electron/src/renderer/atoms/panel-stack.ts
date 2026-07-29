@@ -10,8 +10,11 @@ import { parseRouteToNavigationState } from '../../shared/route-parser'
 import type { PanelContentRoute, ViewRoute } from '../../shared/routes'
 import {
   MAX_PANEL_LAYOUT_ENTRIES,
-  type SerializedPanelLayoutV1,
+  type SerializedPanelLayoutV2,
 } from '@/lib/panel-layout-codec'
+import {
+  getDefaultPanelWidthRatio,
+} from '@/lib/panel-sizing'
 import {
   buildNavigationPanelRoute,
   buildBrowserPanelRoute,
@@ -30,7 +33,8 @@ function generatePanelId(): string {
 export interface PanelStackEntry {
   id: string
   route: PanelContentRoute
-  proportion: number
+  /** Independent share of the visible PanelStack width. Never normalized. */
+  widthRatio: number
   /** Physical navigation panel that owns this companion presentation. */
   ownerPanelId?: string
   /** Explicit Session that receives references from this companion panel. */
@@ -40,6 +44,11 @@ export interface PanelStackEntry {
 export const panelStackAtom = atom<PanelStackEntry[]>([])
 export const focusedPanelIdAtom = atom<string | null>(null)
 export const projectFileOpenIntentsAtom = atom<Map<string, ProjectFileOpenIntent>>(new Map())
+export const panelViewportWidthAtom = atom(
+  typeof document === 'undefined'
+    ? 0
+    : document.documentElement.clientWidth,
+)
 
 export const panelCountAtom = atom((get) => get(panelStackAtom).length)
 
@@ -72,33 +81,41 @@ function toPanelContentRoute(route: ViewRoute | PanelContentRoute): PanelContent
   return typeof route === 'string' ? buildNavigationPanelRoute(route) : route
 }
 
+interface CreatePanelEntryOptions {
+  widthRatio?: number
+  panelViewportWidth?: number
+  id?: string
+  ownerPanelId?: string
+  chatTargetSessionId?: string
+}
+
 function createEntry(
   input: ViewRoute | PanelContentRoute,
-  proportion: number,
-  id?: string,
-  ownerPanelId?: string,
-  chatTargetSessionId?: string,
+  {
+    widthRatio,
+    panelViewportWidth,
+    id,
+    ownerPanelId,
+    chatTargetSessionId,
+  }: CreatePanelEntryOptions = {},
 ): PanelStackEntry {
   const route = toPanelContentRoute(input)
+  const validWidthRatio = (
+    typeof widthRatio === 'number'
+    && Number.isFinite(widthRatio)
+    && widthRatio > 0
+  )
+    ? widthRatio
+    : getDefaultPanelWidthRatio(route, panelViewportWidth ?? 0)
   return {
     id: id ?? generatePanelId(),
     route,
-    proportion,
+    widthRatio: validWidthRatio,
     ...(ownerPanelId ? { ownerPanelId } : {}),
     ...(isCompanionPanelRoute(route) && chatTargetSessionId
       ? { chatTargetSessionId }
       : {}),
   }
-}
-
-function normalizeProportions(stack: PanelStackEntry[]): PanelStackEntry[] {
-  if (stack.length === 0) return stack
-  const total = stack.reduce((sum, panel) => sum + panel.proportion, 0)
-  if (total <= 0) {
-    const equal = 1 / stack.length
-    return stack.map(panel => ({ ...panel, proportion: equal }))
-  }
-  return stack.map(panel => ({ ...panel, proportion: panel.proportion / total }))
 }
 
 function findNavigationPanel(
@@ -160,29 +177,17 @@ export const pushPanelAtom = atom(
     const validOwnerId = isCompanionPanelRoute(contentRoute)
       ? findNavigationPanel(stack, ownerPanelId)?.id
       : undefined
-    // The persisted layout requires every physical panel to have a positive
-    // proportion. Give a newly inserted panel the current average share before
-    // normalizing; using zero makes the whole layout impossible to serialize.
-    const currentTotal = stack.reduce(
-      (total, entry) => total + entry.proportion,
-      0,
-    )
-    const newProportion = stack.length > 0 && currentTotal > 0
-      ? currentTotal / stack.length
-      : 1
-    const newEntry = createEntry(
-      contentRoute,
-      newProportion,
-      undefined,
-      validOwnerId,
-    )
+    const newEntry = createEntry(contentRoute, {
+      panelViewportWidth: get(panelViewportWidthAtom),
+      ownerPanelId: validOwnerId,
+    })
     const newStack = [
       ...stack.slice(0, insertAt),
       newEntry,
       ...stack.slice(insertAt),
     ]
 
-    set(panelStackAtom, normalizeProportions(newStack))
+    set(panelStackAtom, newStack)
     set(focusedPanelIdAtom, newEntry.id)
     return newEntry.id
   },
@@ -445,7 +450,7 @@ export const closePanelAtom = atom(
           : entry
       ))
 
-    set(panelStackAtom, normalizeProportions(remaining))
+    set(panelStackAtom, remaining)
     set(projectFileOpenIntentsAtom, current => {
       if (!current.has(id)) return current
       const next = new Map(current)
@@ -479,8 +484,10 @@ export const backFromCompanionPanelAtom = atom(
 
     const replacement = createEntry(
       buildNavigationPanelRoute(panel.route.contextRoute),
-      panel.proportion,
-      panel.id,
+      {
+        widthRatio: panel.widthRatio,
+        id: panel.id,
+      },
     )
     set(panelStackAtom, stack.map(entry => (
       entry.id === panelId ? replacement : entry
@@ -490,51 +497,55 @@ export const backFromCompanionPanelAtom = atom(
 )
 
 /**
- * Restore a validated V1 snapshot in one atom transaction.
+ * Restore a validated layout snapshot in one atom transaction.
  */
 export const restorePanelLayoutAtom = atom(
   null,
-  (_get, set, layout: SerializedPanelLayoutV1) => {
+  (_get, set, layout: SerializedPanelLayoutV2) => {
     const idByKey = new Map(
       layout.entries.map(entry => [entry.key, generatePanelId()]),
     )
     const restored = layout.entries.map(entry => createEntry(
       entry.route,
-      entry.proportion,
-      idByKey.get(entry.key),
-      entry.ownerKey ? idByKey.get(entry.ownerKey) : undefined,
-      entry.chatTargetSessionId,
+      {
+        widthRatio: entry.widthRatio,
+        id: idByKey.get(entry.key),
+        ownerPanelId: entry.ownerKey
+          ? idByKey.get(entry.ownerKey)
+          : undefined,
+        chatTargetSessionId: entry.chatTargetSessionId,
+      },
     ))
 
-    set(panelStackAtom, normalizeProportions(restored))
+    set(panelStackAtom, restored)
     set(focusedPanelIdAtom, idByKey.get(layout.focusedKey) ?? null)
   },
 )
 
-export const resizePanelsAtom = atom(
+export const resizePanelAtom = atom(
   null,
   (get, set, {
-    leftIndex,
-    rightIndex,
-    leftProportion,
-    rightProportion,
+    panelId,
+    widthRatio,
   }: {
-    leftIndex: number
-    rightIndex: number
-    leftProportion: number
-    rightProportion: number
+    panelId: string
+    widthRatio: number
   }) => {
     const stack = get(panelStackAtom)
-    if (leftIndex < 0 || rightIndex >= stack.length) return
-    set(panelStackAtom, stack.map((panel, index) => {
-      if (index === leftIndex) {
-        return { ...panel, proportion: leftProportion }
-      }
-      if (index === rightIndex) {
-        return { ...panel, proportion: rightProportion }
-      }
-      return panel
-    }))
+    const panel = stack.find(entry => entry.id === panelId)
+    if (
+      !panel
+      || !Number.isFinite(widthRatio)
+      || widthRatio <= 0
+      || widthRatio === panel.widthRatio
+    ) {
+      return
+    }
+    set(panelStackAtom, stack.map(entry => (
+      entry.id === panelId
+        ? { ...entry, widthRatio }
+        : entry
+    )))
   },
 )
 
@@ -545,7 +556,9 @@ export const updateFocusedPanelRouteAtom = atom(
     const contentRoute = buildNavigationPanelRoute(route)
 
     if (stack.length === 0) {
-      const newEntry = createEntry(contentRoute, 1)
+      const newEntry = createEntry(contentRoute, {
+        panelViewportWidth: get(panelViewportWidthAtom),
+      })
       set(panelStackAtom, [newEntry])
       set(focusedPanelIdAtom, newEntry.id)
       return
@@ -555,7 +568,10 @@ export const updateFocusedPanelRouteAtom = atom(
     const focused = stack.find(panel => panel.id === focusedId) ?? stack[0]
     const updated = stack.map(panel =>
       panel.id === focused.id
-        ? createEntry(contentRoute, panel.proportion, panel.id)
+        ? createEntry(contentRoute, {
+            widthRatio: panel.widthRatio,
+            id: panel.id,
+          })
         : panel
     )
 

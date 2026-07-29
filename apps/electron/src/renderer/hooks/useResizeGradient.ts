@@ -60,7 +60,7 @@ export function getResizeGradientStyle(
  * Returns:
  * - ref: Attach to the touch area element
  * - mouseY: Current Y position (null when not hovering)
- * - handlers: onMouseMove, onMouseLeave, onMouseDown for the touch area
+ * - handlers: hover and drag lifecycle handlers for the touch area
  * - gradientStyle: CSS style object for the visual indicator
  */
 export function useResizeGradient() {
@@ -85,6 +85,11 @@ export function useResizeGradient() {
     setIsDragging(true)
   }, [])
 
+  const onMouseUp = React.useCallback(() => {
+    setIsDragging(false)
+    setMouseY(null)
+  }, [])
+
   // Track mouse position during drag and cleanup on mouseup
   React.useEffect(() => {
     if (!isDragging) return
@@ -96,25 +101,20 @@ export function useResizeGradient() {
       }
     }
 
-    const handleMouseUp = () => {
-      setIsDragging(false)
-      setMouseY(null)
-    }
-
     document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
+    document.addEventListener('mouseup', onMouseUp)
 
     return () => {
       document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
+      document.removeEventListener('mouseup', onMouseUp)
     }
-  }, [isDragging])
+  }, [isDragging, onMouseUp])
 
   return {
     ref,
     mouseY,
     isDragging,
-    handlers: { onMouseMove, onMouseLeave, onMouseDown },
+    handlers: { onMouseMove, onMouseLeave, onMouseDown, onMouseUp },
     gradientStyle: getResizeGradientStyle(mouseY, ref.current?.clientHeight ?? null),
   }
 }

@@ -475,7 +475,7 @@ html[data-font="inter"] {
   /* Custom breakpoints for responsive panel layouts.
    * Generates @panel-compact:, @panel-medium:, @mobile: Tailwind utility prefixes. */
   --container-3xs: 16rem;           /* 256px */
-  --container-panel-compact: 28rem; /* 448px — PANEL_MIN_WIDTH */
+  --container-panel-compact: 28rem; /* 448px */
   --container-panel-medium: 40rem;  /* 640px */
   --container-mobile: 48rem;        /* 768px — mobile breakpoint */
 }

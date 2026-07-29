@@ -63,7 +63,7 @@ describe('getStaleBrowserPanelIds', () => {
           kind: 'navigation',
           viewRoute: 'allSessions/session/session-1',
         },
-        proportion: 0.5,
+        widthRatio: 0.47,
       },
       {
         id: 'live-browser-panel',
@@ -72,7 +72,7 @@ describe('getStaleBrowserPanelIds', () => {
           browserId: 'browser-live',
           contextRoute: 'allSessions/session/session-1',
         },
-        proportion: 0.25,
+        widthRatio: 0.47,
       },
       {
         id: 'stale-browser-panel',
@@ -81,7 +81,7 @@ describe('getStaleBrowserPanelIds', () => {
           browserId: 'browser-stale',
           contextRoute: 'allSessions/session/session-1',
         },
-        proportion: 0.25,
+        widthRatio: 0.47,
       },
     ]
 

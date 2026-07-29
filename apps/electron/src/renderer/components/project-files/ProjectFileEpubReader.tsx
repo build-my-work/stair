@@ -36,6 +36,7 @@ import {
   type EpubHighlightTreeNode,
 } from '@/lib/epub-highlights'
 import { cn } from '@/lib/utils'
+import { EPUB_INLINE_NAV_MIN_WIDTH_PX } from '@/lib/panel-sizing'
 import { Button } from '@/components/ui/button'
 import { ChatTargetMenu } from '@/components/app-shell/ChatTargetMenu'
 
@@ -43,6 +44,7 @@ import {
   createEpubSerializeHook,
   createIdempotentEpubCleanup,
   createProjectFileEpubViewerKey,
+  createEpubResizeScheduler,
   findCurrentEpubTocNode,
   getEpubReaderTheme,
   getEpubRenditionOptions,
@@ -388,7 +390,9 @@ export function ProjectFileEpubReader({
 
     let wasCompact: boolean | null = null
     const update = () => {
-      const nextCompact = shell.getBoundingClientRect().width < 560
+      const nextCompact = (
+        shell.getBoundingClientRect().width < EPUB_INLINE_NAV_MIN_WIDTH_PX
+      )
       if (nextCompact && wasCompact !== true) setTocOpen(false)
       wasCompact = nextCompact
       setCompact(nextCompact)
@@ -409,6 +413,8 @@ export function ProjectFileEpubReader({
     let book: Book | null = null
     let rendition: Rendition | null = null
     let resizeObserver: ResizeObserver | null = null
+    let resizeScheduler:
+      ReturnType<typeof createEpubResizeScheduler> | null = null
     let serializeHook: ReturnType<typeof createEpubSerializeHook> | null = null
     let contentHook: ((contents: Contents) => void) | null = null
     let unloadedHook: ((view: RenderedView) => void) | null = null
@@ -484,6 +490,7 @@ export function ProjectFileEpubReader({
         selectionDocumentRef.current = null
       },
       () => resizeObserver?.disconnect(),
+      () => resizeScheduler?.cancel(),
       () => mount?.removeEventListener('scroll', dismissSelection, true),
       () => {
         if (!rendition) return
@@ -664,13 +671,19 @@ export function ProjectFileEpubReader({
         if (disposed) return
 
         if (typeof ResizeObserver !== 'undefined') {
+          const initialBounds = mount.getBoundingClientRect()
+          resizeScheduler = createEpubResizeScheduler(
+            (width, height) => {
+              if (disposed || !rendition) return
+              dismissSelection()
+              rendition.resize(width, height)
+            },
+            initialBounds,
+          )
           resizeObserver = new ResizeObserver(() => {
-            if (disposed || !rendition) return
-            dismissSelection()
+            if (disposed) return
             const bounds = mount.getBoundingClientRect()
-            if (bounds.width > 0 && bounds.height > 0) {
-              rendition.resize(Math.floor(bounds.width), Math.floor(bounds.height))
-            }
+            resizeScheduler?.schedule(bounds.width, bounds.height)
           })
           resizeObserver.observe(mount)
         }

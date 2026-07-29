@@ -4,8 +4,8 @@
  * Renders a single content panel within the PanelStackContainer.
  *
  * When a panel is the only one (isOnly), it flex-grows to fill available space.
- * When multiple panels exist, each uses flex-grow with its proportion as the weight,
- * combined with min-width to prevent shrinking below PANEL_MIN_WIDTH.
+ * When multiple panels exist, each derives a fixed width from its independent
+ * viewport ratio. The lane scrolls instead of shrinking neighboring panels.
  *
  * Each PanelSlot overrides AppShellContext to inject a per-panel close button
  * into PanelHeader's rightSidebarButton slot. All panels are equal — closing
@@ -28,8 +28,9 @@ import {
 } from '@/atoms/panel-stack'
 import { useAppShellContext, AppShellProvider } from '@/context/AppShellContext'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
-import { PANEL_MIN_WIDTH, RADIUS_EDGE, RADIUS_INNER } from './panel-constants'
+import { RADIUS_EDGE, RADIUS_INNER } from './panel-constants'
 import { isCompanionPanelRoute } from '@/lib/project-file-route'
+import { getPanelSizePolicy, getPanelWidthPx } from '@/lib/panel-sizing'
 import { navigate, routes } from '@/lib/navigate'
 import { PanelContentRouter } from './PanelContentRouter'
 
@@ -63,10 +64,8 @@ interface PanelSlotProps {
   isAtLeftEdge: boolean
   /** Whether this panel's right corners touch the window edge (no right sidebar after it) */
   isAtRightEdge: boolean
-  /** Flex-grow weight for proportional sizing */
-  proportion: number
-  /** Optional sash element rendered before this panel */
-  sash?: React.ReactNode
+  /** Visible width used to resolve the independent desktop width ratio. */
+  panelViewportWidth: number
   /** Compact (mobile) mode — shows back button in panel header */
   isCompact?: boolean
 }
@@ -78,8 +77,7 @@ export function PanelSlot({
   isSidebarAndNavigatorHidden,
   isAtLeftEdge,
   isAtRightEdge,
-  proportion,
-  sash,
+  panelViewportWidth,
   isCompact,
 }: PanelSlotProps) {
   const { t } = useTranslation()
@@ -88,6 +86,7 @@ export function PanelSlot({
   const setFocusedPanel = useSetAtom(focusedPanelIdAtom)
   const parentContext = useAppShellContext()
   const compactProjectBackRoute = getCompactProjectBackRoute(entry.route)
+  const { minWidthPx } = getPanelSizePolicy(entry.route)
 
   const handleClose = useCallback(() => {
     closePanel(entry.id)
@@ -151,50 +150,55 @@ export function PanelSlot({
   }, [isFocusedPanel, setFocusedPanel, entry.id])
 
   return (
-    <>
-      {sash}
-      <div
-        onPointerDown={handlePointerDown}
-        data-panel-role="content"
-        data-panel-id={entry.id}
-        data-compact={isCompact || undefined}
-        className={cn(
-          'h-full overflow-hidden relative @container/panel',
-          !isOnly && isFocusedPanel ? 'shadow-panel-focused z-[1]' : 'shadow-middle z-0',
-          'bg-foreground-2',
-        )}
-        style={{
-          // In multi-panel, unfocused panels override --background so all
-          // bg-background children render at the elevated (dimmed) background.
-          ...(!isFocusedPanel && !isOnly
-            ? {
-                '--background': 'var(--background-elevated)',
-                '--shadow-minimal': 'var(--shadow-minimal-flat)',
-                '--user-message-bubble': 'var(--user-message-bubble-dimmed)',
-              } as React.CSSProperties
-            : {}
-          ),
-          // Corner radii: edge corners (touching window boundary) vs interior corners.
-          // Compact mode panels run flush to the viewport floor — no rounded bottom.
-          borderTopLeftRadius: RADIUS_INNER,
-          borderBottomLeftRadius: isCompact ? 0 : (isAtLeftEdge ? RADIUS_EDGE : RADIUS_INNER),
-          borderTopRightRadius: RADIUS_INNER,
-          borderBottomRightRadius: isCompact ? 0 : (isAtRightEdge ? RADIUS_EDGE : RADIUS_INNER),
-          ...(isOnly
-            ? { flexGrow: 1, minWidth: 0 }
-            : { flexGrow: proportion, flexShrink: 1, flexBasis: 0, minWidth: PANEL_MIN_WIDTH }
-          ),
-        }}
-      >
-        <div className="h-full flex flex-col">
-          <AppShellProvider value={contextOverride}>
-            <PanelContentRouter
-              entry={entry}
-              isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
-            />
-          </AppShellProvider>
-        </div>
+    <div
+      onPointerDown={handlePointerDown}
+      data-panel-role="content"
+      data-panel-id={entry.id}
+      data-compact={isCompact || undefined}
+      className={cn(
+        'h-full overflow-hidden relative @container/panel',
+        !isOnly && isFocusedPanel ? 'shadow-panel-focused z-[1]' : 'shadow-middle z-0',
+        'bg-foreground-2',
+      )}
+      style={{
+        // In multi-panel, unfocused panels override --background so all
+        // bg-background children render at the elevated (dimmed) background.
+        ...(!isFocusedPanel && !isOnly
+          ? {
+              '--background': 'var(--background-elevated)',
+              '--shadow-minimal': 'var(--shadow-minimal-flat)',
+              '--user-message-bubble': 'var(--user-message-bubble-dimmed)',
+            } as React.CSSProperties
+          : {}
+        ),
+        // Corner radii: edge corners (touching window boundary) vs interior corners.
+        // Compact mode panels run flush to the viewport floor — no rounded bottom.
+        borderTopLeftRadius: RADIUS_INNER,
+        borderBottomLeftRadius: isCompact ? 0 : (isAtLeftEdge ? RADIUS_EDGE : RADIUS_INNER),
+        borderTopRightRadius: RADIUS_INNER,
+        borderBottomRightRadius: isCompact ? 0 : (isAtRightEdge ? RADIUS_EDGE : RADIUS_INNER),
+        ...(isOnly
+          ? { flexGrow: 1, minWidth: 0 }
+          : {
+              flex: '0 0 auto',
+              width: getPanelWidthPx(
+                entry.route,
+                entry.widthRatio,
+                panelViewportWidth,
+              ),
+              minWidth: minWidthPx,
+            }
+        ),
+      }}
+    >
+      <div className="h-full flex flex-col">
+        <AppShellProvider value={contextOverride}>
+          <PanelContentRouter
+            entry={entry}
+            isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
+          />
+        </AppShellProvider>
       </div>
-    </>
+    </div>
   )
 }

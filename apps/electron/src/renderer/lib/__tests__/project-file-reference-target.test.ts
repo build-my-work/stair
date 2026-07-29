@@ -24,7 +24,7 @@ function panel(
           contextRoute: viewRoute,
         }
       : { kind: 'navigation', viewRoute },
-    proportion: 0.5,
+    widthRatio: 0.47,
     ownerPanelId,
   }
 }
@@ -38,7 +38,7 @@ function orphanFilePanel(id: string, contextRoute: ViewRoute): PanelStackEntry {
       relativePath: 'book.epub',
       contextRoute,
     },
-    proportion: 1,
+    widthRatio: 0.7,
   }
 }
 

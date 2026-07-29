@@ -4,12 +4,11 @@
  * Horizontal layout container for ALL panels:
  * Sidebar → Navigator → Content Panel(s) with resize sashes.
  *
- * Content panels use CSS flex-grow with their proportions as weights:
- * - Each panel gets `flex: <proportion> 1 0px` with `min-width: PANEL_MIN_WIDTH`
- * - Flex distributes available space proportionally — panels fill the viewport
- * - When panels hit min-width, overflow-x: auto kicks in naturally
+ * Each content panel owns an independent ratio of the visible PanelStack
+ * width. Ratios never normalize; when their resolved widths exceed the
+ * viewport, the track scrolls horizontally.
  *
- * Sidebar and Navigator are NOT part of the proportional layout —
+ * Sidebar and Navigator are NOT part of the content-panel width model —
  * they have their own fixed/user-resizable widths managed by AppShell.
  * They just reduce the available width for content panels and scroll with everything else.
  *
@@ -22,12 +21,13 @@
  * feel rather than a CSS reflow.
  */
 
-import { useRef, useEffect } from 'react'
-import { useAtomValue } from 'jotai'
+import { Fragment, useEffect, useLayoutEffect, useRef } from 'react'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { motion } from 'motion/react'
 import { cn } from '@/lib/utils'
 import {
   panelStackAtom,
+  panelViewportWidthAtom,
   focusedPanelIdAtom,
   focusedPanelRouteAtom,
   focusedPanelContentRouteAtom,
@@ -77,6 +77,8 @@ export function PanelStackContainer({
   const focusedPanelId = useAtomValue(focusedPanelIdAtom)
   const focusedRoute = useAtomValue(focusedPanelRouteAtom)
   const focusedContentRoute = useAtomValue(focusedPanelContentRouteAtom)
+  const panelViewportWidth = useAtomValue(panelViewportWidthAtom)
+  const setPanelViewportWidth = useSetAtom(panelViewportWidthAtom)
 
   // Compact mode: drill-in is "detail focused", not just "session selected".
   // For sessions: a session is selected. For settings: a subpage is selected.
@@ -95,6 +97,23 @@ export function PanelStackContainer({
     : panelStack
 
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    const container = scrollRef.current
+    if (!container) return
+
+    const updateViewportWidth = () => {
+      const nextWidth = container.clientWidth
+      if (nextWidth > 0) setPanelViewportWidth(nextWidth)
+    }
+
+    updateViewportWidth()
+    if (typeof ResizeObserver === 'undefined') return
+
+    const observer = new ResizeObserver(updateViewportWidth)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [isCompact, setPanelViewportWidth])
 
   const hasSidebar = sidebarWidth > 0
   // Desktop: navigator is shown when AppShell asks for it. Compact: navigator
@@ -124,7 +143,15 @@ export function PanelStackContainer({
         const rightOverflow = panelRect.right - containerRect.right
         const leftOverflow = containerRect.left - panelRect.left
 
-        if (rightOverflow > 1) {
+        if (panelRect.width > containerRect.width) {
+          const leftOffset = panelRect.left - containerRect.left
+          if (Math.abs(leftOffset) > 1) {
+            container.scrollTo({
+              left: Math.max(0, container.scrollLeft + leftOffset),
+              behavior: 'smooth',
+            })
+          }
+        } else if (rightOverflow > 1) {
           container.scrollTo({
             left: container.scrollLeft + rightOverflow + PANEL_GAP,
             behavior: 'smooth',
@@ -142,7 +169,14 @@ export function PanelStackContainer({
       cancelAnimationFrame(firstFrame)
       cancelAnimationFrame(secondFrame)
     }
-  }, [panelStack.length, focusedPanelId, focusedRoute, isCompact, isRightSidebarVisible])
+  }, [
+    panelStack.length,
+    panelViewportWidth,
+    focusedPanelId,
+    focusedRoute,
+    isCompact,
+    isRightSidebarVisible,
+  ])
 
   const transition = (isResizing || isCompact) ? { duration: 0 } : PANEL_SPRING
 
@@ -199,7 +233,7 @@ export function PanelStackContainer({
                 isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
                 isAtLeftEdge={isLeftEdge}
                 isAtRightEdge={!isRightSidebarVisible}
-                proportion={focusedEntry.proportion}
+                panelViewportWidth={panelViewportWidth}
                 isCompact={true}
               />
             </div>
@@ -210,10 +244,11 @@ export function PanelStackContainer({
   }
 
   // === DESKTOP BRANCH ===
-  // Same flex-row layout as before; behavior is unchanged.
+  // Independent-ratio horizontal panel track.
   return (
     <div
       ref={scrollRef}
+      data-panel-scroll-container="true"
       data-mobile-menu-root="true"
       className="flex-1 min-w-0 flex relative z-panel panel-scroll @container/shell"
       style={{
@@ -232,7 +267,7 @@ export function PanelStackContainer({
         initial={false}
         animate={{ paddingLeft: !hasSidebar ? PANEL_EDGE_INSET : 0 }}
         transition={transition}
-        style={{ gap: PANEL_GAP, flexGrow: 1, minWidth: 0 }}
+        style={{ gap: PANEL_GAP, flexGrow: 1, minWidth: '100%' }}
       >
         {/* === SIDEBAR SLOT === */}
         <motion.div
@@ -286,23 +321,24 @@ export function PanelStackContainer({
           <div className="flex-1 flex items-center justify-center" />
         ) : (
           visiblePanels.map((entry, index) => (
-            <PanelSlot
-              key={entry.id}
-              entry={entry}
-              isOnly={visiblePanels.length === 1}
-              isFocusedPanel={isMultiPanel ? entry.id === focusedPanelId : true}
-              isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
-              isAtLeftEdge={index === 0 && isLeftEdge}
-              isAtRightEdge={index === visiblePanels.length - 1 && !isRightSidebarVisible}
-              proportion={entry.proportion}
-              isCompact={false}
-              sash={index > 0 ? (
+            <Fragment key={entry.id}>
+              <PanelSlot
+                entry={entry}
+                isOnly={visiblePanels.length === 1}
+                isFocusedPanel={isMultiPanel ? entry.id === focusedPanelId : true}
+                isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
+                isAtLeftEdge={index === 0 && isLeftEdge}
+                isAtRightEdge={index === visiblePanels.length - 1 && !isRightSidebarVisible}
+                panelViewportWidth={panelViewportWidth}
+                isCompact={false}
+              />
+              {isMultiPanel && (
                 <PanelResizeSash
-                  leftIndex={index - 1}
-                  rightIndex={index}
+                  panelId={entry.id}
+                  panelViewportWidth={panelViewportWidth}
                 />
-              ) : undefined}
-            />
+              )}
+            </Fragment>
           ))
         )}
       </motion.div>

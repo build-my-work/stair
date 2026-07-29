@@ -11,6 +11,7 @@ import type { SavedWindow } from './window-state'
 
 // Vite dev server URL for hot reload
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL
+const CHROMIUM_ERR_ABORTED = -3
 
 /**
  * Get the appropriate background material for Windows transparency effects
@@ -59,6 +60,7 @@ export class WindowManager {
   private pendingCloseTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Fallback timeouts for window close
   private eventSink: ((channel: string, target: import('@craft-agent/shared/protocol').PushTarget, ...args: any[]) => void) | null = null
   private clientResolver: ((wcId: number) => string | undefined) | null = null
+  private rendererSurfaceParkingHandler: ((webContentsId: number) => void) | null = null
   private keyboardCloseIntents: Set<number> = new Set()  // webContents.id flagged by Cmd/Ctrl+W before close
   private keyboardCloseIntentTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Auto-clear stale keyboard-close intents
   private isAppQuitting = false  // Skip layered close interception during app quit
@@ -73,6 +75,31 @@ export class WindowManager {
   ): void {
     this.eventSink = sink
     this.clientResolver = resolver
+  }
+
+  /**
+   * Register main-process cleanup for native Browser surfaces hosted by a
+   * renderer. Browser instances remain alive; only their panel presentation is
+   * detached before the renderer document changes or disappears.
+   */
+  setRendererSurfaceParkingHandler(
+    handler: (webContentsId: number) => void,
+  ): void {
+    this.rendererSurfaceParkingHandler = handler
+  }
+
+  private parkRendererSurfaces(
+    webContentsId: number,
+    reason: string,
+  ): void {
+    try {
+      this.rendererSurfaceParkingHandler?.(webContentsId)
+    } catch (error) {
+      windowLog.warn(
+        `Failed to park Browser surfaces for renderer ${webContentsId} (${reason}):`,
+        error,
+      )
+    }
   }
 
   /** Return current RPC event sink, if transport has been initialized. */
@@ -336,6 +363,7 @@ export class WindowManager {
           // Preserve pathname and search from saved URL, use dev server host
           devUrl.pathname = savedUrl.pathname
           devUrl.search = savedUrl.search
+          devUrl.hash = savedUrl.hash
           window.loadURL(devUrl.toString())
         } catch {
           // Fallback if URL parsing fails
@@ -351,7 +379,10 @@ export class WindowManager {
           const savedUrl = new URL(restoreUrl)
           const query: Record<string, string> = {}
           savedUrl.searchParams.forEach((value, key) => { query[key] = value })
-          window.loadFile(join(__dirname, 'renderer/index.html'), { query })
+          window.loadFile(join(__dirname, 'renderer/index.html'), {
+            query,
+            hash: savedUrl.hash,
+          })
         } catch {
           window.loadFile(join(__dirname, 'renderer/index.html'), { query: { workspaceId } })
         }
@@ -371,24 +402,114 @@ export class WindowManager {
       }
     }
 
-    // Fallback: if the renderer fails to load (e.g. stale path, disk error),
-    // recover gracefully by loading the default state instead of showing a white screen. See #13.
-    // In dev mode, retry the Vite dev server (it may not be ready yet) instead of falling back
-    // to file:// which doesn't exist during development.
+    // Native Browser surfaces belong to the current renderer document. Park
+    // them before a real main-frame navigation, crash, or destruction so a
+    // replacement renderer never inherits stale views.
     let failLoadRetries = 0
-    window.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-      windowLog.warn('Failed to load renderer:', errorCode, errorDescription)
-      if (VITE_DEV_SERVER_URL && failLoadRetries < 5) {
-        failLoadRetries++
-        windowLog.info(`Retrying Vite dev server (attempt ${failLoadRetries}/5)...`)
-        setTimeout(() => {
-          const params = new URLSearchParams({ workspaceId }).toString()
-          window.loadURL(`${VITE_DEV_SERVER_URL}?${params}`)
-        }, 1000)
-      } else {
-        window.loadFile(join(__dirname, 'renderer/index.html'), { query: { workspaceId } })
+    let failLoadRetryTimer: NodeJS.Timeout | null = null
+    let lastSuccessfulRendererUrl = ''
+    const clearFailLoadRetry = () => {
+      if (!failLoadRetryTimer) return
+      clearTimeout(failLoadRetryTimer)
+      failLoadRetryTimer = null
+    }
+    const rememberRendererUrl = (url: string) => {
+      if (this.isRendererAppUrl(url)) lastSuccessfulRendererUrl = url
+    }
+
+    window.webContents.on('did-start-navigation', (details) => {
+      if (
+        details.isMainFrame
+        && !details.isSameDocument
+        && this.isRendererAppUrl(details.url)
+      ) {
+        this.parkRendererSurfaces(webContentsId, 'main-frame-navigation')
       }
     })
+    window.webContents.on('render-process-gone', (_event, details) => {
+      this.parkRendererSurfaces(
+        webContentsId,
+        `render-process-gone:${details.reason}`,
+      )
+    })
+    window.webContents.once('destroyed', () => {
+      this.parkRendererSurfaces(webContentsId, 'web-contents-destroyed')
+    })
+    window.webContents.on('did-finish-load', () => {
+      failLoadRetries = 0
+      clearFailLoadRetry()
+      rememberRendererUrl(window.webContents.getURL())
+    })
+    window.webContents.on(
+      'did-navigate-in-page',
+      (_event, url, isMainFrame) => {
+        if (isMainFrame) rememberRendererUrl(url)
+      },
+    )
+
+    // Only a genuine main-document failure may replace the renderer. EPUB
+    // iframe teardown commonly emits ERR_ABORTED (-3) while resizing and must
+    // never trigger this recovery path.
+    window.webContents.on(
+      'did-fail-load',
+      (
+        _event,
+        errorCode,
+        errorDescription,
+        validatedURL,
+        isMainFrame,
+      ) => {
+        if (!isMainFrame || errorCode === CHROMIUM_ERR_ABORTED) return
+
+        windowLog.warn(
+          'Failed to load renderer:',
+          errorCode,
+          errorDescription,
+          validatedURL,
+        )
+        this.parkRendererSurfaces(webContentsId, 'main-frame-load-failed')
+
+        if (failLoadRetries >= 5) {
+          windowLog.error('Renderer recovery stopped after 5 failed attempts')
+          return
+        }
+        failLoadRetries++
+
+        const recoveryUrl = [
+          validatedURL,
+          lastSuccessfulRendererUrl,
+          window.webContents.getURL(),
+        ].find(url => url && this.isRendererAppUrl(url))
+        const retry = () => {
+          failLoadRetryTimer = null
+          if (window.isDestroyed()) return
+
+          if (recoveryUrl) {
+            // Retry the complete URL so route, layout query, and hash survive.
+            window.loadURL(recoveryUrl)
+            return
+          }
+
+          const query: Record<string, string> = { workspaceId }
+          if (focused) query.focused = 'true'
+          if (VITE_DEV_SERVER_URL) {
+            const params = new URLSearchParams(query).toString()
+            window.loadURL(`${VITE_DEV_SERVER_URL}?${params}`)
+          } else {
+            window.loadFile(join(__dirname, 'renderer/index.html'), { query })
+          }
+        }
+
+        if (VITE_DEV_SERVER_URL) {
+          windowLog.info(
+            `Retrying Vite dev server (attempt ${failLoadRetries}/5)...`,
+          )
+          failLoadRetryTimer = setTimeout(retry, 1000)
+        } else {
+          retry()
+        }
+      },
+    )
 
     // If an initial deep link was provided, navigate to it after the window is ready
     if (initialDeepLink) {
@@ -490,6 +611,8 @@ export class WindowManager {
 
     // Handle window closed - clean up theme listener and internal state
     window.on('closed', () => {
+      clearFailLoadRetry()
+
       // Clean up any pending close timeout to prevent memory leaks
       const timeout = this.pendingCloseTimeouts.get(webContentsId)
       if (timeout) {

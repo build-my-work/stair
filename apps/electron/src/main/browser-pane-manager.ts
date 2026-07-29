@@ -1065,6 +1065,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.parkInstance(instance)
   }
 
+  /**
+   * Detach every native Browser surface owned by one renderer window while
+   * keeping the Browser instances and their sessions alive.
+   */
+  parkSurfacesForHost(hostWebContentsId: number): void {
+    const attached = Array.from(this.instances.values()).filter(instance => (
+      instance.presentation.mode === 'panel'
+      && instance.presentation.hostWebContentsId === hostWebContentsId
+    ))
+    for (const instance of attached) {
+      this.parkInstance(instance)
+    }
+    if (attached.length > 0) {
+      mainLog.info(
+        `[browser-pane] parked ${attached.length} surface(s) for renderer host=${hostWebContentsId}`,
+      )
+    }
+  }
+
   async navigate(id: string, url: string): Promise<{ url: string; title: string }> {
     const instance = this.requireAliveInstance(id)
     this.clearPendingSelection(instance)
@@ -2595,13 +2614,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     function scaleToPixels(value: number): number {
       return Number.isFinite(value) ? Math.round(value * zoomFactor) : 0
     }
+    function normalizeBounds(bounds: BrowserSurfaceState['bounds']) {
+      return {
+        x: scaleToPixels(bounds.x),
+        y: scaleToPixels(bounds.y),
+        width: Math.max(0, scaleToPixels(bounds.width)),
+        height: Math.max(0, scaleToPixels(bounds.height)),
+      }
+    }
     return {
-      bounds: {
-        x: scaleToPixels(state.bounds.x),
-        y: scaleToPixels(state.bounds.y),
-        width: Math.max(0, scaleToPixels(state.bounds.width)),
-        height: Math.max(0, scaleToPixels(state.bounds.height)),
-      },
+      bounds: normalizeBounds(state.bounds),
+      contentBounds: normalizeBounds(state.contentBounds),
       visible: !!state.visible,
       order: Number.isFinite(state.order) ? Math.round(state.order) : 0,
     }
@@ -2612,7 +2635,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const host = this.windowManager?.getWindowByWebContentsId(
         instance.presentation.hostWebContentsId,
       )
-      host?.contentView.removeChildView(instance.rootView)
+      if (host && !host.isDestroyed()) {
+        host.contentView.removeChildView(instance.rootView)
+      }
       return
     }
     if (!instance.window.isDestroyed()) {
@@ -2658,39 +2683,34 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  private getRootSize(instance: BrowserInstance): {
-    width: number
-    height: number
-  } {
+  private getContentBounds(
+    instance: BrowserInstance,
+  ): BrowserSurfaceState['contentBounds'] {
     if (instance.presentation.mode === 'panel') {
-      return {
-        width: instance.presentation.state.bounds.width,
-        height: instance.presentation.state.bounds.height,
-      }
+      return instance.presentation.state.contentBounds
     }
     const [width, height] = instance.window.getContentSize()
-    return { width, height }
+    return { x: 0, y: 0, width, height }
   }
 
   private getToolbarEffectiveHeight(instance: BrowserInstance): number {
     if (!instance.toolbarMenuOpen) return TOOLBAR_HEIGHT
 
-    return Math.max(TOOLBAR_HEIGHT, this.getRootSize(instance).height)
+    return Math.max(TOOLBAR_HEIGHT, this.getContentBounds(instance).height)
   }
 
   private layoutToolbarView(instance: BrowserInstance): void {
-    const { width } = this.getRootSize(instance)
+    const { x, y, width } = this.getContentBounds(instance)
     const toolbarHeight = this.getToolbarEffectiveHeight(instance)
 
-    instance.toolbarView.setBounds({ x: 0, y: 0, width, height: toolbarHeight })
+    instance.toolbarView.setBounds({ x, y, width, height: toolbarHeight })
   }
 
   private updateNativeOverlayState(instance: BrowserInstance): void {
     const control = instance.agentControl
     const agentActive = !!control?.active
     const menuActive = !!instance.toolbarMenuOverlayActive
-    const selectionActive = !!instance.pendingSelection
-    const shouldShow = agentActive || menuActive || selectionActive
+    const shouldShow = agentActive || menuActive || !!instance.pendingSelection
 
     if (!shouldShow || !instance.nativeOverlayReady || instance.window.isDestroyed()) {
       instance.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
@@ -2698,19 +2718,23 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
 
+    const { x, y, width, height } = this.getContentBounds(instance)
+    const pageHeight = Math.max(100, height - TOOLBAR_HEIGHT)
+
     if (!agentActive && !menuActive && instance.pendingSelection) {
-      const { width, height } = this.getRootSize(instance)
-      const pageHeight = Math.max(100, height - TOOLBAR_HEIGHT)
       const zoomFactor = instance.pageView.webContents.getZoomFactor()
-      instance.nativeOverlayView.setBounds(
-        calculateBrowserSelectionOverlayBounds(
-          instance.pendingSelection.capture.rect,
-          width,
-          pageHeight,
-          TOOLBAR_HEIGHT,
-          zoomFactor,
-        ),
+      const overlayBounds = calculateBrowserSelectionOverlayBounds(
+        instance.pendingSelection.capture.rect,
+        width,
+        pageHeight,
+        TOOLBAR_HEIGHT,
+        zoomFactor,
       )
+      instance.nativeOverlayView.setBounds({
+        ...overlayBounds,
+        x: x + overlayBounds.x,
+        y: y + overlayBounds.y,
+      })
       instance.rootView.addChildView(instance.nativeOverlayView)
       instance.rootView.addChildView(instance.toolbarView)
 
@@ -2723,9 +2747,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
 
-    const { width, height } = this.getRootSize(instance)
-    const overlayHeight = Math.max(100, height - TOOLBAR_HEIGHT)
-    instance.nativeOverlayView.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width, height: overlayHeight })
+    instance.nativeOverlayView.setBounds({
+      x,
+      y: y + TOOLBAR_HEIGHT,
+      width,
+      height: pageHeight,
+    })
     instance.rootView.addChildView(instance.nativeOverlayView)
     instance.rootView.addChildView(instance.toolbarView)
 
@@ -2830,8 +2857,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private layoutPageView(instance: BrowserInstance): void {
-    const { width, height } = this.getRootSize(instance)
-    instance.pageView.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width, height: Math.max(100, height - TOOLBAR_HEIGHT) })
+    const { x, y, width, height } = this.getContentBounds(instance)
+    instance.pageView.setBounds({
+      x,
+      y: y + TOOLBAR_HEIGHT,
+      width,
+      height: Math.max(100, height - TOOLBAR_HEIGHT),
+    })
     this.updateNativeOverlayState(instance)
   }
 

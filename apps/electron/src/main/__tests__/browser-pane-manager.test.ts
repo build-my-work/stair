@@ -1241,6 +1241,7 @@ describe('BrowserPaneManager', () => {
 
     const lease = manager.attachSurface('surface-1', 777, {
       bounds: { x: 10, y: 20, width: 300, height: 200 },
+      contentBounds: { x: 0, y: 0, width: 300, height: 200 },
       visible: true,
       order: 3,
     })
@@ -1265,6 +1266,108 @@ describe('BrowserPaneManager', () => {
     expect(manager.listInstances()).toHaveLength(1)
   })
 
+  it('clips a panel surface without resizing its Browser viewport', () => {
+    const host = createMockWindow()
+    host.webContents.id = 782
+    manager.setWindowManager({
+      getWindowByWebContentsId: (id: number) => id === 782 ? host : null,
+      getWorkspaceForWindow: () => 'workspace-1',
+    } as any)
+    manager.createInstance('surface-clipped', { workspaceId: 'workspace-1' })
+    const instance = (manager as any).instances.get('surface-clipped')
+
+    const lease = manager.attachSurface('surface-clipped', 782, {
+      bounds: { x: 40, y: 80, width: 560, height: 600 },
+      contentBounds: { x: -240, y: 0, width: 800, height: 600 },
+      visible: true,
+      order: 0,
+    })
+
+    expect(instance.rootView.setBounds).toHaveBeenLastCalledWith({
+      x: 40,
+      y: 80,
+      width: 560,
+      height: 600,
+    })
+    expect(instance.toolbarView.setBounds).toHaveBeenLastCalledWith({
+      x: -240,
+      y: 0,
+      width: 800,
+      height: 48,
+    })
+    expect(instance.pageView.setBounds).toHaveBeenLastCalledWith({
+      x: -240,
+      y: 48,
+      width: 800,
+      height: 552,
+    })
+
+    manager.updateSurface('surface-clipped', 782, lease, {
+      bounds: { x: 40, y: 80, width: 410, height: 600 },
+      contentBounds: { x: -390, y: 0, width: 800, height: 600 },
+      visible: true,
+      order: 0,
+    })
+
+    expect(instance.rootView.setBounds).toHaveBeenLastCalledWith({
+      x: 40,
+      y: 80,
+      width: 410,
+      height: 600,
+    })
+    expect(instance.pageView.setBounds).toHaveBeenLastCalledWith({
+      x: -390,
+      y: 48,
+      width: 800,
+      height: 552,
+    })
+  })
+
+  it('parks every surface for a renderer host without destroying Browser sessions', () => {
+    const firstHost = createMockWindow()
+    firstHost.webContents.id = 780
+    const secondHost = createMockWindow()
+    secondHost.webContents.id = 781
+    manager.setWindowManager({
+      getWindowByWebContentsId: (id: number) => (
+        id === 780 ? firstHost : id === 781 ? secondHost : null
+      ),
+      getWorkspaceForWindow: () => 'workspace-1',
+    } as any)
+
+    manager.createInstance('surface-a', { workspaceId: 'workspace-1' })
+    manager.createInstance('surface-b', { workspaceId: 'workspace-1' })
+    manager.createInstance('surface-other', { workspaceId: 'workspace-1' })
+    manager.attachSurface('surface-a', 780, {
+      bounds: { x: 0, y: 0, width: 400, height: 600 },
+      contentBounds: { x: 0, y: 0, width: 400, height: 600 },
+      visible: true,
+      order: 0,
+    })
+    manager.attachSurface('surface-b', 780, {
+      bounds: { x: 400, y: 0, width: 400, height: 600 },
+      contentBounds: { x: 0, y: 0, width: 400, height: 600 },
+      visible: true,
+      order: 1,
+    })
+    manager.attachSurface('surface-other', 781, {
+      bounds: { x: 0, y: 0, width: 400, height: 600 },
+      contentBounds: { x: 0, y: 0, width: 400, height: 600 },
+      visible: true,
+      order: 0,
+    })
+
+    manager.parkSurfacesForHost(780)
+
+    const instances = (manager as any).instances
+    expect(instances.get('surface-a').presentation.mode).toBe('window')
+    expect(instances.get('surface-b').presentation.mode).toBe('window')
+    expect(instances.get('surface-other').presentation.mode).toBe('panel')
+    expect(instances.get('surface-a').window.destroy).not.toHaveBeenCalled()
+    expect(instances.get('surface-b').window.destroy).not.toHaveBeenCalled()
+    expect(manager.listInstances()).toHaveLength(3)
+  })
+
   it('routes panel focus and close requests back to the renderer host', () => {
     const host = createMockWindow()
     host.webContents.id = 778
@@ -1276,6 +1379,7 @@ describe('BrowserPaneManager', () => {
     manager.bindSession('surface-focus', 'session-1')
     manager.attachSurface('surface-focus', 778, {
       bounds: { x: 0, y: 0, width: 800, height: 600 },
+      contentBounds: { x: 0, y: 0, width: 800, height: 600 },
       visible: true,
       order: 0,
     })
@@ -1316,6 +1420,7 @@ describe('BrowserPaneManager', () => {
     manager.createInstance('surface-resize', { workspaceId: 'workspace-1' })
     manager.attachSurface('surface-resize', 779, {
       bounds: { x: 0, y: 0, width: 800, height: 600 },
+      contentBounds: { x: 0, y: 0, width: 800, height: 600 },
       visible: true,
       order: 0,
     })

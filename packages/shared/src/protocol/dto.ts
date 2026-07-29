@@ -941,7 +941,20 @@ export interface BrowserInstanceInfo {
 }
 
 export interface BrowserSurfaceState {
+  /**
+   * Visible portion of the native surface in host-window coordinates.
+   */
   bounds: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  /**
+   * Full page viewport in coordinates relative to `bounds`. Its size remains
+   * stable while PanelStack scrolling only changes which portion is visible.
+   */
+  contentBounds: {
     x: number
     y: number
     width: number

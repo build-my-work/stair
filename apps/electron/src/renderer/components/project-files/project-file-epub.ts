@@ -348,3 +348,88 @@ export function createIdempotentEpubCleanup(
     }
   }
 }
+
+interface EpubRenditionSize {
+  width: number
+  height: number
+}
+
+function normalizeEpubRenditionSize(
+  width: number,
+  height: number,
+): EpubRenditionSize | null {
+  const normalized = {
+    width: Math.floor(width),
+    height: Math.floor(height),
+  }
+  return (
+    Number.isFinite(normalized.width)
+    && Number.isFinite(normalized.height)
+    && normalized.width > 0
+    && normalized.height > 0
+  )
+    ? normalized
+    : null
+}
+
+function isSameEpubRenditionSize(
+  left: EpubRenditionSize | null,
+  right: EpubRenditionSize | null,
+): boolean {
+  return (
+    left !== null
+    && right !== null
+    && left.width === right.width
+    && left.height === right.height
+  )
+}
+
+/**
+ * Coalesces continuous panel changes into one trailing epub.js resize and
+ * skips dimensions already applied at integer-pixel precision.
+ */
+export function createEpubResizeScheduler(
+  resize: (width: number, height: number) => void,
+  initialSize?: { width: number; height: number },
+  delayMs = 150,
+): {
+  schedule: (width: number, height: number) => void
+  cancel: () => void
+} {
+  let lastSize = initialSize
+    ? normalizeEpubRenditionSize(initialSize.width, initialSize.height)
+    : null
+  let pendingSize: EpubRenditionSize | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const cancelPending = () => {
+    if (timer) clearTimeout(timer)
+    timer = null
+    pendingSize = null
+  }
+
+  return {
+    schedule(width, height) {
+      const nextSize = normalizeEpubRenditionSize(width, height)
+      if (!nextSize) {
+        cancelPending()
+        return
+      }
+      if (isSameEpubRenditionSize(nextSize, pendingSize)) return
+
+      cancelPending()
+      if (isSameEpubRenditionSize(nextSize, lastSize)) return
+
+      pendingSize = nextSize
+      timer = setTimeout(() => {
+        const size = pendingSize
+        timer = null
+        pendingSize = null
+        if (!size || isSameEpubRenditionSize(size, lastSize)) return
+        lastSize = size
+        resize(size.width, size.height)
+      }, delayMs)
+    },
+    cancel: cancelPending,
+  }
+}

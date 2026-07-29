@@ -10,6 +10,11 @@ mock.module('@/pages/ProjectFilePage', () => ({
     <div data-testid="project-file-content">{route.relativePath}</div>
   ),
 }))
+mock.module('@/pages/BrowserPage', () => ({
+  default: ({ route }: { route: { browserId: string } }) => (
+    <div data-testid="browser-content">{route.browserId}</div>
+  ),
+}))
 
 const { PanelContentRouter } = await import('../PanelContentRouter')
 
@@ -17,7 +22,7 @@ function entry(route: PanelStackEntry['route']): PanelStackEntry {
   return {
     id: 'panel-1',
     route,
-    proportion: 1,
+    widthRatio: 0.47,
   }
 }
 

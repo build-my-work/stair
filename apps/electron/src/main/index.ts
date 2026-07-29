@@ -479,6 +479,9 @@ app.whenReady().then(async () => {
     // Initialize browser pane manager (always — even in headless, for deps wiring)
     browserPaneManager = new BrowserPaneManager()
     browserPaneManager.setWindowManager(windowManager)
+    windowManager.setRendererSurfaceParkingHandler(hostWebContentsId => {
+      browserPaneManager?.parkSurfacesForHost(hostWebContentsId)
+    })
     browserPaneManager.registerToolbarIpc()
     browserPaneManager.registerCapabilityIpc()
 

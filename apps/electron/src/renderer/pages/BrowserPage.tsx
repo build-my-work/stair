@@ -26,6 +26,7 @@ import {
   getBrowserReferenceProjectId,
   listBrowserReferenceTargets,
 } from '@/lib/browser-reference-target'
+import { calculateBrowserSurfaceGeometry } from '@/lib/browser-surface-geometry'
 import type { BrowserPanelRoute } from '@/lib/project-file-route'
 import { routes } from '../../shared/routes'
 import type {
@@ -75,14 +76,16 @@ function isSurfaceOccluded(surface: HTMLElement): boolean {
   return false
 }
 
-function getVisibleSurfaceBounds(
+function getVisibleSurfaceGeometry(
   surface: HTMLElement,
-): BrowserSurfaceState['bounds'] {
+): Pick<BrowserSurfaceState, 'bounds' | 'contentBounds'> {
   const rect = surface.getBoundingClientRect()
-  let left = Math.max(0, rect.left)
-  let top = Math.max(0, rect.top)
-  let right = Math.min(window.innerWidth, rect.right)
-  let bottom = Math.min(window.innerHeight, rect.bottom)
+  const clip = {
+    left: 0,
+    top: 0,
+    right: window.innerWidth,
+    bottom: window.innerHeight,
+  }
 
   for (
     let ancestor = surface.parentElement;
@@ -92,21 +95,16 @@ function getVisibleSurfaceBounds(
     const style = getComputedStyle(ancestor)
     const ancestorRect = ancestor.getBoundingClientRect()
     if (style.overflowX !== 'visible') {
-      left = Math.max(left, ancestorRect.left)
-      right = Math.min(right, ancestorRect.right)
+      clip.left = Math.max(clip.left, ancestorRect.left)
+      clip.right = Math.min(clip.right, ancestorRect.right)
     }
     if (style.overflowY !== 'visible') {
-      top = Math.max(top, ancestorRect.top)
-      bottom = Math.min(bottom, ancestorRect.bottom)
+      clip.top = Math.max(clip.top, ancestorRect.top)
+      clip.bottom = Math.min(clip.bottom, ancestorRect.bottom)
     }
   }
 
-  return {
-    x: left,
-    y: top,
-    width: Math.max(0, right - left),
-    height: Math.max(0, bottom - top),
-  }
+  return calculateBrowserSurfaceGeometry(rect, clip)
 }
 
 export default function BrowserPage({
@@ -280,15 +278,15 @@ export default function BrowserPage({
   const measure = useCallback((): BrowserSurfaceState | null => {
     const host = hostRef.current
     if (!host) return null
-    const bounds = getVisibleSurfaceBounds(host)
+    const geometry = getVisibleSurfaceGeometry(host)
     const visible = (
       document.visibilityState === 'visible'
-      && bounds.width > 0
-      && bounds.height > 0
+      && geometry.bounds.width > 0
+      && geometry.bounds.height > 0
       && !isSurfaceOccluded(host)
     )
     return {
-      bounds,
+      ...geometry,
       visible,
       order: order < 0 ? 0 : order,
     }

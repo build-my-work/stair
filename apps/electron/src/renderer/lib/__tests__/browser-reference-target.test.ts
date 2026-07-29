@@ -23,7 +23,7 @@ function stack(chatTargetSessionId?: string): PanelStackEntry[] {
   return [
     {
       id: 'owner',
-      proportion: 0.5,
+      widthRatio: 0.47,
       route: {
         kind: 'navigation',
         viewRoute: 'projects/project/demo/session/owner-session',
@@ -32,7 +32,7 @@ function stack(chatTargetSessionId?: string): PanelStackEntry[] {
     {
       id: 'browser',
       ownerPanelId: 'owner',
-      proportion: 0.5,
+      widthRatio: 0.47,
       route: {
         kind: 'browser',
         browserId: 'browser-1',
