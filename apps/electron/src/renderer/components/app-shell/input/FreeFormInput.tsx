@@ -103,7 +103,7 @@ import {
 } from './model-picker-helpers'
 import { useModelVisionToggle } from './useModelVisionToggle'
 import {
-  projectFileReferenceKey,
+  messageReferenceKey,
   type MessageReference,
 } from '@craft-agent/core'
 
@@ -594,7 +594,7 @@ export function FreeFormInput({
   } | null>(null)
   const inputDisabled = disabled || isSubmitting
   const referenceRevision = referencesValue
-    .map(projectFileReferenceKey)
+    .map(messageReferenceKey)
     .join('\n')
 
   React.useEffect(() => {
@@ -1767,8 +1767,8 @@ export function FreeFormInput({
           onRemoveReference={reference => onReferencesChange?.(
             referencesValue.filter(
               item =>
-                projectFileReferenceKey(item)
-                !== projectFileReferenceKey(reference),
+                messageReferenceKey(item)
+                !== messageReferenceKey(reference),
             ),
           )}
         />

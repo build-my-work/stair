@@ -95,6 +95,7 @@ import {
   focusedPanelIndexAtom,
   updateFocusedPanelRouteAtom,
   parseSessionIdFromRoute,
+  visibleSessionIdsAtom,
 } from '@/atoms/panel-stack'
 
 // Re-export routes for convenience
@@ -502,12 +503,7 @@ export function NavigationProvider({
   const prevVisibleSessionIdsRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
-    const currentIds = new Set<string>()
-    for (const entry of panelStack) {
-      if (entry.route.kind === 'projectFile') continue
-      const sessionId = parseSessionIdFromRoute(entry.route)
-      if (sessionId) currentIds.add(sessionId)
-    }
+    const currentIds = new Set(store.get(visibleSessionIdsAtom))
 
     // Only check after we've seen at least one set of IDs
     // (skip first render to avoid false positives during initialization)

@@ -223,3 +223,8 @@ export type PanelContentRoute =
       relativePath: string
       contextRoute: ViewRoute
     }
+  | {
+      kind: 'browser'
+      browserId: string
+      contextRoute: ViewRoute
+    }

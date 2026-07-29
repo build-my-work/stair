@@ -21,7 +21,7 @@ import { X, ChevronLeft } from 'lucide-react'
 import { parseRouteToNavigationState } from '../../../shared/route-parser'
 import type { ViewRoute } from '../../../shared/routes'
 import {
-  backFromProjectFilePanelAtom,
+  backFromCompanionPanelAtom,
   closePanelAtom,
   focusedPanelIdAtom,
   type PanelStackEntry,
@@ -29,7 +29,7 @@ import {
 import { useAppShellContext, AppShellProvider } from '@/context/AppShellContext'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
 import { PANEL_MIN_WIDTH, RADIUS_EDGE, RADIUS_INNER } from './panel-constants'
-import { isProjectFileRoute } from '@/lib/project-file-route'
+import { isCompanionPanelRoute } from '@/lib/project-file-route'
 import { navigate, routes } from '@/lib/navigate'
 import { PanelContentRouter } from './PanelContentRouter'
 
@@ -41,7 +41,7 @@ import { PanelContentRouter } from './PanelContentRouter'
 export function getCompactProjectBackRoute(
   route: PanelStackEntry['route'],
 ): ViewRoute | null {
-  if (isProjectFileRoute(route)) return null
+  if (route.kind !== 'navigation') return null
 
   const navigationState = parseRouteToNavigationState(route.viewRoute)
   if (
@@ -84,7 +84,7 @@ export function PanelSlot({
 }: PanelSlotProps) {
   const { t } = useTranslation()
   const closePanel = useSetAtom(closePanelAtom)
-  const backFromProjectFile = useSetAtom(backFromProjectFilePanelAtom)
+  const backFromCompanion = useSetAtom(backFromCompanionPanelAtom)
   const setFocusedPanel = useSetAtom(focusedPanelIdAtom)
   const parentContext = useAppShellContext()
   const compactProjectBackRoute = getCompactProjectBackRoute(entry.route)
@@ -94,8 +94,8 @@ export function PanelSlot({
   }, [closePanel, entry.id])
 
   const handleBack = useCallback(() => {
-    if (isProjectFileRoute(entry.route)) {
-      backFromProjectFile(entry.id)
+    if (isCompanionPanelRoute(entry.route)) {
+      backFromCompanion(entry.id)
       return
     }
     if (compactProjectBackRoute) {
@@ -104,7 +104,7 @@ export function PanelSlot({
     }
     handleClose()
   }, [
-    backFromProjectFile,
+    backFromCompanion,
     compactProjectBackRoute,
     entry.id,
     entry.route,

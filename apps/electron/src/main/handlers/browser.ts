@@ -1,7 +1,26 @@
-import { RPC_CHANNELS, type BrowserPaneCreateOptions, type BrowserEmptyStateLaunchPayload } from '../../shared/types'
+import {
+  RPC_CHANNELS,
+  type BrowserPaneCreateOptions,
+  type BrowserEmptyStateLaunchPayload,
+  type BrowserSelectionActionPayload,
+  type BrowserSurfaceState,
+} from '../../shared/types'
+import type { WebSelectionReferenceV1 } from '@craft-agent/core/types'
 import type { BrowserScreenshotOptions } from '../browser-pane-manager'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from './handler-deps'
+
+type BrowserHostTarget =
+  | { to: 'client'; clientId: string }
+  | { to: 'all' }
+
+function getBrowserHostTarget(
+  deps: HandlerDeps,
+  hostWebContentsId: number,
+): BrowserHostTarget {
+  const clientId = deps.windowManager?.getClientIdForWindow(hostWebContentsId)
+  return clientId ? { to: 'client', clientId } : { to: 'all' }
+}
 
 export const HANDLED_CHANNELS = [
   RPC_CHANNELS.browserPane.CREATE,
@@ -13,6 +32,10 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.browserPane.RELOAD,
   RPC_CHANNELS.browserPane.STOP,
   RPC_CHANNELS.browserPane.FOCUS,
+  RPC_CHANNELS.browserPane.ATTACH_SURFACE,
+  RPC_CHANNELS.browserPane.UPDATE_SURFACE,
+  RPC_CHANNELS.browserPane.DETACH_SURFACE,
+  RPC_CHANNELS.browserPane.REVEAL_SELECTION,
   RPC_CHANNELS.browserPane.LAUNCH,
   RPC_CHANNELS.browserPane.SNAPSHOT,
   RPC_CHANNELS.browserPane.CLICK,
@@ -99,6 +122,39 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
   server.handle(RPC_CHANNELS.browserPane.FOCUS, (_ctx, id: string) => {
     browserPaneManager.focus(id)
   })
+
+  server.handle(
+    RPC_CHANNELS.browserPane.ATTACH_SURFACE,
+    (ctx, id: string, state: BrowserSurfaceState) => {
+      if (!ctx.webContentsId) throw new Error('Browser surface requires a local renderer')
+      return browserPaneManager.attachSurface(id, ctx.webContentsId, state)
+    },
+  )
+
+  server.handle(
+    RPC_CHANNELS.browserPane.UPDATE_SURFACE,
+    (ctx, id: string, leaseId: string, state: BrowserSurfaceState) => {
+      if (!ctx.webContentsId) throw new Error('Browser surface requires a local renderer')
+      browserPaneManager.updateSurface(id, ctx.webContentsId, leaseId, state)
+    },
+  )
+
+  server.handle(
+    RPC_CHANNELS.browserPane.DETACH_SURFACE,
+    (ctx, id: string, leaseId: string) => {
+      if (!ctx.webContentsId) return
+      browserPaneManager.detachSurface(id, ctx.webContentsId, leaseId)
+    },
+  )
+
+  server.handle(
+    RPC_CHANNELS.browserPane.REVEAL_SELECTION,
+    (ctx, reference: WebSelectionReferenceV1) => (
+      browserPaneManager.revealSelection(reference, {
+        workspaceId: ctx.workspaceId,
+      })
+    ),
+  )
 
   server.handle(RPC_CHANNELS.browserPane.LAUNCH, async (ctx, payload: BrowserEmptyStateLaunchPayload) => {
     try {
@@ -203,5 +259,35 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
 
   browserPaneManager.onInteracted((id) => {
     pushTyped(server, RPC_CHANNELS.browserPane.INTERACTED, { to: 'all' }, id)
+  })
+
+  browserPaneManager.onPresentRequest((request, hostWebContentsId) => {
+    pushTyped(
+      server,
+      RPC_CHANNELS.browserPane.PRESENT_REQUESTED,
+      getBrowserHostTarget(deps, hostWebContentsId),
+      request,
+    )
+  })
+
+  browserPaneManager.onClosePanelRequest((browserId, hostWebContentsId) => {
+    pushTyped(
+      server,
+      RPC_CHANNELS.browserPane.CLOSE_PANEL_REQUESTED,
+      getBrowserHostTarget(deps, hostWebContentsId),
+      browserId,
+    )
+  })
+
+  browserPaneManager.onSelectionAction((
+    payload: BrowserSelectionActionPayload,
+    hostWebContentsId: number,
+  ) => {
+    pushTyped(
+      server,
+      RPC_CHANNELS.browserPane.SELECTION_ACTION,
+      getBrowserHostTarget(deps, hostWebContentsId),
+      payload,
+    )
   })
 }

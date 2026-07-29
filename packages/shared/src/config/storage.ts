@@ -22,8 +22,8 @@ import type {
   StoredMessage,
 } from '@craft-agent/core/types';
 import {
-  isProjectFileReferenceV1,
-  MAX_PROJECT_FILE_REFERENCES,
+  isMessageReference,
+  MAX_MESSAGE_REFERENCES,
 } from '@craft-agent/core/types';
 import type { Plan } from '../agent/plan-types.ts';
 import type { PermissionMode } from '../agent/mode-manager.ts';
@@ -1072,7 +1072,7 @@ export function clearWorkspacePlan(workspaceId: string): void {
 
 // ============================================
 // Session Input Drafts
-// Persists composer state (text + attachments + Project File references) per session across app restarts.
+// Persists composer state (text + attachments + structured references) per session across app restarts.
 // Two shapes for attachments:
 //  - Track P: { path, name } — absolute path captured via webUtils.getPathForFile
 //    (file-picker / OS drag). Re-read on hydrate via file:readUserAttachment RPC.
@@ -1155,8 +1155,8 @@ function isSessionDraft(value: unknown): value is SessionDraft {
   }
   if (candidate.references !== undefined) {
     if (!Array.isArray(candidate.references)) return false;
-    if (candidate.references.length > MAX_PROJECT_FILE_REFERENCES) return false;
-    if (!candidate.references.every(isProjectFileReferenceV1)) return false;
+    if (candidate.references.length > MAX_MESSAGE_REFERENCES) return false;
+    if (!candidate.references.every(isMessageReference)) return false;
     if (candidate.references.some(reference =>
       Buffer.byteLength(JSON.stringify(reference), 'utf8') > MAX_DRAFT_REFERENCE_BYTES)) return false;
     if (Buffer.byteLength(JSON.stringify(candidate.references), 'utf8') > MAX_DRAFT_REFERENCES_BYTES) return false;

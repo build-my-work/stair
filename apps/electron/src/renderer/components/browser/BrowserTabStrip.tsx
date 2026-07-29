@@ -5,7 +5,12 @@
  * Each badge opens a shared action menu.
  */
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  type ReactElement,
+} from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import * as Icons from 'lucide-react'
 import { Spinner } from '@craft-agent/ui'
@@ -23,10 +28,14 @@ import {
   activeBrowserInstanceIdAtom,
   browserInstancesAtom,
   filterInstancesForWorkspace,
-  setBrowserInstancesAtom,
-  updateBrowserInstanceAtom,
-  removeBrowserInstanceAtom,
 } from '@/atoms/browser-pane'
+import {
+  focusedPanelIdAtom,
+  focusedPanelRouteAtom,
+  getPanelOwnerPanelId,
+  openOrFocusBrowserPanelAtom,
+  panelStackAtom,
+} from '@/atoms/panel-stack'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { BrowserTabBadge } from './BrowserTabBadge'
 import type { BrowserInstanceInfo } from '../../../shared/types'
@@ -39,13 +48,15 @@ interface BrowserTabStripProps {
   activeSessionId?: string | null
   instancesOverride?: BrowserInstanceInfo[]
   maxVisibleBadges?: number
+  compact?: boolean
 }
 
 export function BrowserTabStrip({
   activeSessionId,
   instancesOverride,
   maxVisibleBadges = DEFAULT_MAX_VISIBLE_BADGES,
-}: BrowserTabStripProps) {
+  compact = false,
+}: BrowserTabStripProps): ReactElement | null {
   // Filter the badge strip to the workspace currently in focus. Remote-connected
   // workspaces have a different `remoteWorkspaceId` (what the remote agent
   // stamps onto its tabs) than the local `activeWorkspaceId` (what locally-
@@ -54,23 +65,22 @@ export function BrowserTabStrip({
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId)
   const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId ?? null
   const allInstances = useAtomValue(browserInstancesAtom)
+  const panelStack = useAtomValue(panelStackAtom)
+  const focusedPanelId = useAtomValue(focusedPanelIdAtom)
+  const focusedPanelRoute = useAtomValue(focusedPanelRouteAtom)
+  const openBrowserPanel = useSetAtom(openOrFocusBrowserPanelAtom)
   const instances = useMemo(
     () => filterInstancesForWorkspace(allInstances, activeWorkspaceId, remoteWorkspaceId),
     [allInstances, activeWorkspaceId, remoteWorkspaceId],
   )
-  const setInstances = useSetAtom(setBrowserInstancesAtom)
-  const updateInstance = useSetAtom(updateBrowserInstanceAtom)
-  const removeInstance = useSetAtom(removeBrowserInstanceAtom)
   const [activeInstanceId, setActiveInstanceId] = useAtom(activeBrowserInstanceIdAtom)
   const effectiveInstances = instancesOverride ?? instances
-  const instancesRef = useRef(effectiveInstances)
-  const removeReconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const orderedInstances = useMemo(() => {
     const items = [...effectiveInstances]
 
-    // Global list: keep all browser windows visible.
-    // Optional ordering preference: session-local windows first.
+    // Global list: keep all browser resources visible.
+    // Optional ordering preference: session-local resources first.
     if (activeSessionId) {
       items.sort((a, b) => {
         const aInActiveSession = a.boundSessionId === activeSessionId ? 0 : 1
@@ -86,89 +96,6 @@ export function BrowserTabStrip({
   }, [effectiveInstances, activeSessionId])
 
   useEffect(() => {
-    instancesRef.current = effectiveInstances
-  }, [effectiveInstances])
-
-  useEffect(() => {
-    if (instancesOverride) return
-
-    const browserPaneApi = window.electronAPI?.browserPane
-    if (!browserPaneApi || !window.electronAPI.isChannelAvailable('browser-pane:list')) {
-      setInstances([])
-      setActiveInstanceId(null)
-      return
-    }
-
-    browserPaneApi.list()
-      .then((items) => {
-        setInstances(items)
-        if (items.length === 0) {
-          setActiveInstanceId(null)
-          return
-        }
-        setActiveInstanceId((prev) => prev ?? items[0].id)
-      })
-      .catch((error) => {
-        console.warn('[BrowserTabStrip] Failed to list browser panes:', error)
-        setInstances([])
-        setActiveInstanceId(null)
-      })
-  }, [instancesOverride, setInstances, setActiveInstanceId])
-
-  useEffect(() => {
-    if (instancesOverride) return
-
-    const browserPaneApi = window.electronAPI?.browserPane
-    if (!browserPaneApi || !window.electronAPI.isChannelAvailable('browser-pane:list')) return
-
-    const cleanupState = browserPaneApi.onStateChanged((info: BrowserInstanceInfo) => {
-      updateInstance(info)
-    })
-
-    const cleanupRemoved = browserPaneApi.onRemoved((id: string) => {
-      removeInstance(id)
-      setActiveInstanceId((prev) => {
-        if (prev !== id) return prev
-        const remaining = instancesRef.current.filter((item) => item.id !== id)
-        return remaining[0]?.id ?? null
-      })
-
-      if (removeReconcileTimerRef.current) {
-        clearTimeout(removeReconcileTimerRef.current)
-      }
-
-      removeReconcileTimerRef.current = setTimeout(() => {
-        removeReconcileTimerRef.current = null
-        void browserPaneApi.list()
-          .then((items) => {
-            setInstances(items)
-            setActiveInstanceId((prev) => {
-              if (!prev) return items[0]?.id ?? null
-              return items.some((item) => item.id === prev) ? prev : (items[0]?.id ?? null)
-            })
-          })
-          .catch((error) => {
-            console.warn('[BrowserTabStrip] Reconcile list failed after remove:', error)
-          })
-      }, 75)
-    })
-
-    const cleanupInteracted = browserPaneApi.onInteracted((id: string) => {
-      setActiveInstanceId(id)
-    })
-
-    return () => {
-      cleanupState()
-      cleanupRemoved()
-      cleanupInteracted()
-      if (removeReconcileTimerRef.current) {
-        clearTimeout(removeReconcileTimerRef.current)
-        removeReconcileTimerRef.current = null
-      }
-    }
-  }, [instancesOverride, updateInstance, removeInstance, setActiveInstanceId, setInstances])
-
-  useEffect(() => {
     if (orderedInstances.length === 0) {
       setActiveInstanceId(null)
       return
@@ -178,49 +105,47 @@ export function BrowserTabStrip({
     }
   }, [orderedInstances, activeInstanceId, setActiveInstanceId])
 
-  const focusBrowserWindow = useCallback((instance: BrowserInstanceInfo) => {
+  const showBrowserPanel = useCallback((instance: BrowserInstanceInfo) => {
     setActiveInstanceId(instance.id)
     if (instancesOverride) return
 
-    const browserPaneApi = window.electronAPI?.browserPane
-    if (!browserPaneApi) {
-      console.warn('[BrowserTabStrip] browserPane API unavailable for focus action')
-      return
-    }
-
-    void browserPaneApi.focus(instance.id).catch((error) => {
-      console.warn(`[BrowserTabStrip] Failed to focus browser window ${instance.id}:`, error)
+    const ownerPanelId = focusedPanelId
+      ? getPanelOwnerPanelId(panelStack, focusedPanelId) ?? undefined
+      : undefined
+    openBrowserPanel({
+      browserId: instance.id,
+      contextRoute: focusedPanelRoute ?? routes.view.allSessions(),
+      ownerPanelId,
     })
-  }, [instancesOverride, setActiveInstanceId])
+  }, [
+    focusedPanelId,
+    focusedPanelRoute,
+    instancesOverride,
+    openBrowserPanel,
+    panelStack,
+    setActiveInstanceId,
+  ])
 
-  const openSessionUsingWindow = useCallback((instance: BrowserInstanceInfo) => {
+  const openOwningSession = useCallback((instance: BrowserInstanceInfo) => {
     const sessionId = instance.boundSessionId ?? instance.ownerSessionId
     if (!sessionId) return
     navigate(routes.view.allSessions(sessionId))
   }, [])
 
-  const terminateBrowserWindow = useCallback((instance: BrowserInstanceInfo) => {
-    if (!instancesOverride) {
-      const browserPaneApi = window.electronAPI?.browserPane
-      if (!browserPaneApi) {
-        console.warn('[BrowserTabStrip] browserPane API unavailable for terminate action')
-      } else {
-        void browserPaneApi.destroy(instance.id).catch((error) => {
-          console.warn(`[BrowserTabStrip] Failed to terminate browser window ${instance.id}:`, error)
-        })
-      }
-      removeInstance(instance.id)
+  const terminateBrowser = useCallback((instance: BrowserInstanceInfo) => {
+    if (instancesOverride) return
+    const browserPaneApi = window.electronAPI?.browserPane
+    if (!browserPaneApi) {
+      console.warn('[BrowserTabStrip] browserPane API unavailable for terminate action')
+      return
     }
-
-    setActiveInstanceId((prev) => {
-      if (prev !== instance.id) return prev
-      const remaining = instancesRef.current.filter((item) => item.id !== instance.id)
-      return remaining[0]?.id ?? null
+    void browserPaneApi.destroy(instance.id).catch((error) => {
+      console.warn(`[BrowserTabStrip] Failed to terminate browser ${instance.id}:`, error)
     })
-  }, [instancesOverride, removeInstance, setActiveInstanceId])
+  }, [instancesOverride])
 
   const renderBrowserActions = useCallback((instance: BrowserInstanceInfo) => {
-    const canUseLiveWindowActions = !instancesOverride
+    const canUseLiveBrowserActions = !instancesOverride
     const targetSessionId = instance.boundSessionId ?? instance.ownerSessionId
     const canOpenSession = !!targetSessionId
     const openSessionLabel = instance.agentControlActive
@@ -230,16 +155,16 @@ export function BrowserTabStrip({
     return (
       <>
         <StyledDropdownMenuItem
-          disabled={!canUseLiveWindowActions}
-          onSelect={() => focusBrowserWindow(instance)}
+          disabled={!canUseLiveBrowserActions}
+          onSelect={() => showBrowserPanel(instance)}
         >
           <Icons.Monitor className="h-3.5 w-3.5" />
-          Show Browser Window
+          Show Browser Panel
         </StyledDropdownMenuItem>
 
         <StyledDropdownMenuItem
           disabled={!canOpenSession}
-          onSelect={() => openSessionUsingWindow(instance)}
+          onSelect={() => openOwningSession(instance)}
         >
           <Icons.PanelRightOpen className="h-3.5 w-3.5" />
           {openSessionLabel}
@@ -249,15 +174,15 @@ export function BrowserTabStrip({
 
         <StyledDropdownMenuItem
           variant="destructive"
-          disabled={!canUseLiveWindowActions}
-          onSelect={() => terminateBrowserWindow(instance)}
+          disabled={!canUseLiveBrowserActions}
+          onSelect={() => terminateBrowser(instance)}
         >
           <Icons.XCircle className="h-3.5 w-3.5" />
           Terminate Browser
         </StyledDropdownMenuItem>
       </>
     )
-  }, [instancesOverride, focusBrowserWindow, openSessionUsingWindow, terminateBrowserWindow])
+  }, [instancesOverride, openOwningSession, showBrowserPanel, terminateBrowser])
 
   if (orderedInstances.length === 0) return null
 
@@ -273,6 +198,7 @@ export function BrowserTabStrip({
             <BrowserTabBadge
               instance={instance}
               isActive={instance.id === activeInstanceId}
+              style={compact ? { maxWidth: 80 } : undefined}
             />
           </DropdownMenuTrigger>
           <StyledDropdownMenuContent align="end" minWidth="min-w-56">

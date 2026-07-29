@@ -1,14 +1,15 @@
 import {
-  MAX_PROJECT_FILE_REFERENCES,
-  projectFileReferenceKey,
+  isProjectFileReferenceV1,
+  MAX_MESSAGE_REFERENCES,
+  messageReferenceKey,
   type MessageReference,
 } from '@craft-agent/core'
 import type { SessionDraft } from '@craft-agent/shared/config'
 
-const PROJECT_FILE_REFERENCE_SEND_ERROR =
-  /(PROJECT_FILE_REFERENCE_(?:INVALID|TOO_LARGE|PROJECT_MISMATCH|UNAVAILABLE|STALE)|PROJECT_FILE_REFERENCES_TOO_LARGE):\s*([^\n]*)/
+const MESSAGE_REFERENCE_SEND_ERROR =
+  /(MESSAGE_REFERENCE_INVALID|PROJECT_FILE_REFERENCE_(?:INVALID|TOO_LARGE|PROJECT_MISMATCH|UNAVAILABLE|STALE)|WEB_SELECTION_REFERENCE_(?:INVALID|TOO_LARGE)|PROJECT_FILE_REFERENCES_TOO_LARGE|MESSAGE_REFERENCES_TOO_LARGE):\s*([^\n]*)/
 
-interface ProjectFileReferenceSendError {
+interface MessageReferenceSendError {
   code: string
   message: string
   relativePath?: string
@@ -18,20 +19,24 @@ function hasReference(
   references: readonly MessageReference[],
   reference: MessageReference,
 ): boolean {
-  const key = projectFileReferenceKey(reference)
-  return references.some(existing => projectFileReferenceKey(existing) === key)
+  const key = messageReferenceKey(reference)
+  return references.some(existing => messageReferenceKey(existing) === key)
 }
 
 export function getProjectFileReferenceSendError(
   error: unknown,
   references: readonly MessageReference[] = [],
-): ProjectFileReferenceSendError | null {
+): MessageReferenceSendError | null {
   const raw = error instanceof Error ? error.message : String(error)
-  const match = PROJECT_FILE_REFERENCE_SEND_ERROR.exec(raw)
+  const match = MESSAGE_REFERENCE_SEND_ERROR.exec(raw)
   if (!match) return null
-  const message = match[2]?.trim() || 'The Project File reference could not be sent.'
-  const invalidReference = references.find(reference =>
-    message.endsWith(`: ${reference.relativePath}`))
+  const message = match[2]?.trim() || 'The reference could not be sent.'
+  const invalidReference = references.find((
+    reference,
+  ): reference is Extract<MessageReference, { kind: 'project-file' }> => (
+    isProjectFileReferenceV1(reference)
+    && message.endsWith(`: ${reference.relativePath}`)
+  ))
   return {
     code: match[1],
     message,
@@ -49,8 +54,8 @@ export function addDraftReference(
   if (hasReference(references, reference)) {
     return draft
   }
-  if (references.length >= MAX_PROJECT_FILE_REFERENCES) {
-    throw new Error(`PROJECT_FILE_REFERENCE_LIMIT: maximum ${MAX_PROJECT_FILE_REFERENCES}`)
+  if (references.length >= MAX_MESSAGE_REFERENCES) {
+    throw new Error(`MESSAGE_REFERENCE_LIMIT: maximum ${MAX_MESSAGE_REFERENCES}`)
   }
   return {
     ...draft,
@@ -66,7 +71,7 @@ export function mergeDraftReferences(
   let changed = false
   for (const reference of incoming) {
     if (hasReference(references, reference)) continue
-    if (references.length >= MAX_PROJECT_FILE_REFERENCES) break
+    if (references.length >= MAX_MESSAGE_REFERENCES) break
     references = [...references, reference]
     changed = true
   }

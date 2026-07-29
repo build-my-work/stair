@@ -164,6 +164,27 @@ export class BrowserCDP {
     }
   }
 
+  setViewportSize(width: number, height: number): void {
+    void this.send('Emulation.setDeviceMetricsOverride', {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile: false,
+      screenWidth: width,
+      screenHeight: height,
+    }).catch((error) => {
+      mainLog.warn(
+        `[browser-cdp] failed to apply viewport emulation: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+    })
+  }
+
+  clearViewportSize(): void {
+    void this.send('Emulation.clearDeviceMetricsOverride').catch(() => {})
+  }
+
   private allocateRef(backendDOMNodeId?: number): string {
     if (backendDOMNodeId !== undefined) {
       const existing = this.backendNodeRefMap.get(backendDOMNodeId)

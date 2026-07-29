@@ -176,6 +176,10 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.browserPane.RELOAD,
   RPC_CHANNELS.browserPane.STOP,
   RPC_CHANNELS.browserPane.FOCUS,
+  RPC_CHANNELS.browserPane.ATTACH_SURFACE,
+  RPC_CHANNELS.browserPane.UPDATE_SURFACE,
+  RPC_CHANNELS.browserPane.DETACH_SURFACE,
+  RPC_CHANNELS.browserPane.REVEAL_SELECTION,
   RPC_CHANNELS.browserPane.SNAPSHOT,
   RPC_CHANNELS.browserPane.CLICK,
   RPC_CHANNELS.browserPane.FILL,
@@ -187,6 +191,8 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.browserPane.STATE_CHANGED,
   RPC_CHANNELS.browserPane.REMOVED,
   RPC_CHANNELS.browserPane.INTERACTED,
+  RPC_CHANNELS.browserPane.CLOSE_PANEL_REQUESTED,
+  RPC_CHANNELS.browserPane.SELECTION_ACTION,
 
   // gitbash — Windows-specific local
   RPC_CHANNELS.gitbash.CHECK,
@@ -242,6 +248,9 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.sessions.GET_PENDING_PLAN_EXECUTION,
   RPC_CHANNELS.sessions.GET_PERMISSION_MODE_STATE,
   RPC_CHANNELS.sessions.EVENT,
+  // Agent-owned browser presentation must follow the workspace server so a
+  // remote Session can target the desktop client that hosts its browser.
+  RPC_CHANNELS.browserPane.PRESENT_REQUESTED,
   RPC_CHANNELS.sessions.GET_MODEL,
   RPC_CHANNELS.sessions.SET_MODEL,
   RPC_CHANNELS.sessions.GET_FILES,

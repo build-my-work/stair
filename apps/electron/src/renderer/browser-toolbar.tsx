@@ -11,7 +11,7 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { EyeOff, X, XCircle } from 'lucide-react'
+import { EyeOff, PanelRightClose, X, XCircle } from 'lucide-react'
 import { BrowserControls } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
 import {
@@ -37,6 +37,7 @@ interface ToolbarState {
   canGoBack: boolean
   canGoForward: boolean
   themeColor?: string | null
+  isPanel?: boolean
 }
 
 declare global {
@@ -76,6 +77,7 @@ function BrowserToolbarApp() {
   const menuContentRef = useRef<HTMLDivElement | null>(null)
 
   const api = window.browserToolbar
+  const isPanel = state.isPanel === true
 
   useEffect(() => {
     if (!api) return
@@ -210,12 +212,16 @@ function BrowserToolbarApp() {
                 className="titlebar-no-drag z-[110] max-h-none overflow-visible"
               >
                 <StyledDropdownMenuItem onSelect={handleHideWindow}>
-                  <EyeOff className="h-3.5 w-3.5" />
-                  {t('browser.hideWindow')}
+                  {isPanel ? (
+                    <PanelRightClose className="h-3.5 w-3.5" />
+                  ) : (
+                    <EyeOff className="h-3.5 w-3.5" />
+                  )}
+                  {t(isPanel ? 'browser.closePanel' : 'browser.hideWindow')}
                 </StyledDropdownMenuItem>
                 <StyledDropdownMenuItem variant="destructive" onSelect={handleCloseWindowEntirely}>
                   <XCircle className="h-3.5 w-3.5" />
-                  {t('browser.closeWindowEntirely')}
+                  {t(isPanel ? 'browser.terminateBrowser' : 'browser.closeWindowEntirely')}
                 </StyledDropdownMenuItem>
               </StyledDropdownMenuContent>
             </DropdownMenu>

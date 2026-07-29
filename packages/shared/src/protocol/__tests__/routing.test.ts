@@ -68,4 +68,10 @@ describe('channel routing behavior', () => {
       }
     }
   })
+
+  test('browser surface control stays local while Agent presentation follows the workspace server', () => {
+    expect(LOCAL_ONLY_CHANNELS.has(RPC_CHANNELS.browserPane.ATTACH_SURFACE)).toBe(true)
+    expect(LOCAL_ONLY_CHANNELS.has(RPC_CHANNELS.browserPane.CLOSE_PANEL_REQUESTED)).toBe(true)
+    expect(REMOTE_ELIGIBLE_CHANNELS.has(RPC_CHANNELS.browserPane.PRESENT_REQUESTED)).toBe(true)
+  })
 })

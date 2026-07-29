@@ -87,6 +87,51 @@ describe('session draft storage', () => {
     expect(JSON.parse(output)).toEqual({ text: '', references: [reference] })
   })
 
+  it('round-trips a bounded web selection reference without modifying draft text', () => {
+    const configDir = makeConfigDir()
+    const reference = {
+      version: 1,
+      kind: 'web-selection',
+      url: 'https://example.com/article',
+      title: 'Example article',
+      quote: 'selected text',
+      locator: {
+        type: 'text-quote',
+        exact: 'selected text',
+        prefix: 'before',
+        suffix: 'after',
+      },
+    }
+    runEval(configDir, `setSessionDraft('s1', ${JSON.stringify({ text: '', references: [reference] })})`)
+    const output = runEval(configDir, "console.log(JSON.stringify(getSessionDraft('s1')))")
+    expect(JSON.parse(output)).toEqual({ text: '', references: [reference] })
+  })
+
+  it('rejects malformed web selection references at the SET boundary', () => {
+    const configDir = makeConfigDir()
+    const output = runEval(configDir, `
+      try {
+        setSessionDraft('s1', {
+          text: '',
+          references: [{
+            version: 1,
+            kind: 'web-selection',
+            url: 'file:///tmp/private.txt',
+            title: 'Private file',
+            quote: 'selected text',
+            locator: {
+              type: 'text-quote',
+              exact: 'selected text',
+            },
+          }],
+        })
+      } catch (error) {
+        console.log(error.message)
+      }
+    `)
+    expect(output).toStartWith('INVALID_SESSION_DRAFT:')
+  })
+
   it('drops malformed Project File references on load', () => {
     const configDir = makeConfigDir()
     const draftsPath = join(configDir, 'drafts.json')

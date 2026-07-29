@@ -73,6 +73,9 @@ function createMockDeps(): HandlerDeps {
       onStateChange: () => {},
       onRemoved: () => {},
       onInteracted: () => {},
+      onPresentRequest: () => {},
+      onClosePanelRequest: () => {},
+      onSelectionAction: () => {},
     } as unknown as NonNullable<HandlerDeps['browserPaneManager']>,
     oauthFlowStore: {
       store: () => {},

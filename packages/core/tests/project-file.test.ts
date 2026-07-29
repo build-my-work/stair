@@ -2,10 +2,15 @@ import { describe, expect, it } from 'bun:test'
 
 import {
   isCanonicalProjectRelativePath,
+  isMessageReference,
   isProjectFileReferenceV1,
+  isWebSelectionReferenceV1,
+  messageReferenceKey,
+  type ProjectFileReferenceV1,
+  type WebSelectionReferenceV1,
 } from '../src/types/project-file'
 
-function reference(): Record<string, unknown> {
+function reference(): ProjectFileReferenceV1 {
   return {
     version: 1,
     kind: 'project-file',
@@ -25,6 +30,22 @@ function reference(): Record<string, unknown> {
     locator: {
       type: 'epub-cfi',
       cfiRange: 'epubcfi(/6/4!/4/2:0)',
+    },
+  }
+}
+
+function webReference(): WebSelectionReferenceV1 {
+  return {
+    version: 1,
+    kind: 'web-selection',
+    url: 'https://example.com/article',
+    title: 'Example article',
+    quote: 'selected text',
+    locator: {
+      type: 'text-quote',
+      exact: 'selected text',
+      prefix: 'before',
+      suffix: 'after',
     },
   }
 }
@@ -99,5 +120,42 @@ describe('isProjectFileReferenceV1', () => {
     ]) {
       expect(isProjectFileReferenceV1(invalid)).toBe(false)
     }
+  })
+})
+
+describe('WebSelectionReferenceV1', () => {
+  it('accepts bounded HTTPS text-quote references', () => {
+    expect(isWebSelectionReferenceV1(webReference())).toBe(true)
+    expect(isMessageReference(webReference())).toBe(true)
+  })
+
+  it.each([
+    { ...webReference(), version: 2 },
+    { ...webReference(), url: 'file:///tmp/private.txt' },
+    { ...webReference(), url: ' https://example.com/article' },
+    { ...webReference(), title: '' },
+    { ...webReference(), quote: 'different' },
+    {
+      ...webReference(),
+      locator: {
+        type: 'text-quote',
+        exact: 'selected text',
+        prefix: ' before',
+      },
+    },
+  ])('rejects malformed or unsupported references', (value) => {
+    expect(isWebSelectionReferenceV1(value)).toBe(false)
+  })
+
+  it('builds stable kind-specific message reference keys', () => {
+    const first = webReference()
+    const second = {
+      ...webReference(),
+      title: 'A changed page title',
+    }
+    expect(messageReferenceKey(first))
+      .toBe(messageReferenceKey(second))
+    expect(messageReferenceKey(first))
+      .not.toBe(messageReferenceKey(reference()))
   })
 })

@@ -1,10 +1,12 @@
 import { Buffer } from 'node:buffer'
 
 import {
-  MAX_PROJECT_FILE_REFERENCES,
+  MAX_MESSAGE_REFERENCES,
   isProjectFileReferenceV1,
+  isWebSelectionReferenceV1,
   type MessageReference,
   type ProjectFileReferenceV1,
+  type WebSelectionReferenceV1,
 } from '@craft-agent/core/types'
 
 import {
@@ -12,17 +14,29 @@ import {
   resolveProjectWorkingDirectory,
 } from '../handlers/rpc/project-files'
 
-export const MAX_REFERENCES_PER_MESSAGE = MAX_PROJECT_FILE_REFERENCES
+export const MAX_REFERENCES_PER_MESSAGE = MAX_MESSAGE_REFERENCES
 export const MAX_PROJECT_FILE_REFERENCE_BYTES = 16 * 1024
+export const MAX_WEB_SELECTION_REFERENCE_BYTES = 16 * 1024
 export const MAX_MESSAGE_REFERENCES_BYTES = 128 * 1024
 
 type ReferenceErrorCode =
+  | 'MESSAGE_REFERENCE_INVALID'
   | 'PROJECT_FILE_REFERENCE_INVALID'
   | 'PROJECT_FILE_REFERENCE_TOO_LARGE'
-  | 'PROJECT_FILE_REFERENCES_TOO_LARGE'
+  | 'WEB_SELECTION_REFERENCE_INVALID'
+  | 'WEB_SELECTION_REFERENCE_TOO_LARGE'
   | 'PROJECT_FILE_REFERENCE_PROJECT_MISMATCH'
   | 'PROJECT_FILE_REFERENCE_UNAVAILABLE'
   | 'PROJECT_FILE_REFERENCE_STALE'
+  | 'MESSAGE_REFERENCES_TOO_LARGE'
+
+interface ReferenceSizeLimit {
+  maxBytes: number
+  errorCode:
+    | 'PROJECT_FILE_REFERENCE_TOO_LARGE'
+    | 'WEB_SELECTION_REFERENCE_TOO_LARGE'
+  description: string
+}
 
 function referenceError(
   code: ReferenceErrorCode,
@@ -35,12 +49,33 @@ function referenceError(
   )
 }
 
+function getReferenceSizeLimit(
+  reference: MessageReference,
+): ReferenceSizeLimit {
+  switch (reference.kind) {
+    case 'project-file':
+      return {
+        maxBytes: MAX_PROJECT_FILE_REFERENCE_BYTES,
+        errorCode: 'PROJECT_FILE_REFERENCE_TOO_LARGE',
+        description: 'A Project File reference',
+      }
+    case 'web-selection':
+      return {
+        maxBytes: MAX_WEB_SELECTION_REFERENCE_BYTES,
+        errorCode: 'WEB_SELECTION_REFERENCE_TOO_LARGE',
+        description: 'A web selection reference',
+      }
+  }
+}
+
 /**
  * Copy only the fields owned by ProjectFileReferenceV1. This provides one
  * deterministic JSON representation for byte accounting, persistence and
  * model input without retaining arbitrary wire properties.
  */
-function normalizeReference(value: unknown): ProjectFileReferenceV1 {
+function normalizeProjectFileReference(
+  value: unknown,
+): ProjectFileReferenceV1 {
   if (!isProjectFileReferenceV1(value)) {
     throw referenceError(
       'PROJECT_FILE_REFERENCE_INVALID',
@@ -81,36 +116,77 @@ function normalizeReference(value: unknown): ProjectFileReferenceV1 {
   }
 }
 
+function normalizeWebSelectionReference(
+  value: unknown,
+): WebSelectionReferenceV1 {
+  if (!isWebSelectionReferenceV1(value)) {
+    throw referenceError(
+      'WEB_SELECTION_REFERENCE_INVALID',
+      'Invalid web selection reference',
+    )
+  }
+
+  return {
+    version: 1,
+    kind: 'web-selection',
+    url: value.url,
+    title: value.title,
+    quote: value.quote,
+    locator: {
+      type: 'text-quote',
+      exact: value.locator.exact,
+      ...(value.locator.prefix === undefined
+        ? {}
+        : { prefix: value.locator.prefix }),
+      ...(value.locator.suffix === undefined
+        ? {}
+        : { suffix: value.locator.suffix }),
+    },
+  }
+}
+
+function normalizeReference(value: unknown): MessageReference {
+  if (
+    value
+    && typeof value === 'object'
+    && (value as { kind?: unknown }).kind === 'web-selection'
+  ) {
+    return normalizeWebSelectionReference(value)
+  }
+  return normalizeProjectFileReference(value)
+}
+
 /**
  * Runtime validation for untrusted RPC data. Limits are measured on the
  * normalized JSON UTF-8 bytes, not JavaScript character count.
  */
-export function normalizeProjectFileReferences(
+export function normalizeMessageReferences(
   value: unknown,
 ): MessageReference[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     throw referenceError(
-      'PROJECT_FILE_REFERENCE_INVALID',
+      'MESSAGE_REFERENCE_INVALID',
       'Message references must be an array',
     )
   }
   if (value.length > MAX_REFERENCES_PER_MESSAGE) {
     throw referenceError(
-      'PROJECT_FILE_REFERENCE_TOO_LARGE',
+      'MESSAGE_REFERENCES_TOO_LARGE',
       `A message can contain at most ${MAX_REFERENCES_PER_MESSAGE} references`,
     )
   }
 
   const references = value.map(normalizeReference)
   for (const reference of references) {
+    const limit = getReferenceSizeLimit(reference)
     if (
       Buffer.byteLength(JSON.stringify(reference), 'utf8')
-      > MAX_PROJECT_FILE_REFERENCE_BYTES
+      > limit.maxBytes
     ) {
       throw referenceError(
-        'PROJECT_FILE_REFERENCE_TOO_LARGE',
-        `A Project File reference exceeds ${MAX_PROJECT_FILE_REFERENCE_BYTES} bytes`,
+        limit.errorCode,
+        `${limit.description} exceeds ${limit.maxBytes} bytes`,
       )
     }
   }
@@ -119,7 +195,7 @@ export function normalizeProjectFileReferences(
     > MAX_MESSAGE_REFERENCES_BYTES
   ) {
     throw referenceError(
-      'PROJECT_FILE_REFERENCES_TOO_LARGE',
+      'MESSAGE_REFERENCES_TOO_LARGE',
       `Message references exceed ${MAX_MESSAGE_REFERENCES_BYTES} bytes`,
     )
   }
@@ -135,16 +211,21 @@ interface ProjectFileReferenceSendContext {
  * Validate references at the send boundary. Draft persistence intentionally
  * does not call this because a stale file must not block unrelated draft text.
  */
-export async function validateProjectFileReferencesForSend(
+export async function validateMessageReferencesForSend(
   context: ProjectFileReferenceSendContext,
   value: unknown,
 ): Promise<MessageReference[] | undefined> {
-  const references = normalizeProjectFileReferences(value)
+  const references = normalizeMessageReferences(value)
   if (!references?.length) return references
+
+  const projectFileReferences = references.filter(isProjectFileReferenceV1)
+  if (projectFileReferences.length === 0) return references
 
   if (
     !context.sessionProjectId
-    || references.some(reference => reference.projectId !== context.sessionProjectId)
+    || projectFileReferences.some(
+      reference => reference.projectId !== context.sessionProjectId,
+    )
   ) {
     throw referenceError(
       'PROJECT_FILE_REFERENCE_PROJECT_MISMATCH',
@@ -167,7 +248,7 @@ export async function validateProjectFileReferencesForSend(
   }
 
   const currentFingerprints = new Map<string, string>()
-  for (const reference of references) {
+  for (const reference of projectFileReferences) {
     let currentFingerprint = currentFingerprints.get(reference.relativePath)
     if (!currentFingerprint) {
       try {
@@ -205,17 +286,37 @@ function escapeJsonForUntrustedMarkup(json: string): string {
     .replaceAll('\u2029', '\\u2029')
 }
 
+function appendUntrustedReferenceData(
+  message: string,
+  tag: 'project_file_reference_data' | 'web_selection_reference_data',
+  references: readonly MessageReference[],
+): string {
+  if (references.length === 0) return message
+  const data = escapeJsonForUntrustedMarkup(JSON.stringify(references))
+  const separator = message ? '\n\n' : ''
+  return `${message}${separator}<${tag} trust="untrusted">\n${data}\n</${tag}>`
+}
+
 /**
  * Build the provider-independent user-turn model input. The original message
  * and structured references remain separate in Session JSONL.
  */
-export function formatMessageWithProjectFileReferences(
+export function formatMessageWithReferences(
   message: string,
   references: MessageReference[] | undefined,
 ): string {
   if (!references?.length) return message
 
-  const data = escapeJsonForUntrustedMarkup(JSON.stringify(references))
-  const prefix = message ? `${message}\n\n` : ''
-  return `${prefix}<project_file_reference_data trust="untrusted">\n${data}\n</project_file_reference_data>`
+  const projectFileReferences = references.filter(isProjectFileReferenceV1)
+  const webSelectionReferences = references.filter(isWebSelectionReferenceV1)
+  const withProjectFileReferences = appendUntrustedReferenceData(
+    message,
+    'project_file_reference_data',
+    projectFileReferences,
+  )
+  return appendUntrustedReferenceData(
+    withProjectFileReferences,
+    'web_selection_reference_data',
+    webSelectionReferences,
+  )
 }

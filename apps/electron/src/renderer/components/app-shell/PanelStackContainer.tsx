@@ -26,7 +26,12 @@ import { useRef, useEffect } from 'react'
 import { useAtomValue } from 'jotai'
 import { motion } from 'motion/react'
 import { cn } from '@/lib/utils'
-import { panelStackAtom, focusedPanelIdAtom, focusedPanelRouteAtom } from '@/atoms/panel-stack'
+import {
+  panelStackAtom,
+  focusedPanelIdAtom,
+  focusedPanelRouteAtom,
+  focusedPanelContentRouteAtom,
+} from '@/atoms/panel-stack'
 import { parseRouteToNavigationState } from '../../../shared/route-parser'
 import { isDetailNavState } from '@/lib/nav-helpers'
 import { PanelSlot } from './PanelSlot'
@@ -71,13 +76,19 @@ export function PanelStackContainer({
   const panelStack = useAtomValue(panelStackAtom)
   const focusedPanelId = useAtomValue(focusedPanelIdAtom)
   const focusedRoute = useAtomValue(focusedPanelRouteAtom)
+  const focusedContentRoute = useAtomValue(focusedPanelContentRouteAtom)
 
   // Compact mode: drill-in is "detail focused", not just "session selected".
   // For sessions: a session is selected. For settings: a subpage is selected.
   // For sources/skills/automations: a detail entity is selected.
   const focusedNavState = focusedRoute ? parseRouteToNavigationState(focusedRoute) : null
   const isDetailFocused = isDetailNavState(focusedNavState)
-  const hasSelectedContent = isCompact && isDetailFocused
+  const isCompanionFocused = (
+    focusedContentRoute !== null
+    && focusedContentRoute.kind !== 'navigation'
+  )
+  const hasSelectedContent = isCompact
+    && (isCompanionFocused || isDetailFocused)
 
   const visiblePanels = isCompact
     ? panelStack.filter(entry => entry.id === focusedPanelId)

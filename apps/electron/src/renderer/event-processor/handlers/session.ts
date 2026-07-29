@@ -44,7 +44,7 @@ import type {
   Effect,
 } from '../types'
 import type { Message } from '../../../shared/types'
-import { projectFileReferenceKey, type MessageReference } from '@craft-agent/core'
+import { messageReferenceKey, type MessageReference } from '@craft-agent/core'
 import { generateMessageId, appendMessage } from '../helpers'
 
 /**
@@ -342,7 +342,7 @@ export function handleInterrupted(
     const seen = new Set<string>()
     for (const draft of event.queuedDrafts) {
       for (const reference of draft.references ?? []) {
-        const key = projectFileReferenceKey(reference)
+        const key = messageReferenceKey(reference)
         if (seen.has(key)) continue
         seen.add(key)
         references.push(reference)

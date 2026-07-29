@@ -1,6 +1,7 @@
 import type { PanelContentRoute, ViewRoute } from '../../shared/routes'
 
 export type ProjectFileRoute = Extract<PanelContentRoute, { kind: 'projectFile' }>
+export type BrowserPanelRoute = Extract<PanelContentRoute, { kind: 'browser' }>
 type NavigationPanelRoute = Extract<PanelContentRoute, { kind: 'navigation' }>
 
 export function buildNavigationPanelRoute(viewRoute: ViewRoute): NavigationPanelRoute {
@@ -24,8 +25,31 @@ export function isProjectFileRoute(route: PanelContentRoute): route is ProjectFi
   return route.kind === 'projectFile'
 }
 
+export function buildBrowserPanelRoute(input: {
+  browserId: string
+  contextRoute: ViewRoute
+}): BrowserPanelRoute {
+  return {
+    kind: 'browser',
+    browserId: input.browserId,
+    contextRoute: input.contextRoute,
+  }
+}
+
+export function isBrowserPanelRoute(
+  route: PanelContentRoute,
+): route is BrowserPanelRoute {
+  return route.kind === 'browser'
+}
+
+export function isCompanionPanelRoute(
+  route: PanelContentRoute,
+): route is ProjectFileRoute | BrowserPanelRoute {
+  return route.kind === 'projectFile' || route.kind === 'browser'
+}
+
 /**
- * Navigation context shown by the sidebar while a file panel is focused.
+ * Navigation context shown by the sidebar while a companion panel is focused.
  * This is deliberately not the physical owner relationship.
  */
 export function getPanelContextRoute(route: PanelContentRoute): ViewRoute {
@@ -37,26 +61,38 @@ export function panelContentRoutesEqual(
   right: PanelContentRoute,
 ): boolean {
   if (left.kind !== right.kind) return false
-  if (left.kind === 'navigation' && right.kind === 'navigation') {
-    return left.viewRoute === right.viewRoute
+  switch (left.kind) {
+    case 'navigation':
+      return right.kind === 'navigation'
+        && left.viewRoute === right.viewRoute
+    case 'projectFile':
+      return right.kind === 'projectFile'
+        && left.projectId === right.projectId
+        && left.relativePath === right.relativePath
+        && left.contextRoute === right.contextRoute
+    case 'browser':
+      return right.kind === 'browser'
+        && left.browserId === right.browserId
+        && left.contextRoute === right.contextRoute
   }
-  if (left.kind === 'projectFile' && right.kind === 'projectFile') {
-    return left.projectId === right.projectId
-      && left.relativePath === right.relativePath
-      && left.contextRoute === right.contextRoute
-  }
-  return false
 }
 
 export function getPanelContentRouteKey(route: PanelContentRoute): string {
-  return JSON.stringify(
-    route.kind === 'navigation'
-      ? ['navigation', route.viewRoute]
-      : [
-          'projectFile',
-          route.projectId,
-          route.relativePath,
-          route.contextRoute,
-        ],
-  )
+  switch (route.kind) {
+    case 'navigation':
+      return JSON.stringify(['navigation', route.viewRoute])
+    case 'projectFile':
+      return JSON.stringify([
+        'projectFile',
+        route.projectId,
+        route.relativePath,
+        route.contextRoute,
+      ])
+    case 'browser':
+      return JSON.stringify([
+        'browser',
+        route.browserId,
+        route.contextRoute,
+      ])
+  }
 }

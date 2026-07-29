@@ -13,6 +13,7 @@ import type {
   ToolDisplayMeta,
   AnnotationV1,
   MessageReference,
+  WebSelectionReferenceV1,
   PermissionRequest as BasePermissionRequest,
   SourceFingerprint,
   EpubDocumentStateV1,
@@ -937,6 +938,40 @@ export interface BrowserInstanceInfo {
    * and main processes that pre-date the field working unchanged.
    */
   workspaceId?: string | null
+}
+
+export interface BrowserSurfaceState {
+  bounds: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  visible: boolean
+  order: number
+}
+
+export interface BrowserPresentRequest {
+  browserId: string
+  sessionId?: string | null
+  workspaceId?: string | null
+}
+
+export interface BrowserSelectionActionPayload {
+  eventId: string
+  action: 'add-chat' | 'new-chat'
+  browserId: string
+  reference: WebSelectionReferenceV1
+}
+
+export interface BrowserSelectionRevealResult {
+  ok: boolean
+  browserId?: string
+  found?: boolean
+  reason?:
+    | 'invalid_reference'
+    | 'navigation_failed'
+    | 'selection_not_found'
 }
 
 export interface DeepLinkNavigation {

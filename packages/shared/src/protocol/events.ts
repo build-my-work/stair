@@ -13,6 +13,8 @@ import type {
   UnreadSummary,
   UpdateInfo,
   BrowserInstanceInfo,
+  BrowserPresentRequest,
+  BrowserSelectionActionPayload,
   DeepLinkNavigation,
   TaskGenerateResult,
 } from './dto'
@@ -56,6 +58,9 @@ export interface BroadcastEventMap {
   [RPC_CHANNELS.browserPane.STATE_CHANGED]: [info: BrowserInstanceInfo]
   [RPC_CHANNELS.browserPane.REMOVED]: [id: string]
   [RPC_CHANNELS.browserPane.INTERACTED]: [id: string]
+  [RPC_CHANNELS.browserPane.PRESENT_REQUESTED]: [request: BrowserPresentRequest]
+  [RPC_CHANNELS.browserPane.CLOSE_PANEL_REQUESTED]: [browserId: string]
+  [RPC_CHANNELS.browserPane.SELECTION_ACTION]: [payload: BrowserSelectionActionPayload]
 
   // Navigation events (per-window)
   [RPC_CHANNELS.notification.NAVIGATE]: [data: { workspaceId: string; sessionId: string }]

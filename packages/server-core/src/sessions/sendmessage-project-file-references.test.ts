@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import type { ProjectFileReferenceV1 } from '@craft-agent/core/types'
+import type {
+  MessageReference,
+  ProjectFileReferenceV1,
+  WebSelectionReferenceV1,
+} from '@craft-agent/core/types'
 import { getSessionFilePath } from '@craft-agent/shared/sessions/storage'
 import { createProject } from '@craft-agent/shared/projects'
 
@@ -21,15 +25,15 @@ interface ManagedHarness {
     id: string
     role: string
     content: string
-    references?: ProjectFileReferenceV1[]
+    references?: MessageReference[]
     isQueued?: boolean
   }>
   messageQueue: Array<{
     message: string
     messageId?: string
-    options?: { references?: ProjectFileReferenceV1[] }
+    options?: { references?: MessageReference[] }
   }>
-  lastSentOptions?: { references?: ProjectFileReferenceV1[] }
+  lastSentOptions?: { references?: MessageReference[] }
   lastSentMessage?: string
   authRetryAttempted?: boolean
   authRetryInProgress?: boolean
@@ -105,6 +109,7 @@ describe('SessionManager Project File references', () => {
       messagesLoaded?: boolean
       isProcessing?: boolean
       name?: string
+      projectId?: string | null
     } = {},
   ): ManagedHarness {
     managers.add(manager)
@@ -118,7 +123,9 @@ describe('SessionManager Project File references', () => {
       {
         id: sessionId,
         name: options.name === undefined ? 'Reference test' : options.name,
-        projectId,
+        ...(options.projectId === null
+          ? {}
+          : { projectId: options.projectId ?? projectId }),
       },
       workspace as never,
       {
@@ -219,6 +226,58 @@ describe('SessionManager Project File references', () => {
 
     expect(managed.name).toBe('Chapter 1')
     expect(generatedTitleInput).toBe('Chapter 1')
+  })
+
+  it('persists and sends web selections for a Session without a Project', async () => {
+    const manager = new SessionManager()
+    const sessionId = 'web-selection-reference'
+    const managed = installSession(manager, sessionId, {
+      name: '',
+      projectId: null,
+    })
+    const webReference: WebSelectionReferenceV1 = {
+      version: 1,
+      kind: 'web-selection',
+      url: 'https://example.com/article',
+      title: 'Example article',
+      quote: 'selected paragraph',
+      locator: {
+        type: 'text-quote',
+        exact: 'selected paragraph',
+        prefix: 'before',
+        suffix: 'after',
+      },
+    }
+    let modelInput = ''
+    const fakeAgent = {
+      setAllSources: () => {},
+      getModel: () => 'test-model',
+      getSessionId: () => 'sdk-reference',
+      chat: async function* (input: string) {
+        modelInput = input
+        yield { type: 'complete' as const }
+      },
+    }
+    ;(manager as unknown as SessionManagerHarness).getOrCreateAgent =
+      async () => fakeAgent
+
+    await manager.sendMessage(
+      sessionId,
+      '',
+      undefined,
+      undefined,
+      { references: [webReference] },
+    )
+
+    expect(managed.name).toBe('Example article')
+    expect(modelInput).toStartWith(
+      '<web_selection_reference_data trust="untrusted">\n',
+    )
+    expect(modelInput).not.toContain('<project_file_reference_data')
+    expect(storedMessages(sessionId).at(-1)).toMatchObject({
+      content: '',
+      references: [webReference],
+    })
   })
 
   it('rejects a cross-workspace RPC before persisting or redirecting', async () => {

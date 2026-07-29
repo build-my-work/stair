@@ -10,13 +10,18 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test'
 let toolbarLoadFailuresRemaining = 0
 const mockShellOpenExternal = mock(async () => {})
 const mockIpcMainHandle = mock(() => {})
+const mockIpcMainOn = mock(() => {})
 
-function createMockWebContents(options?: { toolbar?: boolean }) {
+function createMockWebContents(options?: {
+  toolbar?: boolean
+  session?: unknown
+}) {
   const listeners: Record<string, Function[]> = {}
   let currentUrl = 'about:blank'
   return {
+    id: 1,
     userAgent: 'Mock Chrome Electron/99.0.0',
-    session: {},
+    session: options?.session ?? {},
     isDestroyed: mock(() => false),
     on: (event: string, cb: Function) => {
       if (!listeners[event]) listeners[event] = []
@@ -66,6 +71,7 @@ function createMockWebContents(options?: { toolbar?: boolean }) {
       sendCommand: mock(async () => ({ nodes: [] })),
       on: mock(() => {}),
     },
+    getZoomFactor: mock(() => 1),
     _listeners: listeners,
     _emit: (event: string, ...args: any[]) => {
       for (const cb of listeners[event] || []) {
@@ -76,12 +82,46 @@ function createMockWebContents(options?: { toolbar?: boolean }) {
   }
 }
 
-function createMockBrowserView(options?: { toolbar?: boolean }) {
+function createMockWebContentsView(options?: {
+  toolbar?: boolean
+  session?: unknown
+}) {
   const webContents = createMockWebContents(options)
+  let bounds = { x: 0, y: 0, width: 0, height: 0 }
   return {
     webContents,
-    setBounds: mock(() => {}),
-    setAutoResize: mock(() => {}),
+    setBounds: mock((nextBounds: typeof bounds) => {
+      bounds = nextBounds
+    }),
+    getBounds: mock(() => bounds),
+    setVisible: mock(() => {}),
+    setBorderRadius: mock(() => {}),
+    addChildView: mock(() => {}),
+    removeChildView: mock(() => {}),
+    children: [],
+  }
+}
+
+function createMockView() {
+  const children: any[] = []
+  let bounds = { x: 0, y: 0, width: 0, height: 0 }
+  return {
+    children,
+    addChildView: mock((view: any) => {
+      const existing = children.indexOf(view)
+      if (existing >= 0) children.splice(existing, 1)
+      children.push(view)
+    }),
+    removeChildView: mock((view: any) => {
+      const index = children.indexOf(view)
+      if (index >= 0) children.splice(index, 1)
+    }),
+    setBounds: mock((nextBounds: typeof bounds) => {
+      bounds = nextBounds
+    }),
+    getBounds: mock(() => bounds),
+    setVisible: mock(() => {}),
+    setBorderRadius: mock(() => {}),
   }
 }
 
@@ -95,6 +135,7 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
 
   const win = {
     webContents,
+    contentView: createMockView(),
     on: (event: string, cb: Function) => {
       if (!listeners[event]) listeners[event] = []
       listeners[event].push(cb)
@@ -148,12 +189,18 @@ mock.module('electron', () => ({
       Object.assign(this, win)
     }
   },
-  BrowserView: class MockBrowserView {
+  View: class MockView {
+    constructor() {
+      Object.assign(this, createMockView())
+    }
+  },
+  WebContentsView: class MockWebContentsView {
     webContents: any
     constructor(opts?: any) {
-      const view = createMockBrowserView({
+      const view = createMockWebContentsView({
         toolbar: typeof opts?.webPreferences?.preload === 'string'
           && opts.webPreferences.preload.includes('browser-toolbar-preload'),
+        session: opts?.webPreferences?.session,
       })
       this.webContents = view.webContents
       Object.assign(this, view)
@@ -161,6 +208,7 @@ mock.module('electron', () => ({
   },
   ipcMain: {
     handle: mockIpcMainHandle,
+    on: mockIpcMainOn,
   },
   Menu: {
     buildFromTemplate: mock(() => ({
@@ -237,10 +285,33 @@ mock.module('../browser-cdp', () => ({
       box: { x: 5, y: 5, width: 20, height: 20 },
       clickPoint: { x: 15, y: 15 },
     }))
+    setViewportSize = mock(() => {})
+    clearViewportSize = mock(() => {})
   },
 }))
 
-const { BrowserPaneManager } = await import('../browser-pane-manager')
+const {
+  BrowserPaneManager,
+  classifyWindowOpen,
+} = await import('../browser-pane-manager')
+
+type WindowOpenDetails = Parameters<typeof classifyWindowOpen>[0]
+
+function createWindowOpenDetails(
+  overrides: Partial<WindowOpenDetails> = {},
+): WindowOpenDetails {
+  return {
+    url: 'https://example.com/child',
+    frameName: '',
+    features: '',
+    disposition: 'default',
+    referrer: {
+      url: 'https://example.com/parent',
+      policy: 'strict-origin-when-cross-origin',
+    },
+    ...overrides,
+  }
+}
 
 describe('BrowserPaneManager', () => {
   let manager: InstanceType<typeof BrowserPaneManager>
@@ -249,6 +320,7 @@ describe('BrowserPaneManager', () => {
     toolbarLoadFailuresRemaining = 0
     mockShellOpenExternal.mockClear()
     mockIpcMainHandle.mockClear()
+    mockIpcMainOn.mockClear()
     manager = new BrowserPaneManager()
   })
 
@@ -269,18 +341,112 @@ describe('BrowserPaneManager', () => {
     expect(manager.listInstances()).toHaveLength(1)
   })
 
-  it('allows http(s) popups with shared browser partition', () => {
+  describe('window.open classification', () => {
+    it('routes ordinary tab dispositions to the current page', () => {
+      expect(classifyWindowOpen(createWindowOpenDetails({
+        disposition: 'foreground-tab',
+      }))).toBe('current-page')
+      expect(classifyWindowOpen(createWindowOpenDetails({
+        disposition: 'background-tab',
+      }))).toBe('current-page')
+    })
+
+    it('routes a default _blank without popup features to the current page', () => {
+      expect(classifyWindowOpen(createWindowOpenDetails({
+        disposition: 'default',
+        frameName: '_blank',
+        features: 'noopener,noreferrer',
+      }))).toBe('current-page')
+    })
+
+    it('keeps explicit window dispositions as native popups', () => {
+      expect(classifyWindowOpen(createWindowOpenDetails({
+        disposition: 'new-window',
+      }))).toBe('native-popup')
+      expect(classifyWindowOpen(createWindowOpenDetails({
+        disposition: 'other',
+      }))).toBe('native-popup')
+    })
+
+    it('treats strong popup dimensions as native popup signals', () => {
+      expect(classifyWindowOpen(createWindowOpenDetails({
+        features: 'noopener,width=520,height=720',
+      }))).toBe('native-popup')
+    })
+
+    it('keeps non-reserved named windows as native popups', () => {
+      expect(classifyWindowOpen(createWindowOpenDetails({
+        frameName: 'oauth-consent',
+      }))).toBe('native-popup')
+    })
+
+    it('keeps target-blank form posts as native popups', () => {
+      expect(classifyWindowOpen(createWindowOpenDetails({
+        frameName: '_blank',
+        postBody: {
+          contentType: 'application/x-www-form-urlencoded',
+          data: [],
+        },
+      }))).toBe('native-popup')
+    })
+
+    it('denies deep links and non-http protocols', () => {
+      expect(classifyWindowOpen(createWindowOpenDetails({
+        url: 'craftagents://settings',
+      }))).toBe('deny')
+      expect(classifyWindowOpen(createWindowOpenDetails({
+        url: 'mailto:hello@example.com',
+      }))).toBe('deny')
+    })
+  })
+
+  it('navigates ordinary window.open requests in the existing browser instance', async () => {
+    manager.createInstance('same-page-parent', {
+      ownerType: 'session',
+      ownerSessionId: 'session-1',
+      workspaceId: 'workspace-1',
+    })
+    const parent = (manager as any).instances.get('same-page-parent')
+    const openHandler = parent.pageView.webContents.setWindowOpenHandler.mock.calls[0][0]
+    parent.pageView.webContents.loadURL.mockClear()
+
+    for (const disposition of [
+      'foreground-tab',
+      'background-tab',
+      'default',
+    ] as const) {
+      const url = `https://example.com/${disposition}`
+      const result = openHandler(createWindowOpenDetails({
+        url,
+        disposition,
+        frameName: '_blank',
+      }))
+
+      expect(result).toEqual({ action: 'deny' })
+      await Bun.sleep(0)
+      expect(parent.pageView.webContents.loadURL).toHaveBeenLastCalledWith(url)
+    }
+
+    expect(manager.listInstances()).toHaveLength(1)
+    expect(parent.boundSessionId).toBe('session-1')
+    expect((manager as any).popupWindowsByParentInstanceId.has(parent.id))
+      .toBe(false)
+  })
+
+  it('keeps new-window as a native popup with the shared browser partition', () => {
     manager.createInstance('popup-allow')
     const instance = (manager as any).instances.get('popup-allow')
     const openHandler = instance.pageView.webContents.setWindowOpenHandler.mock.calls[0][0]
 
-    const result = openHandler({
+    const result = openHandler(createWindowOpenDetails({
       url: 'https://accounts.google.com/o/oauth2/v2/auth',
-      disposition: 'new-popup',
+      disposition: 'new-window',
       frameName: 'oauth-popup',
-    })
+    }))
 
     expect(result.action).toBe('allow')
+    expect(result.createWindow).toBeUndefined()
+    expect(result.outlivesOpener).toBeUndefined()
     expect(result.overrideBrowserWindowOptions?.webPreferences?.partition).toBe('persist:browser-pane')
     expect(result.overrideBrowserWindowOptions?.webPreferences?.nodeIntegration).toBe(false)
     expect(result.overrideBrowserWindowOptions?.webPreferences?.contextIsolation).toBe(true)
@@ -291,15 +457,26 @@ describe('BrowserPaneManager', () => {
     const instance = (manager as any).instances.get('popup-deeplink')
     const openHandler = instance.pageView.webContents.setWindowOpenHandler.mock.calls[0][0]
 
-    const result = openHandler({
+    const result = openHandler(createWindowOpenDetails({
       url: 'craftagents://settings',
-      disposition: 'new-popup',
+      disposition: 'new-window',
       frameName: '',
-    })
+    }))
 
     expect(result).toEqual({ action: 'deny' })
     await Bun.sleep(0)
     expect(mockShellOpenExternal).toHaveBeenCalledWith('craftagents://settings')
+  })
+
+  it('denies non-http window.open requests', () => {
+    manager.createInstance('popup-deny-protocol')
+    const instance = (manager as any).instances.get('popup-deny-protocol')
+    const openHandler = instance.pageView.webContents.setWindowOpenHandler.mock.calls[0][0]
+
+    expect(openHandler(createWindowOpenDetails({
+      url: 'file:///tmp/private.txt',
+      disposition: 'default',
+    }))).toEqual({ action: 'deny' })
   })
 
   it('destroys child popups when parent instance is destroyed', () => {
@@ -790,6 +967,7 @@ describe('BrowserPaneManager', () => {
         canGoBack: true,
         canGoForward: false,
         themeColor: '#123456',
+        isPanel: false,
       },
     ])
   })
@@ -821,6 +999,7 @@ describe('BrowserPaneManager', () => {
         canGoBack: true,
         canGoForward: true,
         themeColor: '#654321',
+        isPanel: false,
       },
     ])
   })
@@ -1049,6 +1228,108 @@ describe('BrowserPaneManager', () => {
     expect(resized).toEqual({ width: 700, height: 452 })
   })
 
+  it('moves one native root view into a panel host and honors lease-safe detach', () => {
+    const host = createMockWindow()
+    host.webContents.id = 777
+    host.webContents.getZoomFactor = mock(() => 2)
+    manager.setWindowManager({
+      getWindowByWebContentsId: (id: number) => id === 777 ? host : null,
+      getWorkspaceForWindow: () => 'workspace-1',
+    } as any)
+    manager.createInstance('surface-1', { workspaceId: 'workspace-1' })
+    const instance = (manager as any).instances.get('surface-1')
+
+    const lease = manager.attachSurface('surface-1', 777, {
+      bounds: { x: 10, y: 20, width: 300, height: 200 },
+      visible: true,
+      order: 3,
+    })
+
+    expect(instance.presentation).toMatchObject({
+      mode: 'panel',
+      hostWebContentsId: 777,
+      leaseId: lease,
+    })
+    expect(instance.rootView.setBounds).toHaveBeenLastCalledWith({
+      x: 20,
+      y: 40,
+      width: 600,
+      height: 400,
+    })
+    manager.detachSurface('surface-1', 777, 'stale-lease')
+    expect(instance.presentation.mode).toBe('panel')
+
+    manager.detachSurface('surface-1', 777, lease)
+    expect(instance.presentation.mode).toBe('window')
+    expect(instance.window.destroy).not.toHaveBeenCalled()
+    expect(manager.listInstances()).toHaveLength(1)
+  })
+
+  it('routes panel focus and close requests back to the renderer host', () => {
+    const host = createMockWindow()
+    host.webContents.id = 778
+    manager.setWindowManager({
+      getWindowByWebContentsId: (id: number) => id === 778 ? host : null,
+      getWorkspaceForWindow: () => 'workspace-1',
+    } as any)
+    manager.createInstance('surface-focus', { workspaceId: 'workspace-1' })
+    manager.bindSession('surface-focus', 'session-1')
+    manager.attachSurface('surface-focus', 778, {
+      bounds: { x: 0, y: 0, width: 800, height: 600 },
+      visible: true,
+      order: 0,
+    })
+    const presents: any[] = []
+    const closes: any[] = []
+    manager.onPresentRequest((request, hostId) => {
+      presents.push({ request, hostId })
+    })
+    manager.onClosePanelRequest((browserId, hostId) => {
+      closes.push({ browserId, hostId })
+    })
+
+    manager.focus('surface-focus')
+    manager.hide('surface-focus')
+
+    expect(presents).toEqual([{
+      request: {
+        browserId: 'surface-focus',
+        sessionId: 'session-1',
+        workspaceId: 'workspace-1',
+      },
+      hostId: 778,
+    }])
+    expect(closes).toEqual([{
+      browserId: 'surface-focus',
+      hostId: 778,
+    }])
+    expect(host.focus).toHaveBeenCalled()
+  })
+
+  it('uses CDP viewport emulation instead of resizing the parking window in panel mode', () => {
+    const host = createMockWindow()
+    host.webContents.id = 779
+    manager.setWindowManager({
+      getWindowByWebContentsId: () => host,
+      getWorkspaceForWindow: () => 'workspace-1',
+    } as any)
+    manager.createInstance('surface-resize', { workspaceId: 'workspace-1' })
+    manager.attachSurface('surface-resize', 779, {
+      bounds: { x: 0, y: 0, width: 800, height: 600 },
+      visible: true,
+      order: 0,
+    })
+    const instance = (manager as any).instances.get('surface-resize')
+    instance.window.setContentSize.mockClear()
+
+    expect(manager.windowResize('surface-resize', 1024, 768)).toEqual({
+      width: 1024,
+      height: 768,
+    })
+    expect(instance.cdp.setViewportSize).toHaveBeenCalledWith(1024, 768)
+    expect(instance.window.setContentSize).not.toHaveBeenCalled()
+  })
+
   describe('agent control overlay', () => {
     it('setAgentControl activates native overlay on bound instance', async () => {
       manager.createInstance('ac-1')
@@ -1212,6 +1493,118 @@ describe('BrowserPaneManager', () => {
       const instance = (manager as any).instances.get('ac-8')
       expect(instance.agentControl).toBeNull()
       expect(instance.nativeOverlayView.webContents.executeJavaScript).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('browser selection references', () => {
+    const capture = {
+      quote: 'selected text',
+      prefix: 'before',
+      suffix: 'after',
+      rect: { x: 100, y: 100, width: 80, height: 18 },
+    }
+
+    it('shows bounded selection actions and routes the selected snapshot to the app host', () => {
+      const host = createMockWindow()
+      manager.setWindowManager({
+        getWindowByWebContentsId: () => null,
+        getWindowByWorkspace: () => host,
+        getFocusedWindow: () => null,
+        getAllWindows: () => [{ window: host, workspaceId: 'workspace-1' }],
+      } as any)
+      manager.createInstance('selection-1', { workspaceId: 'workspace-1' })
+      const instance = (manager as any).instances.get('selection-1')
+      instance.currentUrl = 'https://example.com/article'
+      instance.title = 'Example article'
+      instance.nativeOverlayReady = true
+      const actions: Array<{ payload: any; hostWebContentsId: number }> = []
+      manager.onSelectionAction((payload, hostWebContentsId) => {
+        actions.push({ payload, hostWebContentsId })
+      })
+
+      ;(manager as any).handleSelectionCapture(instance, capture)
+
+      expect(instance.pendingSelection.reference).toMatchObject({
+        kind: 'web-selection',
+        url: 'https://example.com/article',
+        title: 'Example article',
+        quote: 'selected text',
+      })
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenCalledWith({
+        x: 71,
+        y: 82,
+        width: 138,
+        height: 56,
+      })
+
+      ;(manager as any).handleSelectionAction(instance, 'add-chat')
+
+      expect(instance.pendingSelection).toBeNull()
+      expect(host.show).toHaveBeenCalled()
+      expect(host.focus).toHaveBeenCalled()
+      expect(actions).toHaveLength(1)
+      expect(actions[0].hostWebContentsId).toBe(host.webContents.id)
+      expect(actions[0].payload).toMatchObject({
+        action: 'add-chat',
+        browserId: 'selection-1',
+        reference: {
+          kind: 'web-selection',
+          quote: 'selected text',
+        },
+      })
+      expect(typeof actions[0].payload.eventId).toBe('string')
+    })
+
+    it('clears selection actions when agent control takes priority', () => {
+      manager.createInstance('selection-agent')
+      const instance = (manager as any).instances.get('selection-agent')
+      instance.currentUrl = 'https://example.com'
+      instance.title = 'Example'
+      instance.nativeOverlayReady = true
+      manager.bindSession('selection-agent', 'session-1')
+      ;(manager as any).handleSelectionCapture(instance, capture)
+
+      manager.setAgentControl('session-1', { displayName: 'Agent' })
+
+      expect(instance.pendingSelection).toBeNull()
+      expect(instance.nativeOverlayView.setBounds).toHaveBeenCalledWith({
+        x: 0,
+        y: 48,
+        width: 1200,
+        height: 852,
+      })
+    })
+
+    it('reuses a matching manual browser and reveals the saved text quote', async () => {
+      manager.createInstance('selection-reveal', {
+        workspaceId: 'workspace-1',
+      })
+      const instance = (manager as any).instances.get('selection-reveal')
+      instance.currentUrl = 'https://example.com/article'
+      instance.pageView.webContents.executeJavaScript = mock(async () => true)
+
+      const result = await manager.revealSelection({
+        version: 1,
+        kind: 'web-selection',
+        url: 'https://example.com/article',
+        title: 'Example article',
+        quote: 'selected text',
+        locator: {
+          type: 'text-quote',
+          exact: 'selected text',
+          prefix: 'before',
+          suffix: 'after',
+        },
+      }, { workspaceId: 'workspace-1' })
+
+      expect(result).toEqual({
+        ok: true,
+        browserId: 'selection-reveal',
+        found: true,
+      })
+      expect(manager.listInstances()).toHaveLength(1)
+      expect(instance.pageView.webContents.executeJavaScript)
+        .toHaveBeenCalledTimes(1)
     })
   })
 

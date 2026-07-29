@@ -85,7 +85,15 @@ import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
-import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
+import {
+  isProjectFileReferenceV1,
+  messageToStored,
+  storedToMessage,
+  type Message,
+  type StoredAttachment,
+  type ToolDisplayMeta,
+  type TokenUsage,
+} from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
@@ -102,8 +110,8 @@ import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntr
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
 import { validateArchiveTarget } from './archive-guards'
 import {
-  formatMessageWithProjectFileReferences,
-  validateProjectFileReferencesForSend,
+  formatMessageWithReferences,
+  validateMessageReferencesForSend,
 } from './project-file-references'
 
 // Import from server-core domain utilities
@@ -1439,6 +1447,28 @@ export class SessionManager implements ISessionManager {
     if (!fallback) return null
     this.browserHostByCanvas.set(sid, fallback)
     return fallback
+  }
+
+  private requestBrowserPresentation(
+    sid: string,
+    browserId: string,
+  ): boolean {
+    if (!this.eventSink) return false
+    const clientId = this.browserHostByCanvas.get(sid)
+      ?? this.getBrowserHostClient(sid)
+    const session = this.sessions.get(sid)
+    if (!clientId || !session) return false
+
+    this.eventSink(
+      RPC_CHANNELS.browserPane.PRESENT_REQUESTED,
+      { to: 'client', clientId },
+      {
+        browserId,
+        sessionId: sid,
+        workspaceId: session.workspace.id,
+      },
+    )
+    return true
   }
 
   /** Returns a strictly increasing timestamp (ms). When Date.now() collides with
@@ -3769,9 +3799,15 @@ export class SessionManager implements ISessionManager {
         mergeSessionScopedToolCallbacks(sid, {
           browserPaneFns: {
             openPanel: async (options) => {
-              const instanceId = options?.background
-                ? await bpm.createForSessionAsync(sid, { show: false, workspaceId })
-                : await bpm.focusBoundForSessionAsync(sid, { workspaceId })
+              const instanceId = await bpm.createForSessionAsync(
+                sid,
+                { show: false, workspaceId },
+              )
+              if (!options?.background) {
+                if (!this.requestBrowserPresentation(sid, instanceId)) {
+                  bpm.focus(instanceId)
+                }
+              }
               const info = await bpm.getInstanceAsync(instanceId)
               sessionLog.info(`[browser-pane] route decision: browser_open session=${sid} instance=${instanceId} background=${options?.background ?? false} ownerType=${info?.ownerType ?? 'unknown'} ownerSessionId=${info?.ownerSessionId ?? 'none'} visible=${info?.isVisible ?? false}`)
               return { instanceId }
@@ -3894,7 +3930,9 @@ export class SessionManager implements ISessionManager {
                 bpm.bindSession(target.id, sid, { workspaceId })
               }
 
-              bpm.focus(target.id)
+              if (!this.requestBrowserPresentation(sid, target.id)) {
+                bpm.focus(target.id)
+              }
               const focused = await bpm.getInstanceAsync(target.id)
               return {
                 instanceId: target.id,
@@ -5835,7 +5873,7 @@ export class SessionManager implements ISessionManager {
     }
 
     if (options?.references !== undefined) {
-      const references = await validateProjectFileReferencesForSend({
+      const references = await validateMessageReferencesForSend({
         workspaceRootPath: managed.workspace.rootPath,
         sessionProjectId: managed.projectId,
       }, options.references)
@@ -5879,7 +5917,7 @@ export class SessionManager implements ISessionManager {
       const behavior = connection ? resolveMidStreamBehavior(connection) : 'steer'
 
       const agent = managed.agent
-      const modelInput = formatMessageWithProjectFileReferences(
+      const modelInput = formatMessageWithReferences(
         message,
         options?.references,
       )
@@ -6020,10 +6058,16 @@ export class SessionManager implements ISessionManager {
         // Replace bracket mentions with their display labels (e.g. [skill:ws:commit] -> "Commit")
         // so titles show human-readable names instead of raw IDs
         const firstReference = options?.references?.[0]
-        let titleSource = message
-          || firstReference?.chapterTitle?.trim()
-          || firstReference?.fileName
-          || ''
+        let referenceTitle = ''
+        if (firstReference) {
+          if (isProjectFileReferenceV1(firstReference)) {
+            referenceTitle = firstReference.chapterTitle?.trim()
+              || firstReference.fileName
+          } else {
+            referenceTitle = firstReference.title
+          }
+        }
+        let titleSource = message || referenceTitle
         if (options?.badges) {
           for (const badge of options.badges) {
             if (badge.rawText && badge.label) {
@@ -6244,7 +6288,7 @@ export class SessionManager implements ISessionManager {
       // Uses <system-reminder> tags so the LLM treats it as transient system guidance
       // rather than part of the user's message content. The original message is stored
       // in session JSONL (line ~3952); this only affects the SDK's in-process context.
-      let effectiveMessage = formatMessageWithProjectFileReferences(
+      let effectiveMessage = formatMessageWithReferences(
         message,
         options?.references,
       )

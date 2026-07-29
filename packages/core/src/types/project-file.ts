@@ -99,14 +99,36 @@ export interface ProjectFileReferenceV1 extends ProjectFileIdentity {
   };
 }
 
-export type MessageReference = ProjectFileReferenceV1;
+export interface WebSelectionReferenceV1 {
+  version: 1;
+  kind: 'web-selection';
+  url: string;
+  title: string;
+  quote: string;
+  locator: {
+    type: 'text-quote';
+    exact: string;
+    prefix?: string;
+    suffix?: string;
+  };
+}
+
+export type MessageReference =
+  | ProjectFileReferenceV1
+  | WebSelectionReferenceV1;
 
 export const MAX_PROJECT_FILE_REFERENCES = 32;
+export const MAX_MESSAGE_REFERENCES = MAX_PROJECT_FILE_REFERENCES;
 export const MAX_PROJECT_FILE_REFERENCE_CHARS = 16 * 1024;
 export const MAX_PROJECT_FILE_REFERENCE_CFI_CHARS = 4_096;
 export const MAX_PROJECT_FILE_REFERENCE_QUOTE_CHARS = 4_000;
 export const MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS = 1_000;
 export const MAX_PROJECT_FILE_REFERENCE_TOC_DEPTH = 32;
+export const MAX_WEB_SELECTION_REFERENCE_CHARS = 16 * 1024;
+export const MAX_WEB_SELECTION_URL_CHARS = 8_192;
+export const MAX_WEB_SELECTION_TITLE_CHARS = 512;
+export const MAX_WEB_SELECTION_QUOTE_CHARS = 4_000;
+export const MAX_WEB_SELECTION_CONTEXT_CHARS = 128;
 
 export function isSourceFingerprint(value: unknown): value is SourceFingerprint {
   return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
@@ -172,6 +194,62 @@ export function isProjectFileReferenceV1(value: unknown): value is ProjectFileRe
     && JSON.stringify(reference).length <= MAX_PROJECT_FILE_REFERENCE_CHARS;
 }
 
+function isBoundedTrimmedText(
+  value: unknown,
+  maxLength: number,
+): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= maxLength
+    && value === value.trim()
+    && !value.includes('\0');
+}
+
+function isSupportedWebUrl(value: string): boolean {
+  const UrlConstructor = (
+    globalThis as typeof globalThis & {
+      URL?: new (input: string) => { protocol: string };
+    }
+  ).URL;
+  if (!UrlConstructor) return false;
+  try {
+    const parsed = new UrlConstructor(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+export function isWebSelectionReferenceV1(
+  value: unknown,
+): value is WebSelectionReferenceV1 {
+  if (!value || typeof value !== 'object') return false;
+  const reference = value as WebSelectionReferenceV1;
+  return reference.version === 1
+    && reference.kind === 'web-selection'
+    && isBoundedTrimmedText(reference.url, MAX_WEB_SELECTION_URL_CHARS)
+    && isSupportedWebUrl(reference.url)
+    && isBoundedTrimmedText(reference.title, MAX_WEB_SELECTION_TITLE_CHARS)
+    && isBoundedTrimmedText(reference.quote, MAX_WEB_SELECTION_QUOTE_CHARS)
+    && reference.locator?.type === 'text-quote'
+    && reference.locator.exact === reference.quote
+    && (reference.locator.prefix === undefined
+      || isBoundedTrimmedText(
+        reference.locator.prefix,
+        MAX_WEB_SELECTION_CONTEXT_CHARS,
+      ))
+    && (reference.locator.suffix === undefined
+      || isBoundedTrimmedText(
+        reference.locator.suffix,
+        MAX_WEB_SELECTION_CONTEXT_CHARS,
+      ))
+    && JSON.stringify(reference).length <= MAX_WEB_SELECTION_REFERENCE_CHARS;
+}
+
+export function isMessageReference(value: unknown): value is MessageReference {
+  return isProjectFileReferenceV1(value) || isWebSelectionReferenceV1(value);
+}
+
 export function projectFileReferenceKey(reference: ProjectFileReferenceV1): string {
   return JSON.stringify([
     reference.kind,
@@ -180,5 +258,19 @@ export function projectFileReferenceKey(reference: ProjectFileReferenceV1): stri
     reference.sourceFingerprint,
     reference.locator.type,
     reference.locator.cfiRange,
+  ]);
+}
+
+export function messageReferenceKey(reference: MessageReference): string {
+  if (reference.kind === 'project-file') {
+    return projectFileReferenceKey(reference);
+  }
+  return JSON.stringify([
+    reference.kind,
+    reference.url,
+    reference.locator.type,
+    reference.locator.exact,
+    reference.locator.prefix ?? '',
+    reference.locator.suffix ?? '',
   ]);
 }

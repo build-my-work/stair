@@ -66,19 +66,29 @@ export type {
   EpubDocumentStateV1,
   EpubStateMutation,
   ProjectFileReferenceV1,
+  WebSelectionReferenceV1,
   MessageReference,
 } from './project-file.ts';
-export { projectFileReferenceKey } from './project-file.ts';
 export {
+  messageReferenceKey,
+  projectFileReferenceKey,
+  MAX_MESSAGE_REFERENCES,
   MAX_PROJECT_FILE_REFERENCES,
   MAX_PROJECT_FILE_REFERENCE_CHARS,
   MAX_PROJECT_FILE_REFERENCE_CFI_CHARS,
   MAX_PROJECT_FILE_REFERENCE_QUOTE_CHARS,
   MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
   MAX_PROJECT_FILE_REFERENCE_TOC_DEPTH,
+  MAX_WEB_SELECTION_REFERENCE_CHARS,
+  MAX_WEB_SELECTION_URL_CHARS,
+  MAX_WEB_SELECTION_TITLE_CHARS,
+  MAX_WEB_SELECTION_QUOTE_CHARS,
+  MAX_WEB_SELECTION_CONTEXT_CHARS,
   isSourceFingerprint,
   isCanonicalProjectRelativePath,
+  isMessageReference,
   isProjectFileReferenceV1,
+  isWebSelectionReferenceV1,
 } from './project-file.ts';
 
 // Message persistence mappers

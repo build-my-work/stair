@@ -1,7 +1,7 @@
 import type { PanelContentRoute } from '../../shared/routes'
 import { isCanonicalProjectRelativePath } from '@craft-agent/core'
 import { isValidViewRoute } from '../../shared/route-parser'
-import { isProjectFileRoute } from './project-file-route'
+import { isCompanionPanelRoute } from './project-file-route'
 
 export const PANEL_LAYOUT_VERSION = 1 as const
 export const MAX_PANEL_LAYOUT_ENTRIES = 8
@@ -98,6 +98,23 @@ function parsePanelContentRoute(value: unknown): PanelContentRoute | null {
     }
   }
 
+  if (value.kind === 'browser') {
+    if (
+      !hasOnlyKeys(value, ['kind', 'browserId', 'contextRoute'])
+      || typeof value.browserId !== 'string'
+      || value.browserId.length === 0
+      || value.browserId.length > 512
+      || !isValidViewRoute(value.contextRoute)
+    ) {
+      return null
+    }
+    return {
+      kind: 'browser',
+      browserId: value.browserId,
+      contextRoute: value.contextRoute,
+    }
+  }
+
   return null
 }
 
@@ -115,7 +132,7 @@ export function serializePanelLayoutV1(
       || (
         entry.chatTargetSessionId !== undefined
         && (
-          !isProjectFileRoute(entry.route)
+          !isCompanionPanelRoute(entry.route)
           || entry.chatTargetSessionId.length === 0
           || entry.chatTargetSessionId.length
             > MAX_CHAT_TARGET_SESSION_ID_LENGTH
@@ -145,7 +162,7 @@ export function serializePanelLayoutV1(
       const owner = entry.ownerPanelId
         ? runtimeEntryById.get(entry.ownerPanelId)
         : undefined
-      const ownerKey = isProjectFileRoute(entry.route)
+      const ownerKey = isCompanionPanelRoute(entry.route)
         && owner?.route.kind === 'navigation'
         ? keyById.get(owner.id)
         : undefined
@@ -239,12 +256,12 @@ export function deserializePanelLayoutV1(
 
     const route = parsePanelContentRoute(candidate.route)
     if (!route) return null
-    if (candidate.ownerKey !== undefined && !isProjectFileRoute(route)) {
-      return null
-    }
     if (
-      candidate.chatTargetSessionId !== undefined
-      && !isProjectFileRoute(route)
+      (
+        candidate.ownerKey !== undefined
+        || candidate.chatTargetSessionId !== undefined
+      )
+      && !isCompanionPanelRoute(route)
     ) {
       return null
     }

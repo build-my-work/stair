@@ -8,13 +8,11 @@ import ePub, {
 } from 'epubjs'
 import {
   BookOpenText,
-  Check,
   ChevronRight,
   Download,
   Highlighter,
   ListTree,
   Loader2,
-  MessageSquare,
   MessageSquareQuote,
   RotateCcw,
   Trash2,
@@ -39,13 +37,7 @@ import {
 } from '@/lib/epub-highlights'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
+import { ChatTargetMenu } from '@/components/app-shell/ChatTargetMenu'
 
 import {
   createEpubSerializeHook,
@@ -284,79 +276,6 @@ function captureEpubSelection(
     }),
     anchorRect,
   }
-}
-
-function EpubChatTargetMenu({
-  targetSessionId,
-  targets,
-  onChange,
-}: {
-  targetSessionId: string | null
-  targets: Array<{ id: string; title: string }>
-  onChange: (sessionId: string) => void
-}) {
-  const target = targets.find(option => option.id === targetSessionId)
-  const tooltip = target
-    ? `Chat: ${target.title}`
-    : 'Choose a discussion chat'
-
-  return (
-    <Tooltip>
-      <DropdownMenu>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={cn(
-                'size-8 shrink-0',
-                target ? 'text-blue-500' : 'text-muted-foreground',
-              )}
-              aria-label={tooltip}
-            >
-              <MessageSquare className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <DropdownMenuContent
-          align="start"
-          sideOffset={8}
-          className="max-h-[240px] w-56"
-        >
-          <DropdownMenuLabel className="px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-            Discussion chat
-          </DropdownMenuLabel>
-          {targets.length > 0 ? targets.map(option => {
-            const selected = option.id === targetSessionId
-            return (
-              <DropdownMenuItem
-                key={option.id}
-                className="text-xs"
-                aria-current={selected ? 'true' : undefined}
-                onSelect={() => onChange(option.id)}
-              >
-                <Check
-                  className={cn(
-                    'size-3.5',
-                    selected ? 'text-blue-500 opacity-100' : 'opacity-0',
-                  )}
-                />
-                <span className="truncate">{option.title}</span>
-              </DropdownMenuItem>
-            )
-          }) : (
-            <DropdownMenuItem disabled className="text-xs text-muted-foreground">
-              No available chats
-            </DropdownMenuItem>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <TooltipContent side="bottom" className="max-w-64 truncate">
-        {tooltip}
-      </TooltipContent>
-    </Tooltip>
-  )
 }
 
 export function ProjectFileEpubReader({
@@ -1047,7 +966,7 @@ export function ProjectFileEpubReader({
           <TooltipContent side="bottom">Contents</TooltipContent>
         </Tooltip>
 
-        <EpubChatTargetMenu
+        <ChatTargetMenu
           targetSessionId={chatTargetSessionId}
           targets={chatTargets}
           onChange={onChatTargetChange}

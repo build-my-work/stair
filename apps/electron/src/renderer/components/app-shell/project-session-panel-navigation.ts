@@ -4,30 +4,29 @@ import {
   panelStackAtom,
   parseSessionIdFromRoute,
 } from '@/atoms/panel-stack'
-import { isProjectFileRoute } from '@/lib/project-file-route'
+import { isCompanionPanelRoute } from '@/lib/project-file-route'
 import { routes } from '@/lib/navigate'
+import type { ViewRoute } from '../../../shared/routes'
 
 type JotaiStore = ReturnType<typeof createStore>
 
 /**
- * Focus an already-open project session without creating another panel.
+ * Focus an already-open Session without creating another panel.
  *
  * Session panels can have been opened through a generic Sessions route before
- * the user enters the owning Project. Rebase that physical panel (and any file
- * companion it owns) onto the Project route so the focused navigation context
- * agrees with the sidebar entry the user clicked.
+ * the caller enters another navigation context. Rebase that physical panel and
+ * its companion panels onto the requested canonical route.
  */
-export function focusExistingProjectSessionPanel(
+export function focusExistingSessionPanel(
   store: JotaiStore,
-  projectSlug: string,
+  canonicalRoute: ViewRoute,
   sessionId: string,
 ): boolean {
   const stack = store.get(panelStackAtom)
-  const projectRoute = routes.view.projectSession(projectSlug, sessionId)
   const matchingPanel = stack.find(
     entry => (
       entry.route.kind === 'navigation'
-      && entry.route.viewRoute === projectRoute
+      && entry.route.viewRoute === canonicalRoute
       && parseSessionIdFromRoute(entry.route) === sessionId
     ),
   ) ?? stack.find(
@@ -44,20 +43,20 @@ export function focusExistingProjectSessionPanel(
     if (
       entry.id === matchingPanel.id
       && entry.route.kind === 'navigation'
-      && entry.route.viewRoute !== projectRoute
+      && entry.route.viewRoute !== canonicalRoute
     ) {
       routeChanged = true
       return {
         ...entry,
-        route: { kind: 'navigation' as const, viewRoute: projectRoute },
+        route: { kind: 'navigation' as const, viewRoute: canonicalRoute },
       }
     }
 
-    if (!isProjectFileRoute(entry.route)) return entry
+    if (!isCompanionPanelRoute(entry.route)) return entry
 
     if (
       entry.ownerPanelId !== matchingPanel.id
-      || entry.route.contextRoute === projectRoute
+      || entry.route.contextRoute === canonicalRoute
     ) {
       return entry
     }
@@ -67,7 +66,7 @@ export function focusExistingProjectSessionPanel(
       ...entry,
       route: {
         ...entry.route,
-        contextRoute: projectRoute,
+        contextRoute: canonicalRoute,
       },
     }
   })
@@ -77,4 +76,16 @@ export function focusExistingProjectSessionPanel(
   }
   store.set(focusedPanelIdAtom, matchingPanel.id)
   return true
+}
+
+export function focusExistingProjectSessionPanel(
+  store: JotaiStore,
+  projectSlug: string,
+  sessionId: string,
+): boolean {
+  return focusExistingSessionPanel(
+    store,
+    routes.view.projectSession(projectSlug, sessionId),
+    sessionId,
+  )
 }

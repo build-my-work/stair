@@ -1,8 +1,8 @@
 import * as React from "react"
-import { X, Image as ImageIcon, BookOpenText } from "lucide-react"
+import { X, Image as ImageIcon, BookOpenText, Globe2 } from "lucide-react"
 import { Spinner, FileTypeIcon, getFileTypeLabel } from "@craft-agent/ui"
 import {
-  projectFileReferenceKey,
+  messageReferenceKey,
   type MessageReference,
 } from "@craft-agent/core"
 import { cn } from "@/lib/utils"
@@ -58,7 +58,7 @@ export function AttachmentPreview({
       ))}
       {references.map(reference => (
         <ReferenceBubble
-          key={projectFileReferenceKey(reference)}
+          key={messageReferenceKey(reference)}
           reference={reference}
           onRemove={
             onRemoveReference
@@ -68,6 +68,7 @@ export function AttachmentPreview({
           disabled={disabled}
           invalid={
             !!referenceError
+            && reference.kind === 'project-file'
             && (
               !referenceError.relativePath
               || referenceError.relativePath === reference.relativePath
@@ -94,18 +95,22 @@ function ReferenceBubble({
   disabled?: boolean
   invalid?: boolean
 }) {
-  const chapter = reference.chapterTitle
-    || reference.tocPath.at(-1)?.title
-  const detail = [chapter, `“${reference.quote}”`]
-    .filter(Boolean)
-    .join(' · ')
+  const label = reference.kind === 'project-file'
+    ? reference.fileName
+    : reference.title
+  const detail = reference.kind === 'project-file'
+    ? [
+        reference.chapterTitle || reference.tocPath.at(-1)?.title,
+        `“${reference.quote}”`,
+      ].filter(Boolean).join(' · ')
+    : `“${reference.quote}”`
 
   return (
     <div className="relative group shrink-0 select-none">
       {!disabled && onRemove && (
         <button
           type="button"
-          aria-label={`Remove reference from ${reference.fileName}`}
+          aria-label={`Remove reference from ${label}`}
           onClick={onRemove}
           data-touch-reveal="true"
           className={cn(
@@ -129,11 +134,13 @@ function ReferenceBubble({
         title={detail}
       >
         <div className="h-12 w-9 rounded-[6px] bg-background shadow-minimal flex items-center justify-center shrink-0">
-          <BookOpenText className="h-5 w-5 text-muted-foreground" />
+          {reference.kind === 'project-file'
+            ? <BookOpenText className="h-5 w-5 text-muted-foreground" />
+            : <Globe2 className="h-5 w-5 text-muted-foreground" />}
         </div>
         <div className="flex min-w-0 max-w-[180px] flex-col">
           <span className="truncate text-xs font-medium">
-            {reference.fileName}
+            {label}
           </span>
           <span className="truncate text-[10px] text-muted-foreground">
             {detail}

@@ -12,10 +12,10 @@
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { BookOpenText, Clock } from 'lucide-react'
+import { BookOpenText, Clock, Globe2 } from 'lucide-react'
 import {
-  isProjectFileReferenceV1,
-  projectFileReferenceKey,
+  isMessageReference,
+  messageReferenceKey,
   type ContentBadge,
   type MessageReference,
   type StoredAttachment,
@@ -353,7 +353,7 @@ export function UserMessageBubble({
 }: UserMessageBubbleProps) {
   const { t } = useTranslation()
   const hasAttachments = attachments && attachments.length > 0
-  const validReferences = references?.filter(isProjectFileReferenceV1)
+  const validReferences = references?.filter(isMessageReference)
   const hasReferences = validReferences && validReferences.length > 0
 
   // Show the queued chip while `isQueued` is true AND for at least
@@ -487,19 +487,23 @@ export function UserMessageBubble({
             )
           })}
           {validReferences?.map(reference => {
-            const chapter = reference.chapterTitle
-              || reference.tocPath.at(-1)?.title
-            const detail = [chapter, `“${reference.quote}”`]
-              .filter(Boolean)
-              .join(' · ')
+            const label = reference.kind === 'project-file'
+              ? reference.fileName
+              : reference.title
+            const detail = reference.kind === 'project-file'
+              ? [
+                  reference.chapterTitle || reference.tocPath.at(-1)?.title,
+                  `“${reference.quote}”`,
+                ].filter(Boolean).join(' · ')
+              : `“${reference.quote}”`
             const clickable = !!onReferenceClick
 
             return (
               <button
-                key={projectFileReferenceKey(reference)}
+                key={messageReferenceKey(reference)}
                 type="button"
                 disabled={!clickable}
-                aria-label={`Open reference from ${reference.fileName}`}
+                aria-label={`Open reference from ${label}`}
                 title={detail}
                 onClick={() => onReferenceClick?.(reference)}
                 className={cn(
@@ -508,11 +512,13 @@ export function UserMessageBubble({
                 )}
               >
                 <span className="flex h-11 w-8 shrink-0 items-center justify-center rounded-[6px] bg-background shadow-minimal">
-                  <BookOpenText className="h-5 w-5 text-muted-foreground" />
+                  {reference.kind === 'project-file'
+                    ? <BookOpenText className="h-5 w-5 text-muted-foreground" />
+                    : <Globe2 className="h-5 w-5 text-muted-foreground" />}
                 </span>
                 <span className="flex min-w-0 max-w-[180px] flex-col">
                   <span className="truncate text-xs font-medium">
-                    {reference.fileName}
+                    {label}
                   </span>
                   <span className="truncate text-[10px] text-muted-foreground">
                     {detail}

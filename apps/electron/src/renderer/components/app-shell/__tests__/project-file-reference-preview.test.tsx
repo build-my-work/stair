@@ -45,6 +45,18 @@ const reference: MessageReference = {
   },
 }
 
+const webReference: MessageReference = {
+  version: 1,
+  kind: 'web-selection',
+  url: 'https://example.com/article',
+  title: 'Example article',
+  quote: 'The selected web passage',
+  locator: {
+    type: 'text-quote',
+    exact: 'The selected web passage',
+  },
+}
+
 const attachment: StoredAttachment = {
   id: 'attachment-1',
   type: 'pdf',
@@ -90,6 +102,35 @@ describe('Project File reference previews', () => {
 
     expect(html).toContain('operating-systems.epub')
     expect(html).not.toContain('aria-label="Remove reference')
+  })
+
+  it('renders browser selections in both draft and sent-message previews', () => {
+    const draftHtml = render(
+      <AttachmentPreview
+        attachments={[]}
+        references={[webReference]}
+        onRemove={() => {}}
+        onRemoveReference={() => {}}
+      />,
+    )
+    const messageHtml = render(
+      <UserMessageBubble
+        content=""
+        references={[webReference]}
+        onReferenceClick={() => {}}
+      />,
+    )
+
+    expect(draftHtml).toContain('Example article')
+    expect(draftHtml).toContain('The selected web passage')
+    expect(draftHtml).toContain(
+      'aria-label="Remove reference from Example article"',
+    )
+    expect(messageHtml).toContain('Example article')
+    expect(messageHtml).toContain('The selected web passage')
+    expect(messageHtml).toContain(
+      'aria-label="Open reference from Example article"',
+    )
   })
 
   it('renders a reference-only UserMessageBubble without an empty body', () => {

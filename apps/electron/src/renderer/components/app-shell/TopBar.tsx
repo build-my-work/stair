@@ -246,7 +246,7 @@ export function TopBar({
             </StyledDropdownMenuItem>
             <StyledDropdownMenuItem onClick={onAddBrowserPanel}>
               <Icons.Globe className="h-3.5 w-3.5" />
-              {t("browser.newWindow")}
+              {t("browser.newPanel")}
             </StyledDropdownMenuItem>
           </StyledDropdownMenuContent>
         </DropdownMenu>
@@ -297,6 +297,28 @@ export function TopBar({
           </StyledDropdownMenuContent>
         </DropdownMenu>
         </>
+        )}
+
+        {isCompact && (
+          <>
+            <BrowserTabStrip
+              activeSessionId={activeSessionId}
+              maxVisibleBadges={1}
+              compact
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <TopBarButton
+                  onClick={onAddBrowserPanel}
+                  aria-label={t("browser.newPanel")}
+                  className="h-[26px] w-[26px] rounded-lg"
+                >
+                  <Icons.Globe className="h-4 w-4 text-foreground/50" strokeWidth={1.5} />
+                </TopBarButton>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{t("browser.newPanel")}</TooltipContent>
+            </Tooltip>
+          </>
         )}
 
         <Tooltip>

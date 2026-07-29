@@ -270,4 +270,47 @@ describe('PanelLayoutV1 codec', () => {
     }
     expect(deserializePanelLayoutV1(encodeUnknown(layout))).toEqual(layout)
   })
+
+  it('round-trips a browser route without persisting page URL or cookie state', () => {
+    const browserRoute: PanelContentRoute = {
+      kind: 'browser',
+      browserId: '6e8dbf54-6349-4ed8-bd4f-a93a0df15dbe',
+      contextRoute: 'allSessions/session/s1',
+    }
+    const encoded = serializePanelLayoutV1([
+      {
+        id: 'anchor',
+        route: navigation('allSessions/session/s1'),
+        proportion: 0.5,
+      },
+      {
+        id: 'browser',
+        route: browserRoute,
+        proportion: 0.5,
+        ownerPanelId: 'anchor',
+        chatTargetSessionId: 'session-2',
+      },
+    ], 'browser')
+
+    expect(encoded).not.toBeNull()
+    expect(deserializePanelLayoutV1(encoded!)).toEqual({
+      version: 1,
+      entries: [
+        {
+          key: 'p0',
+          route: navigation('allSessions/session/s1'),
+          proportion: 0.5,
+        },
+        {
+          key: 'p1',
+          route: browserRoute,
+          proportion: 0.5,
+          ownerKey: 'p0',
+          chatTargetSessionId: 'session-2',
+        },
+      ],
+      focusedKey: 'p1',
+    })
+  })
+
 })

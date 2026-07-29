@@ -37,6 +37,7 @@ import {
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
 import { TopBar } from "./TopBar"
+import { BrowserPaneController } from "../browser/BrowserPaneController"
 import { SquarePenRounded } from "../icons/SquarePenRounded"
 import { McpIcon } from "../icons/McpIcon"
 import { cn } from "@/lib/utils"
@@ -90,7 +91,10 @@ import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
 import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
-import type { MessageReference } from "@craft-agent/core"
+import {
+  isProjectFileReferenceV1,
+  type MessageReference,
+} from "@craft-agent/core"
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
@@ -102,7 +106,8 @@ import {
   focusedSessionIdAtom,
   focusNextPanelAtom,
   focusPrevPanelAtom,
-  getProjectFileOwnerPanelId,
+  getPanelOwnerPanelId,
+  openOrFocusBrowserPanelAtom,
   openOrReuseProjectFileAtom,
   parseSessionIdFromRoute,
 } from "@/atoms/panel-stack"
@@ -707,6 +712,7 @@ function AppShellContent({
   const focusedPanelRoute = useAtomValue(focusedPanelRouteAtom)
   const focusedSessionId = useAtomValue(focusedSessionIdAtom)
   const openProjectFile = useSetAtom(openOrReuseProjectFileAtom)
+  const openBrowserPanel = useSetAtom(openOrFocusBrowserPanelAtom)
 
   // Navigate the focused panel to a session.
   // If the session is already open in another panel, focus that panel instead.
@@ -1473,8 +1479,8 @@ function AppShellContent({
       : undefined,
     [rightSidebarOwnerRoute, sessionMetaMap, projects],
   )
-  const projectFileOwnerPanelId = focusedPanelId
-    ? getProjectFileOwnerPanelId(panelStack, focusedPanelId) ?? undefined
+  const companionOwnerPanelId = focusedPanelId
+    ? getPanelOwnerPanelId(panelStack, focusedPanelId) ?? undefined
     : undefined
   const isRightSidebarVisible = navState.rightSidebar?.type === 'files'
   const handleToggleRightSidebar = React.useCallback(() => {
@@ -1483,7 +1489,7 @@ function AppShellContent({
   const handleOpenProjectFile = React.useCallback((relativePath: string) => {
     if (!rightSidebarOwnerRoute || !rightSidebarProject?.config.workingDirectory) return
     openProjectFile({
-      ownerPanelId: projectFileOwnerPanelId,
+      ownerPanelId: companionOwnerPanelId,
       projectId: rightSidebarProject.config.id,
       contextRoute: rightSidebarOwnerRoute,
       relativePath,
@@ -1492,7 +1498,7 @@ function AppShellContent({
   }, [
     isAutoCompact,
     openProjectFile,
-    projectFileOwnerPanelId,
+    companionOwnerPanelId,
     rightSidebarOwnerRoute,
     rightSidebarProject?.config.id,
     rightSidebarProject?.config.workingDirectory,
@@ -1501,9 +1507,31 @@ function AppShellContent({
   const handleOpenProjectFileReference = React.useCallback((
     reference: MessageReference,
   ) => {
+    if (!isProjectFileReferenceV1(reference)) {
+      void window.electronAPI.browserPane.revealSelection(reference)
+        .then((result) => {
+          if (!result.ok || !result.browserId) {
+            toast.error('The referenced page could not be opened.')
+            return
+          }
+          openBrowserPanel({
+            browserId: result.browserId,
+            contextRoute: focusedPanelRoute ?? routes.view.allSessions(),
+            ownerPanelId: companionOwnerPanelId,
+          })
+          if (!result.found) {
+            toast.info('The page opened, but the saved selection was not found.')
+          }
+        })
+        .catch((error) => {
+          console.error('[Browser] Failed to reveal web selection:', error)
+          toast.error('The referenced page could not be opened.')
+        })
+      return
+    }
     if (!focusedPanelRoute) return
     openProjectFile({
-      ownerPanelId: projectFileOwnerPanelId,
+      ownerPanelId: companionOwnerPanelId,
       projectId: reference.projectId,
       relativePath: reference.relativePath,
       contextRoute: focusedPanelRoute,
@@ -1517,8 +1545,9 @@ function AppShellContent({
   }, [
     focusedPanelRoute,
     isAutoCompact,
+    openBrowserPanel,
     openProjectFile,
-    projectFileOwnerPanelId,
+    companionOwnerPanelId,
     updateRightSidebar,
   ])
   React.useEffect(() => {
@@ -2258,19 +2287,25 @@ function AppShellContent({
     }
   }, [activeWorkspaceId, focusZone, onCreateSession, t])
 
-  // Create a brand new dedicated browser window and focus it.
-  // Intentionally unbound: this action should always create a NEW window.
-  const handleNewBrowserWindow = useCallback(async () => {
+  // Create a new browser resource and present it as a normal companion panel.
+  const handleNewBrowserPanel = useCallback(async () => {
     try {
-      const instanceId = await window.electronAPI.browserPane.create({
-        show: true,
+      const instanceId = await window.electronAPI.browserPane.create()
+      openBrowserPanel({
+        browserId: instanceId,
+        contextRoute: focusedPanelRoute ?? routes.view.allSessions(),
+        ownerPanelId: companionOwnerPanelId,
       })
-      await window.electronAPI.browserPane.focus(instanceId)
     } catch (error) {
-      console.error('[Chat] Failed to create browser window:', error)
+      console.error('[Browser] Failed to create browser panel:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
-  }, [])
+  }, [
+    companionOwnerPanelId,
+    focusedPanelRoute,
+    openBrowserPanel,
+    t,
+  ])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -2604,6 +2639,7 @@ function AppShellContent({
 
   return (
     <AppShellProvider value={appShellContextValue}>
+        <BrowserPaneController />
         {/* === TOP BAR === */}
         <TopBar
           workspaces={workspaces}
@@ -2628,7 +2664,7 @@ function AppShellContent({
           isRightSidebarVisible={isRightSidebarVisible}
           onToggleFocusMode={() => setIsSidebarAndNavigatorHidden(prev => !prev)}
           onAddSessionPanel={() => handleNewChat(true)}
-          onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
+          onAddBrowserPanel={() => void handleNewBrowserPanel()}
           isCompact={isAutoCompact}
         />
 

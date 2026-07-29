@@ -279,7 +279,7 @@ export interface Message {
   badges?: ContentBadge[];
   /** Annotation payloads for this message */
   annotations?: AnnotationV1[];
-  /** Structured Project File references attached to this message. */
+  /** Structured file or web-selection references attached to this message. */
   references?: MessageReference[];
   isError?: boolean;
   isStreaming?: boolean;
@@ -375,7 +375,7 @@ export interface StoredMessage {
   badges?: ContentBadge[];
   /** Annotations persisted at message level */
   annotations?: AnnotationV1[];
-  /** Structured Project File references persisted with the user message. */
+  /** Structured file or web-selection references persisted with the user message. */
   references?: MessageReference[];
   // Turn grouping - critical for TurnCard rendering after reload
   isIntermediate?: boolean;

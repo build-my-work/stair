@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAtomValue, useSetAtom, useStore } from 'jotai'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, FileQuestion } from 'lucide-react'
@@ -16,16 +16,16 @@ import type {
 import {
   isCanonicalProjectRelativePath,
   type MessageReference,
+  type ProjectFileReferenceV1,
   type SourceFingerprint,
 } from '@craft-agent/core'
 import { ProjectFileEpubReader } from '@/components/project-files/ProjectFileEpubReader'
-import { ProjectFileReferenceTargetDialog } from '@/components/project-files/ProjectFileReferenceTargetDialog'
 import {
   consumeProjectFileOpenIntentAtom,
   panelStackAtom,
   projectFileOpenIntentsAtom,
   pushPanelAtom,
-  setProjectFileChatTargetAtom,
+  setCompanionChatTargetAtom,
 } from '@/atoms/panel-stack'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
 import {
@@ -102,7 +102,7 @@ export default function ProjectFilePage({
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
   const openIntent = useAtomValue(projectFileOpenIntentsAtom).get(panelId)
   const consumeOpenIntent = useSetAtom(consumeProjectFileOpenIntentAtom)
-  const setChatTarget = useSetAtom(setProjectFileChatTargetAtom)
+  const setChatTarget = useSetAtom(setCompanionChatTargetAtom)
   const store = useStore()
   const project = useMemo(
     () => projects.find(candidate => candidate.config.id === route.projectId),
@@ -120,11 +120,9 @@ export default function ProjectFilePage({
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
-  const [initialLocator, setInitialLocator] = useState<MessageReference['locator']>()
+  const [initialLocator, setInitialLocator] =
+    useState<ProjectFileReferenceV1['locator']>()
   const [staleReference, setStaleReference] = useState(false)
-  const [pendingReference, setPendingReference] = useState<MessageReference | null>(null)
-  const pendingReferenceResolutionRef =
-    useRef<((attached: boolean) => void) | null>(null)
   const fileName = relativePath.split(/[\\/]/).pop() || t('filesSidebar.previewTitle')
   const fileIdentity = `${route.projectId}\0${relativePath}`
   const referenceTargets = useMemo(
@@ -151,14 +149,6 @@ export default function ProjectFilePage({
   const selectChatTarget = useCallback((sessionId: string) => {
     setChatTarget({ panelId, sessionId })
   }, [panelId, setChatTarget])
-
-  useEffect(() => {
-    setPendingReference(null)
-    return () => {
-      pendingReferenceResolutionRef.current?.(false)
-      pendingReferenceResolutionRef.current = null
-    }
-  }, [fileIdentity])
 
   useEffect(() => {
     let cancelled = false
@@ -311,13 +301,20 @@ export default function ProjectFilePage({
     route.projectId,
   ])
 
-  const finishPendingReference = useCallback((attached: boolean) => {
-    pendingReferenceResolutionRef.current?.(attached)
-    pendingReferenceResolutionRef.current = null
-    setPendingReference(null)
-  }, [])
+  const createAndSelectSessionWithReference = useCallback(async (
+    reference: MessageReference,
+  ) => {
+    const sessionId = await createSessionWithReference(reference)
+    if (!sessionId) {
+      throw new Error('The new chat could not accept this reference.')
+    }
+    selectChatTarget(sessionId)
+    return true
+  }, [createSessionWithReference, selectChatTarget])
 
-  const handleAddChatReference = useCallback((reference: MessageReference) => {
+  const handleAddChatReference = useCallback(async (
+    reference: MessageReference,
+  ) => {
     const targetSessionId = getProjectFileChatTargetSessionId(
       panelStack,
       panelId,
@@ -330,29 +327,15 @@ export default function ProjectFilePage({
       }
       return true
     }
-    return new Promise<boolean>(resolve => {
-      pendingReferenceResolutionRef.current?.(false)
-      pendingReferenceResolutionRef.current = resolve
-      setPendingReference(reference)
-    })
+    return createAndSelectSessionWithReference(reference)
   }, [
     attachReferenceToSession,
+    createAndSelectSessionWithReference,
     panelId,
     panelStack,
     route.projectId,
     sessionMetaMap,
   ])
-
-  const handleAddNewChatReference = useCallback(async (
-    reference: MessageReference,
-  ) => {
-    const sessionId = await createSessionWithReference(reference)
-    if (!sessionId) {
-      throw new Error('The new chat could not accept this reference.')
-    }
-    selectChatTarget(sessionId)
-    return true
-  }, [createSessionWithReference, selectChatTarget])
 
   const preview = (() => {
     if (isLoading) {
@@ -409,7 +392,7 @@ export default function ProjectFilePage({
               chatTargets={chatTargets}
               onChatTargetChange={selectChatTarget}
               onAddChatReference={handleAddChatReference}
-              onAddNewChatReference={handleAddNewChatReference}
+              onAddNewChatReference={createAndSelectSessionWithReference}
               onExportMarkdown={async ({ suggestedFilename, content }) => {
                 await saveTextFile({
                   suggestedName: suggestedFilename,
@@ -483,26 +466,6 @@ export default function ProjectFilePage({
         rightSidebarButton={rightSidebarButton}
       />
       <div key={fileIdentity} className="min-h-0 flex-1">{preview}</div>
-      <ProjectFileReferenceTargetDialog
-        reference={pendingReference}
-        sessions={referenceTargets}
-        onOpenChange={open => {
-          if (!open) finishPendingReference(false)
-        }}
-        onSelect={sessionId => {
-          if (pendingReference && attachReferenceToSession(sessionId, pendingReference)) {
-            selectChatTarget(sessionId)
-            finishPendingReference(true)
-          }
-        }}
-        onCreate={async () => {
-          if (!pendingReference) return
-          const sessionId = await createSessionWithReference(pendingReference)
-          if (!sessionId) return
-          selectChatTarget(sessionId)
-          finishPendingReference(true)
-        }}
-      />
     </Panel>
   )
 }

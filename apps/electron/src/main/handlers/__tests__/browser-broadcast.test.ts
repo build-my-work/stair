@@ -16,7 +16,11 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
-import type { BrowserInstanceInfo } from '@craft-agent/shared/protocol'
+import type {
+  BrowserInstanceInfo,
+  BrowserPresentRequest,
+  BrowserSelectionActionPayload,
+} from '@craft-agent/shared/protocol'
 
 mock.module('electron', () => ({
   ipcMain: { handle: () => {}, on: () => {} },
@@ -73,6 +77,15 @@ function makeDeps(opts: {
   captureStateCb?: (cb: (info: BrowserInstanceInfo) => void) => void
   captureRemovedCb?: (cb: (id: string) => void) => void
   captureInteractedCb?: (cb: (id: string) => void) => void
+  capturePresentCb?: (cb: (
+    request: BrowserPresentRequest,
+    hostWebContentsId: number,
+  ) => void) => void
+  captureClosePanelCb?: (cb: (browserId: string, hostWebContentsId: number) => void) => void
+  captureSelectionCb?: (cb: (
+    payload: BrowserSelectionActionPayload,
+    hostWebContentsId: number,
+  ) => void) => void
 }): HandlerDeps {
   return {
     sessionManager: {} as HandlerDeps['sessionManager'],
@@ -88,12 +101,27 @@ function makeDeps(opts: {
         process: async () => Buffer.from(''),
       },
     },
-    windowManager: {} as HandlerDeps['windowManager'],
+    windowManager: {
+      getClientIdForWindow: (id: number) => (
+        id === 42 ? 'client-42' : null
+      ),
+    } as HandlerDeps['windowManager'],
     browserPaneManager: {
       listInstances: () => opts.instances,
       onStateChange: (cb: (info: BrowserInstanceInfo) => void) => opts.captureStateCb?.(cb),
       onRemoved: (cb: (id: string) => void) => opts.captureRemovedCb?.(cb),
       onInteracted: (cb: (id: string) => void) => opts.captureInteractedCb?.(cb),
+      onPresentRequest: (cb: (
+        request: BrowserPresentRequest,
+        hostWebContentsId: number,
+      ) => void) => opts.capturePresentCb?.(cb),
+      onClosePanelRequest: (
+        cb: (browserId: string, hostWebContentsId: number) => void,
+      ) => opts.captureClosePanelCb?.(cb),
+      onSelectionAction: (cb: (
+        payload: BrowserSelectionActionPayload,
+        hostWebContentsId: number,
+      ) => void) => opts.captureSelectionCb?.(cb),
     } as unknown as NonNullable<HandlerDeps['browserPaneManager']>,
     oauthFlowStore: {} as HandlerDeps['oauthFlowStore'],
   }
@@ -167,6 +195,45 @@ describe('browser handler — workspace filtering', () => {
       expect(recorder.pushes).toHaveLength(1)
       expect(recorder.pushes[0].target).toEqual({ to: 'all' })
     })
+  })
+
+  it('routes a browser selection action only to the surface host client', async () => {
+    let captured: ((
+      payload: BrowserSelectionActionPayload,
+      hostWebContentsId: number,
+    ) => void) | null = null
+    const { registerBrowserHandlers } = await import('../browser')
+    registerBrowserHandlers(
+      recorder.server,
+      makeDeps({
+        instances: [],
+        captureSelectionCb: (cb) => { captured = cb },
+      }),
+    )
+    const payload: BrowserSelectionActionPayload = {
+      eventId: 'event-1',
+      action: 'add-chat',
+      browserId: 'browser-1',
+      reference: {
+        version: 1,
+        kind: 'web-selection',
+        url: 'https://example.com',
+        title: 'Example',
+        quote: 'selected text',
+        locator: {
+          type: 'text-quote',
+          exact: 'selected text',
+        },
+      },
+    }
+
+    captured!(payload, 42)
+
+    expect(recorder.pushes).toEqual([{
+      channel: 'browser-pane:selection-action',
+      target: { to: 'client', clientId: 'client-42' },
+      args: [payload],
+    }])
   })
 
   describe('LIST handler', () => {

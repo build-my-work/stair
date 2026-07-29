@@ -14,8 +14,11 @@ import {
 } from '@/lib/panel-layout-codec'
 import {
   buildNavigationPanelRoute,
+  buildBrowserPanelRoute,
   buildProjectFileRoute,
   getPanelContextRoute,
+  isBrowserPanelRoute,
+  isCompanionPanelRoute,
   isProjectFileRoute,
 } from '@/lib/project-file-route'
 
@@ -28,9 +31,9 @@ export interface PanelStackEntry {
   id: string
   route: PanelContentRoute
   proportion: number
-  /** Physical navigation panel that owns a reusable Project File companion. */
+  /** Physical navigation panel that owns this companion presentation. */
   ownerPanelId?: string
-  /** Explicit Session that receives references from this Project File panel. */
+  /** Explicit Session that receives references from this companion panel. */
   chatTargetSessionId?: string
 }
 
@@ -57,7 +60,7 @@ export const focusedPanelContentRouteAtom = atom((get) => {
 /**
  * Logical navigation context for sidebar and Session selection.
  *
- * A Project File panel keeps its own content route while exposing the
+ * A companion panel keeps its own content route while exposing the
  * navigation context from which it was opened.
  */
 export const focusedPanelRouteAtom = atom((get) => {
@@ -82,7 +85,7 @@ function createEntry(
     route,
     proportion,
     ...(ownerPanelId ? { ownerPanelId } : {}),
-    ...(isProjectFileRoute(route) && chatTargetSessionId
+    ...(isCompanionPanelRoute(route) && chatTargetSessionId
       ? { chatTargetSessionId }
       : {}),
   }
@@ -96,6 +99,16 @@ function normalizeProportions(stack: PanelStackEntry[]): PanelStackEntry[] {
     return stack.map(panel => ({ ...panel, proportion: equal }))
   }
   return stack.map(panel => ({ ...panel, proportion: panel.proportion / total }))
+}
+
+function findNavigationPanel(
+  stack: PanelStackEntry[],
+  panelId?: string,
+): PanelStackEntry | undefined {
+  if (!panelId) return undefined
+  return stack.find(entry => (
+    entry.id === panelId && entry.route.kind === 'navigation'
+  ))
 }
 
 export function parseSessionIdFromRoute(
@@ -116,13 +129,13 @@ export const focusedSessionIdAtom = atom((get) => {
 })
 
 /**
- * Session ids rendered by navigation panels. Project File panels are views of
- * files, not duplicate visible chats, even when their context is a Session.
+ * Session ids rendered by navigation panels. Companion panels expose a
+ * navigation context but do not render duplicate chats.
  */
 export const visibleSessionIdsAtom = atom((get) => {
   const ids = new Set<string>()
   for (const entry of get(panelStackAtom)) {
-    if (isProjectFileRoute(entry.route)) continue
+    if (isCompanionPanelRoute(entry.route)) continue
     const id = parseSessionIdFromRoute(entry.route)
     if (id) ids.add(id)
   }
@@ -144,12 +157,8 @@ export const pushPanelAtom = atom(
     }
 
     const contentRoute = toPanelContentRoute(route)
-    const validOwnerId = isProjectFileRoute(contentRoute)
-      && ownerPanelId
-      && stack.some(
-        entry => entry.id === ownerPanelId && entry.route.kind === 'navigation',
-      )
-      ? ownerPanelId
+    const validOwnerId = isCompanionPanelRoute(contentRoute)
+      ? findNavigationPanel(stack, ownerPanelId)?.id
       : undefined
     // The persisted layout requires every physical panel to have a positive
     // proportion. Give a newly inserted panel the current average share before
@@ -180,25 +189,24 @@ export const pushPanelAtom = atom(
 )
 
 /**
- * Resolve the physical owner of a panel.
+ * Resolve the physical navigation owner of a panel.
  *
  * Owner is an explicit runtime instance relationship. It is never inferred
  * from route equality or panel position.
  */
-export function getProjectFileOwnerPanelId(
+export function getPanelOwnerPanelId(
   stack: PanelStackEntry[],
   panelId: string,
 ): string | null {
   const panel = stack.find(entry => entry.id === panelId)
   if (!panel) return null
-  if (!isProjectFileRoute(panel.route)) return panel.id
+  if (!isCompanionPanelRoute(panel.route)) return panel.id
   if (!panel.ownerPanelId) return null
 
-  const owner = stack.find(entry => entry.id === panel.ownerPanelId)
-  return owner?.route.kind === 'navigation' ? owner.id : null
+  return findNavigationPanel(stack, panel.ownerPanelId)?.id ?? null
 }
 
-export const setProjectFileChatTargetAtom = atom(
+export const setCompanionChatTargetAtom = atom(
   null,
   (get, set, {
     panelId,
@@ -212,7 +220,7 @@ export const setProjectFileChatTargetAtom = atom(
     const panel = stack.find(entry => entry.id === panelId)
     if (
       !panel
-      || !isProjectFileRoute(panel.route)
+      || !isCompanionPanelRoute(panel.route)
       || panel.chatTargetSessionId === sessionId
     ) {
       return
@@ -243,13 +251,9 @@ export const openOrReuseProjectFileAtom = atom(
     const stack = get(panelStackAtom)
     const focusedId = get(focusedPanelIdAtom)
     const focusedPanel = stack.find(entry => entry.id === focusedId)
-    const explicitOwner = input.ownerPanelId
-      ? stack.find(
-          entry => entry.id === input.ownerPanelId && entry.route.kind === 'navigation',
-        )
-      : undefined
+    const explicitOwner = findNavigationPanel(stack, input.ownerPanelId)
     const focusedOwnerId = focusedPanel
-      ? getProjectFileOwnerPanelId(stack, focusedPanel.id)
+      ? getPanelOwnerPanelId(stack, focusedPanel.id)
       : null
     const focusedOwner = focusedOwnerId
       ? stack.find(entry => entry.id === focusedOwnerId)
@@ -333,13 +337,82 @@ export const openOrReuseProjectFileAtom = atom(
       afterIndex: ownerIndex >= 0 ? ownerIndex : get(focusedPanelIndexAtom),
       ownerPanelId: ownerEntry?.id,
     })
-    if (panelId && input.intent) {
+    const intent = input.intent
+    if (panelId && intent) {
       set(projectFileOpenIntentsAtom, current => {
         const next = new Map(current)
-        next.set(panelId, input.intent!)
+        next.set(panelId, intent)
         return next
       })
     }
+  },
+)
+
+/**
+ * Present a browser resource as a normal PanelStack companion. A browser
+ * resource has exactly one visible panel; presenting it again
+ * focuses that panel instead of creating a duplicate native surface.
+ */
+export const openOrFocusBrowserPanelAtom = atom(
+  null,
+  (get, set, input: {
+    browserId: string
+    contextRoute: ViewRoute
+    ownerPanelId?: string
+  }) => {
+    const stack = get(panelStackAtom)
+    const requestedOwner = findNavigationPanel(stack, input.ownerPanelId)
+    const existing = stack.find(entry => (
+      isBrowserPanelRoute(entry.route)
+      && entry.route.browserId === input.browserId
+    ))
+    if (existing) {
+      if (!getPanelOwnerPanelId(stack, existing.id) && requestedOwner) {
+        set(panelStackAtom, stack.map(entry => (
+          entry.id === existing.id
+            ? {
+                ...entry,
+                ownerPanelId: requestedOwner.id,
+                route: buildBrowserPanelRoute({
+                  browserId: input.browserId,
+                  contextRoute: input.contextRoute,
+                }),
+              }
+            : entry
+        )))
+      }
+      set(focusedPanelIdAtom, existing.id)
+      return existing.id
+    }
+
+    const focused = stack.find(entry => entry.id === get(focusedPanelIdAtom))
+    const focusedOwnerId = focused
+      ? getPanelOwnerPanelId(stack, focused.id)
+      : null
+    const owner = requestedOwner ?? (
+      focusedOwnerId
+        ? stack.find(entry => entry.id === focusedOwnerId)
+        : undefined
+    )
+    const ownerIndex = owner
+      ? stack.findIndex(entry => entry.id === owner.id)
+      : get(focusedPanelIndexAtom)
+    let insertAfterIndex = ownerIndex
+    if (owner) {
+      for (let index = ownerIndex + 1; index < stack.length; index += 1) {
+        if (stack[index].ownerPanelId !== owner.id) break
+        insertAfterIndex = index
+      }
+    }
+
+    return set(pushPanelAtom, {
+      route: buildBrowserPanelRoute({
+        browserId: input.browserId,
+        contextRoute: input.contextRoute,
+      }),
+      afterIndex: insertAfterIndex,
+      ownerPanelId: owner?.id,
+    })
   },
 )
 
@@ -388,16 +461,16 @@ export const closePanelAtom = atom(
 )
 
 /**
- * Compact Project File Back behavior differs from the desktop close button.
+ * Compact companion Back behavior differs from the desktop close button.
  */
-export const backFromProjectFilePanelAtom = atom(
+export const backFromCompanionPanelAtom = atom(
   null,
   (get, set, panelId: string) => {
     const stack = get(panelStackAtom)
     const panel = stack.find(entry => entry.id === panelId)
-    if (!panel || !isProjectFileRoute(panel.route)) return
+    if (!panel || !isCompanionPanelRoute(panel.route)) return
 
-    const ownerId = getProjectFileOwnerPanelId(stack, panelId)
+    const ownerId = getPanelOwnerPanelId(stack, panelId)
     if (ownerId) {
       set(closePanelAtom, panelId)
       set(focusedPanelIdAtom, ownerId)

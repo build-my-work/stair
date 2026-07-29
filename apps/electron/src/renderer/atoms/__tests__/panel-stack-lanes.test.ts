@@ -1,19 +1,20 @@
 import { describe, expect, it } from 'bun:test'
 import { createStore } from 'jotai'
 import {
-  backFromProjectFilePanelAtom,
+  backFromCompanionPanelAtom,
   closePanelAtom,
   consumeProjectFileOpenIntentAtom,
   focusedPanelIdAtom,
   focusedSessionIdAtom,
-  getProjectFileOwnerPanelId,
+  getPanelOwnerPanelId,
+  openOrFocusBrowserPanelAtom,
   openOrReuseProjectFileAtom,
   panelStackAtom,
   projectFileOpenIntentsAtom,
   parseSessionIdFromRoute,
   pushPanelAtom,
   restorePanelLayoutAtom,
-  setProjectFileChatTargetAtom,
+  setCompanionChatTargetAtom,
   updateFocusedPanelRouteAtom,
   visibleSessionIdsAtom,
   type PanelStackEntry,
@@ -30,11 +31,16 @@ function getStack(store: ReturnType<typeof createStore>): PanelStackEntry[] {
 }
 
 function viewRoutes(store: ReturnType<typeof createStore>): Array<ViewRoute | string> {
-  return getStack(store).map(entry => (
-    entry.route.kind === 'navigation'
-      ? entry.route.viewRoute
-      : entry.route.relativePath
-  ))
+  return getStack(store).map((entry) => {
+    switch (entry.route.kind) {
+      case 'navigation':
+        return entry.route.viewRoute
+      case 'projectFile':
+        return entry.route.relativePath
+      case 'browser':
+        return entry.route.browserId
+    }
+  })
 }
 
 function openProjectFile(
@@ -129,7 +135,7 @@ describe('panel stack content routes', () => {
       'projects/project/os/session/s1',
     )
     const openedFile = getStack(store)[1]
-    store.set(setProjectFileChatTargetAtom, {
+    store.set(setCompanionChatTargetAtom, {
       panelId: openedFile.id,
       sessionId: 'session-2',
     })
@@ -190,7 +196,7 @@ describe('panel stack content routes', () => {
     const owner = getStack(store)[0]
     openProjectFile(store, owner.id, 'src/first.ts')
     const companionId = getStack(store)[1].id
-    store.set(setProjectFileChatTargetAtom, {
+    store.set(setCompanionChatTargetAtom, {
       panelId: companionId,
       sessionId: 'session-2',
     })
@@ -411,7 +417,7 @@ describe('panel stack content routes', () => {
       },
     ])
 
-    expect(getProjectFileOwnerPanelId(getStack(store), 'file')).toBeNull()
+    expect(getPanelOwnerPanelId(getStack(store), 'file')).toBeNull()
   })
 
   it('clears owner when its navigation panel closes and excludes the orphan from visible chats', () => {
@@ -445,7 +451,7 @@ describe('panel stack content routes', () => {
     const orphan = getStack(store).find(panel => panel.id === orphanId)
     expect(orphan?.ownerPanelId).toBeUndefined()
     expect(orphan?.route).toMatchObject({ relativePath: 'first-updated.ts' })
-    expect(getProjectFileOwnerPanelId(getStack(store), orphanId)).toBeNull()
+    expect(getPanelOwnerPanelId(getStack(store), orphanId)).toBeNull()
     expect(getStack(store).some(panel => panel.id === secondOwner.id)).toBe(true)
   })
 
@@ -456,7 +462,7 @@ describe('panel stack content routes', () => {
     openProjectFile(store, owner.id, 'README.md')
     const file = getStack(store)[1]
 
-    store.set(backFromProjectFilePanelAtom, file.id)
+    store.set(backFromCompanionPanelAtom, file.id)
 
     expect(getStack(store)).toHaveLength(1)
     expect(store.get(focusedPanelIdAtom)).toBe(owner.id)
@@ -480,7 +486,7 @@ describe('panel stack content routes', () => {
     })
     const fileId = getStack(store)[0].id
 
-    store.set(backFromProjectFilePanelAtom, fileId)
+    store.set(backFromCompanionPanelAtom, fileId)
 
     expect(getStack(store)[0]).toMatchObject({
       id: fileId,
@@ -535,5 +541,86 @@ describe('panel stack content routes', () => {
       store.set(pushPanelAtom, { route: 'settings' })
     }
     expect(getStack(store)).toHaveLength(8)
+  })
+
+  it('opens multiple browser companions after the anchor and dedupes by browser id', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    const anchor = getStack(store)[0]
+    openProjectFile(store, anchor.id, 'book.epub')
+
+    store.set(openOrFocusBrowserPanelAtom, {
+      browserId: 'browser-a',
+      contextRoute: 'allSessions/session/s1',
+      ownerPanelId: anchor.id,
+    })
+    store.set(openOrFocusBrowserPanelAtom, {
+      browserId: 'browser-b',
+      contextRoute: 'allSessions/session/s1',
+      ownerPanelId: anchor.id,
+    })
+    store.set(openOrFocusBrowserPanelAtom, {
+      browserId: 'browser-a',
+      contextRoute: 'allSessions/session/s1',
+      ownerPanelId: anchor.id,
+    })
+
+    const stack = getStack(store)
+    expect(stack.map(entry => (
+      entry.route.kind === 'browser' ? entry.route.browserId : entry.route.kind
+    ))).toEqual(['navigation', 'projectFile', 'browser-a', 'browser-b'])
+    expect(stack.filter(entry => entry.route.kind === 'browser')).toHaveLength(2)
+    expect(store.get(focusedPanelIdAtom)).toBe(stack[2].id)
+    expect(getPanelOwnerPanelId(stack, stack[3].id)).toBe(anchor.id)
+  })
+
+  it('orphans browser companions without destroying their resource identity', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    const anchor = getStack(store)[0]
+    store.set(openOrFocusBrowserPanelAtom, {
+      browserId: 'browser-a',
+      contextRoute: 'allSessions/session/s1',
+      ownerPanelId: anchor.id,
+    })
+    const browser = getStack(store)[1]
+
+    store.set(closePanelAtom, anchor.id)
+
+    expect(getStack(store)).toHaveLength(1)
+    expect(getStack(store)[0].route).toMatchObject({
+      kind: 'browser',
+      browserId: 'browser-a',
+    })
+    expect(getStack(store)[0].ownerPanelId).toBeUndefined()
+    expect(browser.id).toBe(getStack(store)[0].id)
+    expect(store.get(visibleSessionIdsAtom).size).toBe(0)
+  })
+
+  it('stores and restores a Browser companion Chat target', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    const anchor = getStack(store)[0]
+    store.set(openOrFocusBrowserPanelAtom, {
+      browserId: 'browser-a',
+      contextRoute: 'allSessions/session/s1',
+      ownerPanelId: anchor.id,
+    })
+    const browser = getStack(store)[1]
+
+    store.set(setCompanionChatTargetAtom, {
+      panelId: browser.id,
+      sessionId: 'session-2',
+    })
+    const encoded = serializePanelLayoutV1(
+      getStack(store),
+      store.get(focusedPanelIdAtom),
+    )
+    const layout = deserializePanelLayoutV1(encoded!)
+    const restoredStore = createStore()
+    restoredStore.set(restorePanelLayoutAtom, layout!)
+
+    expect(getStack(store)[1].chatTargetSessionId).toBe('session-2')
+    expect(getStack(restoredStore)[1].chatTargetSessionId).toBe('session-2')
   })
 })
