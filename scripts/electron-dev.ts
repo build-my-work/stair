@@ -451,14 +451,24 @@ async function main(): Promise<void> {
   const mainCjsPath = join(DIST_DIR, "main.cjs");
   const preloadCjsPath = join(DIST_DIR, "bootstrap-preload.cjs");
   const toolbarPreloadCjsPath = join(DIST_DIR, "browser-toolbar-preload.cjs");
+  const pagePreloadCjsPath = join(DIST_DIR, "browser-page-preload.cjs");
+  const overlayPreloadCjsPath = join(DIST_DIR, "browser-overlay-preload.cjs");
 
   // Remove old build files to ensure fresh build
   if (existsSync(mainCjsPath)) rmSync(mainCjsPath);
   if (existsSync(preloadCjsPath)) rmSync(preloadCjsPath);
   if (existsSync(toolbarPreloadCjsPath)) rmSync(toolbarPreloadCjsPath);
+  if (existsSync(pagePreloadCjsPath)) rmSync(pagePreloadCjsPath);
+  if (existsSync(overlayPreloadCjsPath)) rmSync(overlayPreloadCjsPath);
 
   // Build main and preload entries in parallel
-  const [mainResult, preloadResult, toolbarPreloadResult] = await Promise.all([
+  const [
+    mainResult,
+    preloadResult,
+    toolbarPreloadResult,
+    pagePreloadResult,
+    overlayPreloadResult,
+  ] = await Promise.all([
     runEsbuild(
       "apps/electron/src/main/index.ts",
       "apps/electron/dist/main.cjs",
@@ -472,6 +482,14 @@ async function main(): Promise<void> {
     runEsbuild(
       "apps/electron/src/preload/browser-toolbar.ts",
       "apps/electron/dist/browser-toolbar-preload.cjs"
+    ),
+    runEsbuild(
+      "apps/electron/src/preload/browser-page.ts",
+      "apps/electron/dist/browser-page-preload.cjs"
+    ),
+    runEsbuild(
+      "apps/electron/src/preload/browser-overlay.ts",
+      "apps/electron/dist/browser-overlay-preload.cjs"
     ),
   ]);
 
@@ -490,25 +508,57 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  if (!pagePreloadResult.success) {
+    console.error("❌ Browser page preload build failed:", pagePreloadResult.error);
+    process.exit(1);
+  }
+
+  if (!overlayPreloadResult.success) {
+    console.error("❌ Browser overlay preload build failed:", overlayPreloadResult.error);
+    process.exit(1);
+  }
+
   // Wait for files to stabilize (filesystem flush)
   console.log("⏳ Waiting for build files to stabilize...");
-  const [mainStable, preloadStable, toolbarPreloadStable] = await Promise.all([
+  const [
+    mainStable,
+    preloadStable,
+    toolbarPreloadStable,
+    pagePreloadStable,
+    overlayPreloadStable,
+  ] = await Promise.all([
     waitForFileStable(mainCjsPath),
     waitForFileStable(preloadCjsPath),
     waitForFileStable(toolbarPreloadCjsPath),
+    waitForFileStable(pagePreloadCjsPath),
+    waitForFileStable(overlayPreloadCjsPath),
   ]);
 
-  if (!mainStable || !preloadStable || !toolbarPreloadStable) {
+  if (
+    !mainStable
+    || !preloadStable
+    || !toolbarPreloadStable
+    || !pagePreloadStable
+    || !overlayPreloadStable
+  ) {
     console.error("❌ Build files did not stabilize");
     process.exit(1);
   }
 
   // Verify the built files are valid JavaScript
   console.log("🔍 Verifying build output...");
-  const [mainValid, preloadValid, toolbarPreloadValid] = await Promise.all([
+  const [
+    mainValid,
+    preloadValid,
+    toolbarPreloadValid,
+    pagePreloadValid,
+    overlayPreloadValid,
+  ] = await Promise.all([
     verifyJsFile(mainCjsPath),
     verifyJsFile(preloadCjsPath),
     verifyJsFile(toolbarPreloadCjsPath),
+    verifyJsFile(pagePreloadCjsPath),
+    verifyJsFile(overlayPreloadCjsPath),
   ]);
 
   if (!mainValid.valid) {
@@ -523,6 +573,16 @@ async function main(): Promise<void> {
 
   if (!toolbarPreloadValid.valid) {
     console.error("❌ browser-toolbar-preload.cjs is invalid:", toolbarPreloadValid.error);
+    process.exit(1);
+  }
+
+  if (!pagePreloadValid.valid) {
+    console.error("❌ browser-page-preload.cjs is invalid:", pagePreloadValid.error);
+    process.exit(1);
+  }
+
+  if (!overlayPreloadValid.valid) {
+    console.error("❌ browser-overlay-preload.cjs is invalid:", overlayPreloadValid.error);
     process.exit(1);
   }
 
@@ -591,7 +651,35 @@ async function main(): Promise<void> {
   esbuildContexts.push(toolbarPreloadContext);
   console.log("👀 Watching browser toolbar preload...");
 
-  // 5. Start Electron (build already verified)
+  // 5. Browser page preload watcher (captures selected webpage text)
+  const pagePreloadContext = await esbuild.context({
+    entryPoints: [join(ROOT_DIR, "apps/electron/src/preload/browser-page.ts")],
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    outfile: join(ROOT_DIR, "apps/electron/dist/browser-page-preload.cjs"),
+    external: ["electron"],
+    logLevel: "info",
+  });
+  await pagePreloadContext.watch();
+  esbuildContexts.push(pagePreloadContext);
+  console.log("👀 Watching browser page preload...");
+
+  // 6. Browser overlay preload watcher (handles selection actions)
+  const overlayPreloadContext = await esbuild.context({
+    entryPoints: [join(ROOT_DIR, "apps/electron/src/preload/browser-overlay.ts")],
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    outfile: join(ROOT_DIR, "apps/electron/dist/browser-overlay-preload.cjs"),
+    external: ["electron"],
+    logLevel: "info",
+  });
+  await overlayPreloadContext.watch();
+  esbuildContexts.push(overlayPreloadContext);
+  console.log("👀 Watching browser overlay preload...");
+
+  // 7. Start Electron (build already verified)
   console.log("🚀 Starting Electron...\n");
 
   const electronProc = spawn({
