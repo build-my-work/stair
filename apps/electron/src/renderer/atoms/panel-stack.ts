@@ -522,6 +522,30 @@ export const restorePanelLayoutAtom = atom(
   },
 )
 
+export const reorderPanelAtom = atom(
+  null,
+  (get, set, {
+    panelId,
+    overPanelId,
+  }: {
+    panelId: string
+    overPanelId: string
+  }) => {
+    const stack = get(panelStackAtom)
+    const fromIndex = stack.findIndex(entry => entry.id === panelId)
+    const toIndex = stack.findIndex(entry => entry.id === overPanelId)
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
+      return false
+    }
+
+    const reordered = [...stack]
+    const [panel] = reordered.splice(fromIndex, 1)
+    reordered.splice(toIndex, 0, panel)
+    set(panelStackAtom, reordered)
+    return true
+  },
+)
+
 export const resizePanelAtom = atom(
   null,
   (get, set, {

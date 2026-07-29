@@ -119,7 +119,11 @@ export function PanelHeader({
   // PanelSlot in compact mode) propagate to every page's PanelHeader without each
   // page having to forward the prop manually. ChatPage explicitly passes its own
   // value, which overrides the context.
-  const { leadingAction: contextLeadingAction, isCompactMode } = useAppShellContext()
+  const {
+    leadingAction: contextLeadingAction,
+    isCompactMode,
+    panelDragHandle,
+  } = useAppShellContext()
   const leadingAction = explicitLeadingAction ?? contextLeadingAction
 
   // Use context as fallback when prop is not explicitly set.
@@ -237,6 +241,11 @@ export function PanelHeader({
       {leadingAction && (
         <div className="titlebar-no-drag shrink-0">
           {leadingAction}
+        </div>
+      )}
+      {panelDragHandle && (
+        <div className="titlebar-no-drag shrink-0">
+          {panelDragHandle}
         </div>
       )}
       <div className="flex-1 min-w-0 flex items-center select-none">

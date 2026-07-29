@@ -68,6 +68,11 @@ interface PanelSlotProps {
   panelViewportWidth: number
   /** Compact (mobile) mode — shows back button in panel header */
   isCompact?: boolean
+  /** Desktop drag-and-drop integration. */
+  panelRef?: (node: HTMLDivElement | null) => void
+  panelDragHandle?: React.ReactNode
+  dropIndicator?: 'before' | 'after'
+  isDragging?: boolean
 }
 
 export function PanelSlot({
@@ -79,6 +84,10 @@ export function PanelSlot({
   isAtRightEdge,
   panelViewportWidth,
   isCompact,
+  panelRef,
+  panelDragHandle,
+  dropIndicator,
+  isDragging,
 }: PanelSlotProps) {
   const { t } = useTranslation()
   const closePanel = useSetAtom(closePanelAtom)
@@ -140,8 +149,15 @@ export function PanelSlot({
     ...parentContext,
     rightSidebarButton: closeButton,
     leadingAction: backButton,
+    panelDragHandle,
     isFocusedPanel,
-  }), [parentContext, closeButton, backButton, isFocusedPanel])
+  }), [
+    parentContext,
+    closeButton,
+    backButton,
+    panelDragHandle,
+    isFocusedPanel,
+  ])
 
   const handlePointerDown = useCallback(() => {
     if (!isFocusedPanel) {
@@ -151,13 +167,16 @@ export function PanelSlot({
 
   return (
     <div
+      ref={panelRef}
       onPointerDown={handlePointerDown}
       data-panel-role="content"
       data-panel-id={entry.id}
       data-compact={isCompact || undefined}
+      data-panel-dragging={isDragging || undefined}
       className={cn(
         'h-full overflow-hidden relative @container/panel',
         !isOnly && isFocusedPanel ? 'shadow-panel-focused z-[1]' : 'shadow-middle z-0',
+        isDragging && 'ring-2 ring-inset ring-foreground/20',
         'bg-foreground-2',
       )}
       style={{
@@ -191,6 +210,15 @@ export function PanelSlot({
         ),
       }}
     >
+      {dropIndicator && (
+        <div
+          data-panel-drop-indicator={dropIndicator}
+          className={cn(
+            'pointer-events-none absolute inset-y-1 z-dropdown w-0.5 rounded-full bg-foreground/70 shadow-minimal',
+            dropIndicator === 'before' ? 'left-0' : 'right-0',
+          )}
+        />
+      )}
       <div className="h-full flex flex-col">
         <AppShellProvider value={contextOverride}>
           <PanelContentRouter

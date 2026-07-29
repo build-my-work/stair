@@ -21,9 +21,38 @@
  * feel rather than a CSS reflow.
  */
 
-import { Fragment, useEffect, useLayoutEffect, useRef } from 'react'
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+} from 'react'
+import { useTranslation } from 'react-i18next'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { motion } from 'motion/react'
+import {
+  AutoScrollActivator,
+  DndContext,
+  MeasuringStrategy,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type AutoScrollOptions,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+  type MeasuringConfiguration,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable'
+import { GripHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   panelStackAtom,
@@ -31,12 +60,14 @@ import {
   focusedPanelIdAtom,
   focusedPanelRouteAtom,
   focusedPanelContentRouteAtom,
+  reorderPanelAtom,
 } from '@/atoms/panel-stack'
 import { parseRouteToNavigationState } from '../../../shared/route-parser'
 import { isDetailNavState } from '@/lib/nav-helpers'
 import { PanelSlot } from './PanelSlot'
 import { PanelResizeSash } from './PanelResizeSash'
 import { CompactPanelTransition } from './CompactPanelTransition'
+import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
 import {
   PANEL_GAP,
   PANEL_EDGE_INSET,
@@ -50,6 +81,87 @@ const PANEL_SPRING = { type: 'spring' as const, stiffness: 600, damping: 49 }
 
 /** Visual breathing room between the fixed compact TopBar and the first panel. */
 const COMPACT_PANEL_TOP_GAP = 8
+
+const PANEL_DND_MEASURING: MeasuringConfiguration = {
+  droppable: {
+    strategy: MeasuringStrategy.Always,
+  },
+}
+
+const PANEL_AUTO_SCROLL: AutoScrollOptions = {
+  acceleration: 12,
+  activator: AutoScrollActivator.Pointer,
+  interval: 5,
+  threshold: { x: 0.12, y: 0.2 },
+  canScroll: element => (
+    element.getAttribute('data-panel-scroll-container') === 'true'
+  ),
+}
+
+type SortablePanelSlotProps = Omit<
+  ComponentProps<typeof PanelSlot>,
+  'panelRef' | 'panelDragHandle' | 'isDragging'
+>
+
+function SortablePanelSlot(panelSlotProps: SortablePanelSlotProps) {
+  const { t } = useTranslation()
+  const isDragEnabled = !panelSlotProps.isOnly
+  // The destination indicator moves during drag; the keyed Panel DOM moves
+  // only on drop so native Browser surfaces do not churn or flicker.
+  const {
+    isDragging,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+  } = useSortable({
+    id: panelSlotProps.entry.id,
+    disabled: !isDragEnabled,
+    transition: null,
+  })
+  const activateDrag = listeners?.onPointerDown as
+    | React.PointerEventHandler<HTMLButtonElement>
+    | undefined
+
+  const dragHandle = isDragEnabled ? (
+    <PanelHeaderCenterButton
+      ref={setActivatorNodeRef}
+      onPointerDown={(event) => {
+        event.stopPropagation()
+        if (event.isPrimary && event.button === 0) {
+          // Keep the drag in this renderer across native Browser surfaces.
+          event.currentTarget.setPointerCapture(event.pointerId)
+        }
+        activateDrag?.(event)
+      }}
+      icon={<GripHorizontal className="h-4 w-4" />}
+      tooltip={t('common.dragToReorder')}
+      data-panel-drag-handle="true"
+      className={cn(
+        'cursor-grab touch-none',
+        isDragging && 'cursor-grabbing opacity-100',
+      )}
+    />
+  ) : undefined
+
+  return (
+    <PanelSlot
+      {...panelSlotProps}
+      panelRef={setNodeRef}
+      panelDragHandle={dragHandle}
+      isDragging={isDragging}
+    />
+  )
+}
+
+function getPanelDropIndicator(
+  activeIndex: number,
+  overIndex: number,
+): 'before' | 'after' | undefined {
+  if (activeIndex < 0 || overIndex < 0 || activeIndex === overIndex) {
+    return undefined
+  }
+  return activeIndex < overIndex ? 'after' : 'before'
+}
 
 interface PanelStackContainerProps {
   sidebarSlot: React.ReactNode
@@ -79,6 +191,14 @@ export function PanelStackContainer({
   const focusedContentRoute = useAtomValue(focusedPanelContentRouteAtom)
   const panelViewportWidth = useAtomValue(panelViewportWidthAtom)
   const setPanelViewportWidth = useSetAtom(panelViewportWidthAtom)
+  const reorderPanel = useSetAtom(reorderPanelAtom)
+  const [activePanelId, setActivePanelId] = useState<string | null>(null)
+  const [overPanelId, setOverPanelId] = useState<string | null>(null)
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+  )
 
   // Compact mode: drill-in is "detail focused", not just "session selected".
   // For sessions: a session is selected. For settings: a subpage is selected.
@@ -97,6 +217,31 @@ export function PanelStackContainer({
     : panelStack
 
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  const clearDragState = useCallback(() => {
+    setActivePanelId(null)
+    setOverPanelId(null)
+  }, [])
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    const panelId = String(event.active.id)
+    setActivePanelId(panelId)
+    setOverPanelId(panelId)
+  }, [])
+
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    setOverPanelId(event.over ? String(event.over.id) : null)
+  }, [])
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event
+    clearDragState()
+    if (!over) return
+    reorderPanel({
+      panelId: String(active.id),
+      overPanelId: String(over.id),
+    })
+  }, [clearDragState, reorderPanel])
 
   useLayoutEffect(() => {
     const container = scrollRef.current
@@ -243,6 +388,18 @@ export function PanelStackContainer({
     )
   }
 
+  const panelIds = visiblePanels.map(entry => entry.id)
+  const activePanelIndex = activePanelId
+    ? panelIds.indexOf(activePanelId)
+    : -1
+  const overPanelIndex = overPanelId
+    ? panelIds.indexOf(overPanelId)
+    : -1
+  const overDropIndicator = getPanelDropIndicator(
+    activePanelIndex,
+    overPanelIndex,
+  )
+
   // === DESKTOP BRANCH ===
   // Independent-ratio horizontal panel track.
   return (
@@ -320,26 +477,47 @@ export function PanelStackContainer({
         {visiblePanels.length === 0 ? (
           <div className="flex-1 flex items-center justify-center" />
         ) : (
-          visiblePanels.map((entry, index) => (
-            <Fragment key={entry.id}>
-              <PanelSlot
-                entry={entry}
-                isOnly={visiblePanels.length === 1}
-                isFocusedPanel={isMultiPanel ? entry.id === focusedPanelId : true}
-                isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
-                isAtLeftEdge={index === 0 && isLeftEdge}
-                isAtRightEdge={index === visiblePanels.length - 1 && !isRightSidebarVisible}
-                panelViewportWidth={panelViewportWidth}
-                isCompact={false}
-              />
-              {isMultiPanel && (
-                <PanelResizeSash
-                  panelId={entry.id}
-                  panelViewportWidth={panelViewportWidth}
-                />
-              )}
-            </Fragment>
-          ))
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            measuring={PANEL_DND_MEASURING}
+            autoScroll={PANEL_AUTO_SCROLL}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDragEnd={handleDragEnd}
+            onDragCancel={clearDragState}
+          >
+            <SortableContext
+              items={panelIds}
+              strategy={horizontalListSortingStrategy}
+            >
+              {visiblePanels.map((entry, index) => (
+                <Fragment key={entry.id}>
+                  <SortablePanelSlot
+                    entry={entry}
+                    isOnly={!isMultiPanel}
+                    isFocusedPanel={!isMultiPanel || entry.id === focusedPanelId}
+                    isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
+                    isAtLeftEdge={index === 0 && isLeftEdge}
+                    isAtRightEdge={index === visiblePanels.length - 1 && !isRightSidebarVisible}
+                    panelViewportWidth={panelViewportWidth}
+                    isCompact={false}
+                    dropIndicator={
+                      entry.id === overPanelId
+                        ? overDropIndicator
+                        : undefined
+                    }
+                  />
+                  {isMultiPanel && (
+                    <PanelResizeSash
+                      panelId={entry.id}
+                      panelViewportWidth={panelViewportWidth}
+                    />
+                  )}
+                </Fragment>
+              ))}
+            </SortableContext>
+          </DndContext>
         )}
       </motion.div>
     </div>

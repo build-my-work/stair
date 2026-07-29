@@ -310,6 +310,7 @@
   "common.disconnect": "切断",
   "common.dismiss": "閉じる",
   "common.done": "完了",
+  "common.dragToReorder": "ドラッグして並べ替え",
   "common.edit": "編集",
   "common.editFile": "ファイルを編集",
   "common.editing": "編集中...",

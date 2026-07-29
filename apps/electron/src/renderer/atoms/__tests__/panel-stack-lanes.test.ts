@@ -14,6 +14,7 @@ import {
   projectFileOpenIntentsAtom,
   parseSessionIdFromRoute,
   pushPanelAtom,
+  reorderPanelAtom,
   resizePanelAtom,
   restorePanelLayoutAtom,
   setCompanionChatTargetAtom,
@@ -127,6 +128,73 @@ describe('panel stack content routes', () => {
     expect(
       getStack(store).reduce((sum, panel) => sum + panel.widthRatio, 0),
     ).toBeGreaterThan(1)
+  })
+
+  it('reorders panels without changing focus, width, or owner identity and restores that order', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    store.set(pushPanelAtom, { route: 'allSessions/session/s2' })
+    const [owner, secondSession] = getStack(store)
+    openProjectFile(store, owner.id, 'book.epub')
+    const file = getStack(store)[1]
+    store.set(resizePanelAtom, {
+      panelId: file.id,
+      widthRatio: 0.81,
+    })
+    store.set(focusedPanelIdAtom, file.id)
+
+    expect(store.set(reorderPanelAtom, {
+      panelId: owner.id,
+      overPanelId: secondSession.id,
+    })).toBe(true)
+
+    const reordered = getStack(store)
+    expect(reordered.map(panel => panel.id)).toEqual([
+      file.id,
+      secondSession.id,
+      owner.id,
+    ])
+    expect(reordered.find(panel => panel.id === file.id)).toMatchObject({
+      ownerPanelId: owner.id,
+      widthRatio: 0.81,
+    })
+    expect(store.get(focusedPanelIdAtom)).toBe(file.id)
+
+    const layout = deserializePanelLayout(serializePanelLayout(
+      reordered,
+      store.get(focusedPanelIdAtom),
+    )!)
+    const restoredStore = createStore()
+    restoredStore.set(restorePanelLayoutAtom, layout!)
+
+    expect(viewRoutes(restoredStore)).toEqual([
+      'book.epub',
+      'allSessions/session/s2',
+      'allSessions/session/s1',
+    ])
+    const [restoredFile, , restoredOwner] = getStack(restoredStore)
+    expect(restoredFile).toMatchObject({
+      ownerPanelId: restoredOwner.id,
+      widthRatio: 0.81,
+    })
+    expect(restoredStore.get(focusedPanelIdAtom)).toBe(restoredFile.id)
+  })
+
+  it('ignores panel reorder requests with missing or identical targets', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    store.set(pushPanelAtom, { route: 'allSessions/session/s2' })
+    const stack = getStack(store)
+
+    expect(store.set(reorderPanelAtom, {
+      panelId: stack[0].id,
+      overPanelId: stack[0].id,
+    })).toBe(false)
+    expect(store.set(reorderPanelAtom, {
+      panelId: stack[0].id,
+      overPanelId: 'missing',
+    })).toBe(false)
+    expect(getStack(store)).toBe(stack)
   })
 
   it('does not rewrite ratios when the PanelStack viewport changes', () => {

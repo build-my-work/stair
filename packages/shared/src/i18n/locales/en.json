@@ -310,6 +310,7 @@
   "common.disconnect": "Disconnect",
   "common.dismiss": "Dismiss",
   "common.done": "Done",
+  "common.dragToReorder": "Drag to reorder",
   "common.edit": "Edit",
   "common.editFile": "Edit File",
   "common.editing": "Editing...",

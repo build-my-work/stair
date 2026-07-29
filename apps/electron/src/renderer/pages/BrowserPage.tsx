@@ -131,6 +131,9 @@ export default function BrowserPage({
   const [attachError, setAttachError] = useState<string | null>(null)
   const [isAttached, setIsAttached] = useState(false)
   const order = panelStack.findIndex(entry => entry.id === panelId)
+  // Reordering must update the native surface in place, not restart its lease.
+  const orderRef = useRef(order)
+  orderRef.current = order
   const browser = browserInstances.get(route.browserId)
   const remoteWorkspaceId = workspaces.find(
     workspace => workspace.id === activeWorkspaceId,
@@ -288,9 +291,9 @@ export default function BrowserPage({
     return {
       ...geometry,
       visible,
-      order: order < 0 ? 0 : order,
+      order: orderRef.current < 0 ? 0 : orderRef.current,
     }
-  }, [order])
+  }, [])
 
   const flushSurface = useCallback(() => {
     frameRef.current = null
@@ -309,6 +312,10 @@ export default function BrowserPage({
     if (frameRef.current !== null) return
     frameRef.current = requestAnimationFrame(flushSurface)
   }, [flushSurface])
+
+  useEffect(() => {
+    scheduleSurface()
+  }, [order, scheduleSurface])
 
   useEffect(() => {
     const host = hostRef.current

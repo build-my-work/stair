@@ -310,6 +310,7 @@
   "common.disconnect": "断开连接",
   "common.dismiss": "关闭",
   "common.done": "完成",
+  "common.dragToReorder": "拖动调整顺序",
   "common.edit": "编辑",
   "common.editFile": "编辑文件",
   "common.editing": "编辑中...",

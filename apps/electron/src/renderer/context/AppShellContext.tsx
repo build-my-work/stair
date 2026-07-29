@@ -173,6 +173,9 @@ export interface AppShellContextType {
   // Leading action button for panel header (e.g., back button in compact mode)
   leadingAction?: React.ReactNode
 
+  // Drag handle injected into desktop content-panel headers
+  panelDragHandle?: React.ReactNode
+
   /** Whether this panel is the focused panel (for multi-panel visual differentiation) */
   isFocusedPanel?: boolean
 
