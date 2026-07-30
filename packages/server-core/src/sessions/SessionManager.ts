@@ -871,6 +871,8 @@ interface ManagedSession {
   labels?: string[]
   // Workspace-scoped project binding (undefined = unbound)
   projectId?: string
+  // Canonical path under the bound Project root used by Add Note
+  projectNoteTargetPath?: string
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
   // Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus
@@ -1024,6 +1026,22 @@ interface ManagedSession {
     /** True after the first matching sendMessage consumes the slot; later matches drop. */
     committed: boolean
   }
+}
+
+/** Update the Project binding while preserving the target-belongs-to-Project invariant. */
+function setManagedProjectBinding(
+  managed: ManagedSession,
+  projectId: string | undefined,
+): boolean {
+  const projectChanged = managed.projectId !== projectId
+  const targetWasCleared = projectChanged
+    && managed.projectNoteTargetPath !== undefined
+
+  if (projectChanged) {
+    managed.projectNoteTargetPath = undefined
+  }
+  managed.projectId = projectId
+  return targetWasCleared
 }
 
 const PI_SDK_MESSAGE_ID_CACHE_LIMIT = 256
@@ -1583,9 +1601,24 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
-    // Project binding (no dedicated event today — handled via metaChanged broadcast)
+    // Project binding
     if (managed.projectId !== header.projectId) {
       managed.projectId = header.projectId
+      this.sendEvent({
+        type: 'project_id_changed',
+        sessionId,
+        projectId: header.projectId ?? null,
+      }, managed.workspace.id)
+      changed = true
+    }
+
+    if (managed.projectNoteTargetPath !== header.projectNoteTargetPath) {
+      managed.projectNoteTargetPath = header.projectNoteTargetPath
+      this.sendEvent({
+        type: 'project_note_target_changed',
+        sessionId,
+        relativePath: header.projectNoteTargetPath ?? null,
+      }, managed.workspace.id)
       changed = true
     }
 
@@ -7369,7 +7402,8 @@ export class SessionManager implements ISessionManager {
   async setSessionProjectId(sessionId: string, projectId: string | null): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
-      managed.projectId = projectId ?? undefined
+      const nextProjectId = projectId ?? undefined
+      const targetWasCleared = setManagedProjectBinding(managed, nextProjectId)
       this.setMetadataWriteGuard(managed)
 
       this.sendEvent({
@@ -7377,6 +7411,13 @@ export class SessionManager implements ISessionManager {
         sessionId: managed.id,
         projectId: managed.projectId ?? null,
       }, managed.workspace.id)
+      if (targetWasCleared) {
+        this.sendEvent({
+          type: 'project_note_target_changed',
+          sessionId: managed.id,
+          relativePath: null,
+        }, managed.workspace.id)
+      }
 
       this.persistSession(managed)
       await this.flushSession(managed.id)
@@ -7477,7 +7518,9 @@ export class SessionManager implements ISessionManager {
     // the connection_changed event below keeps the renderer in sync.
     managed.taskSlug = taskSlug
     managed.taskDraft = false
-    if (reconcile?.projectId !== undefined) managed.projectId = reconcile.projectId
+    const noteTargetCleared = reconcile?.projectId === undefined
+      ? false
+      : setManagedProjectBinding(managed, reconcile.projectId)
     if (connectionChanged) managed.llmConnection = reconcile!.llmConnection
     const renamed = Boolean(reconcile?.name && reconcile.name !== managed.name)
     if (renamed) managed.name = reconcile!.name!
@@ -7499,6 +7542,13 @@ export class SessionManager implements ISessionManager {
     const changes: { taskDraft: boolean; taskSlug: string; projectId?: string } = { taskDraft: false, taskSlug }
     if (reconcile?.projectId !== undefined) changes.projectId = reconcile.projectId
     this.sendEvent({ type: 'session_metadata_changed', sessionId, changes }, managed.workspace.id)
+    if (noteTargetCleared) {
+      this.sendEvent({
+        type: 'project_note_target_changed',
+        sessionId,
+        relativePath: null,
+      }, managed.workspace.id)
+    }
     if (renamed) {
       this.sendEvent({ type: 'name_changed', sessionId, name: managed.name }, managed.workspace.id)
     }
@@ -7564,7 +7614,9 @@ export class SessionManager implements ISessionManager {
     // the connection_changed event below keeps the renderer in sync.
     managed.taskSlug = taskSlug
     managed.taskDraft = false
-    if (reconcile?.projectId !== undefined) managed.projectId = reconcile.projectId
+    const noteTargetCleared = reconcile?.projectId === undefined
+      ? false
+      : setManagedProjectBinding(managed, reconcile.projectId)
     if (connectionChanged) managed.llmConnection = reconcile!.llmConnection
     const renamed = Boolean(reconcile?.name && reconcile.name !== managed.name)
     if (renamed) managed.name = reconcile!.name!
@@ -7583,6 +7635,13 @@ export class SessionManager implements ISessionManager {
     const changes: { taskDraft: boolean; taskSlug: string; projectId?: string } = { taskDraft: false, taskSlug }
     if (reconcile?.projectId !== undefined) changes.projectId = reconcile.projectId
     this.sendEvent({ type: 'session_metadata_changed', sessionId, changes }, managed.workspace.id)
+    if (noteTargetCleared) {
+      this.sendEvent({
+        type: 'project_note_target_changed',
+        sessionId,
+        relativePath: null,
+      }, managed.workspace.id)
+    }
     if (renamed) {
       this.sendEvent({ type: 'name_changed', sessionId, name: managed.name }, managed.workspace.id)
     }
@@ -7619,6 +7678,31 @@ export class SessionManager implements ISessionManager {
       // Persist to disk
       this.persistSession(managed)
     }
+  }
+
+  /**
+   * Set or clear the Add Note destination for one Session.
+   * Returns false if the Session no longer belongs to the expected Project.
+   * The caller remains responsible for validating the canonical path.
+   */
+  async setSessionProjectNoteTarget(
+    sessionId: string,
+    expectedProjectId: string,
+    relativePath: string | null,
+  ): Promise<boolean> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed || managed.projectId !== expectedProjectId) return false
+
+    managed.projectNoteTargetPath = relativePath ?? undefined
+    this.setMetadataWriteGuard(managed)
+    this.sendEvent({
+      type: 'project_note_target_changed',
+      sessionId: managed.id,
+      relativePath: managed.projectNoteTargetPath ?? null,
+    }, managed.workspace.id)
+    this.persistSession(managed)
+    await this.flushSession(managed.id)
+    return true
   }
 
   /**

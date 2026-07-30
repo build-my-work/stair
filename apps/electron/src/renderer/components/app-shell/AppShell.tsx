@@ -94,6 +94,7 @@ import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSourc
 import {
   isProjectFileReferenceV1,
   type MessageReference,
+  type SelectionReference,
 } from "@craft-agent/core"
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
@@ -171,6 +172,11 @@ import { WorkspaceFilesSidebar } from "@/components/right-sidebar/WorkspaceFiles
 import { getProjectForRoute } from "@/lib/project-working-directory"
 import type { LoadedProject } from "@craft-agent/shared/projects/types"
 import { focusExistingProjectSessionPanel } from "./project-session-panel-navigation"
+import {
+  ProjectNoteTargetPicker,
+  withProjectNoteTargetTimeout,
+} from "./ProjectNoteTargetPicker"
+import { ProjectNoteProjectPicker } from "./ProjectNoteProjectPicker"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -194,7 +200,46 @@ interface AppShellProps {
   isFocusedMode?: boolean
 }
 
+interface ProjectNoteTargetRequest {
+  requestId: string
+  sessionId: string
+  projectId?: string
+  phase:
+    | 'choosing-project'
+    | 'assigning-project'
+    | 'selecting'
+    | 'configuring'
+    | 'appending'
+  appendRequestId?: string
+  selection?: SelectionReference
+}
+
+interface ProjectNoteTargetCompletion {
+  requestId: string
+  resolve: (accepted: boolean) => void
+}
 const altClickTooltipLabel = isMac ? '⌥ click to exclude' : 'Alt click to exclude'
+const PROJECT_NOTE_TARGET_RESELECTION_ERRORS = [
+  'PROJECT_NOTE_TARGET_REQUIRED',
+  'PROJECT_NOTE_TARGET_CHANGED',
+  'PROJECT_NOTE_TARGET_INVALID',
+  'PROJECT_NOTE_TARGET_NOT_FOUND',
+  'PROJECT_NOTE_TARGET_ACCESS_DENIED',
+  'PROJECT_NOTE_TARGET_NOT_REGULAR',
+  'PROJECT_NOTE_TARGET_TOO_LARGE',
+  'PROJECT_NOTE_TARGET_INVALID_TEXT',
+] as const
+
+function requiresProjectNoteTargetReselection(message: string): boolean {
+  return PROJECT_NOTE_TARGET_RESELECTION_ERRORS.some(code =>
+    message.includes(code))
+}
+
+function createProjectNoteRequestId(): string {
+  return typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
 
 /** Wraps children in a Tooltip that shows instantly on hover — only rendered when `show` is true. */
 function AltExcludeTooltip({ show, children }: { show: boolean; children: React.ReactNode }) {
@@ -999,9 +1044,11 @@ function AppShellContent({
   const handleSessionProjectChange = useCallback(async (sessionId: string, projectId: string | null) => {
     try {
       await window.electronAPI.sessionCommand(sessionId, { type: 'setProjectId', projectId })
+      return true
     } catch (err) {
       console.error('[AppShell] Failed to update session project:', err)
       toast.error(t('toast.failedToUpdateProject'))
+      return false
     }
   }, [t])
 
@@ -1459,6 +1506,391 @@ function AppShellContent({
   // This prevents closures from retaining full message arrays
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
   const setSessionMetaMap = useSetAtom(sessionMetaMapAtom)
+  const [projectNoteTargetRequest, setProjectNoteTargetRequest] =
+    React.useState<ProjectNoteTargetRequest | null>(null)
+  const projectNoteTargetRequestRef = React.useRef(projectNoteTargetRequest)
+  const projectNoteTargetCompletionRef =
+    React.useRef<ProjectNoteTargetCompletion | null>(null)
+  const projectNoteTargetMountedRef = React.useRef(true)
+  const [projectFilesProjectOverrideId, setProjectFilesProjectOverrideId] =
+    React.useState<string | null>(null)
+
+  const appendSelectionToConfiguredTarget = React.useCallback((
+    sessionId: string,
+    projectId: string,
+    expectedTargetPath: string,
+    selection: SelectionReference,
+    requestId = createProjectNoteRequestId(),
+  ) => window.electronAPI.appendProjectNote({
+    requestId,
+    sessionId,
+    projectId,
+    expectedTargetPath,
+    selection,
+  }), [])
+
+  const beginProjectNoteTargetRequest = React.useCallback((
+    sessionId: string,
+    projectId: string | undefined,
+    selection?: SelectionReference,
+  ): Promise<boolean> | null => {
+    if (projectNoteTargetRequestRef.current) {
+      toast.error('Finish or cancel the current Add Note file selection first.')
+      return selection ? Promise.resolve(false) : null
+    }
+    const next: ProjectNoteTargetRequest = {
+      requestId: createProjectNoteRequestId(),
+      sessionId,
+      projectId,
+      phase: projectId ? 'selecting' : 'choosing-project',
+      ...(selection
+        ? {
+            selection,
+            appendRequestId: createProjectNoteRequestId(),
+          }
+        : {}),
+    }
+    projectNoteTargetRequestRef.current = next
+    setProjectNoteTargetRequest(next)
+    if (!selection) return null
+    return new Promise<boolean>(resolve => {
+      projectNoteTargetCompletionRef.current = {
+        requestId: next.requestId,
+        resolve,
+      }
+    })
+  }, [])
+
+  const finishProjectNoteTargetRequest = React.useCallback((
+    requestId: string,
+    accepted: boolean,
+  ) => {
+    if (projectNoteTargetRequestRef.current?.requestId !== requestId) return
+    const completion = projectNoteTargetCompletionRef.current
+    projectNoteTargetRequestRef.current = null
+    if (projectNoteTargetMountedRef.current) {
+      setProjectNoteTargetRequest(null)
+    }
+    if (completion?.requestId === requestId) {
+      projectNoteTargetCompletionRef.current = null
+      completion.resolve(accepted)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    projectNoteTargetMountedRef.current = true
+    return () => {
+      projectNoteTargetMountedRef.current = false
+      const pending = projectNoteTargetRequestRef.current
+      if (!pending) return
+
+      projectNoteTargetRequestRef.current = null
+      const completion = projectNoteTargetCompletionRef.current
+      projectNoteTargetCompletionRef.current = null
+      completion?.resolve(false)
+    }
+  }, [])
+
+  const handleAddSelectionNote = React.useCallback(async (
+    sessionId: string,
+    selection: SelectionReference,
+  ): Promise<boolean> => {
+    const meta = store.get(sessionMetaMapAtom).get(sessionId)
+    if (!meta) {
+      toast.error('This Session is no longer available.')
+      return false
+    }
+    if (!meta.projectId || !meta.projectNoteTargetPath) {
+      return await beginProjectNoteTargetRequest(
+        sessionId,
+        meta.projectId,
+        selection,
+      ) ?? false
+    }
+
+    try {
+      const result = await appendSelectionToConfiguredTarget(
+        sessionId,
+        meta.projectId,
+        meta.projectNoteTargetPath,
+        selection,
+      )
+      toast.success(`Note added to ${result.relativePath}`)
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (requiresProjectNoteTargetReselection(message)) {
+        const completion = beginProjectNoteTargetRequest(
+          sessionId,
+          meta.projectId,
+          selection,
+        )
+        toast.error('The current note file is unavailable. Choose another target.')
+        return await completion ?? false
+      }
+      toast.error(
+        message.replace(/^PROJECT_NOTE_[A-Z_]+:\s*/, '')
+        || 'The selection could not be added to the note file.',
+      )
+      return false
+    }
+  }, [
+    appendSelectionToConfiguredTarget,
+    beginProjectNoteTargetRequest,
+    store,
+  ])
+
+  const handleConfigureProjectNoteTarget = React.useCallback((sessionId: string) => {
+    const meta = store.get(sessionMetaMapAtom).get(sessionId)
+    if (!meta) {
+      toast.error('This Session is no longer available.')
+      return
+    }
+    void beginProjectNoteTargetRequest(sessionId, meta.projectId)
+  }, [beginProjectNoteTargetRequest, store])
+
+  const handleProjectNoteProjectSelect = React.useCallback(async (
+    projectId: string,
+  ) => {
+    const current = projectNoteTargetRequestRef.current
+    if (
+      !current
+      || current.phase !== 'choosing-project'
+      || !projectMenuOptions.some(project => project.id === projectId)
+    ) {
+      return
+    }
+
+    const pending: ProjectNoteTargetRequest = {
+      ...current,
+      projectId,
+      phase: 'assigning-project',
+    }
+    projectNoteTargetRequestRef.current = pending
+    setProjectNoteTargetRequest(pending)
+
+    const assigned = await handleSessionProjectChange(pending.sessionId, projectId)
+    const activeRequest = projectNoteTargetRequestRef.current
+    if (
+      activeRequest?.requestId !== pending.requestId
+      || activeRequest.phase !== 'assigning-project'
+    ) {
+      return
+    }
+
+    if (!assigned) {
+      const retryableRequest: ProjectNoteTargetRequest = {
+        ...activeRequest,
+        projectId: undefined,
+        phase: 'choosing-project',
+      }
+      projectNoteTargetRequestRef.current = retryableRequest
+      setProjectNoteTargetRequest(retryableRequest)
+      return
+    }
+
+    const latestMeta = store.get(sessionMetaMapAtom).get(pending.sessionId)
+    if (!latestMeta) {
+      finishProjectNoteTargetRequest(pending.requestId, false)
+      toast.error('This Session is no longer available.')
+      return
+    }
+
+    setSessionMetaMap(previous => {
+      const currentMeta = previous.get(pending.sessionId)
+      if (!currentMeta) return previous
+      const next = new Map(previous)
+      next.set(pending.sessionId, {
+        ...currentMeta,
+        projectId,
+        projectNoteTargetPath: undefined,
+      })
+      return next
+    })
+
+    const selectingRequest: ProjectNoteTargetRequest = {
+      ...activeRequest,
+      projectId,
+      phase: 'selecting',
+    }
+    projectNoteTargetRequestRef.current = selectingRequest
+    setProjectNoteTargetRequest(selectingRequest)
+  }, [
+    finishProjectNoteTargetRequest,
+    handleSessionProjectChange,
+    projectMenuOptions,
+    setSessionMetaMap,
+    store,
+  ])
+
+  const handleProjectNoteTargetSelect = React.useCallback(async (
+    relativePath: string,
+  ) => {
+    const current = projectNoteTargetRequestRef.current
+    if (!current || current.phase !== 'selecting' || !current.projectId) return
+    const projectId = current.projectId
+    const pending: ProjectNoteTargetRequest = {
+      ...current,
+      projectId,
+      phase: 'configuring',
+    }
+    projectNoteTargetRequestRef.current = pending
+    setProjectNoteTargetRequest(pending)
+
+    try {
+      const meta = store.get(sessionMetaMapAtom).get(pending.sessionId)
+      if (!meta?.projectId || meta.projectId !== projectId) {
+        throw new Error('This Session is no longer assigned to a Project.')
+      }
+
+      const configured = await withProjectNoteTargetTimeout(
+        window.electronAPI.configureProjectNoteTarget({
+          sessionId: pending.sessionId,
+          projectId,
+          relativePath,
+        }),
+      )
+
+      const activeRequest = projectNoteTargetRequestRef.current
+      const latestMeta = store.get(sessionMetaMapAtom).get(pending.sessionId)
+      if (
+        activeRequest?.requestId !== pending.requestId
+        || activeRequest.phase !== 'configuring'
+      ) {
+        return
+      }
+      if (
+        configured.projectId !== projectId
+        || latestMeta?.projectId !== projectId
+      ) {
+        finishProjectNoteTargetRequest(pending.requestId, false)
+        return
+      }
+
+      if (projectNoteTargetMountedRef.current) {
+        setSessionMetaMap(previous => {
+          const next = new Map(previous)
+          const current = next.get(pending.sessionId)
+          if (current?.projectId === projectId) {
+            next.set(pending.sessionId, {
+              ...current,
+              projectNoteTargetPath: configured.relativePath ?? undefined,
+            })
+          }
+          return next
+        })
+      }
+
+      if (pending.selection && pending.appendRequestId) {
+        if (!configured.relativePath) {
+          throw new Error('The selected note file is no longer available.')
+        }
+        const appendingRequest: ProjectNoteTargetRequest = {
+          ...pending,
+          phase: 'appending',
+        }
+        projectNoteTargetRequestRef.current = appendingRequest
+        if (projectNoteTargetMountedRef.current) {
+          setProjectNoteTargetRequest(appendingRequest)
+        }
+        const result = await appendSelectionToConfiguredTarget(
+          pending.sessionId,
+          projectId,
+          configured.relativePath,
+          pending.selection,
+          pending.appendRequestId,
+        )
+        toast.success(`Note added to ${result.relativePath}`)
+      } else {
+        toast.success(`Add Note target set to ${configured.relativePath}`)
+      }
+      finishProjectNoteTargetRequest(pending.requestId, true)
+    } catch (error) {
+      const activeRequest = projectNoteTargetRequestRef.current
+      if (activeRequest?.requestId === pending.requestId) {
+        const message = error instanceof Error ? error.message : String(error)
+        const latestProjectId = store
+          .get(sessionMetaMapAtom)
+          .get(pending.sessionId)
+          ?.projectId
+        const canRetryTarget = requiresProjectNoteTargetReselection(message)
+        const mounted = projectNoteTargetMountedRef.current
+        if (
+          !mounted
+          || latestProjectId !== projectId
+          || message.includes('PROJECT_NOTE_SESSION_PROJECT_CHANGED')
+          || !canRetryTarget
+        ) {
+          finishProjectNoteTargetRequest(pending.requestId, false)
+          if (mounted) {
+            toast.error(
+              message.replace(/^PROJECT_NOTE_[A-Z_]+:\s*/, '')
+              || 'The selection could not be added to the note file.',
+            )
+          }
+          return
+        }
+        const retryableRequest: ProjectNoteTargetRequest = {
+          ...activeRequest,
+          phase: 'selecting',
+        }
+        projectNoteTargetRequestRef.current = retryableRequest
+        setProjectNoteTargetRequest(retryableRequest)
+      }
+      throw error
+    }
+  }, [
+    appendSelectionToConfiguredTarget,
+    finishProjectNoteTargetRequest,
+    setSessionMetaMap,
+    store,
+  ])
+
+  const handleProjectNoteTargetCancel = React.useCallback(() => {
+    const pending = projectNoteTargetRequestRef.current
+    if (
+      pending?.phase === 'choosing-project'
+      || pending?.phase === 'selecting'
+    ) {
+      finishProjectNoteTargetRequest(pending.requestId, false)
+    }
+  }, [finishProjectNoteTargetRequest])
+
+  const handleProjectNoteTargetManageFiles = React.useCallback(() => {
+    const pending = projectNoteTargetRequestRef.current
+    if (!pending || pending.phase !== 'selecting' || !pending.projectId) return
+    setProjectFilesProjectOverrideId(pending.projectId)
+    updateRightSidebar({ type: 'files' })
+    finishProjectNoteTargetRequest(pending.requestId, false)
+  }, [finishProjectNoteTargetRequest, updateRightSidebar])
+
+  React.useEffect(() => {
+    const pending = projectNoteTargetRequestRef.current
+    if (!pending || pending.phase === 'appending') return
+
+    const meta = sessionMetaMap.get(pending.sessionId)
+    if (!meta || meta.workspaceId !== activeWorkspaceId) {
+      finishProjectNoteTargetRequest(pending.requestId, false)
+      return
+    }
+    if (
+      pending.phase === 'choosing-project'
+      || pending.phase === 'assigning-project'
+      || meta.projectId === pending.projectId
+    ) return
+
+    finishProjectNoteTargetRequest(pending.requestId, false)
+  }, [activeWorkspaceId, finishProjectNoteTargetRequest, sessionMetaMap])
+
+  const projectNoteTargetMeta = projectNoteTargetRequest
+    ? sessionMetaMap.get(projectNoteTargetRequest.sessionId)
+    : undefined
+  const projectNoteTargetProject = projectNoteTargetRequest
+    ? projects.find(project => project.config.id === projectNoteTargetRequest.projectId)
+    : undefined
+  const isChoosingNoteProject =
+    projectNoteTargetRequest?.phase === 'choosing-project'
+    || projectNoteTargetRequest?.phase === 'assigning-project'
 
   const hasPendingPrompt = React.useCallback((sessionId: string) => {
     return (pendingPermissions.get(sessionId)?.length ?? 0) > 0
@@ -1473,19 +1905,32 @@ function AppShellContent({
     ? sessionMetaMap.get(session.selected)?.workingDirectory
     : undefined
   const rightSidebarOwnerRoute = focusedPanelRoute ?? undefined
-  const rightSidebarProject = React.useMemo(
+  const routeProject = React.useMemo(
     () => rightSidebarOwnerRoute
       ? getProjectForRoute(rightSidebarOwnerRoute, sessionMetaMap, projects)
       : undefined,
     [rightSidebarOwnerRoute, sessionMetaMap, projects],
   )
+  const projectFilesProjectOverride = projectFilesProjectOverrideId
+    ? projects.find(project => project.config.id === projectFilesProjectOverrideId)
+    : undefined
+  const rightSidebarProject = projectFilesProjectOverride ?? routeProject
   const companionOwnerPanelId = focusedPanelId
     ? getPanelOwnerPanelId(panelStack, focusedPanelId) ?? undefined
     : undefined
   const isRightSidebarVisible = navState.rightSidebar?.type === 'files'
+  const handleCloseRightSidebar = React.useCallback(() => {
+    setProjectFilesProjectOverrideId(null)
+    updateRightSidebar(undefined)
+  }, [updateRightSidebar])
   const handleToggleRightSidebar = React.useCallback(() => {
-    updateRightSidebar(isRightSidebarVisible ? undefined : { type: 'files' })
-  }, [isRightSidebarVisible, updateRightSidebar])
+    if (isRightSidebarVisible) {
+      handleCloseRightSidebar()
+    } else {
+      setProjectFilesProjectOverrideId(null)
+      updateRightSidebar({ type: 'files' })
+    }
+  }, [handleCloseRightSidebar, isRightSidebarVisible, updateRightSidebar])
   const handleOpenProjectFile = React.useCallback((relativePath: string) => {
     if (!rightSidebarOwnerRoute || !rightSidebarProject?.config.workingDirectory) return
     openProjectFile({
@@ -1494,15 +1939,15 @@ function AppShellContent({
       contextRoute: rightSidebarOwnerRoute,
       relativePath,
     })
-    if (isAutoCompact) updateRightSidebar(undefined)
+    if (isAutoCompact) handleCloseRightSidebar()
   }, [
+    handleCloseRightSidebar,
     isAutoCompact,
     openProjectFile,
     companionOwnerPanelId,
     rightSidebarOwnerRoute,
     rightSidebarProject?.config.id,
     rightSidebarProject?.config.workingDirectory,
-    updateRightSidebar,
   ])
   const handleOpenProjectFileReference = React.useCallback((
     reference: MessageReference,
@@ -1886,6 +2331,8 @@ function AppShellContent({
     onSessionSourcesChange: handleSessionSourcesChange,
     onJumpToTaskSessions: handleJumpToTaskSessions,
     onOpenProjectFileReference: handleOpenProjectFileReference,
+    onAddSelectionNote: handleAddSelectionNote,
+    onConfigureProjectNoteTarget: handleConfigureProjectNoteTarget,
     rightSidebarButton: null,
     isCompactMode: isAutoCompact,
     // Search state for ChatDisplay highlighting
@@ -1900,7 +2347,7 @@ function AppShellContent({
     automationTestResults,
     getAutomationHistory,
     onReplayAutomation: handleReplayAutomation,
-  }), [contextValue, handleDeleteSession, sources, skills, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, handleOpenProjectFileReference, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
+  }), [contextValue, handleDeleteSession, sources, skills, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, handleOpenProjectFileReference, handleAddSelectionNote, handleConfigureProjectNoteTarget, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {
@@ -3906,7 +4353,7 @@ function AppShellContent({
                   projectId={rightSidebarProject?.config.id}
                   projectName={rightSidebarProject?.config.name}
                   rootPath={rightSidebarProject?.config.workingDirectory}
-                  onClose={() => updateRightSidebar(undefined)}
+                  onClose={handleCloseRightSidebar}
                   onOpenFile={handleOpenProjectFile}
                 />
               </div>
@@ -3954,7 +4401,7 @@ function AppShellContent({
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                onClick={() => updateRightSidebar(undefined)}
+                onClick={handleCloseRightSidebar}
                 className="absolute inset-0 z-overlay bg-black/20"
               />
               <motion.div
@@ -3969,7 +4416,7 @@ function AppShellContent({
                   projectId={rightSidebarProject?.config.id}
                   projectName={rightSidebarProject?.config.name}
                   rootPath={rightSidebarProject?.config.workingDirectory}
-                  onClose={() => updateRightSidebar(undefined)}
+                  onClose={handleCloseRightSidebar}
                   onOpenFile={handleOpenProjectFile}
                 />
               </motion.div>
@@ -4224,6 +4671,41 @@ function AppShellContent({
             })()}
           />
         </>
+      )}
+
+      {projectNoteTargetRequest && isChoosingNoteProject && (
+        <ProjectNoteProjectPicker
+          open
+          sessionName={projectNoteTargetMeta?.name ?? 'Session'}
+          projects={projectMenuOptions}
+          assigningProjectId={projectNoteTargetRequest.phase === 'assigning-project'
+            ? projectNoteTargetRequest.projectId
+            : undefined}
+          quote={projectNoteTargetRequest.selection?.quote}
+          onSelect={projectId => void handleProjectNoteProjectSelect(projectId)}
+          onCancel={handleProjectNoteTargetCancel}
+        />
+      )}
+
+      {projectNoteTargetRequest?.projectId
+        && !isChoosingNoteProject
+        && (
+        <ProjectNoteTargetPicker
+          open
+          projectId={projectNoteTargetRequest.projectId}
+          projectName={projectNoteTargetProject?.config.name}
+          sessionName={projectNoteTargetMeta?.name ?? 'Session'}
+          currentPath={projectNoteTargetRequest.selection
+            ? undefined
+            : projectNoteTargetMeta?.projectNoteTargetPath}
+          quote={projectNoteTargetRequest.selection?.quote}
+          onSelect={handleProjectNoteTargetSelect}
+          onCancel={handleProjectNoteTargetCancel}
+          onManageProjectFiles={handleProjectNoteTargetManageFiles}
+          onRestoreFocus={projectNoteTargetRequest.selection
+            ? undefined
+            : () => focusChatInputForSession(projectNoteTargetRequest.sessionId)}
+        />
       )}
 
       {/* What's New overlay */}

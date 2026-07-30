@@ -97,8 +97,12 @@ export const CHANNEL_MAP = {
   readProjectFileBinary: invoke(RPC_CHANNELS.projectFiles.READ_BINARY),
   searchProjectFiles: invoke(RPC_CHANNELS.projectFiles.SEARCH),
   listProjectDirectoryEntries: invoke(RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES),
+  createProjectFile: invoke(RPC_CHANNELS.projectFiles.CREATE_FILE),
+  createProjectDirectory: invoke(RPC_CHANNELS.projectFiles.CREATE_DIRECTORY),
   getEpubDocumentState: invoke(RPC_CHANNELS.projectFiles.GET_EPUB_STATE),
   applyEpubStateMutation: invoke(RPC_CHANNELS.projectFiles.APPLY_EPUB_STATE_MUTATION),
+  configureProjectNoteTarget: invoke(RPC_CHANNELS.projectNotes.CONFIGURE_TARGET),
+  appendProjectNote: invoke(RPC_CHANNELS.projectNotes.APPEND),
 
   // Theme
   getSystemTheme: invoke(RPC_CHANNELS.theme.GET_SYSTEM_PREFERENCE),

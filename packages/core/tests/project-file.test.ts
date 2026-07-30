@@ -2,11 +2,16 @@ import { describe, expect, it } from 'bun:test'
 
 import {
   isCanonicalProjectRelativePath,
+  isChatMessageSelectionReferenceV1,
   isMessageReference,
+  isProjectFileSelectionReferenceV1,
   isProjectFileReferenceV1,
+  isSelectionReference,
   isWebSelectionReferenceV1,
   messageReferenceKey,
   type ProjectFileReferenceV1,
+  type ProjectFileSelectionReferenceV1,
+  type ChatMessageSelectionReferenceV1,
   type WebSelectionReferenceV1,
 } from '../src/types/project-file'
 
@@ -30,6 +35,47 @@ function reference(): ProjectFileReferenceV1 {
     locator: {
       type: 'epub-cfi',
       cfiRange: 'epubcfi(/6/4!/4/2:0)',
+    },
+  }
+}
+
+function textFileSelection(): ProjectFileSelectionReferenceV1 {
+  return {
+    version: 1,
+    kind: 'project-file',
+    projectId: 'project-1',
+    relativePath: 'notes/source.md',
+    sourceFingerprint: `sha256:${'b'.repeat(64)}`,
+    fileName: 'source.md',
+    quote: 'selected text',
+    contextBefore: 'before',
+    contextAfter: 'after',
+    locator: {
+      type: 'text-quote',
+      exact: 'selected text',
+      prefix: 'before',
+      suffix: 'after',
+      start: 10,
+      end: 23,
+    },
+  }
+}
+
+function chatSelection(): ChatMessageSelectionReferenceV1 {
+  return {
+    version: 1,
+    kind: 'chat-message',
+    sessionId: 'session-1',
+    messageId: 'message-1',
+    role: 'assistant',
+    quote: 'selected text',
+    locator: {
+      type: 'text-quote',
+      exact: 'selected text',
+      prefix: 'before',
+      suffix: 'after',
+      start: 10,
+      end: 23,
     },
   }
 }
@@ -157,5 +203,52 @@ describe('WebSelectionReferenceV1', () => {
       .toBe(messageReferenceKey(second))
     expect(messageReferenceKey(first))
       .not.toBe(messageReferenceKey(reference()))
+  })
+})
+
+describe('SelectionReference', () => {
+  it('unifies web, Project File, EPUB, and chat selections', () => {
+    expect(isSelectionReference(webReference())).toBe(true)
+    expect(isSelectionReference(reference())).toBe(true)
+    expect(isSelectionReference(textFileSelection())).toBe(true)
+    expect(isSelectionReference(chatSelection())).toBe(true)
+  })
+
+  it('keeps non-EPUB Project File selections out of MessageReference', () => {
+    expect(isProjectFileSelectionReferenceV1(textFileSelection())).toBe(true)
+    expect(isProjectFileReferenceV1(textFileSelection())).toBe(false)
+    expect(isMessageReference(textFileSelection())).toBe(false)
+  })
+
+  it('validates PDF page locators', () => {
+    const pdf: ProjectFileSelectionReferenceV1 = {
+      ...textFileSelection(),
+      relativePath: 'paper.pdf',
+      fileName: 'paper.pdf',
+      locator: {
+        type: 'pdf-text-quote',
+        exact: 'selected text',
+        startPage: 2,
+        endPage: 3,
+      },
+    }
+    expect(isProjectFileSelectionReferenceV1(pdf)).toBe(true)
+    expect(isProjectFileSelectionReferenceV1({
+      ...pdf,
+      locator: { ...pdf.locator, startPage: 0 },
+    })).toBe(false)
+  })
+
+  it('requires chat selections to point to an existing non-empty range', () => {
+    expect(isChatMessageSelectionReferenceV1(chatSelection())).toBe(true)
+    expect(isChatMessageSelectionReferenceV1({
+      ...chatSelection(),
+      locator: { ...chatSelection().locator, end: 10 },
+    })).toBe(false)
+    expect(isSelectionReference({
+      version: 1,
+      kind: 'manual-note',
+      text: 'free-form text',
+    })).toBe(false)
   })
 })

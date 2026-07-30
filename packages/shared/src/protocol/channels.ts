@@ -108,8 +108,14 @@ export const RPC_CHANNELS = {
     READ_BINARY: 'projectFiles:readBinary',
     SEARCH: 'projectFiles:search',
     LIST_DIRECTORY_ENTRIES: 'projectFiles:listDirectoryEntries',
+    CREATE_FILE: 'projectFiles:createFile',
+    CREATE_DIRECTORY: 'projectFiles:createDirectory',
     GET_EPUB_STATE: 'projectFiles:getEpubState',
     APPLY_EPUB_STATE_MUTATION: 'projectFiles:applyEpubStateMutation',
+  },
+  projectNotes: {
+    CONFIGURE_TARGET: 'projectNotes:configureTarget',
+    APPEND: 'projectNotes:append',
   },
   fs: {
     SEARCH: 'fs:search',

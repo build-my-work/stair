@@ -13,6 +13,7 @@ import type {
   ToolDisplayMeta,
   AnnotationV1,
   MessageReference,
+  SelectionReference,
   WebSelectionReferenceV1,
   PermissionRequest as BasePermissionRequest,
   SourceFingerprint,
@@ -109,6 +110,8 @@ export interface Session {
   supportsBranching?: boolean
   /** Workspace-scoped project id this session is bound to (undefined = unbound) */
   projectId?: string
+  /** Canonical path, relative to the bound Project root, used by Add Note. */
+  projectNoteTargetPath?: string
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */
@@ -405,6 +408,7 @@ export type SessionEvent =
   | { type: 'sources_changed'; sessionId: string; enabledSourceSlugs: string[] }
   | { type: 'labels_changed'; sessionId: string; labels: string[] }
   | { type: 'project_id_changed'; sessionId: string; projectId: string | null }
+  | { type: 'project_note_target_changed'; sessionId: string; relativePath: string | null }
   | { type: 'connection_changed'; sessionId: string; connectionSlug: string; supportsBranching?: boolean }
   | { type: 'task_backgrounded'; sessionId: string; toolUseId: string; taskId: string; intent?: string; turnId?: string; kind?: 'workflow'; workflowId?: string }
   | { type: 'shell_backgrounded'; sessionId: string; toolUseId: string; shellId: string; intent?: string; command?: string; turnId?: string }
@@ -420,7 +424,7 @@ export type SessionEvent =
   | { type: 'name_changed'; sessionId: string; name?: string }
   | { type: 'session_model_changed'; sessionId: string; model: string | null }
   | { type: 'session_status_changed'; sessionId: string; sessionStatus: SessionStatus }
-  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId'>> }
+  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'projectNoteTargetPath'>> }
   | { type: 'session_deleted'; sessionId: string }
   | { type: 'session_created'; sessionId: string }
   | { type: 'session_shared'; sessionId: string; sharedUrl: string }
@@ -564,10 +568,21 @@ export interface ProjectDirectoryEntriesRequest {
   relativePath?: string
 }
 
+/** Create one direct child inside a Project directory. */
+export interface CreateProjectEntryRequest {
+  projectId: string
+  /** Omitted for the Project root. */
+  parentRelativePath?: string
+  /** One path segment; separators are not allowed. */
+  name: string
+}
+
 /** Server-resolved Project file search request. */
 export interface ProjectFileSearchRequest {
   projectId: string
   query: string
+  /** Optional lowercase extensions, without a leading dot, applied before result limiting. */
+  extensions?: string[]
 }
 
 /** One file matched within a Project root. */
@@ -605,7 +620,44 @@ export interface ProjectFileBinaryResponse {
 }
 
 export interface ProjectFileTextResponse {
+  metadata: ProjectFileMetadata
   text: string
+  /** SHA-256 of the exact UTF-8 bytes decoded into `text`. */
+  sourceFingerprint: SourceFingerprint
+}
+
+// ---------------------------------------------------------------------------
+// Project Notes
+// ---------------------------------------------------------------------------
+
+export interface ConfigureProjectNoteTargetRequest {
+  sessionId: string
+  /** Project the Session was bound to when the target was chosen. */
+  projectId: string
+  /** Existing Markdown path under the Session's Project; null clears it. */
+  relativePath: string | null
+}
+
+export interface ConfigureProjectNoteTargetResponse {
+  projectId: string
+  relativePath: string | null
+}
+
+export interface AppendProjectNoteRequest {
+  /** Client-generated id used to make retries idempotent. */
+  requestId: string
+  sessionId: string
+  /** Project the Session was bound to when Add Note started. */
+  projectId: string
+  /** Target path confirmed by the user for this append. */
+  expectedTargetPath: string
+  selection: SelectionReference
+}
+
+export interface AppendProjectNoteResponse {
+  projectId: string
+  relativePath: string
+  appendedAt: string
 }
 
 export interface EpubStateRequest extends ProjectFileRequest {
@@ -972,7 +1024,7 @@ export interface BrowserPresentRequest {
 
 export interface BrowserSelectionActionPayload {
   eventId: string
-  action: 'add-chat' | 'new-chat'
+  action: 'add-note' | 'add-chat' | 'new-chat'
   browserId: string
   reference: WebSelectionReferenceV1
 }

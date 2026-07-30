@@ -3,7 +3,10 @@
  */
 
 import { ipcRenderer } from 'electron'
-import { BROWSER_OVERLAY_ACTION_CHANNEL } from '../shared/browser-selection'
+import {
+  BROWSER_OVERLAY_ACTION_CHANNEL,
+  isBrowserSelectionAction,
+} from '../shared/browser-selection'
 
 window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('click', (event) => {
@@ -14,7 +17,7 @@ window.addEventListener('DOMContentLoaded', () => {
       '[data-browser-selection-action]',
     )
     const action = button?.dataset.browserSelectionAction
-    if (action !== 'add-chat' && action !== 'new-chat') return
+    if (!isBrowserSelectionAction(action)) return
     event.preventDefault()
     event.stopPropagation()
     ipcRenderer.send(BROWSER_OVERLAY_ACTION_CHANNEL, action)

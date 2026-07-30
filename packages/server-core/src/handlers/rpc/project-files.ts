@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto'
 import type { Stats } from 'node:fs'
-import { open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises'
+import {
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  realpath,
+  stat,
+  type FileHandle,
+} from 'node:fs/promises'
 import { extname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import {
   isCanonicalProjectRelativePath,
@@ -9,6 +17,7 @@ import {
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import {
   RPC_CHANNELS,
+  type CreateProjectEntryRequest,
   type ProjectDirectoryEntriesRequest,
   type ProjectDirectoryEntriesResult,
   type ProjectDirectoryEntry,
@@ -28,6 +37,7 @@ import { validateEpubArchive } from '../../project-files/epub-archive-validator'
 import { searchFilesWithinRoot } from './files'
 
 export const MAX_PROJECT_FILE_PATH_BYTES = 2_048
+export const MAX_PROJECT_FILE_NAME_BYTES = 255
 export const MAX_PROJECT_FILE_TEXT_BYTES = 8 * 1024 * 1024
 export const MAX_PROJECT_FILE_BINARY_BYTES = 32 * 1024 * 1024
 
@@ -36,6 +46,8 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.projectFiles.READ_BINARY,
   RPC_CHANNELS.projectFiles.SEARCH,
   RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
+  RPC_CHANNELS.projectFiles.CREATE_FILE,
+  RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
 ] as const
 
 type ProjectFileErrorCode =
@@ -43,6 +55,7 @@ type ProjectFileErrorCode =
   | 'PROJECT_FILE_NO_WORKSPACE'
   | 'PROJECT_FILE_NOT_FOUND'
   | 'PROJECT_FILE_ACCESS_DENIED'
+  | 'PROJECT_FILE_ALREADY_EXISTS'
   | 'PROJECT_FILE_NOT_REGULAR'
   | 'PROJECT_FILE_TOO_LARGE'
   | 'PROJECT_FILE_CHANGED'
@@ -92,6 +105,180 @@ function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
 
 export function toProjectRelativePath(relativePath: string): string {
   return relativePath.replaceAll(sep, '/')
+}
+
+function isValidCreateParentPath(value: unknown): value is string | undefined {
+  return value === undefined
+    || (
+      typeof value === 'string'
+      && Buffer.byteLength(value, 'utf8') <= MAX_PROJECT_FILE_PATH_BYTES
+      && (value.length === 0 || isCanonicalProjectRelativePath(value))
+    )
+}
+
+function isValidProjectEntryName(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value === value.trim()
+    && value !== '.'
+    && value !== '..'
+    && !value.includes('\0')
+    && !value.includes('/')
+    && !value.includes('\\')
+    && Buffer.byteLength(value, 'utf8') <= MAX_PROJECT_FILE_NAME_BYTES
+}
+
+function validateCreateEntryRequest(value: unknown): CreateProjectEntryRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Project entry request is required',
+    )
+  }
+
+  const request = value as Partial<CreateProjectEntryRequest>
+  const projectId = validateProjectId(request.projectId)
+  const parentRelativePath = request.parentRelativePath
+  if (!isValidCreateParentPath(parentRelativePath)) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Parent directory must be a canonical Project-relative path',
+    )
+  }
+
+  const name = request.name
+  if (!isValidProjectEntryName(name)) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Name must be one valid path segment',
+    )
+  }
+
+  return {
+    projectId,
+    ...(parentRelativePath ? { parentRelativePath } : {}),
+    name,
+  }
+}
+
+async function resolveCreateParent(
+  rootPath: string,
+  parentRelativePath = '',
+): Promise<{ rootPath: string; parentPath: string }> {
+  const canonicalRoot = await realpath(resolve(rootPath))
+  let currentPath = canonicalRoot
+
+  for (const segment of parentRelativePath ? parentRelativePath.split('/') : []) {
+    currentPath = resolve(currentPath, segment)
+    let entry: Stats
+    try {
+      entry = await lstat(currentPath)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        throw projectFileError(
+          'PROJECT_FILE_NOT_FOUND',
+          'Parent directory was not found',
+        )
+      }
+      throw projectFileError(
+        'PROJECT_FILE_ACCESS_DENIED',
+        'Parent directory could not be accessed',
+      )
+    }
+    if (entry.isSymbolicLink()) {
+      throw projectFileError(
+        'PROJECT_FILE_ACCESS_DENIED',
+        'Symbolic links cannot be used as creation parents',
+      )
+    }
+    if (!entry.isDirectory()) {
+      throw projectFileError(
+        'PROJECT_FILE_NOT_FOUND',
+        'Parent path is not a directory',
+      )
+    }
+  }
+
+  const canonicalParent = await realpath(currentPath)
+  if (!isPathWithinRoot(canonicalRoot, canonicalParent)) {
+    throw projectFileError(
+      'PROJECT_FILE_ACCESS_DENIED',
+      'Parent directory is outside the Project root',
+    )
+  }
+  return { rootPath: canonicalRoot, parentPath: canonicalParent }
+}
+
+function createdRelativePath(request: CreateProjectEntryRequest): string {
+  const relativePath = request.parentRelativePath
+    ? posix.join(request.parentRelativePath, request.name)
+    : request.name
+  if (Buffer.byteLength(relativePath, 'utf8') > MAX_PROJECT_FILE_PATH_BYTES) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Created path exceeds the Project path limit',
+    )
+  }
+  return relativePath
+}
+
+function throwCreateError(error: unknown): never {
+  const code = (error as NodeJS.ErrnoException).code
+  if (code === 'EEXIST') {
+    throw projectFileError(
+      'PROJECT_FILE_ALREADY_EXISTS',
+      'A file or directory with this name already exists',
+    )
+  }
+  if (code === 'ENOENT' || code === 'ENOTDIR') {
+    throw projectFileError(
+      'PROJECT_FILE_NOT_FOUND',
+      'Parent directory was not found',
+    )
+  }
+  throw projectFileError(
+    'PROJECT_FILE_ACCESS_DENIED',
+    'Project entry could not be created',
+  )
+}
+
+export async function createProjectEntryWithinRoot(
+  rootPath: string,
+  request: CreateProjectEntryRequest,
+  type: ProjectDirectoryEntry['type'],
+): Promise<ProjectDirectoryEntry> {
+  const validated = validateCreateEntryRequest(request)
+  const parent = await resolveCreateParent(
+    rootPath,
+    validated.parentRelativePath,
+  )
+  const relativePath = createdRelativePath(validated)
+  const targetPath = resolve(parent.parentPath, validated.name)
+  if (!isPathWithinRoot(parent.rootPath, targetPath)) {
+    throw projectFileError(
+      'PROJECT_FILE_ACCESS_DENIED',
+      'Project entry is outside the Project root',
+    )
+  }
+
+  try {
+    if (type === 'directory') {
+      await mkdir(targetPath)
+    } else {
+      const handle = await open(targetPath, 'wx')
+      await handle.close()
+    }
+  } catch (error) {
+    throwCreateError(error)
+  }
+
+  return {
+    name: validated.name,
+    relativePath,
+    type,
+    isSymlink: false,
+  }
 }
 
 /**
@@ -217,6 +404,72 @@ function validateProjectFileRequest(request: unknown): ProjectFileRequest {
     projectId: validateProjectId(value.projectId),
     relativePath: canonicalizeProjectFileRelativePath(value.relativePath),
   }
+}
+
+function validateProjectFileSearchRequest(
+  value: unknown,
+): ProjectFileSearchRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Project file search request is required',
+    )
+  }
+
+  const request = value as Partial<ProjectFileSearchRequest>
+  const projectId = validateProjectId(request.projectId)
+  if (typeof request.query !== 'string') {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Project file search query is required',
+    )
+  }
+
+  const extensions = request.extensions
+  if (
+    extensions !== undefined
+    && (
+      !Array.isArray(extensions)
+      || extensions.length === 0
+      || extensions.length > 16
+      || extensions.some(extension =>
+        typeof extension !== 'string'
+        || extension.length > 32
+        || !/^[a-z0-9]+$/.test(extension))
+    )
+  ) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Project file search extensions are invalid',
+    )
+  }
+
+  return { projectId, query: request.query, extensions }
+}
+
+function validateProjectDirectoryEntriesRequest(
+  value: unknown,
+): ProjectDirectoryEntriesRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Project directory request is required',
+    )
+  }
+
+  const request = value as Partial<ProjectDirectoryEntriesRequest>
+  const projectId = validateProjectId(request.projectId)
+  if (
+    request.relativePath !== undefined
+    && typeof request.relativePath !== 'string'
+  ) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Project directory path must be a string',
+    )
+  }
+
+  return { projectId, relativePath: request.relativePath }
 }
 
 /**
@@ -478,7 +731,9 @@ export async function readProjectFileTextWithinRoot(
   }
 
   return {
+    metadata: toMetadata(validated.projectId, validated.relativePath, stable.stat),
     text,
+    sourceFingerprint: fingerprint(stable.bytes),
   }
 }
 
@@ -512,11 +767,13 @@ async function resolveAuthorizedProjectRoot(
 export async function searchProjectFilesWithinRoot(
   rootPath: string,
   query: string,
+  extensions?: string[],
 ): Promise<ProjectFileSearchResult[]> {
   const results = await searchFilesWithinRoot(rootPath, query, {
     includeHidden: true,
     skipSymlinks: true,
     filesOnly: true,
+    extensions: extensions ? new Set(extensions) : undefined,
   })
   return results.map(({ name, relativePath }) => ({
     name,
@@ -550,47 +807,48 @@ export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps
   server.handle(
     RPC_CHANNELS.projectFiles.SEARCH,
     async (ctx, rawRequest: unknown) => {
-      if (!rawRequest || typeof rawRequest !== 'object' || Array.isArray(rawRequest)) {
-        throw projectFileError(
-          'PROJECT_FILE_INVALID_REQUEST',
-          'Project file search request is required',
-        )
-      }
-      const request = rawRequest as Partial<ProjectFileSearchRequest>
-      const projectId = validateProjectId(request.projectId)
-      if (typeof request.query !== 'string') {
-        throw projectFileError(
-          'PROJECT_FILE_INVALID_REQUEST',
-          'Project file search query is required',
-        )
-      }
-      const rootPath = await resolveAuthorizedProjectRoot(ctx, deps, projectId)
-      return searchProjectFilesWithinRoot(rootPath, request.query)
+      const request = validateProjectFileSearchRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(
+        ctx,
+        deps,
+        request.projectId,
+      )
+      return searchProjectFilesWithinRoot(
+        rootPath,
+        request.query,
+        request.extensions,
+      )
     },
   )
 
   server.handle(
     RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
     async (ctx, rawRequest: unknown) => {
-      if (!rawRequest || typeof rawRequest !== 'object' || Array.isArray(rawRequest)) {
-        throw projectFileError(
-          'PROJECT_FILE_INVALID_REQUEST',
-          'Project directory request is required',
-        )
-      }
-      const request = rawRequest as Partial<ProjectDirectoryEntriesRequest>
-      const projectId = validateProjectId(request.projectId)
-      if (
-        request.relativePath !== undefined
-        && typeof request.relativePath !== 'string'
-      ) {
-        throw projectFileError(
-          'PROJECT_FILE_INVALID_REQUEST',
-          'Project directory path must be a string',
-        )
-      }
-      const rootPath = await resolveAuthorizedProjectRoot(ctx, deps, projectId)
+      const request = validateProjectDirectoryEntriesRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(
+        ctx,
+        deps,
+        request.projectId,
+      )
       return listDirectoryEntriesWithinRoot(rootPath, request.relativePath)
+    },
+  )
+
+  server.handle(
+    RPC_CHANNELS.projectFiles.CREATE_FILE,
+    async (ctx, rawRequest: unknown) => {
+      const request = validateCreateEntryRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(ctx, deps, request.projectId)
+      return createProjectEntryWithinRoot(rootPath, request, 'file')
+    },
+  )
+
+  server.handle(
+    RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
+    async (ctx, rawRequest: unknown) => {
+      const request = validateCreateEntryRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(ctx, deps, request.projectId)
+      return createProjectEntryWithinRoot(rootPath, request, 'directory')
     },
   )
 }

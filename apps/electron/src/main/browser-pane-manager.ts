@@ -44,6 +44,7 @@ import {
   buildWebSelectionRevealExpression,
   calculateBrowserSelectionOverlayBounds,
   createWebSelectionReference,
+  isBrowserSelectionAction,
   sanitizeBrowserSelectionCapture,
   sanitizeWebSelectionReference,
   type BrowserSelectionCapturePayload,
@@ -428,12 +429,6 @@ interface LastBrowserAction {
   status: 'succeeded' | 'failed'
   geometry?: ElementGeometry
   timestamp: number
-}
-
-function isBrowserSelectionAction(
-  value: unknown,
-): value is BrowserSelectionActionPayload['action'] {
-  return value === 'add-chat' || value === 'new-chat'
 }
 
 export class BrowserPaneManager implements IBrowserPaneManager {
@@ -2527,6 +2522,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       <div id="chip">Agent is working…</div>
     </div>
     <div id="selection-actions">
+      <button
+        type="button"
+        title="Append this selection to the current Session's note file"
+        data-browser-selection-action="add-note"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M13.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8.5z" />
+          <path d="M13 2v7h7" />
+          <path d="M12 18v-6" />
+          <path d="M9 15h6" />
+        </svg>
+        <span>Add Note</span>
+      </button>
       <button
         type="button"
         title="Add this selection to a chat draft"

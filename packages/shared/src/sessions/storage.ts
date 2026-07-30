@@ -554,6 +554,7 @@ export async function updateSessionMetadata(
     | 'isArchived'
     | 'archivedAt'
     | 'projectId'
+    | 'projectNoteTargetPath'
   >>
 ): Promise<void> {
   const session = loadSession(workspaceRootPath, sessionId);
@@ -576,6 +577,9 @@ export async function updateSessionMetadata(
   if (updates.isArchived !== undefined) session.isArchived = updates.isArchived;
   if ('archivedAt' in updates) session.archivedAt = updates.archivedAt;
   if ('projectId' in updates) session.projectId = updates.projectId;
+  if ('projectNoteTargetPath' in updates) {
+    session.projectNoteTargetPath = updates.projectNoteTargetPath;
+  }
 
   await saveSession(session);
 }
@@ -645,6 +649,7 @@ export async function unbindProjectFromSessions(
     const full = loadSession(workspaceRootPath, meta.id);
     if (full?.projectId === projectId) {
       full.projectId = undefined;
+      full.projectNoteTargetPath = undefined;
       await saveSession(full);
       touched++;
     }

@@ -1,4 +1,3 @@
-import * as React from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -6,11 +5,14 @@ import {
   ChevronRight,
   File,
   FileCode2,
+  FilePlus2,
   FileText,
   Folder,
   FolderOpen,
+  FolderPlus,
   Image,
   Link2,
+  Loader2,
   RefreshCw,
   Search,
   X,
@@ -22,12 +24,36 @@ import {
 import { cn } from '@/lib/utils'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  StyledContextMenuContent,
+  StyledContextMenuItem,
+} from '@/components/ui/styled-context-menu'
 
 interface DirectoryState {
   entries: ProjectDirectoryEntry[]
   loading: boolean
   error?: string
   truncated?: boolean
+}
+
+type CreateEntryKind = 'file' | 'directory'
+
+interface InlineCreateState {
+  id: number
+  kind: CreateEntryKind
+  parentRelativePath: string
+  name: string
+  submitting: boolean
+  error?: string
+}
+
+interface InlineCreateActions {
+  begin: (kind: CreateEntryKind, parentRelativePath: string) => void
+  changeName: (name: string) => void
+  submit: () => void
+  cancel: () => void
 }
 
 interface WorkspaceFilesSidebarProps {
@@ -62,8 +88,12 @@ interface TreeEntryProps {
   depth: number
   directoryStates: Map<string, DirectoryState>
   expandedPaths: Set<string>
+  selectedDirectoryPath: string
+  inlineCreate: InlineCreateState | null
   onToggleDirectory: (path: string) => void
+  onSelectDirectory: (path: string) => void
   onOpenFile: (relativePath: string) => void
+  createActions: InlineCreateActions
 }
 
 function TreeEntry({
@@ -71,50 +101,90 @@ function TreeEntry({
   depth,
   directoryStates,
   expandedPaths,
+  selectedDirectoryPath,
+  inlineCreate,
   onToggleDirectory,
+  onSelectDirectory,
   onOpenFile,
+  createActions,
 }: TreeEntryProps) {
   const { t } = useTranslation()
   const isDirectory = entry.type === 'directory'
+  const canCreateWithinDirectory = isDirectory && !entry.isSymlink
   const expanded = isDirectory && expandedPaths.has(entry.relativePath)
   const directoryState = isDirectory ? directoryStates.get(entry.relativePath) : undefined
+  const selected = canCreateWithinDirectory
+    && selectedDirectoryPath === entry.relativePath
+
+  const entryButton = (
+    <button
+      type="button"
+      onClick={() => {
+        if (isDirectory) {
+          if (canCreateWithinDirectory) {
+            onSelectDirectory(entry.relativePath)
+          }
+          onToggleDirectory(entry.relativePath)
+        } else {
+          onOpenFile(entry.relativePath)
+        }
+      }}
+      className={cn(
+        'group flex h-7 w-full min-w-0 items-center gap-1.5 rounded-[6px] pr-2 text-left text-[13px]',
+        'outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring',
+        selected
+          ? 'bg-foreground/[0.065] text-foreground'
+          : 'text-foreground/85 hover:bg-foreground/[0.045]',
+      )}
+      aria-pressed={canCreateWithinDirectory ? selected : undefined}
+      style={{ paddingLeft: 8 + depth * 14 }}
+    >
+      {isDirectory ? (
+        <>
+          <ChevronRight
+            className={cn(
+              'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-150',
+              expanded && 'rotate-90',
+            )}
+          />
+          {expanded
+            ? <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
+            : <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />}
+        </>
+      ) : (
+        <>
+          <span className="w-3.5 shrink-0" />
+          {fileIcon(entry.name)}
+        </>
+      )}
+      <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+      {entry.isSymlink && <Link2 className="h-3 w-3 shrink-0 text-muted-foreground/45" />}
+    </button>
+  )
 
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => {
-          if (isDirectory) onToggleDirectory(entry.relativePath)
-          else onOpenFile(entry.relativePath)
-        }}
-        className={cn(
-          'group flex h-7 w-full min-w-0 items-center gap-1.5 rounded-[6px] pr-2 text-left text-[13px]',
-          'text-foreground/85 outline-none transition-colors hover:bg-foreground/[0.045]',
-          'focus-visible:ring-1 focus-visible:ring-ring',
-        )}
-        style={{ paddingLeft: 8 + depth * 14 }}
-      >
-        {isDirectory ? (
-          <>
-            <ChevronRight
-              className={cn(
-                'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-150',
-                expanded && 'rotate-90',
-              )}
-            />
-            {expanded
-              ? <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
-              : <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />}
-          </>
-        ) : (
-          <>
-            <span className="w-3.5 shrink-0" />
-            {fileIcon(entry.name)}
-          </>
-        )}
-        <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-        {entry.isSymlink && <Link2 className="h-3 w-3 shrink-0 text-muted-foreground/45" />}
-      </button>
+      {canCreateWithinDirectory ? (
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            {entryButton}
+          </ContextMenuTrigger>
+          <StyledContextMenuContent>
+            <StyledContextMenuItem
+              onSelect={() => createActions.begin('file', entry.relativePath)}
+            >
+              <FilePlus2 />
+              {t('filesSidebar.newFile')}
+            </StyledContextMenuItem>
+            <StyledContextMenuItem
+              onSelect={() => createActions.begin('directory', entry.relativePath)}
+            >
+              <FolderPlus />
+              {t('filesSidebar.newFolder')}
+            </StyledContextMenuItem>
+          </StyledContextMenuContent>
+        </ContextMenu>
+      ) : entryButton}
 
       {isDirectory && expanded && (
         <div className="relative">
@@ -138,6 +208,16 @@ function TreeEntry({
               {t('filesSidebar.loadError')}
             </div>
           )}
+          {inlineCreate?.parentRelativePath === entry.relativePath && (
+            <InlineCreateEntry
+              key={inlineCreate.id}
+              state={inlineCreate}
+              depth={depth + 1}
+              onNameChange={createActions.changeName}
+              onSubmit={createActions.submit}
+              onCancel={createActions.cancel}
+            />
+          )}
           {directoryState?.entries.map(child => (
             <TreeEntry
               key={child.relativePath}
@@ -145,8 +225,12 @@ function TreeEntry({
               depth={depth + 1}
               directoryStates={directoryStates}
               expandedPaths={expandedPaths}
+              selectedDirectoryPath={selectedDirectoryPath}
+              inlineCreate={inlineCreate}
               onToggleDirectory={onToggleDirectory}
+              onSelectDirectory={onSelectDirectory}
               onOpenFile={onOpenFile}
+              createActions={createActions}
             />
           ))}
           {directoryState?.truncated && (
@@ -163,6 +247,82 @@ function TreeEntry({
   )
 }
 
+function InlineCreateEntry({
+  state,
+  depth,
+  onNameChange,
+  onSubmit,
+  onCancel,
+}: {
+  state: InlineCreateState
+  depth: number
+  onNameChange: (name: string) => void
+  onSubmit: () => void
+  onCancel: () => void
+}) {
+  const { t } = useTranslation()
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    if (state.error) inputRef.current?.focus()
+  }, [state.error])
+
+  return (
+    <div
+      className="py-0.5 pr-2"
+      style={{ paddingLeft: 8 + depth * 14 }}
+    >
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="w-3.5 shrink-0" />
+        {state.kind === 'directory'
+          ? <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
+          : <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground/75" />}
+        <input
+          ref={inputRef}
+          value={state.name}
+          disabled={state.submitting}
+          onChange={event => onNameChange(event.target.value)}
+          onKeyDown={event => {
+            if (state.submitting) return
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+              event.preventDefault()
+              onSubmit()
+            } else if (event.key === 'Escape') {
+              event.preventDefault()
+              onCancel()
+            }
+          }}
+          onBlur={() => {
+            if (!state.submitting) onCancel()
+          }}
+          aria-label={state.kind === 'directory'
+            ? t('filesSidebar.newFolderName')
+            : t('filesSidebar.newFileName')}
+          aria-invalid={Boolean(state.error)}
+          className={cn(
+            'h-6 min-w-0 flex-1 rounded-[4px] border bg-background px-1.5 text-xs outline-none',
+            state.error
+              ? 'border-destructive focus:ring-1 focus:ring-destructive/35'
+              : 'border-foreground/25 focus:ring-1 focus:ring-ring/40',
+          )}
+        />
+        {state.submitting && (
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+        )}
+      </div>
+      {state.error && (
+        <p className="mt-1 pl-5 text-[10px] leading-4 text-destructive" role="alert">
+          {state.error}
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function WorkspaceFilesSidebar({
   projectId,
   projectName,
@@ -174,13 +334,27 @@ export function WorkspaceFilesSidebar({
   const [directoryStates, setDirectoryStates] = useState<Map<string, DirectoryState>>(new Map())
   const directoryStatesRef = useRef(directoryStates)
   const requestGenerationRef = useRef(0)
+  const inlineCreateIdRef = useRef(0)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
+  const [selectedDirectoryPath, setSelectedDirectoryPath] = useState('')
+  const [inlineCreate, setInlineCreate] = useState<InlineCreateState | null>(null)
   const [filter, setFilter] = useState('')
   const [searchResults, setSearchResults] = useState<ProjectFileSearchResult[] | null>([])
 
   useEffect(() => {
     directoryStatesRef.current = directoryStates
   }, [directoryStates])
+
+  const setDirectoryState = useCallback((
+    relativePath: string,
+    state: DirectoryState,
+  ) => {
+    setDirectoryStates(previous => {
+      const next = new Map(previous)
+      next.set(relativePath, state)
+      return next
+    })
+  }, [])
 
   const loadDirectory = useCallback(async (relativePath: string, force = false) => {
     if (!projectId) return
@@ -189,10 +363,9 @@ export function WorkspaceFilesSidebar({
     const current = directoryStatesRef.current.get(relativePath)
     if (!force && current && !current.error) return
 
-    setDirectoryStates(previous => {
-      const next = new Map(previous)
-      next.set(relativePath, { entries: current?.entries ?? [], loading: true })
-      return next
+    setDirectoryState(relativePath, {
+      entries: current?.entries ?? [],
+      loading: true,
     })
 
     try {
@@ -201,31 +374,29 @@ export function WorkspaceFilesSidebar({
         relativePath: relativePath || undefined,
       })
       if (generation !== requestGenerationRef.current) return
-      setDirectoryStates(previous => {
-        const next = new Map(previous)
-        next.set(relativePath, {
-          entries: result.entries,
-          loading: false,
-          truncated: result.truncated,
-        })
-        return next
+      setDirectoryState(relativePath, {
+        entries: result.entries,
+        loading: false,
+        truncated: result.truncated,
       })
     } catch (error) {
       if (generation !== requestGenerationRef.current) return
       const message = error instanceof Error ? error.message : String(error)
       window.electronAPI.debugLog('[ProjectFiles] Failed to list directory:', message)
-      setDirectoryStates(previous => {
-        const next = new Map(previous)
-        next.set(relativePath, { entries: [], loading: false, error: message })
-        return next
+      setDirectoryState(relativePath, {
+        entries: [],
+        loading: false,
+        error: message,
       })
     }
-  }, [projectId])
+  }, [projectId, setDirectoryState])
 
   const refreshTree = useCallback(() => {
     requestGenerationRef.current += 1
     setDirectoryStates(new Map())
     setExpandedPaths(new Set())
+    setSelectedDirectoryPath('')
+    setInlineCreate(null)
     if (projectId && rootPath) {
       void loadDirectory('', true)
     }
@@ -275,10 +446,137 @@ export function WorkspaceFilesSidebar({
     })
   }, [loadDirectory])
 
+  const handleBeginCreate = useCallback((
+    kind: CreateEntryKind,
+    createParent = selectedDirectoryPath,
+  ) => {
+    if (!projectId || !rootPath) return
+    setFilter('')
+    setSelectedDirectoryPath(createParent)
+    inlineCreateIdRef.current += 1
+    setInlineCreate({
+      id: inlineCreateIdRef.current,
+      kind,
+      parentRelativePath: createParent,
+      name: '',
+      submitting: false,
+    })
+    if (createParent) {
+      setExpandedPaths(previous => {
+        const next = new Set(previous)
+        next.add(createParent)
+        return next
+      })
+      void loadDirectory(createParent)
+    }
+  }, [loadDirectory, projectId, rootPath, selectedDirectoryPath])
+
+  const handleInlineCreateNameChange = useCallback((name: string) => {
+    setInlineCreate(previous => previous
+      ? { ...previous, name, error: undefined }
+      : previous)
+  }, [])
+
+  const handleInlineCreateCancel = useCallback(() => {
+    setInlineCreate(previous => previous?.submitting ? previous : null)
+  }, [])
+
+  const handleInlineCreateSubmit = useCallback(async () => {
+    if (!inlineCreate || inlineCreate.submitting || !projectId) return
+    const pendingCreate = inlineCreate
+    const name = pendingCreate.name
+    const trimmedName = name.trim()
+    let validationError: string | undefined
+    if (!trimmedName) {
+      validationError = t('filesSidebar.createEnterName')
+    } else if (name !== trimmedName) {
+      validationError = t('filesSidebar.createTrimName')
+    }
+    if (validationError) {
+      setInlineCreate(previous => previous
+        ? { ...previous, error: validationError }
+        : previous)
+      return
+    }
+
+    const generation = requestGenerationRef.current
+    const request = {
+      projectId,
+      parentRelativePath: pendingCreate.parentRelativePath || undefined,
+      name,
+    }
+    setInlineCreate(previous => previous
+      ? { ...previous, name, submitting: true, error: undefined }
+      : previous)
+
+    try {
+      const created = pendingCreate.kind === 'directory'
+        ? await window.electronAPI.createProjectDirectory(request)
+        : await window.electronAPI.createProjectFile(request)
+      if (generation !== requestGenerationRef.current) return
+
+      setInlineCreate(null)
+      setExpandedPaths(previous => {
+        const next = new Set(previous)
+        if (pendingCreate.parentRelativePath) {
+          next.add(pendingCreate.parentRelativePath)
+        }
+        if (created.type === 'directory') next.add(created.relativePath)
+        return next
+      })
+      if (created.type === 'directory') {
+        setSelectedDirectoryPath(created.relativePath)
+        setDirectoryState(created.relativePath, {
+          entries: [],
+          loading: false,
+          truncated: false,
+        })
+      } else {
+        onOpenFile(created.relativePath)
+      }
+      await loadDirectory(pendingCreate.parentRelativePath, true)
+    } catch (error) {
+      if (generation !== requestGenerationRef.current) return
+      const message = error instanceof Error ? error.message : String(error)
+      setInlineCreate(previous => previous
+        ? {
+            ...previous,
+            submitting: false,
+            error: message.replace(/^PROJECT_FILE_[A-Z_]+:\s*/, ''),
+          }
+        : previous)
+    }
+  }, [
+    inlineCreate,
+    loadDirectory,
+    onOpenFile,
+    projectId,
+    setDirectoryState,
+    t,
+  ])
+
   const rootState = rootPath ? directoryStates.get('') : undefined
   const normalizedRootPath = rootPath?.replace(/[\\/]+$/, '')
   const rootLabel = normalizedRootPath?.split(/[\\/]/).pop() || rootPath || ''
   const hasFilter = filter.trim().length > 0
+  const rootInlineCreate = inlineCreate?.parentRelativePath === ''
+    ? (
+        <InlineCreateEntry
+          key={inlineCreate.id}
+          state={inlineCreate}
+          depth={0}
+          onNameChange={handleInlineCreateNameChange}
+          onSubmit={handleInlineCreateSubmit}
+          onCancel={handleInlineCreateCancel}
+        />
+      )
+    : null
+  const createActions = {
+    begin: handleBeginCreate,
+    changeName: handleInlineCreateNameChange,
+    submit: handleInlineCreateSubmit,
+    cancel: handleInlineCreateCancel,
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-foreground-2">
@@ -287,11 +585,23 @@ export function WorkspaceFilesSidebar({
         actions={(
           <div className="flex items-center gap-1">
             {projectId && rootPath && (
-              <PanelHeaderCenterButton
-                icon={<RefreshCw className="h-3.5 w-3.5" />}
-                tooltip={t('common.refresh')}
-                onClick={refreshTree}
-              />
+              <>
+                <PanelHeaderCenterButton
+                  icon={<FilePlus2 className="h-3.5 w-3.5" />}
+                  tooltip={t('filesSidebar.newFile')}
+                  onClick={() => handleBeginCreate('file')}
+                />
+                <PanelHeaderCenterButton
+                  icon={<FolderPlus className="h-3.5 w-3.5" />}
+                  tooltip={t('filesSidebar.newFolder')}
+                  onClick={() => handleBeginCreate('directory')}
+                />
+                <PanelHeaderCenterButton
+                  icon={<RefreshCw className="h-3.5 w-3.5" />}
+                  tooltip={t('common.refresh')}
+                  onClick={refreshTree}
+                />
+              </>
             )}
             <PanelHeaderCenterButton
               icon={<X className="h-3.5 w-3.5" />}
@@ -311,7 +621,21 @@ export function WorkspaceFilesSidebar({
       ) : (
         <>
           <div className="shrink-0 border-b border-border/45 px-3 pb-3">
-            <div className="mb-2 flex min-w-0 items-start gap-2 px-1">
+            <button
+              type="button"
+              onClick={() => setSelectedDirectoryPath('')}
+              aria-pressed={selectedDirectoryPath === ''}
+              className={cn(
+                'mb-2 flex w-full min-w-0 items-start gap-2 rounded-[6px] px-1 py-1 text-left outline-none transition-colors',
+                selectedDirectoryPath === ''
+                  ? 'bg-foreground/[0.055]'
+                  : 'hover:bg-foreground/[0.035]',
+                'focus-visible:ring-1 focus-visible:ring-ring',
+              )}
+              aria-label={t('filesSidebar.useAsLocation', {
+                name: projectName || rootLabel,
+              })}
+            >
               <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-xs font-medium">{projectName || rootLabel}</div>
@@ -322,7 +646,7 @@ export function WorkspaceFilesSidebar({
                   {rootPath}
                 </div>
               </div>
-            </div>
+            </button>
             <label className="relative block">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60" />
               <input
@@ -375,29 +699,39 @@ export function WorkspaceFilesSidebar({
                   </button>
                 ))
               )
-            ) : !rootState || rootState.loading ? (
-              <div className="px-2 py-3 text-xs text-muted-foreground">{t('common.loading')}</div>
-            ) : rootState?.error ? (
-              <div className="px-2 py-3 text-xs text-destructive/80">{t('filesSidebar.loadError')}</div>
-            ) : rootState?.entries.length === 0 ? (
-              <div className="px-2 py-3 text-xs text-muted-foreground">{t('filesSidebar.empty')}</div>
             ) : (
               <>
-                {rootState?.entries.map(entry => (
-                  <TreeEntry
-                    key={entry.relativePath}
-                    entry={entry}
-                    depth={0}
-                    directoryStates={directoryStates}
-                    expandedPaths={expandedPaths}
-                    onToggleDirectory={handleToggleDirectory}
-                    onOpenFile={onOpenFile}
-                  />
-                ))}
-                {rootState?.truncated && (
-                  <p className="px-2 pt-2 text-[11px] text-muted-foreground">
-                    {t('filesSidebar.truncated', { count: rootState.entries.length })}
-                  </p>
+                {rootInlineCreate}
+                {!rootState || rootState.loading ? (
+                  <div className="px-2 py-3 text-xs text-muted-foreground">{t('common.loading')}</div>
+                ) : rootState.error ? (
+                  <div className="px-2 py-3 text-xs text-destructive/80">{t('filesSidebar.loadError')}</div>
+                ) : (
+                  <>
+                    {rootState.entries.length === 0 && !inlineCreate && (
+                      <div className="px-2 py-3 text-xs text-muted-foreground">{t('filesSidebar.empty')}</div>
+                    )}
+                    {rootState.entries.map(entry => (
+                      <TreeEntry
+                        key={entry.relativePath}
+                        entry={entry}
+                        depth={0}
+                        directoryStates={directoryStates}
+                        expandedPaths={expandedPaths}
+                        selectedDirectoryPath={selectedDirectoryPath}
+                        inlineCreate={inlineCreate}
+                        onToggleDirectory={handleToggleDirectory}
+                        onSelectDirectory={setSelectedDirectoryPath}
+                        onOpenFile={onOpenFile}
+                        createActions={createActions}
+                      />
+                    ))}
+                    {rootState.truncated && (
+                      <p className="px-2 pt-2 text-[11px] text-muted-foreground">
+                        {t('filesSidebar.truncated', { count: rootState.entries.length })}
+                      </p>
+                    )}
+                  </>
                 )}
               </>
             )}

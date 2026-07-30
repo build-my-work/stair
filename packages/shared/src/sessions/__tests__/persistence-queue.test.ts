@@ -37,6 +37,26 @@ describe('session persistence header conflict helpers', () => {
     expect(getHeaderMetadataSignature(a)).not.toBe(getHeaderMetadataSignature(b))
   })
 
+  it('metadata signature changes when Project note routing changes', () => {
+    const original = makeHeader({
+      projectId: 'project-a',
+      projectNoteTargetPath: 'notes/a.md',
+    })
+
+    expect(getHeaderMetadataSignature(original)).not.toBe(getHeaderMetadataSignature(
+      makeHeader({
+        projectId: 'project-b',
+        projectNoteTargetPath: 'notes/a.md',
+      }),
+    ))
+    expect(getHeaderMetadataSignature(original)).not.toBe(getHeaderMetadataSignature(
+      makeHeader({
+        projectId: 'project-a',
+        projectNoteTargetPath: 'notes/b.md',
+      }),
+    ))
+  })
+
   it('merge preserves external metadata while keeping local computed fields', () => {
     const local = makeHeader({
       name: 'Local Name',
@@ -44,6 +64,8 @@ describe('session persistence header conflict helpers', () => {
       isFlagged: false,
       sessionStatus: 'todo',
       permissionMode: 'allow-all',
+      projectId: 'local-project',
+      projectNoteTargetPath: 'notes/local.md',
       hasUnread: true,
       lastReadMessageId: 'm-local',
       messageCount: 99,
@@ -56,6 +78,8 @@ describe('session persistence header conflict helpers', () => {
       isFlagged: true,
       sessionStatus: 'needs-review',
       permissionMode: 'safe',
+      projectId: 'disk-project',
+      projectNoteTargetPath: 'notes/disk.md',
       hasUnread: false,
       lastReadMessageId: 'm-disk',
       messageCount: 1,
@@ -69,6 +93,8 @@ describe('session persistence header conflict helpers', () => {
     expect(merged.isFlagged).toBe(true)
     expect(merged.sessionStatus).toBe('needs-review')
     expect(merged.permissionMode).toBe('safe')
+    expect(merged.projectId).toBe('disk-project')
+    expect(merged.projectNoteTargetPath).toBe('notes/disk.md')
     expect(merged.hasUnread).toBe(false)
     expect(merged.lastReadMessageId).toBe('m-disk')
 

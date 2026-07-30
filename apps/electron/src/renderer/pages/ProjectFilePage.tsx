@@ -17,9 +17,12 @@ import {
   isCanonicalProjectRelativePath,
   type MessageReference,
   type ProjectFileReferenceV1,
+  type ProjectFileSelectionReferenceV1,
   type SourceFingerprint,
 } from '@craft-agent/core'
 import { ProjectFileEpubReader } from '@/components/project-files/ProjectFileEpubReader'
+import { ProjectFileTextSelectionSurface } from '@/components/project-files/ProjectFileTextSelection'
+import { ProjectFilePdfReader } from '@/components/project-files/ProjectFilePdfReader'
 import {
   consumeProjectFileOpenIntentAtom,
   panelStackAtom,
@@ -93,6 +96,7 @@ export default function ProjectFilePage({
   const {
     activeWorkspaceId,
     onAddDraftReference,
+    onAddSelectionNote,
     onCreateSession,
     rightSidebarButton,
   } = useAppShellContext()
@@ -188,7 +192,7 @@ export default function ProjectFilePage({
           setBytes(response.bytes)
           setSourceFingerprint(response.sourceFingerprint)
 
-          if (kind !== 'image' && kind !== 'pdf') return
+          if (kind !== 'image') return
           const data = response.bytes
           const buffer = data.buffer.slice(
             data.byteOffset,
@@ -209,7 +213,9 @@ export default function ProjectFilePage({
         if (result.type === 'unsupported') return
         const response = result.response
         if (!cancelled) {
+          setMetadata(response.metadata)
           setContent(response.text)
+          setSourceFingerprint(response.sourceFingerprint)
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -315,14 +321,8 @@ export default function ProjectFilePage({
   const handleAddChatReference = useCallback(async (
     reference: MessageReference,
   ) => {
-    const targetSessionId = getProjectFileChatTargetSessionId(
-      panelStack,
-      panelId,
-      sessionMetaMap,
-      route.projectId,
-    )
-    if (targetSessionId) {
-      if (!attachReferenceToSession(targetSessionId, reference)) {
+    if (chatTargetSessionId) {
+      if (!attachReferenceToSession(chatTargetSessionId, reference)) {
         throw new Error('The target chat draft is currently locked.')
       }
       return true
@@ -330,12 +330,36 @@ export default function ProjectFilePage({
     return createAndSelectSessionWithReference(reference)
   }, [
     attachReferenceToSession,
+    chatTargetSessionId,
     createAndSelectSessionWithReference,
-    panelId,
-    panelStack,
-    route.projectId,
-    sessionMetaMap,
   ])
+
+  const handleAddNoteReference = useCallback(async (
+    reference: ProjectFileSelectionReferenceV1,
+  ) => {
+    if (!chatTargetSessionId) {
+      toast.error('Choose a target Session before using Add Note.')
+      return false
+    }
+    if (!onAddSelectionNote) {
+      toast.error('Add Note is unavailable.')
+      return false
+    }
+    return onAddSelectionNote(chatTargetSessionId, reference)
+  }, [
+    chatTargetSessionId,
+    onAddSelectionNote,
+  ])
+
+  const selectionSource = metadata && sourceFingerprint
+    ? {
+        projectId: route.projectId,
+        relativePath,
+        metadata,
+        sourceFingerprint,
+        onAddNote: handleAddNoteReference,
+      }
+    : null
 
   const preview = (() => {
     if (isLoading) {
@@ -393,6 +417,7 @@ export default function ProjectFilePage({
               onChatTargetChange={selectChatTarget}
               onAddChatReference={handleAddChatReference}
               onAddNewChatReference={createAndSelectSessionWithReference}
+              onAddNoteReference={handleAddNoteReference}
               onExportMarkdown={async ({ suggestedFilename, content }) => {
                 await saveTextFile({
                   suggestedName: suggestedFilename,
@@ -424,20 +449,42 @@ export default function ProjectFilePage({
         </div>
       )
     }
-    if (classification.type === 'pdf' && binaryUrl) {
-      return <iframe title={fileName} src={binaryUrl} className="h-full w-full border-0 bg-background" />
-    }
-    if (classification.type === 'markdown') {
+    if (
+      classification.type === 'pdf'
+      && bytes
+      && selectionSource
+    ) {
       return (
-        <div className="h-full overflow-y-auto px-8 py-8">
+        <ProjectFilePdfReader
+          key={`${fileIdentity}\0${sourceFingerprint}`}
+          {...selectionSource}
+          bytes={bytes}
+        />
+      )
+    }
+    if (
+      classification.type === 'markdown'
+      && selectionSource
+    ) {
+      return (
+        <ProjectFileTextSelectionSurface
+          key={`${fileIdentity}\0${sourceFingerprint}`}
+          {...selectionSource}
+          className="h-full overflow-y-auto px-8 py-8"
+        >
           <div className="mx-auto max-w-[900px] rounded-[12px] bg-background px-8 py-7 shadow-minimal">
             <Markdown mode="minimal">{content ?? ''}</Markdown>
           </div>
-        </div>
+        </ProjectFileTextSelectionSurface>
       )
     }
+    if (!selectionSource) return null
     return (
-      <div className="h-full overflow-auto bg-background">
+      <ProjectFileTextSelectionSurface
+        key={`${fileIdentity}\0${sourceFingerprint}`}
+        {...selectionSource}
+        className="h-full overflow-auto bg-background"
+      >
         <ShikiCodeViewer
           code={content ?? ''}
           filePath={relativePath}
@@ -446,7 +493,7 @@ export default function ProjectFilePage({
           shikiTheme={shikiTheme}
           className="min-h-full"
         />
-      </div>
+      </ProjectFileTextSelectionSurface>
     )
   })()
 

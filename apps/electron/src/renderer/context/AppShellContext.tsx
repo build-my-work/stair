@@ -76,6 +76,16 @@ export interface AppShellContextType {
   onOpenProjectFileReference?: (
     reference: import('@craft-agent/core').MessageReference,
   ) => void
+  /**
+   * Hand off an existing selection for Add Note.
+   * Resolves true only after the selection has been appended successfully.
+   */
+  onAddSelectionNote?: (
+    sessionId: string,
+    selection: import('@craft-agent/core').SelectionReference,
+  ) => Promise<boolean>
+  /** Choose a Project when needed, then open the target picker without creating a free-form note. */
+  onConfigureProjectNoteTarget?: (sessionId: string) => void
   /** All enabled sources for this workspace - provided by AppShell component */
   enabledSources?: LoadedSource[]
   /** All skills for this workspace - provided by AppShell component (for @mentions) */

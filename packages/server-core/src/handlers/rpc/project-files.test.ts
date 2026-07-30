@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import {
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   rm,
   symlink,
@@ -20,6 +21,7 @@ import {
   MAX_PROJECT_FILE_PATH_BYTES,
   MAX_PROJECT_FILE_TEXT_BYTES,
   canonicalizeProjectFileRelativePath,
+  createProjectEntryWithinRoot,
   projectFileStatSnapshotsMatch,
   readProjectFileBinaryWithinRoot,
   readProjectFileTextWithinRoot,
@@ -96,7 +98,7 @@ describe('Project File reads', () => {
     expect(response.metadata.lastModifiedMs).toBeGreaterThan(0)
   })
 
-  it('returns only decoded UTF-8 text', async () => {
+  it('returns decoded UTF-8 text with source metadata and fingerprint', async () => {
     const content = Buffer.from('第一章\nHello', 'utf8')
     await writeFile(join(root, 'notes.md'), content)
 
@@ -105,7 +107,17 @@ describe('Project File reads', () => {
       relativePath: 'notes.md',
     })
 
-    expect(response).toEqual({ text: '第一章\nHello' })
+    expect(response.text).toBe('第一章\nHello')
+    expect(response.sourceFingerprint).toBe(
+      `sha256:${createHash('sha256').update(content).digest('hex')}`,
+    )
+    expect(response.metadata).toMatchObject({
+      projectId: 'project-1',
+      relativePath: 'notes.md',
+      name: 'notes.md',
+      mimeType: 'text/markdown',
+      byteLength: content.byteLength,
+    })
   })
 
   it('returns file-only Project search DTOs without letting directories consume the limit', async () => {
@@ -131,6 +143,33 @@ describe('Project File reads', () => {
     expect(genericResults).toHaveLength(50)
     expect(genericResults.every(result => result.type === 'directory')).toBe(true)
     expect(genericResults.every(result => result.path.startsWith(root))).toBe(true)
+  })
+
+  it('filters Project search extensions before applying the result limit', async () => {
+    await Promise.all(
+      Array.from({ length: 55 }, async (_, index) => {
+        await writeFile(
+          join(root, `target-${String(index).padStart(2, '0')}.txt`),
+          '',
+        )
+      }),
+    )
+    await Promise.all([
+      writeFile(join(root, 'target-notes.md'), ''),
+      writeFile(join(root, 'target-journal.MARKDOWN'), ''),
+      writeFile(join(root, 'target-draft.mdx'), ''),
+    ])
+
+    const results = await searchProjectFilesWithinRoot(
+      root,
+      'target',
+      ['md', 'markdown'],
+    )
+
+    expect(results.map(result => result.name).sort()).toEqual([
+      'target-journal.MARKDOWN',
+      'target-notes.md',
+    ])
   })
 
   it('rejects invalid UTF-8 instead of silently replacing bytes', async () => {
@@ -310,12 +349,78 @@ describe('Project File reads', () => {
     ).rejects.toThrow(/^PROJECT_FILE_NOT_FOUND:/)
   })
 
-  it('declares all Project File read and tree handlers', () => {
+  it('creates empty files and one-level directories without overwriting entries', async () => {
+    const directory = await createProjectEntryWithinRoot(root, {
+      projectId: 'project-1',
+      name: 'research',
+    }, 'directory')
+    expect(directory).toEqual({
+      name: 'research',
+      relativePath: 'research',
+      type: 'directory',
+      isSymlink: false,
+    })
+
+    const file = await createProjectEntryWithinRoot(root, {
+      projectId: 'project-1',
+      parentRelativePath: 'research',
+      name: 'notes.md',
+    }, 'file')
+    expect(file).toEqual({
+      name: 'notes.md',
+      relativePath: 'research/notes.md',
+      type: 'file',
+      isSymlink: false,
+    })
+    expect(await readFile(join(root, 'research', 'notes.md'), 'utf8')).toBe('')
+
+    await writeFile(join(root, 'existing.md'), 'keep me')
+    await expect(createProjectEntryWithinRoot(root, {
+      projectId: 'project-1',
+      name: 'existing.md',
+    }, 'file')).rejects.toThrow(/^PROJECT_FILE_ALREADY_EXISTS:/)
+    expect(await readFile(join(root, 'existing.md'), 'utf8')).toBe('keep me')
+  })
+
+  it('rejects invalid names, missing parents, and symlink parents', async () => {
+    for (const name of ['', '.', '..', ' nested', 'nested ', 'a/b', 'a\\b']) {
+      await expect(createProjectEntryWithinRoot(root, {
+        projectId: 'project-1',
+        name,
+      }, 'file')).rejects.toThrow(/^PROJECT_FILE_INVALID_REQUEST:/)
+    }
+
+    await expect(createProjectEntryWithinRoot(root, {
+      projectId: 'project-1',
+      parentRelativePath: '../outside',
+      name: 'notes.md',
+    }, 'file')).rejects.toThrow(/^PROJECT_FILE_INVALID_REQUEST:/)
+    await expect(createProjectEntryWithinRoot(root, {
+      projectId: 'project-1',
+      parentRelativePath: 'missing',
+      name: 'notes.md',
+    }, 'file')).rejects.toThrow(/^PROJECT_FILE_NOT_FOUND:/)
+
+    if (process.platform !== 'win32') {
+      const outside = join(sandbox, 'outside')
+      await mkdir(outside)
+      await symlink(outside, join(root, 'linked'), 'dir')
+      await expect(createProjectEntryWithinRoot(root, {
+        projectId: 'project-1',
+        parentRelativePath: 'linked',
+        name: 'notes.md',
+      }, 'file')).rejects.toThrow(/^PROJECT_FILE_ACCESS_DENIED:/)
+    }
+  })
+
+  it('declares all Project File read, tree, and create handlers', () => {
     expect(HANDLED_CHANNELS).toEqual([
       'projectFiles:readText',
       'projectFiles:readBinary',
       'projectFiles:search',
       'projectFiles:listDirectoryEntries',
+      'projectFiles:createFile',
+      'projectFiles:createDirectory',
     ])
   })
 })

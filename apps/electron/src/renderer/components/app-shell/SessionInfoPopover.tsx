@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { NotebookPen } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
@@ -38,6 +39,7 @@ export function SessionInfoPopover({
   presentation = 'popover',
 }: SessionInfoPopoverProps) {
   const { t } = useTranslation()
+  const { onConfigureProjectNoteTarget } = useAppShellContext()
   const [open, setOpen] = React.useState(false)
 
   const handleOpenChange = React.useCallback((nextOpen: boolean) => {
@@ -51,6 +53,11 @@ export function SessionInfoPopover({
       })
     }
   }, [sessionId])
+
+  const handleConfigureProjectNoteTarget = React.useCallback(() => {
+    setOpen(false)
+    onConfigureProjectNoteTarget?.(sessionId)
+  }, [onConfigureProjectNoteTarget, sessionId])
 
   if (presentation === 'drawer') {
     return (
@@ -68,7 +75,11 @@ export function SessionInfoPopover({
             <DrawerTitle className="text-sm font-medium">{t('chat.sessionInfo')}</DrawerTitle>
           </DrawerHeader>
           <div className="flex-1 min-h-0 overflow-hidden">
-            <SessionInfoPopoverContent sessionId={sessionId} sessionFolderPath={sessionFolderPath} />
+            <SessionInfoPopoverContent
+              sessionId={sessionId}
+              sessionFolderPath={sessionFolderPath}
+              onConfigureProjectNoteTarget={handleConfigureProjectNoteTarget}
+            />
           </div>
         </DrawerContent>
       </Drawer>
@@ -92,18 +103,33 @@ export function SessionInfoPopover({
           e.preventDefault()
         }}
       >
-        <SessionInfoPopoverContent sessionId={sessionId} sessionFolderPath={sessionFolderPath} />
+        <SessionInfoPopoverContent
+          sessionId={sessionId}
+          sessionFolderPath={sessionFolderPath}
+          onConfigureProjectNoteTarget={handleConfigureProjectNoteTarget}
+        />
       </PopoverContent>
     </Popover>
   )
 }
 
-function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId: string; sessionFolderPath?: string }) {
+function SessionInfoPopoverContent({
+  sessionId,
+  sessionFolderPath,
+  onConfigureProjectNoteTarget,
+}: {
+  sessionId: string
+  sessionFolderPath?: string
+  onConfigureProjectNoteTarget?: () => void
+}) {
   const { t } = useTranslation()
   const session = useSession(sessionId)
   const { onRenameSession } = useAppShellContext()
   const [name, setName] = React.useState('')
   const renameTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const canConfigureProjectNoteTarget = Boolean(
+    session && onConfigureProjectNoteTarget,
+  )
 
   React.useEffect(() => {
     setName(session?.name || '')
@@ -147,6 +173,32 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
             className="h-9 py-2 text-sm border-0 shadow-none bg-transparent focus-visible:ring-0"
           />
         </div>
+      </div>
+      <div className="shrink-0 border-b border-border/50 p-3">
+        <div className="mb-1.5 text-xs font-medium text-muted-foreground">
+          {t('projectNoteTarget.label')}
+        </div>
+        <button
+          type="button"
+          disabled={!canConfigureProjectNoteTarget}
+          onClick={onConfigureProjectNoteTarget}
+          className={cn(
+            'flex h-9 w-full items-center gap-2 rounded-lg bg-foreground-2 px-2.5 text-left text-xs transition-colors',
+            canConfigureProjectNoteTarget
+              ? 'text-foreground/85 hover:bg-foreground/[0.07]'
+              : 'cursor-not-allowed text-muted-foreground/60',
+          )}
+        >
+          <NotebookPen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate">
+            {session?.projectNoteTargetPath
+              ?? (
+                session?.projectId
+                  ? t('projectNoteTarget.chooseFile')
+                  : t('projectNoteTarget.chooseProjectTitle')
+              )}
+          </span>
+        </button>
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
         <SessionFilesSection

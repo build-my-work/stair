@@ -223,13 +223,19 @@ import type {
   TestAutomationResult,
   WindowCloseRequest,
   ProjectDirectoryEntriesResult,
+  ProjectDirectoryEntry,
   DirectoryListingResult,
   ProjectFileBinaryResponse,
   ProjectFileRequest,
   ProjectDirectoryEntriesRequest,
+  CreateProjectEntryRequest,
   ProjectFileSearchRequest,
   ProjectFileSearchResult,
   ProjectFileTextResponse,
+  ConfigureProjectNoteTargetRequest,
+  ConfigureProjectNoteTargetResponse,
+  AppendProjectNoteRequest,
+  AppendProjectNoteResponse,
   ApplyEpubStateMutationRequest,
   ApplyEpubStateMutationResponse,
   EpubStateRequest,
@@ -367,6 +373,12 @@ export interface ElectronAPI {
   applyEpubStateMutation(
     request: ApplyEpubStateMutationRequest,
   ): Promise<ApplyEpubStateMutationResponse>
+  configureProjectNoteTarget(
+    request: ConfigureProjectNoteTargetRequest,
+  ): Promise<ConfigureProjectNoteTargetResponse>
+  appendProjectNote(
+    request: AppendProjectNoteRequest,
+  ): Promise<AppendProjectNoteResponse>
 
   // Filesystem search (for @ mention file selection)
   searchFiles(basePath: string, query: string): Promise<FileSearchResult[]>
@@ -377,6 +389,10 @@ export interface ElectronAPI {
   searchProjectFiles(request: ProjectFileSearchRequest): Promise<ProjectFileSearchResult[]>
   /** List one Project directory level, including files, for lazy workspace trees. */
   listProjectDirectoryEntries(request: ProjectDirectoryEntriesRequest): Promise<ProjectDirectoryEntriesResult>
+  /** Create one empty file inside a Project directory. */
+  createProjectFile(request: CreateProjectEntryRequest): Promise<ProjectDirectoryEntry>
+  /** Create one direct child directory inside a Project. */
+  createProjectDirectory(request: CreateProjectEntryRequest): Promise<ProjectDirectoryEntry>
   // Debug: send renderer logs to main process log file
   debugLog(...args: unknown[]): void
 

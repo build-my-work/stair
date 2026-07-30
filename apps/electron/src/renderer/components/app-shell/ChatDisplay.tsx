@@ -61,6 +61,7 @@ import {
   extractAnnotationSelectedText,
   normalizeFollowUpText,
   type Turn,
+  type ChatTextSelection,
   type AssistantTurn,
   type UserTurn,
   type SystemTurn,
@@ -80,6 +81,7 @@ import { resolveBranchNewPanelOption } from "./branching"
 import { handleErrorMessageAction } from "./error-message-actions"
 import type { MessageReference } from "@craft-agent/core"
 import type { SendMessageDeliveryOptions } from "@/context/AppShellContext"
+import { buildChatSelectionReference } from "@/lib/selection-reference"
 
 // ============================================================================
 // CSS Custom Highlight API helper
@@ -516,6 +518,19 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Panel focus state (for multi-panel auto-scroll behavior)
   const appShellContext = useAppShellContext()
   const isFocusedPanel = appShellContext?.isFocusedPanel ?? true
+  const onAddSelectionNote = appShellContext.onAddSelectionNote
+  const handleAddNoteSelection = useCallback(async (
+    selection: ChatTextSelection,
+  ): Promise<boolean> => {
+    if (!session?.id || !onAddSelectionNote) {
+      toast.error('Add Note is unavailable.')
+      return false
+    }
+    return onAddSelectionNote(
+      session.id,
+      buildChatSelectionReference(session.id, selection),
+    )
+  }, [onAddSelectionNote, session?.id])
 
   // Input is only disabled when explicitly disabled (e.g., agent needs activation)
   // User can type during streaming - submitting will stop the stream and send
@@ -1659,6 +1674,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             onOpenFile={onOpenFile}
                             onOpenUrl={onOpenUrl}
                             onOpenProjectFileReference={appShellContext.onOpenProjectFileReference}
+                            onAddNoteSelection={handleAddNoteSelection}
                             sessionId={session?.id}
                             compactMode={compactMode}
                           />
@@ -1775,6 +1791,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                         compactMode={compactMode}
                         sendMessageKey={sendMessageKey}
                         openAnnotationRequest={openAnnotationRequest}
+                        onAddNoteSelection={handleAddNoteSelection}
                         onBranch={session?.supportsBranching ? async (messageId: string, options?: { newPanel?: boolean }) => {
                           if (!session) return
                           try {
@@ -2176,6 +2193,9 @@ interface MessageBubbleProps {
   onOpenFile: (path: string) => void
   onOpenUrl: (url: string) => void
   onOpenProjectFileReference?: (reference: MessageReference) => void
+  onAddNoteSelection?: (
+    selection: ChatTextSelection,
+  ) => boolean | Promise<boolean>
   sessionId?: string
   /**
    * Markdown render mode for assistant messages
@@ -2273,6 +2293,7 @@ function MessageBubble({
   onOpenFile,
   onOpenUrl,
   onOpenProjectFileReference,
+  onAddNoteSelection,
   sessionId,
   renderMode = 'minimal',
   onPopOut,
@@ -2300,6 +2321,7 @@ function MessageBubble({
           || message.references?.length
         ) && (
           <UserMessageBubble
+            messageId={message.id}
             content={message.content}
             attachments={message.attachments}
             badges={message.badges}
@@ -2307,6 +2329,7 @@ function MessageBubble({
             onReferenceClick={onOpenProjectFileReference}
             isPending={message.isPending}
             isQueued={message.isQueued}
+            onAddNoteSelection={onAddNoteSelection}
             onUrlClick={onOpenUrl}
             onFileClick={onOpenFile}
             compactMode={compactMode}
@@ -2443,6 +2466,7 @@ const MemoizedMessageBubble = React.memo(MessageBubble, (prev, next) => {
     areMemoizedMessagesEqual(prev.message, next.message) &&
     prev.sessionId === next.sessionId &&
     prev.onOpenProjectFileReference === next.onOpenProjectFileReference &&
+    prev.onAddNoteSelection === next.onAddNoteSelection &&
     prev.compactMode === next.compactMode
   )
 })

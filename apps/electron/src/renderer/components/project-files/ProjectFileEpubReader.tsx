@@ -22,6 +22,7 @@ import {
 import type {
   EpubHighlightV1,
   ProjectFileReferenceV1,
+  ProjectFileSelectionReferenceV1,
   ProjectFileIdentity,
   SourceFingerprint,
 } from '@craft-agent/core/types'
@@ -93,6 +94,9 @@ interface ProjectFileEpubReaderProps {
   ) => boolean | Promise<boolean>
   onAddNewChatReference: (
     reference: ProjectFileReferenceV1,
+  ) => boolean | Promise<boolean>
+  onAddNoteReference: (
+    reference: ProjectFileSelectionReferenceV1,
   ) => boolean | Promise<boolean>
   onExportMarkdown: (exported: {
     suggestedFilename: string
@@ -292,6 +296,7 @@ export function ProjectFileEpubReader({
   onChatTargetChange,
   onAddChatReference,
   onAddNewChatReference,
+  onAddNoteReference,
   onExportMarkdown,
 }: ProjectFileEpubReaderProps) {
   const { isDark } = useTheme()
@@ -345,6 +350,7 @@ export function ProjectFileEpubReader({
   const [exporting, setExporting] = React.useState(false)
   const [addingReferenceTo, setAddingReferenceTo] =
     React.useState<'current' | 'new' | null>(null)
+  const [addingNote, setAddingNote] = React.useState(false)
   const [compact, setCompact] = React.useState(false)
 
   const dismissSelection = React.useCallback(() => {
@@ -869,6 +875,41 @@ export function ProjectFileEpubReader({
     sourceFingerprint,
   ])
 
+  const addSelectionToNote = React.useCallback(async () => {
+    const selection = pendingSelection?.snapshot
+    if (!selection || addingNote || addingReferenceTo) return
+
+    setAddingNote(true)
+    try {
+      const added = await onAddNoteReference(
+        buildProjectFileReferenceFromSelection({
+          identity,
+          sourceFingerprint,
+          fileName: metadata.name,
+          selection,
+        }),
+      )
+      if (added) dismissSelection()
+    } catch (error) {
+      console.error(
+        '[ProjectFileEpubReader] Failed to add EPUB selection to notes:',
+        error,
+      )
+      setReaderNotice('The selection could not be added to the note file.')
+    } finally {
+      setAddingNote(false)
+    }
+  }, [
+    addingNote,
+    addingReferenceTo,
+    dismissSelection,
+    identity,
+    metadata.name,
+    onAddNoteReference,
+    pendingSelection,
+    sourceFingerprint,
+  ])
+
   const displayHighlight = React.useCallback(async (
     highlight: EpubHighlightV1,
   ) => {
@@ -1193,7 +1234,9 @@ export function ProjectFileEpubReader({
               anchorRect={pendingSelection.anchorRect}
               collisionBoundary={readerViewportRef.current}
               addingReferenceTo={addingReferenceTo}
+              addingNote={addingNote}
               onCreateHighlight={() => void createRedWavyHighlight()}
+              onAddNote={() => void addSelectionToNote()}
               onAddChat={() => void addSelectionToChat('current')}
               onAddNewChat={() => void addSelectionToChat('new')}
               onDismiss={dismissSelection}

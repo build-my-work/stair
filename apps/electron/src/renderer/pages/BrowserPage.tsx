@@ -114,6 +114,7 @@ export default function BrowserPage({
   const {
     activeWorkspaceId,
     onAddDraftReference,
+    onAddSelectionNote,
     onCreateSession,
     rightSidebarButton,
     workspaces,
@@ -238,14 +239,36 @@ export default function BrowserPage({
     lastSelectionEventIdRef.current = payload.eventId
 
     try {
-      if (payload.action === 'add-chat' && chatTargetSessionId) {
-        if (!attachReferenceToSession(
-          chatTargetSessionId,
-          payload.reference,
-        )) {
-          throw new Error('The target chat draft is currently locked.')
+      switch (payload.action) {
+        case 'add-note': {
+          if (!chatTargetSessionId) {
+            throw new Error('Choose a target Session before using Add Note.')
+          }
+          if (!onAddSelectionNote) {
+            throw new Error('Add Note is unavailable.')
+          }
+          const accepted = await onAddSelectionNote(
+            chatTargetSessionId,
+            payload.reference,
+          )
+          if (!accepted) {
+            await window.electronAPI.browserPane.revealSelection(payload.reference)
+          }
+          return
         }
-        return
+        case 'add-chat':
+          if (chatTargetSessionId) {
+            if (!attachReferenceToSession(
+              chatTargetSessionId,
+              payload.reference,
+            )) {
+              throw new Error('The target chat draft is currently locked.')
+            }
+            return
+          }
+          break
+        case 'new-chat':
+          break
       }
 
       const sessionId = await createSessionWithReference(
@@ -267,6 +290,7 @@ export default function BrowserPage({
     attachReferenceToSession,
     chatTargetSessionId,
     createSessionWithReference,
+    onAddSelectionNote,
     preferredProjectId,
     route.browserId,
     selectChatTarget,

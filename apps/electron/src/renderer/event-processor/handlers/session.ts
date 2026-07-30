@@ -14,6 +14,7 @@ import type {
   SourcesChangedEvent,
   LabelsChangedEvent,
   ProjectIdChangedEvent,
+  ProjectNoteTargetChangedEvent,
   SessionStatusChangedEvent,
   SessionMetadataChangedEvent,
   SessionFlaggedEvent,
@@ -687,6 +688,27 @@ export function handleProjectIdChanged(
       session: {
         ...session,
         projectId: event.projectId ?? undefined,
+        projectNoteTargetPath: session.projectId === event.projectId
+          ? session.projectNoteTargetPath
+          : undefined,
+      },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+export function handleProjectNoteTargetChanged(
+  state: SessionState,
+  event: ProjectNoteTargetChangedEvent,
+): ProcessResult {
+  const { session, streaming } = state
+
+  return {
+    state: {
+      session: {
+        ...session,
+        projectNoteTargetPath: event.relativePath ?? undefined,
       },
       streaming,
     },

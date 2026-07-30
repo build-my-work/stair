@@ -51,6 +51,7 @@ export {
   type TurnCardProps,
   type TurnCardActionsMenuProps,
   type ResponseCardProps,
+  type ChatTextSelection,
   type UserMessageBubbleProps,
   type SystemMessageProps,
   type SystemMessageType,

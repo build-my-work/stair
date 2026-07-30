@@ -1,6 +1,6 @@
 import * as React from 'react'
 import * as ReactDOM from 'react-dom'
-import { CornerDownRight } from 'lucide-react'
+import { CornerDownRight, Loader2, NotebookPen } from 'lucide-react'
 import {
   Island,
   IslandContentView,
@@ -26,6 +26,8 @@ export interface AnnotationIslandMenuProps {
   draft: string
   onDraftChange: (next: string) => void
   onOpenFollowUp: () => void
+  onAddNote?: () => void
+  addingNote?: boolean
   onCancel: () => void
   onRequestBack?: () => boolean
   onRequestEdit: () => void
@@ -49,6 +51,8 @@ export function AnnotationIslandMenu({
   draft,
   onDraftChange,
   onOpenFollowUp,
+  onAddNote,
+  addingNote = false,
   onCancel,
   onRequestBack,
   onRequestEdit,
@@ -114,6 +118,24 @@ export function AnnotationIslandMenu({
       >
         <IslandContentView id="compact" anchorX="center" anchorY="bottom">
           <div className="p-1 flex items-center gap-1">
+            {onAddNote && (
+              <button
+                type="button"
+                disabled={addingNote}
+                onClick={onAddNote}
+                className={cn(
+                  'h-[30px] px-2.5 rounded-[8px] text-[13px] font-medium inline-flex items-center gap-1.5',
+                  'text-foreground/85 hover:text-foreground hover:bg-foreground/5',
+                  'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                  'disabled:pointer-events-none disabled:opacity-60',
+                )}
+              >
+                {addingNote
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  : <NotebookPen className="h-3.5 w-3.5" />}
+                <span>Add Note</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={onOpenFollowUp}

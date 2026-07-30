@@ -157,6 +157,13 @@ export interface ProjectIdChangedEvent {
   projectId: string | null
 }
 
+/** Add Note target changed for one Session. */
+export interface ProjectNoteTargetChangedEvent {
+  type: 'project_note_target_changed'
+  sessionId: string
+  relativePath: string | null
+}
+
 /**
  * Todo state changed event (external metadata change or agent tool)
  */
@@ -173,7 +180,7 @@ export interface SessionStatusChangedEvent {
 export interface SessionMetadataChangedEvent {
   type: 'session_metadata_changed'
   sessionId: string
-  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId'>>
+  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'projectNoteTargetPath'>>
 }
 
 /**
@@ -528,6 +535,7 @@ export type AgentEvent =
   | SourcesChangedEvent
   | LabelsChangedEvent
   | ProjectIdChangedEvent
+  | ProjectNoteTargetChangedEvent
   | SessionStatusChangedEvent
   | SessionMetadataChangedEvent
   | SessionFlaggedEvent

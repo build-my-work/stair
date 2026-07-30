@@ -11,10 +11,19 @@
  * - Pending/queued states (Electron only)
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { BookOpenText, Clock, Globe2 } from 'lucide-react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react'
+import * as ReactDOM from 'react-dom'
+import { BookOpenText, Clock, Globe2, Loader2, NotebookPen } from 'lucide-react'
 import {
   isMessageReference,
+  MAX_CHAT_SELECTION_CONTEXT_CHARS,
   messageReferenceKey,
   type ContentBadge,
   type MessageReference,
@@ -22,10 +31,16 @@ import {
 } from '@craft-agent/core'
 import { normalizePath } from '@craft-agent/core/utils'
 import { cn } from '../../lib/utils'
+import {
+  clamp,
+  getCanonicalText,
+  resolveNodeOffset,
+} from '../annotations/annotation-core'
 import { Markdown } from '../markdown'
 import { FileTypeIcon, getFileTypeLabel } from './attachment-helpers'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '../tooltip'
 import { useTranslation } from 'react-i18next'
+import type { ChatTextSelection } from './TurnCard'
 
 // Fallback text icons for badges without iconDataUrl
 // Using simple characters since SVG rendering may not work in all contexts
@@ -308,7 +323,53 @@ function renderContentWithBadges(
   return <p className="text-sm">{elements}</p>
 }
 
+function MessageReferencePreview({
+  reference,
+  onClick,
+}: {
+  reference: MessageReference
+  onClick?: (reference: MessageReference) => void
+}) {
+  const isProjectFile = reference.kind === 'project-file'
+  const label = isProjectFile ? reference.fileName : reference.title
+  const detail = isProjectFile
+    ? [
+        reference.chapterTitle || reference.tocPath.at(-1)?.title,
+        `“${reference.quote}”`,
+      ].filter(Boolean).join(' · ')
+    : `“${reference.quote}”`
+  const ReferenceIcon = isProjectFile ? BookOpenText : Globe2
+
+  return (
+    <button
+      type="button"
+      disabled={!onClick}
+      aria-label={`Open reference from ${label}`}
+      title={detail}
+      onClick={() => onClick?.(reference)}
+      className={cn(
+        "flex min-w-0 shrink-0 items-center gap-2.5 rounded-[8px] bg-user-message-bubble py-1.5 pl-1.5 pr-3 text-left",
+        onClick && "transition-opacity hover:opacity-80",
+      )}
+    >
+      <span className="flex h-11 w-8 shrink-0 items-center justify-center rounded-[6px] bg-background shadow-minimal">
+        <ReferenceIcon className="h-5 w-5 text-muted-foreground" />
+      </span>
+      <span className="flex min-w-0 max-w-[180px] flex-col">
+        <span className="truncate text-xs font-medium">
+          {label}
+        </span>
+        <span className="truncate text-[10px] text-muted-foreground">
+          {detail}
+        </span>
+      </span>
+    </button>
+  )
+}
+
 export interface UserMessageBubbleProps {
+  /** Persisted message identity used by SelectionReference. */
+  messageId?: string
   /** Message content (markdown supported) */
   content: string
   /** Additional className for the outer container */
@@ -329,6 +390,10 @@ export interface UserMessageBubbleProps {
   isPending?: boolean
   /** Whether the message is queued (badge shown) */
   isQueued?: boolean
+  /** Append an existing user-message text selection to Project notes. */
+  onAddNoteSelection?: (
+    selection: ChatTextSelection,
+  ) => boolean | Promise<boolean>
   /** Compact mode - reduces padding for popover embedding */
   compactMode?: boolean
 }
@@ -339,7 +404,73 @@ export interface UserMessageBubbleProps {
  * actually read it. */
 const QUEUED_MIN_VISIBLE_MS = 2500
 
+interface UserNoteSelection {
+  anchorX: number
+  anchorY: number
+  selection: ChatTextSelection
+}
+
+function captureUserNoteSelection(
+  root: HTMLElement,
+  messageId: string,
+  pointerX: number,
+): UserNoteSelection | null {
+  const domSelection = window.getSelection()
+  if (
+    !domSelection
+    || domSelection.rangeCount === 0
+    || domSelection.isCollapsed
+  ) {
+    return null
+  }
+
+  const range = domSelection.getRangeAt(0)
+  if (!root.contains(range.commonAncestorContainer)) return null
+
+  const rawText = range.toString()
+  const selectedText = rawText.trim()
+  if (!selectedText) return null
+
+  const rawStart = resolveNodeOffset(
+    root,
+    range.startContainer,
+    range.startOffset,
+  )
+  if (rawStart == null) return null
+
+  const leadingWhitespace = rawText.length - rawText.trimStart().length
+  const start = rawStart + leadingWhitespace
+  const end = start + selectedText.length
+  const fullText = getCanonicalText(root)
+  const rect = range.getBoundingClientRect()
+
+  return {
+    anchorX: clamp(
+      pointerX,
+      rect.left,
+      Math.max(rect.left, rect.right),
+    ),
+    anchorY: rect.top - 8,
+    selection: {
+      messageId,
+      role: 'user',
+      selectedText,
+      start,
+      end,
+      prefix: fullText.slice(
+        Math.max(0, start - MAX_CHAT_SELECTION_CONTEXT_CHARS),
+        start,
+      ),
+      suffix: fullText.slice(
+        end,
+        end + MAX_CHAT_SELECTION_CONTEXT_CHARS,
+      ),
+    },
+  }
+}
+
 export function UserMessageBubble({
+  messageId,
   content,
   className,
   onUrlClick,
@@ -348,7 +479,9 @@ export function UserMessageBubble({
   badges,
   references,
   onReferenceClick,
+  isPending,
   isQueued,
+  onAddNoteSelection,
   compactMode,
 }: UserMessageBubbleProps) {
   const { t } = useTranslation()
@@ -363,6 +496,9 @@ export function UserMessageBubble({
   const [showQueued, setShowQueued] = useState(isQueued ?? false)
   const queuedShownAtRef = useRef<number | null>(isQueued ? Date.now() : null)
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const contentBubbleRef = useRef<HTMLDivElement>(null)
+  const [noteSelection, setNoteSelection] = useState<UserNoteSelection | null>(null)
+  const [addingNote, setAddingNote] = useState(false)
 
   useEffect(() => {
     return () => {
@@ -403,6 +539,73 @@ export function UserMessageBubble({
       clearTimerRef.current = null
     }, remaining)
   }, [isQueued])
+
+  useEffect(() => {
+    if (isPending || isQueued || !messageId || !onAddNoteSelection) {
+      setNoteSelection(null)
+    }
+  }, [isPending, isQueued, messageId, onAddNoteSelection])
+
+  useEffect(() => {
+    if (!noteSelection) return
+
+    const closeOnPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('[data-ca-user-note-menu]')) return
+      setNoteSelection(null)
+    }
+    const closeOnKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setNoteSelection(null)
+    }
+    const closeOnScroll = () => setNoteSelection(null)
+
+    document.addEventListener('pointerdown', closeOnPointerDown, true)
+    document.addEventListener('keydown', closeOnKeyDown)
+    document.addEventListener('scroll', closeOnScroll, true)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnPointerDown, true)
+      document.removeEventListener('keydown', closeOnKeyDown)
+      document.removeEventListener('scroll', closeOnScroll, true)
+    }
+  }, [noteSelection])
+
+  const handleTextSelection = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const root = contentBubbleRef.current
+    if (
+      !root
+      || !messageId
+      || !onAddNoteSelection
+      || isPending
+      || isQueued
+    ) {
+      return
+    }
+
+    const pointerX = event.clientX
+    requestAnimationFrame(() => {
+      setNoteSelection(captureUserNoteSelection(
+        root,
+        messageId,
+        pointerX,
+      ))
+    })
+  }, [isPending, isQueued, messageId, onAddNoteSelection])
+
+  const addSelectedTextToNotes = useCallback(async () => {
+    if (!noteSelection || !onAddNoteSelection || addingNote) return
+    setAddingNote(true)
+    try {
+      const added = await onAddNoteSelection(noteSelection.selection)
+      if (added) {
+        window.getSelection()?.removeAllRanges()
+        setNoteSelection(null)
+      }
+    } catch (error) {
+      console.error('[UserMessageBubble] Failed to add selection to notes:', error)
+    } finally {
+      setAddingNote(false)
+    }
+  }, [addingNote, noteSelection, onAddNoteSelection])
 
   // Separate edit_request badges (rendered above bubble) from other badges (rendered inline)
   const editRequestBadges = badges?.filter(isEditRequestBadge) ?? []
@@ -486,47 +689,13 @@ export function UserMessageBubble({
               </div>
             )
           })}
-          {validReferences?.map(reference => {
-            const label = reference.kind === 'project-file'
-              ? reference.fileName
-              : reference.title
-            const detail = reference.kind === 'project-file'
-              ? [
-                  reference.chapterTitle || reference.tocPath.at(-1)?.title,
-                  `“${reference.quote}”`,
-                ].filter(Boolean).join(' · ')
-              : `“${reference.quote}”`
-            const clickable = !!onReferenceClick
-
-            return (
-              <button
-                key={messageReferenceKey(reference)}
-                type="button"
-                disabled={!clickable}
-                aria-label={`Open reference from ${label}`}
-                title={detail}
-                onClick={() => onReferenceClick?.(reference)}
-                className={cn(
-                  "flex min-w-0 shrink-0 items-center gap-2.5 rounded-[8px] bg-user-message-bubble py-1.5 pl-1.5 pr-3 text-left",
-                  clickable && "transition-opacity hover:opacity-80",
-                )}
-              >
-                <span className="flex h-11 w-8 shrink-0 items-center justify-center rounded-[6px] bg-background shadow-minimal">
-                  {reference.kind === 'project-file'
-                    ? <BookOpenText className="h-5 w-5 text-muted-foreground" />
-                    : <Globe2 className="h-5 w-5 text-muted-foreground" />}
-                </span>
-                <span className="flex min-w-0 max-w-[180px] flex-col">
-                  <span className="truncate text-xs font-medium">
-                    {label}
-                  </span>
-                  <span className="truncate text-[10px] text-muted-foreground">
-                    {detail}
-                  </span>
-                </span>
-              </button>
-            )
-          })}
+          {validReferences?.map(reference => (
+            <MessageReferencePreview
+              key={messageReferenceKey(reference)}
+              reference={reference}
+              onClick={onReferenceClick}
+            />
+          ))}
         </div>
       )}
 
@@ -546,6 +715,8 @@ export function UserMessageBubble({
           (#616 follow-up). */}
       {showMessageContent && (
         <div
+          ref={contentBubbleRef}
+          onMouseUp={handleTextSelection}
           className={cn(
             "max-w-[80%] bg-user-message-bubble rounded-[16px] break-words min-w-0 select-text [&_p]:m-0",
             compactMode ? "px-4 py-2" : "px-5 py-3.5"
@@ -575,6 +746,34 @@ export function UserMessageBubble({
             )
           }
         </div>
+      )}
+      {noteSelection && typeof document !== 'undefined' && ReactDOM.createPortal(
+        <div
+          data-ca-user-note-menu
+          className="fixed z-[var(--z-island,400)] -translate-x-1/2 -translate-y-full rounded-[10px] border border-border/40 bg-background/80 p-1 shadow-strong backdrop-blur-xl"
+          style={{
+            left: clamp(
+              noteSelection.anchorX,
+              70,
+              Math.max(70, window.innerWidth - 70),
+            ),
+            top: Math.max(40, noteSelection.anchorY),
+          }}
+          onMouseDown={event => event.preventDefault()}
+        >
+          <button
+            type="button"
+            disabled={addingNote}
+            onClick={() => void addSelectedTextToNotes()}
+            className="inline-flex h-[30px] items-center gap-1.5 rounded-[8px] px-2.5 text-[13px] font-medium text-foreground/85 hover:bg-foreground/5 hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
+          >
+            {addingNote
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <NotebookPen className="h-3.5 w-3.5" />}
+            Add Note
+          </button>
+        </div>,
+        document.body,
       )}
     </div>
   )

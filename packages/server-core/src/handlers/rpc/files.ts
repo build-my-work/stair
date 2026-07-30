@@ -1,5 +1,5 @@
 import { readFile, writeFile, unlink, mkdir, readdir, stat } from 'fs/promises'
-import { isAbsolute, join, resolve, dirname, parse as parsePath } from 'path'
+import { isAbsolute, join, resolve, dirname, extname, parse as parsePath } from 'path'
 import { homedir } from 'os'
 import { validatePathFormat } from '../../utils/path-validation'
 import { randomUUID } from 'crypto'
@@ -52,6 +52,7 @@ export async function searchFilesWithinRoot(
     includeHidden?: boolean
     skipSymlinks?: boolean
     filesOnly?: boolean
+    extensions?: ReadonlySet<string>
   } = {},
 ): Promise<FileSearchResult[]> {
   const lowerQuery = query.toLowerCase()
@@ -96,6 +97,13 @@ export async function searchFilesWithinRoot(
         const isDirectory = entry.isDirectory()
         if (isDirectory) nextQueue.push(relativePath)
         if (options.filesOnly && isDirectory) continue
+        if (
+          !isDirectory
+          && options.extensions
+          && !options.extensions.has(extname(entry.name).slice(1).toLowerCase())
+        ) {
+          continue
+        }
 
         if (
           entry.name.toLowerCase().includes(lowerQuery)

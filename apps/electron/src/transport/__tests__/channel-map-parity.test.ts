@@ -78,5 +78,13 @@ describe('CHANNEL_MAP runtime contract', () => {
       type: 'invoke',
       channel: RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
     })
+    expect(CHANNEL_MAP.createProjectFile).toEqual({
+      type: 'invoke',
+      channel: RPC_CHANNELS.projectFiles.CREATE_FILE,
+    })
+    expect(CHANNEL_MAP.createProjectDirectory).toEqual({
+      type: 'invoke',
+      channel: RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
+    })
   })
 })

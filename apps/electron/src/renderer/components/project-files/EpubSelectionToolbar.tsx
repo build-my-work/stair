@@ -5,6 +5,7 @@ import {
   Loader2,
   MessageSquarePlus,
   MessageSquareQuote,
+  NotebookPen,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -20,7 +21,9 @@ interface EpubSelectionToolbarProps {
   anchorRect: EpubSelectionViewportRect
   collisionBoundary: HTMLElement | null
   addingReferenceTo: 'current' | 'new' | null
+  addingNote: boolean
   onCreateHighlight: () => void
+  onAddNote: () => void
   onAddChat: () => void
   onAddNewChat: () => void
   onDismiss: () => void
@@ -30,7 +33,9 @@ export function EpubSelectionToolbar({
   anchorRect,
   collisionBoundary,
   addingReferenceTo,
+  addingNote,
   onCreateHighlight,
+  onAddNote,
   onAddChat,
   onAddNewChat,
   onDismiss,
@@ -40,6 +45,7 @@ export function EpubSelectionToolbar({
       getBoundingClientRect: () => DOMRect.fromRect(anchorRect),
     },
   }), [anchorRect])
+  const selectionActionPending = addingNote || addingReferenceTo !== null
 
   return (
     <Popover
@@ -65,6 +71,19 @@ export function EpubSelectionToolbar({
         <Button
           type="button"
           variant="ghost"
+          className="h-12 min-w-16 flex-col gap-0.5 rounded-lg px-2 text-[10px]"
+          disabled={selectionActionPending}
+          title="Append this selection to the target Session's note file"
+          onClick={onAddNote}
+        >
+          {addingNote
+            ? <Loader2 className="size-4 animate-spin" />
+            : <NotebookPen className="size-4" />}
+          Add Note
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
           className="h-12 min-w-16 flex-col gap-0.5 rounded-lg px-2 text-[10px] text-red-500 hover:bg-red-500/10 hover:text-red-500"
           onClick={onCreateHighlight}
         >
@@ -75,7 +94,7 @@ export function EpubSelectionToolbar({
           type="button"
           variant="ghost"
           className="h-12 min-w-16 flex-col gap-0.5 rounded-lg px-2 text-[10px]"
-          disabled={addingReferenceTo !== null}
+          disabled={selectionActionPending}
           title="Add this selection to a chat draft"
           onClick={onAddChat}
         >
@@ -88,7 +107,7 @@ export function EpubSelectionToolbar({
           type="button"
           variant="ghost"
           className="h-12 min-w-16 flex-col gap-0.5 rounded-lg px-2 text-[10px]"
-          disabled={addingReferenceTo !== null}
+          disabled={selectionActionPending}
           title="Start a new chat with this selection"
           onClick={onAddNewChat}
         >

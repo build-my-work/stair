@@ -18,6 +18,7 @@ export { getHealthCheck } from './server'
 import { registerSettingsHandlers } from './settings'
 import { registerProjectsHandlers } from './projects'
 import { registerProjectFileHandlers } from './project-files'
+import { registerProjectNoteHandlers } from './project-notes'
 import { registerEpubStateHandlers } from './epub-state'
 import { registerSkillsHandlers } from './skills'
 import { registerSourcesHandlers } from './sources'
@@ -47,6 +48,7 @@ export function registerCoreRpcHandlers(
   registerSettingsHandlers(server, deps)
   registerProjectsHandlers(server, deps)
   registerProjectFileHandlers(server, deps)
+  registerProjectNoteHandlers(server, deps)
   registerEpubStateHandlers(server, deps)
   registerSkillsHandlers(server, deps)
   registerSourcesHandlers(server, deps)

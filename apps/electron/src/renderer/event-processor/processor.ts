@@ -22,6 +22,7 @@ import {
   handleSourcesChanged,
   handleLabelsChanged,
   handleProjectIdChanged,
+  handleProjectNoteTargetChanged,
   handleSessionStatusChanged,
   handleSessionMetadataChanged,
   handleSessionFlagged,
@@ -165,6 +166,9 @@ export function processEvent(
 
     case 'project_id_changed':
       return handleProjectIdChanged(state, event)
+
+    case 'project_note_target_changed':
+      return handleProjectNoteTargetChanged(state, event)
 
     case 'session_status_changed':
       return handleSessionStatusChanged(state, event)

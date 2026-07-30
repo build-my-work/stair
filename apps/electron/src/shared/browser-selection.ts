@@ -17,6 +17,20 @@ export const BROWSER_SELECTION_LIMITS = {
 export const BROWSER_PAGE_SELECTION_CHANNEL = 'browser-page:selection'
 export const BROWSER_OVERLAY_ACTION_CHANNEL = 'browser-overlay:selection-action'
 
+const BROWSER_SELECTION_ACTIONS = [
+  'add-note',
+  'add-chat',
+  'new-chat',
+] as const
+
+export type BrowserSelectionAction = typeof BROWSER_SELECTION_ACTIONS[number]
+
+export function isBrowserSelectionAction(
+  value: unknown,
+): value is BrowserSelectionAction {
+  return BROWSER_SELECTION_ACTIONS.some(action => action === value)
+}
+
 export interface BrowserSelectionRect {
   x: number
   y: number
@@ -151,7 +165,7 @@ export function calculateBrowserSelectionOverlayBounds(
   toolbarHeight: number,
   zoomFactor = 1,
 ): BrowserSelectionRect {
-  const width = 138
+  const width = 204
   const height = 56
   const gap = 10
   const margin = 8

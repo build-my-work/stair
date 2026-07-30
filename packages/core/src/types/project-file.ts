@@ -82,7 +82,36 @@ export type EpubStateMutation =
       highlightId: string;
     };
 
-export interface ProjectFileReferenceV1 extends ProjectFileIdentity {
+export type ProjectFileSelectionLocatorV1 =
+  | {
+      type: 'epub-cfi';
+      cfiRange: string;
+    }
+  | {
+      type: 'text-quote';
+      exact: string;
+      prefix?: string;
+      suffix?: string;
+      start?: number;
+      end?: number;
+    }
+  | {
+      type: 'pdf-text-quote';
+      exact: string;
+      prefix?: string;
+      suffix?: string;
+      startPage: number;
+      endPage: number;
+    };
+
+/**
+ * A text selection captured from a Project File.
+ *
+ * This is deliberately broader than ProjectFileReferenceV1: selections can
+ * come from EPUB, PDF, Markdown, or other rendered UTF-8 text files, while
+ * ProjectFileReferenceV1 remains the EPUB-only message attachment contract.
+ */
+export interface ProjectFileSelectionReferenceV1 extends ProjectFileIdentity {
   version: 1;
   kind: 'project-file';
   sourceFingerprint: SourceFingerprint;
@@ -92,6 +121,11 @@ export interface ProjectFileReferenceV1 extends ProjectFileIdentity {
   contextAfter?: string;
   chapterKey?: string;
   chapterTitle?: string;
+  tocPath?: EpubTocPathEntryV1[];
+  locator: ProjectFileSelectionLocatorV1;
+}
+
+export interface ProjectFileReferenceV1 extends ProjectFileSelectionReferenceV1 {
   tocPath: EpubTocPathEntryV1[];
   locator: {
     type: 'epub-cfi';
@@ -113,6 +147,34 @@ export interface WebSelectionReferenceV1 {
   };
 }
 
+export interface ChatMessageSelectionReferenceV1 {
+  version: 1;
+  kind: 'chat-message';
+  sessionId: string;
+  messageId: string;
+  role: 'user' | 'assistant' | 'plan';
+  quote: string;
+  locator: {
+    type: 'text-quote';
+    exact: string;
+    prefix?: string;
+    suffix?: string;
+    start: number;
+    end: number;
+  };
+}
+
+/**
+ * The single Add Note source contract.
+ *
+ * It only represents a selection that already exists in a source. Free-form
+ * note input is intentionally not part of this union.
+ */
+export type SelectionReference =
+  | ProjectFileSelectionReferenceV1
+  | WebSelectionReferenceV1
+  | ChatMessageSelectionReferenceV1;
+
 export type MessageReference =
   | ProjectFileReferenceV1
   | WebSelectionReferenceV1;
@@ -129,6 +191,10 @@ export const MAX_WEB_SELECTION_URL_CHARS = 8_192;
 export const MAX_WEB_SELECTION_TITLE_CHARS = 512;
 export const MAX_WEB_SELECTION_QUOTE_CHARS = 4_000;
 export const MAX_WEB_SELECTION_CONTEXT_CHARS = 128;
+export const MAX_CHAT_SELECTION_REFERENCE_CHARS = 16 * 1024;
+export const MAX_CHAT_SELECTION_ID_CHARS = 256;
+export const MAX_CHAT_SELECTION_QUOTE_CHARS = 4_000;
+export const MAX_CHAT_SELECTION_CONTEXT_CHARS = 128;
 
 export function isSourceFingerprint(value: unknown): value is SourceFingerprint {
   return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
@@ -149,10 +215,68 @@ export function isCanonicalProjectRelativePath(value: unknown): value is string 
     !segment || segment === '.' || segment === '..' || segment.includes('\\'));
 }
 
-export function isProjectFileReferenceV1(value: unknown): value is ProjectFileReferenceV1 {
+function isValidTocPath(value: unknown): value is EpubTocPathEntryV1[] {
+  return Array.isArray(value)
+    && value.length <= MAX_PROJECT_FILE_REFERENCE_TOC_DEPTH
+    && value.every(entry =>
+      Boolean(entry)
+      && typeof entry.key === 'string'
+      && entry.key.length > 0
+      && !entry.key.includes('\0')
+      && typeof entry.title === 'string'
+      && !entry.title.includes('\0')
+      && (entry.href === undefined || typeof entry.href === 'string')
+      && Array.isArray(entry.orderPath)
+      && entry.orderPath.every(
+        (index: unknown) => Number.isSafeInteger(index) && (index as number) >= 0,
+      ));
+}
+
+function isOptionalSelectionContext(value: unknown, maxLength: number): boolean {
+  return value === undefined
+    || (
+      typeof value === 'string'
+      && value.length <= maxLength
+      && !value.includes('\0')
+    );
+}
+
+function isValidTextRange(start: unknown, end: unknown): boolean {
+  return Number.isSafeInteger(start)
+    && Number.isSafeInteger(end)
+    && (start as number) >= 0
+    && (end as number) > (start as number);
+}
+
+function isTextQuoteSelectionLocator(
+  value: unknown,
+  quote: string,
+): value is Extract<ProjectFileSelectionLocatorV1, { type: 'text-quote' }> {
   if (!value || typeof value !== 'object') return false;
-  const reference = value as ProjectFileReferenceV1;
-  return reference.version === 1
+  const locator = value as Extract<ProjectFileSelectionLocatorV1, { type: 'text-quote' }>;
+  const hasPositions = locator.start !== undefined || locator.end !== undefined;
+  return locator.type === 'text-quote'
+    && locator.exact === quote
+    && isOptionalSelectionContext(
+      locator.prefix,
+      MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
+    )
+    && isOptionalSelectionContext(
+      locator.suffix,
+      MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
+    )
+    && (
+      !hasPositions
+      || isValidTextRange(locator.start, locator.end)
+    );
+}
+
+export function isProjectFileSelectionReferenceV1(
+  value: unknown,
+): value is ProjectFileSelectionReferenceV1 {
+  if (!value || typeof value !== 'object') return false;
+  const reference = value as ProjectFileSelectionReferenceV1;
+  const baseIsValid = reference.version === 1
     && reference.kind === 'project-file'
     && typeof reference.projectId === 'string'
     && reference.projectId.length > 0
@@ -164,34 +288,56 @@ export function isProjectFileReferenceV1(value: unknown): value is ProjectFileRe
     && reference.fileName.length > 0
     && !reference.fileName.includes('\0')
     && typeof reference.quote === 'string'
+    && reference.quote.length > 0
     && reference.quote.length <= MAX_PROJECT_FILE_REFERENCE_QUOTE_CHARS
-    && (reference.contextBefore === undefined
-      || (typeof reference.contextBefore === 'string'
-        && reference.contextBefore.length <= MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS))
-    && (reference.contextAfter === undefined
-      || (typeof reference.contextAfter === 'string'
-        && reference.contextAfter.length <= MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS))
+    && !reference.quote.includes('\0')
+    && isOptionalSelectionContext(
+      reference.contextBefore,
+      MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
+    )
+    && isOptionalSelectionContext(
+      reference.contextAfter,
+      MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
+    )
     && (reference.chapterKey === undefined
       || typeof reference.chapterKey === 'string')
     && (reference.chapterTitle === undefined
       || typeof reference.chapterTitle === 'string')
-    && Array.isArray(reference.tocPath)
-    && reference.tocPath.length <= MAX_PROJECT_FILE_REFERENCE_TOC_DEPTH
-    && reference.tocPath.every(entry =>
-      Boolean(entry)
-      && typeof entry.key === 'string'
-      && entry.key.length > 0
-      && !entry.key.includes('\0')
-      && typeof entry.title === 'string'
-      && !entry.title.includes('\0')
-      && (entry.href === undefined || typeof entry.href === 'string')
-      && Array.isArray(entry.orderPath)
-      && entry.orderPath.every(index => Number.isSafeInteger(index) && index >= 0))
-    && reference.locator?.type === 'epub-cfi'
-    && typeof reference.locator.cfiRange === 'string'
-    && reference.locator.cfiRange.length > 0
-    && reference.locator.cfiRange.length <= MAX_PROJECT_FILE_REFERENCE_CFI_CHARS
+    && (reference.tocPath === undefined || isValidTocPath(reference.tocPath))
     && JSON.stringify(reference).length <= MAX_PROJECT_FILE_REFERENCE_CHARS;
+
+  if (!baseIsValid || !reference.locator) return false;
+
+  switch (reference.locator.type) {
+    case 'epub-cfi':
+      return typeof reference.locator.cfiRange === 'string'
+        && reference.locator.cfiRange.length > 0
+        && reference.locator.cfiRange.length <= MAX_PROJECT_FILE_REFERENCE_CFI_CHARS;
+    case 'text-quote':
+      return isTextQuoteSelectionLocator(reference.locator, reference.quote);
+    case 'pdf-text-quote':
+      return reference.locator.exact === reference.quote
+        && isOptionalSelectionContext(
+          reference.locator.prefix,
+          MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
+        )
+        && isOptionalSelectionContext(
+          reference.locator.suffix,
+          MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
+        )
+        && Number.isSafeInteger(reference.locator.startPage)
+        && Number.isSafeInteger(reference.locator.endPage)
+        && reference.locator.startPage >= 1
+        && reference.locator.endPage >= reference.locator.startPage;
+    default:
+      return false;
+  }
+}
+
+export function isProjectFileReferenceV1(value: unknown): value is ProjectFileReferenceV1 {
+  if (!isProjectFileSelectionReferenceV1(value)) return false;
+  return value.locator.type === 'epub-cfi'
+    && isValidTocPath(value.tocPath);
 }
 
 function isBoundedTrimmedText(
@@ -244,6 +390,46 @@ export function isWebSelectionReferenceV1(
         MAX_WEB_SELECTION_CONTEXT_CHARS,
       ))
     && JSON.stringify(reference).length <= MAX_WEB_SELECTION_REFERENCE_CHARS;
+}
+
+export function isChatMessageSelectionReferenceV1(
+  value: unknown,
+): value is ChatMessageSelectionReferenceV1 {
+  if (!value || typeof value !== 'object') return false;
+  const reference = value as ChatMessageSelectionReferenceV1;
+  return reference.version === 1
+    && reference.kind === 'chat-message'
+    && isBoundedTrimmedText(reference.sessionId, MAX_CHAT_SELECTION_ID_CHARS)
+    && isBoundedTrimmedText(reference.messageId, MAX_CHAT_SELECTION_ID_CHARS)
+    && (
+      reference.role === 'user'
+      || reference.role === 'assistant'
+      || reference.role === 'plan'
+    )
+    && isBoundedTrimmedText(
+      reference.quote,
+      MAX_CHAT_SELECTION_QUOTE_CHARS,
+    )
+    && reference.locator?.type === 'text-quote'
+    && reference.locator.exact === reference.quote
+    && isOptionalSelectionContext(
+      reference.locator.prefix,
+      MAX_CHAT_SELECTION_CONTEXT_CHARS,
+    )
+    && isOptionalSelectionContext(
+      reference.locator.suffix,
+      MAX_CHAT_SELECTION_CONTEXT_CHARS,
+    )
+    && isValidTextRange(reference.locator.start, reference.locator.end)
+    && JSON.stringify(reference).length <= MAX_CHAT_SELECTION_REFERENCE_CHARS;
+}
+
+export function isSelectionReference(
+  value: unknown,
+): value is SelectionReference {
+  return isProjectFileSelectionReferenceV1(value)
+    || isWebSelectionReferenceV1(value)
+    || isChatMessageSelectionReferenceV1(value);
 }
 
 export function isMessageReference(value: unknown): value is MessageReference {

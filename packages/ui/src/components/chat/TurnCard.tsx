@@ -289,6 +289,16 @@ export type OpenAnnotationRequest = {
   nonce: number
 }
 
+export interface ChatTextSelection {
+  messageId: string
+  role: 'user' | 'assistant' | 'plan'
+  selectedText: string
+  start: number
+  end: number
+  prefix: string
+  suffix: string
+}
+
 export interface TurnCardProps {
   /** Session ID for state persistence (optional in shared context) */
   sessionId?: string
@@ -352,6 +362,10 @@ export interface TurnCardProps {
   onBranch?: (messageId: string, options?: { newPanel?: boolean }) => void
   /** Callback to add an annotation to a response message */
   onAddAnnotation?: (messageId: string, annotation: AnnotationV1) => void
+  /** Callback to append an existing response/plan text selection to Project notes. */
+  onAddNoteSelection?: (
+    selection: ChatTextSelection,
+  ) => boolean | Promise<boolean>
   /** Callback to remove a persisted annotation from a response message */
   onRemoveAnnotation?: (messageId: string, annotationId: string) => void
   /** Callback to update a persisted annotation */
@@ -1421,6 +1435,10 @@ export interface ResponseCardProps {
   onBranch?: (options?: { newPanel?: boolean }) => void
   /** Callback to add annotation from selected text */
   onAddAnnotation?: (messageId: string, annotation: AnnotationV1) => void
+  /** Callback to append the selected response/plan text to Project notes. */
+  onAddNoteSelection?: (
+    selection: ChatTextSelection,
+  ) => boolean | Promise<boolean>
   /** Callback to remove persisted annotation */
   onRemoveAnnotation?: (messageId: string, annotationId: string) => void
   /** Callback to update persisted annotation */
@@ -1668,6 +1686,7 @@ export function ResponseCard({
   compactMode = false,
   onBranch,
   onAddAnnotation,
+  onAddNoteSelection,
   onRemoveAnnotation,
   onUpdateAnnotation,
   sendMessageKey = 'enter',
@@ -1684,6 +1703,7 @@ export function ResponseCard({
   const [copied, setCopied] = useState(false)
   // Fullscreen state
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [addingNote, setAddingNote] = useState(false)
   // Dark mode detection - scroll fade only shown in dark mode
   const [isDarkMode, setIsDarkMode] = useState(false)
   // Pending text selection waiting for explicit follow-up action
@@ -1724,6 +1744,8 @@ export function ResponseCard({
     hasMessageId: !!messageId,
     isStreaming,
   })
+  const canSelectText = canAnnotate
+    || (Boolean(messageId) && !isStreaming && Boolean(onAddNoteSelection))
   const allowAnnotationIsland = annotationInteractionMode === 'interactive'
 
   // Detect dark mode from document class and listen for changes
@@ -1884,10 +1906,10 @@ export function ResponseCard({
   }, [annotations, renderedAnnotations, text, displayedText, isStreaming])
 
   useEffect(() => {
-    if (!canAnnotate) {
+    if (!canSelectText) {
       closeSelectionMenu()
     }
-  }, [canAnnotate, closeSelectionMenu])
+  }, [canSelectText, closeSelectionMenu])
 
   useEffect(() => {
     // Session switches should fully reset local island UI state to avoid stale
@@ -2164,7 +2186,10 @@ export function ResponseCard({
         return
       }
 
-      if (hasExistingTextRangeAnnotation(annotations, start, end)) {
+      if (
+        !onAddNoteSelection
+        && hasExistingTextRangeAnnotation(annotations, start, end)
+      ) {
         closeSelectionMenu()
         return
       }
@@ -2245,10 +2270,10 @@ export function ResponseCard({
       })
       dragStartPointerRef.current = null
     })
-  }, [annotations, closeSelectionMenu, triggerSelectionMenuEntryReplay, openFromSelection])
+  }, [annotations, closeSelectionMenu, onAddNoteSelection, triggerSelectionMenuEntryReplay, openFromSelection])
 
   const handleTextSelection = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (!canAnnotate || !onAddAnnotation || !messageId) return
+    if (!canSelectText || !messageId) return
     const root = contentLayerRef.current
     if (!root) return
 
@@ -2265,7 +2290,7 @@ export function ResponseCard({
     }
 
     // Block annotation gesture: Shift+click on a block wrapper
-    if (event.shiftKey) {
+    if (event.shiftKey && onAddAnnotation) {
       const targetElement = event.target instanceof Element ? event.target : null
       const blockElement = targetElement?.closest<HTMLElement>('[data-ca-block-path]')
       if (blockElement) {
@@ -2318,10 +2343,10 @@ export function ResponseCard({
 
     selectionStartedInContentRef.current = false
     showSelectionMenuFromCurrentSelection()
-  }, [canAnnotate, onAddAnnotation, messageId, annotations, showSelectionMenuFromCurrentSelection, closeSelectionMenu])
+  }, [canSelectText, onAddAnnotation, messageId, annotations, showSelectionMenuFromCurrentSelection, closeSelectionMenu])
 
   useEffect(() => {
-    if (!canAnnotate || !onAddAnnotation || !messageId) return
+    if (!canSelectText || !messageId) return
 
     const handleDocumentMouseUp = (event: MouseEvent) => {
       if (!selectionStartedInContentRef.current) return
@@ -2350,7 +2375,7 @@ export function ResponseCard({
     return () => {
       document.removeEventListener('mouseup', handleDocumentMouseUp)
     }
-  }, [canAnnotate, onAddAnnotation, messageId, showSelectionMenuFromCurrentSelection])
+  }, [canSelectText, messageId, showSelectionMenuFromCurrentSelection])
 
   const handleSelectionMenuRequestBack = useCallback((): boolean => {
     if (selectionMenuView !== 'compact') {
@@ -2370,6 +2395,37 @@ export function ResponseCard({
     onClose: closeSelectionMenu,
   })
 
+  const handleAddSelectionNote = useCallback(async () => {
+    if (!onAddNoteSelection || !messageId || !pendingSelection || addingNote) return
+    setAddingNote(true)
+    try {
+      const added = await onAddNoteSelection({
+        messageId,
+        role: variant === 'plan' ? 'plan' : 'assistant',
+        selectedText: pendingSelection.selectedText,
+        start: pendingSelection.start,
+        end: pendingSelection.end,
+        prefix: pendingSelection.prefix,
+        suffix: pendingSelection.suffix,
+      })
+      if (added) {
+        clearDomSelection()
+        closeSelectionMenu()
+      }
+    } catch (error) {
+      console.error('[ResponseCard] Failed to add selection to notes:', error)
+    } finally {
+      setAddingNote(false)
+    }
+  }, [
+    addingNote,
+    closeSelectionMenu,
+    messageId,
+    onAddNoteSelection,
+    pendingSelection,
+    variant,
+  ])
+
   const selectionMenu = allowAnnotationIsland ? (
     <AnnotationIslandMenu
       anchor={selectionMenuRenderAnchor}
@@ -2381,6 +2437,10 @@ export function ResponseCard({
       draft={followUpDraft}
       onDraftChange={setFollowUpDraft}
       onOpenFollowUp={handleOpenFollowUpView}
+      onAddNote={pendingSelection && onAddNoteSelection
+        ? () => void handleAddSelectionNote()
+        : undefined}
+      addingNote={addingNote}
       onCancel={handleCancelFollowUp}
       onRequestBack={handleSelectionMenuRequestBack}
       onRequestEdit={handleRequestFollowUpEdit}
@@ -2794,6 +2854,7 @@ export const TurnCard = React.memo(function TurnCard({
   compactMode = false,
   onBranch,
   onAddAnnotation,
+  onAddNoteSelection,
   onRemoveAnnotation,
   onUpdateAnnotation,
   sendMessageKey = 'enter',
@@ -3151,6 +3212,7 @@ export const TurnCard = React.memo(function TurnCard({
             messageId={planActivity.messageId}
             annotations={planActivity.annotations}
             onAddAnnotation={onAddAnnotation}
+            onAddNoteSelection={onAddNoteSelection}
             onRemoveAnnotation={onRemoveAnnotation}
             onUpdateAnnotation={onUpdateAnnotation}
             onSaveAndSendFollowUp={onSaveAndSendFollowUp}
@@ -3190,6 +3252,7 @@ export const TurnCard = React.memo(function TurnCard({
                 messageId={response.messageId}
                 annotations={response.annotations}
                 onAddAnnotation={onAddAnnotation}
+                onAddNoteSelection={onAddNoteSelection}
                 onRemoveAnnotation={onRemoveAnnotation}
                 onUpdateAnnotation={onUpdateAnnotation}
                 onSaveAndSendFollowUp={onSaveAndSendFollowUp}
@@ -3222,6 +3285,7 @@ export const TurnCard = React.memo(function TurnCard({
             messageId={response.messageId}
             annotations={response.annotations}
             onAddAnnotation={onAddAnnotation}
+            onAddNoteSelection={onAddNoteSelection}
             onRemoveAnnotation={onRemoveAnnotation}
             onUpdateAnnotation={onUpdateAnnotation}
             onSaveAndSendFollowUp={onSaveAndSendFollowUp}
@@ -3264,6 +3328,7 @@ export const TurnCard = React.memo(function TurnCard({
 
   // Re-render if annotation interaction mode changed (interactive vs tooltip-only)
   if (prev.annotationInteractionMode !== next.annotationInteractionMode) return false
+  if (prev.onAddNoteSelection !== next.onAddNoteSelection) return false
 
   // Re-render if activities changed (important for playground/testing scenarios)
   if (prev.activities !== next.activities) return false

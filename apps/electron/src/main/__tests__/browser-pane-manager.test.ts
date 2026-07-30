@@ -1636,13 +1636,13 @@ describe('BrowserPaneManager', () => {
         quote: 'selected text',
       })
       expect(instance.nativeOverlayView.setBounds).toHaveBeenCalledWith({
-        x: 71,
+        x: 38,
         y: 82,
-        width: 138,
+        width: 204,
         height: 56,
       })
 
-      ;(manager as any).handleSelectionAction(instance, 'add-chat')
+      ;(manager as any).handleSelectionAction(instance, 'add-note')
 
       expect(instance.pendingSelection).toBeNull()
       expect(host.show).toHaveBeenCalled()
@@ -1650,7 +1650,7 @@ describe('BrowserPaneManager', () => {
       expect(actions).toHaveLength(1)
       expect(actions[0].hostWebContentsId).toBe(host.webContents.id)
       expect(actions[0].payload).toMatchObject({
-        action: 'add-chat',
+        action: 'add-note',
         browserId: 'selection-1',
         reference: {
           kind: 'web-selection',
