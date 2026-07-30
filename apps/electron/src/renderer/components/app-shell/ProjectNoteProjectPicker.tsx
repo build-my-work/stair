@@ -21,6 +21,7 @@ interface ProjectNoteProjectOption {
   id: string
   name: string
   color?: string
+  workingDirectory?: string
 }
 
 interface ProjectNoteProjectPickerProps {
@@ -101,7 +102,7 @@ export function ProjectNoteProjectPicker({
                   <CommandItem
                     key={project.id}
                     value={project.id}
-                    disabled={isAssigning}
+                    disabled={isAssigning || !project.workingDirectory}
                     onSelect={() => onSelect(project.id)}
                     className="py-2"
                   >
@@ -109,8 +110,15 @@ export function ProjectNoteProjectPicker({
                       className="h-2.5 w-2.5 shrink-0 rounded-full border border-foreground/10"
                       style={{ backgroundColor: project.color ?? 'currentColor' }}
                     />
-                    <span className="min-w-0 flex-1 truncate text-[13px]">
-                      {project.name}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px]">
+                        {project.name}
+                      </span>
+                      {!project.workingDirectory && (
+                        <span className="block truncate text-[10px] text-muted-foreground">
+                          {t('filesSidebar.noProjectTitle')}
+                        </span>
+                      )}
                     </span>
                     {assigningProjectId === project.id && (
                       <Loader2 className="animate-spin" />

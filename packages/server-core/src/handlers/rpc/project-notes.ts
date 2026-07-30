@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
-import { isAbsolute, extname, relative, resolve, sep } from 'node:path'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { lstat, open, realpath, stat, type FileHandle } from 'node:fs/promises'
 import {
   isSelectionReference,
@@ -11,6 +11,7 @@ import {
 } from '@craft-agent/core/types'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import {
+  isProjectNoteTargetPath,
   RPC_CHANNELS,
   type AppendProjectNoteRequest,
   type AppendProjectNoteResponse,
@@ -103,7 +104,7 @@ function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
     )
 }
 
-function validateMarkdownTargetPath(value: unknown): string {
+function validateProjectNoteTargetPath(value: unknown): string {
   let relativePath: string
   try {
     relativePath = canonicalizeProjectFileRelativePath(value)
@@ -114,11 +115,10 @@ function validateMarkdownTargetPath(value: unknown): string {
     )
   }
 
-  const extension = extname(relativePath).toLowerCase()
-  if (extension !== '.md' && extension !== '.markdown') {
+  if (!isProjectNoteTargetPath(relativePath)) {
     throw projectNoteError(
       'PROJECT_NOTE_TARGET_INVALID',
-      'Note target must be a Markdown file',
+      'Note target must be a .md, .markdown, or .txt file',
     )
   }
   return relativePath
@@ -136,7 +136,7 @@ function validateConfigureRequest(value: unknown): ConfigureProjectNoteTargetReq
     sessionId: validateSessionId(candidate.sessionId),
     relativePath: candidate.relativePath === null
       ? null
-      : validateMarkdownTargetPath(candidate.relativePath),
+      : validateProjectNoteTargetPath(candidate.relativePath),
     projectId: validateProjectId(candidate.projectId),
   }
 }
@@ -156,7 +156,7 @@ function validateAppendRequest(value: unknown): AppendProjectNoteRequest {
     requestId: validateRequestId(candidate.requestId),
     sessionId: validateSessionId(candidate.sessionId),
     projectId: validateProjectId(candidate.projectId),
-    expectedTargetPath: validateMarkdownTargetPath(candidate.expectedTargetPath),
+    expectedTargetPath: validateProjectNoteTargetPath(candidate.expectedTargetPath),
     selection: candidate.selection,
   }
 }
@@ -361,7 +361,7 @@ export async function ensureProjectNoteTarget(
 ): Promise<void> {
   const { handle } = await openExistingTarget(
     rootPath,
-    validateMarkdownTargetPath(relativePath),
+    validateProjectNoteTargetPath(relativePath),
   )
   await handle.close()
 }
@@ -496,7 +496,7 @@ export async function appendProjectNoteWithinRoot(
   relativePath: string,
   entry: string,
 ): Promise<void> {
-  const canonicalPath = validateMarkdownTargetPath(relativePath)
+  const canonicalPath = validateProjectNoteTargetPath(relativePath)
   const canonicalRoot = await realpath(resolve(rootPath))
   const queueKey = `${canonicalRoot}\0${canonicalPath}`
 
@@ -598,7 +598,7 @@ export function resolveExpectedProjectNoteTarget(
   if (!session.projectNoteTargetPath) {
     throw projectNoteError(
       'PROJECT_NOTE_TARGET_REQUIRED',
-      'Choose a Markdown note target for this Session',
+      'Choose a note target for this Session',
     )
   }
   if (session.projectNoteTargetPath !== expectedTargetPath) {

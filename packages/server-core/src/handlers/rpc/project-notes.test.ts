@@ -99,21 +99,33 @@ describe('Project Notes', () => {
     await rm(sandbox, { recursive: true, force: true })
   })
 
-  it('accepts only an existing Markdown target', async () => {
-    await writeFile(join(root, 'existing.md'), '# Existing\n')
+  it('accepts existing Markdown and text note targets', async () => {
+    await Promise.all([
+      writeFile(join(root, 'existing.md'), '# Existing\n'),
+      writeFile(join(root, 'existing.txt'), 'Existing\n'),
+      writeFile(join(root, 'existing.TXT'), 'Existing\n'),
+    ])
 
     await expect(ensureProjectNoteTarget(root, 'existing.md'))
+      .resolves.toBeUndefined()
+    await expect(ensureProjectNoteTarget(root, 'existing.txt'))
+      .resolves.toBeUndefined()
+    await expect(ensureProjectNoteTarget(root, 'existing.TXT'))
       .resolves.toBeUndefined()
     await expect(ensureProjectNoteTarget(root, 'missing.md'))
       .rejects.toThrow(/^PROJECT_NOTE_TARGET_NOT_FOUND:/)
   })
 
-  it('rejects traversal, non-Markdown, missing targets, and directories', async () => {
+  it('rejects traversal, unsupported files, missing targets, and directories', async () => {
     await mkdir(join(root, 'folder.md'))
 
     await expect(ensureProjectNoteTarget(root, '../outside.md'))
       .rejects.toThrow(/^PROJECT_NOTE_TARGET_INVALID:/)
-    await expect(ensureProjectNoteTarget(root, 'notes.txt'))
+    await expect(ensureProjectNoteTarget(root, 'notes.json'))
+      .rejects.toThrow(/^PROJECT_NOTE_TARGET_INVALID:/)
+    await expect(ensureProjectNoteTarget(root, 'notes.mdx'))
+      .rejects.toThrow(/^PROJECT_NOTE_TARGET_INVALID:/)
+    await expect(ensureProjectNoteTarget(root, '.md'))
       .rejects.toThrow(/^PROJECT_NOTE_TARGET_INVALID:/)
     await expect(ensureProjectNoteTarget(root, 'missing/notes.md'))
       .rejects.toThrow(/^PROJECT_NOTE_TARGET_NOT_FOUND:/)
@@ -161,6 +173,85 @@ describe('Project Notes', () => {
         .toHaveLength(1)
     }
     expect(content.endsWith('\n')).toBe(true)
+  })
+
+  it('appends the same safe note format to text targets', async () => {
+    await writeFile(join(root, 'notes.txt'), 'Existing line')
+
+    await appendProjectNoteWithinRoot(root, 'notes.txt', '> 摘录\n')
+
+    expect(await readFile(join(root, 'notes.txt'), 'utf8'))
+      .toBe('Existing line\n\n> 摘录\n')
+  })
+
+  it('configures and appends to a text target through the RPC handlers', async () => {
+    const workspaceRoot = join(sandbox, 'workspace')
+    await mkdir(workspaceRoot)
+    await Promise.all([
+      writeFile(join(root, 'notes.markdown'), ''),
+      writeFile(join(root, 'notes.txt'), ''),
+    ])
+    const project = createProject(workspaceRoot, {
+      name: 'Project',
+      workingDirectory: root,
+    })
+    const workspace = {
+      id: 'workspace',
+      name: 'Workspace',
+      slug: 'workspace',
+      rootPath: workspaceRoot,
+      createdAt: 1,
+    }
+    const workspaceLookup = spyOn(config, 'getWorkspaceByNameOrId')
+      .mockImplementation(id => id === workspace.id ? workspace : null)
+    const session = {
+      id: 'session-1',
+      name: 'Research',
+      workspaceId: workspace.id,
+      projectId: project.id,
+      messages: [],
+    } as unknown as Session
+    const handlers = createHandlerHarness({
+      getSession: async () => session,
+      setSessionProjectNoteTarget: async (
+        sessionId,
+        projectId,
+        relativePath,
+      ) => {
+        if (sessionId !== session.id || projectId !== project.id) return false
+        session.projectNoteTargetPath = relativePath ?? undefined
+        return true
+      },
+    })
+    const configure = handlers.get(RPC_CHANNELS.projectNotes.CONFIGURE_TARGET)!
+    const append = handlers.get(RPC_CHANNELS.projectNotes.APPEND)!
+    const ctx: RequestContext = {
+      clientId: 'client',
+      workspaceId: workspace.id,
+      webContentsId: null,
+    }
+
+    try {
+      await expect(configure(ctx, {
+        sessionId: session.id,
+        projectId: project.id,
+        relativePath: 'notes.markdown',
+      })).resolves.toMatchObject({ relativePath: 'notes.markdown' })
+      await expect(configure(ctx, {
+        sessionId: session.id,
+        projectId: project.id,
+        relativePath: 'notes.txt',
+      })).resolves.toMatchObject({ relativePath: 'notes.txt' })
+
+      await expect(append(ctx, {
+        ...createAppendRequest('request-txt', session.id, project.id),
+        expectedTargetPath: 'notes.txt',
+      })).resolves.toMatchObject({ relativePath: 'notes.txt' })
+      expect(await readFile(join(root, 'notes.txt'), 'utf8'))
+        .toContain('> Evidence')
+    } finally {
+      workspaceLookup.mockRestore()
+    }
   })
 
   it('writes source attribution without allowing selected HTML through', () => {

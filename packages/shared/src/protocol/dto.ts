@@ -653,7 +653,7 @@ export interface ConfigureProjectNoteTargetRequest {
   sessionId: string
   /** Project the Session was bound to when the target was chosen. */
   projectId: string
-  /** Existing Markdown path under the Session's Project; null clears it. */
+  /** Existing .md, .markdown, or .txt path under the Session's Project; null clears it. */
   relativePath: string | null
 }
 

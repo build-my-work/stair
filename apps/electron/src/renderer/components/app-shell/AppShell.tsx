@@ -173,10 +173,8 @@ import { WorkspaceFilesSidebar } from "@/components/right-sidebar/WorkspaceFiles
 import { getProjectForRoute } from "@/lib/project-working-directory"
 import type { LoadedProject } from "@craft-agent/shared/projects/types"
 import { focusExistingProjectSessionPanel } from "./project-session-panel-navigation"
-import {
-  ProjectNoteTargetPicker,
-  withProjectNoteTargetTimeout,
-} from "./ProjectNoteTargetPicker"
+import { ProjectNoteTargetPicker } from "./ProjectNoteTargetPicker"
+import { withProjectNoteTargetTimeout } from "./project-note-target-timeout"
 import { ProjectNoteProjectPicker } from "./ProjectNoteProjectPicker"
 
 /**
@@ -1039,7 +1037,13 @@ function AppShellContent({
 
   const { projects } = useProjects(activeWorkspaceId)
   const projectMenuOptions = useMemo(
-    () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
+    () => projects.map(p => ({
+      id: p.config.id,
+      slug: p.config.slug,
+      name: p.config.name,
+      color: p.config.color,
+      workingDirectory: p.config.workingDirectory,
+    })),
     [projects],
   )
   const handleSessionProjectChange = useCallback(async (sessionId: string, projectId: string | null) => {
@@ -1513,8 +1517,6 @@ function AppShellContent({
   const projectNoteTargetCompletionRef =
     React.useRef<ProjectNoteTargetCompletion | null>(null)
   const projectNoteTargetMountedRef = React.useRef(true)
-  const [projectFilesProjectOverrideId, setProjectFilesProjectOverrideId] =
-    React.useState<string | null>(null)
 
   const appendSelectionToConfiguredTarget = React.useCallback((
     sessionId: string,
@@ -1657,7 +1659,8 @@ function AppShellContent({
     if (
       !current
       || current.phase !== 'choosing-project'
-      || !projectMenuOptions.some(project => project.id === projectId)
+      || !projectMenuOptions.some(project =>
+        project.id === projectId && project.workingDirectory)
     ) {
       return
     }
@@ -1857,14 +1860,6 @@ function AppShellContent({
     }
   }, [finishProjectNoteTargetRequest])
 
-  const handleProjectNoteTargetManageFiles = React.useCallback(() => {
-    const pending = projectNoteTargetRequestRef.current
-    if (!pending || pending.phase !== 'selecting' || !pending.projectId) return
-    setProjectFilesProjectOverrideId(pending.projectId)
-    updateRightSidebar({ type: 'files' })
-    finishProjectNoteTargetRequest(pending.requestId, false)
-  }, [finishProjectNoteTargetRequest, updateRightSidebar])
-
   React.useEffect(() => {
     const pending = projectNoteTargetRequestRef.current
     if (!pending || pending.phase === 'appending') return
@@ -1912,23 +1907,18 @@ function AppShellContent({
       : undefined,
     [rightSidebarOwnerRoute, sessionMetaMap, projects],
   )
-  const projectFilesProjectOverride = projectFilesProjectOverrideId
-    ? projects.find(project => project.config.id === projectFilesProjectOverrideId)
-    : undefined
-  const rightSidebarProject = projectFilesProjectOverride ?? routeProject
+  const rightSidebarProject = routeProject
   const companionOwnerPanelId = focusedPanelId
     ? getPanelOwnerPanelId(panelStack, focusedPanelId) ?? undefined
     : undefined
   const isRightSidebarVisible = navState.rightSidebar?.type === 'files'
   const handleCloseRightSidebar = React.useCallback(() => {
-    setProjectFilesProjectOverrideId(null)
     updateRightSidebar(undefined)
   }, [updateRightSidebar])
   const handleToggleRightSidebar = React.useCallback(() => {
     if (isRightSidebarVisible) {
       handleCloseRightSidebar()
     } else {
-      setProjectFilesProjectOverrideId(null)
       updateRightSidebar({ type: 'files' })
     }
   }, [handleCloseRightSidebar, isRightSidebarVisible, updateRightSidebar])
@@ -4707,6 +4697,7 @@ function AppShellContent({
           open
           projectId={projectNoteTargetRequest.projectId}
           projectName={projectNoteTargetProject?.config.name}
+          rootPath={projectNoteTargetProject?.config.workingDirectory}
           sessionName={projectNoteTargetMeta?.name ?? 'Session'}
           currentPath={projectNoteTargetRequest.selection
             ? undefined
@@ -4714,7 +4705,6 @@ function AppShellContent({
           quote={projectNoteTargetRequest.selection?.quote}
           onSelect={handleProjectNoteTargetSelect}
           onCancel={handleProjectNoteTargetCancel}
-          onManageProjectFiles={handleProjectNoteTargetManageFiles}
           onRestoreFocus={projectNoteTargetRequest.selection
             ? undefined
             : () => focusChatInputForSession(projectNoteTargetRequest.sessionId)}
