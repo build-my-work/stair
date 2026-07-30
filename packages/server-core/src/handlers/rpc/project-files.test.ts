@@ -17,15 +17,18 @@ import { createProject } from '@craft-agent/shared/projects'
 import { deserializeEnvelope, serializeEnvelope } from '../../transport'
 import {
   HANDLED_CHANNELS,
+  EMPTY_DRAWNIX_DOCUMENT,
   MAX_PROJECT_FILE_BINARY_BYTES,
   MAX_PROJECT_FILE_PATH_BYTES,
   MAX_PROJECT_FILE_TEXT_BYTES,
   canonicalizeProjectFileRelativePath,
+  createDrawnixProjectFileWithinRoot,
   createProjectEntryWithinRoot,
   projectFileStatSnapshotsMatch,
   readProjectFileBinaryWithinRoot,
   readProjectFileTextWithinRoot,
   resolveProjectWorkingDirectory,
+  saveDrawnixProjectFileWithinRoot,
   searchProjectFilesWithinRoot,
 } from './project-files'
 import { searchFilesWithinRoot } from './files'
@@ -382,6 +385,90 @@ describe('Project File reads', () => {
     expect(await readFile(join(root, 'existing.md'), 'utf8')).toBe('keep me')
   })
 
+  it('creates a valid empty native Drawnix document', async () => {
+    const file = await createDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-1',
+      name: 'tutorial.drawnix',
+    })
+
+    expect(file.relativePath).toBe('tutorial.drawnix')
+    expect(await readFile(join(root, 'tutorial.drawnix'), 'utf8')).toBe(
+      EMPTY_DRAWNIX_DOCUMENT,
+    )
+    expect(JSON.parse(EMPTY_DRAWNIX_DOCUMENT)).toEqual({
+      type: 'drawnix',
+      version: 1,
+      source: 'web',
+      elements: [],
+      viewport: { zoom: 1 },
+      theme: { themeColorMode: 'default' },
+    })
+
+    await expect(createDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-1',
+      name: 'tutorial.json',
+    })).rejects.toThrow(/^PROJECT_FILE_INVALID_REQUEST:/)
+  })
+
+  it('saves Drawnix atomically with a fingerprint compare-and-swap', async () => {
+    await writeFile(join(root, 'tutorial.drawnix'), EMPTY_DRAWNIX_DOCUMENT)
+    const opened = await readProjectFileTextWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'tutorial.drawnix',
+    })
+    expect(opened.metadata.mimeType).toBe('application/vnd.drawnix+json')
+    const changed = JSON.stringify({
+      ...JSON.parse(EMPTY_DRAWNIX_DOCUMENT),
+      elements: [{ id: 'root', type: 'mind', children: [] }],
+    }, null, 2)
+
+    const saved = await saveDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'tutorial.drawnix',
+      expectedFingerprint: opened.sourceFingerprint,
+      content: changed,
+    })
+    expect(await readFile(join(root, 'tutorial.drawnix'), 'utf8')).toBe(changed)
+    expect(saved.sourceFingerprint).toBe(
+      `sha256:${createHash('sha256').update(changed).digest('hex')}`,
+    )
+    expect(saved.metadata.mimeType).toBe('application/vnd.drawnix+json')
+
+    await expect(saveDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'tutorial.drawnix',
+      expectedFingerprint: opened.sourceFingerprint,
+      content: EMPTY_DRAWNIX_DOCUMENT,
+    })).rejects.toThrow(/^PROJECT_FILE_CHANGED:/)
+    expect(await readFile(join(root, 'tutorial.drawnix'), 'utf8')).toBe(changed)
+  })
+
+  it('rejects invalid Drawnix saves and detects external changes', async () => {
+    await writeFile(join(root, 'tutorial.drawnix'), EMPTY_DRAWNIX_DOCUMENT)
+    const opened = await readProjectFileTextWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'tutorial.drawnix',
+    })
+
+    await expect(saveDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'tutorial.drawnix',
+      expectedFingerprint: opened.sourceFingerprint,
+      content: '{"type":"not-drawnix"}',
+    })).rejects.toThrow(/^PROJECT_FILE_INVALID_REQUEST:/)
+
+    await writeFile(join(root, 'tutorial.drawnix'), JSON.stringify({
+      ...JSON.parse(EMPTY_DRAWNIX_DOCUMENT),
+      elements: [{ id: 'external-change' }],
+    }))
+    await expect(saveDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'tutorial.drawnix',
+      expectedFingerprint: opened.sourceFingerprint,
+      content: EMPTY_DRAWNIX_DOCUMENT,
+    })).rejects.toThrow(/^PROJECT_FILE_CHANGED:/)
+  })
+
   it('rejects invalid names, missing parents, and symlink parents', async () => {
     for (const name of ['', '.', '..', ' nested', 'nested ', 'a/b', 'a\\b']) {
       await expect(createProjectEntryWithinRoot(root, {
@@ -420,7 +507,9 @@ describe('Project File reads', () => {
       'projectFiles:search',
       'projectFiles:listDirectoryEntries',
       'projectFiles:createFile',
+      'projectFiles:createDrawnixFile',
       'projectFiles:createDirectory',
+      'projectFiles:saveDrawnixFile',
     ])
   })
 })

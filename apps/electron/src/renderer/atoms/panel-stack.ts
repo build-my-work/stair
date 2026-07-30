@@ -306,7 +306,8 @@ export const setCompanionChatTargetAtom = atom(
 
 /**
  * Open one reusable Project File companion per physical navigation owner.
- * Reference navigation may instead focus an already-open matching file.
+ * Drawnix files always reuse the one visible board for that Project File.
+ * Reference navigation may also focus an already-open matching file.
  */
 export const openOrReuseProjectFileAtom = atom(
   null,
@@ -335,7 +336,10 @@ export const openOrReuseProjectFileAtom = atom(
       relativePath: input.relativePath,
       contextRoute: input.contextRoute,
     })
-    const existingFile = input.preferExistingFile
+    const existingFile = (
+      input.preferExistingFile
+      || input.relativePath.toLowerCase().endsWith('.drawnix')
+    )
       ? stack.find(entry => (
           isProjectFileRoute(entry.route)
           && entry.route.projectId === input.projectId
@@ -584,7 +588,16 @@ export const restorePanelLayoutAtom = atom(
   null,
   (_get, set, layout: SerializedPanelLayoutV2) => {
     const sessionIds = new Set<string>()
+    const drawnixFiles = new Set<string>()
     for (const entry of layout.entries) {
+      if (
+        isProjectFileRoute(entry.route)
+        && entry.route.relativePath.toLowerCase().endsWith('.drawnix')
+      ) {
+        const key = `${entry.route.projectId}\0${entry.route.relativePath}`
+        if (drawnixFiles.has(key)) return false
+        drawnixFiles.add(key)
+      }
       if (entry.route.kind !== 'navigation') continue
       const sessionId = parseSessionIdFromRoute(entry.route)
       if (!sessionId) continue

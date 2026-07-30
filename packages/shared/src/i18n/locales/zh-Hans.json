@@ -487,6 +487,8 @@
   "filesSidebar.newFileName": "新文件名称",
   "filesSidebar.newFolder": "新建文件夹",
   "filesSidebar.newFolderName": "新文件夹名称",
+  "filesSidebar.newMindMap": "新建脑图",
+  "filesSidebar.newMindMapName": "新脑图名称",
   "filesSidebar.noMatches": "没有匹配的文件。",
   "filesSidebar.noProjectDescription": "请选择已绑定项目且项目已配置工作目录的会话。",
   "filesSidebar.noProjectTitle": "没有项目目录",

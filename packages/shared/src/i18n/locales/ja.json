@@ -487,6 +487,8 @@
   "filesSidebar.newFileName": "新規ファイル名",
   "filesSidebar.newFolder": "新規フォルダ",
   "filesSidebar.newFolderName": "新規フォルダ名",
+  "filesSidebar.newMindMap": "新規マインドマップ",
+  "filesSidebar.newMindMapName": "新規マインドマップ名",
   "filesSidebar.noMatches": "一致するファイルはありません。",
   "filesSidebar.noProjectDescription": "作業ディレクトリが設定されたプロジェクトに紐づくセッションを選択してください。",
   "filesSidebar.noProjectTitle": "プロジェクトフォルダなし",

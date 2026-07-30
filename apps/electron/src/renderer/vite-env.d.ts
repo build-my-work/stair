@@ -26,3 +26,5 @@ declare module "*.pdf?url" {
   const src: string
   export default src
 }
+
+declare module "@drawnix/drawnix/index.css"

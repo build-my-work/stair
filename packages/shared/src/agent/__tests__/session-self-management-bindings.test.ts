@@ -146,6 +146,42 @@ describe('attachSessionSelfManagementBindings', () => {
     expect(ctx.setSessionLabels).toBeDefined();
   });
 
+  it('exposes late-bound live mind-map callbacks without wrapping their requests', async () => {
+    const ctx = createBaseContext(sessionId);
+    attachSessionSelfManagementBindings(ctx, sessionId);
+    expect(ctx.readMindmap).toBeUndefined();
+    expect(ctx.updateMindmap).toBeUndefined();
+
+    const updates: unknown[] = [];
+    registerSessionScopedToolCallbacks(sessionId, {
+      readMindmapFn: async (relativePath) => ({
+        relativePath,
+        changeSeq: 7,
+        roots: [],
+      }),
+      updateMindmapFn: async (request) => {
+        updates.push(request);
+        return {
+          relativePath: request.relativePath,
+          changeSeq: request.expectedChangeSeq + 1,
+          roots: [],
+        };
+      },
+    });
+
+    expect(await ctx.readMindmap!('maps/tutorial.drawnix')).toMatchObject({
+      relativePath: 'maps/tutorial.drawnix',
+      changeSeq: 7,
+    });
+    const request = {
+      relativePath: 'maps/tutorial.drawnix',
+      expectedChangeSeq: 7,
+      operations: [{ type: 'populate_empty' as const, markdown: '# Tutorial' }],
+    };
+    expect(await ctx.updateMindmap!(request)).toMatchObject({ changeSeq: 8 });
+    expect(updates).toEqual([request]);
+  });
+
   it('callback replacement is visible without recreating the context', () => {
     const ctx = createBaseContext(sessionId);
     attachSessionSelfManagementBindings(ctx, sessionId);

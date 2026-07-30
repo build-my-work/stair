@@ -487,6 +487,8 @@
   "filesSidebar.newFileName": "Nombre del archivo nuevo",
   "filesSidebar.newFolder": "Nueva carpeta",
   "filesSidebar.newFolderName": "Nombre de la carpeta nueva",
+  "filesSidebar.newMindMap": "Nuevo mapa mental",
+  "filesSidebar.newMindMapName": "Nombre del mapa mental nuevo",
   "filesSidebar.noMatches": "No hay archivos coincidentes.",
   "filesSidebar.noProjectDescription": "Selecciona una sesión vinculada a un proyecto con un directorio de trabajo.",
   "filesSidebar.noProjectTitle": "Sin carpeta de proyecto",

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  BrainCircuit,
   Braces,
   ChevronRight,
   File,
@@ -38,7 +39,7 @@ interface DirectoryState {
   truncated?: boolean
 }
 
-type CreateEntryKind = 'file' | 'directory'
+type CreateEntryKind = 'file' | 'directory' | 'mindmap'
 
 interface InlineCreateState {
   id: number
@@ -68,6 +69,9 @@ function fileIcon(name: string) {
   const extension = name.split('.').pop()?.toLowerCase()
   const className = 'h-3.5 w-3.5 shrink-0 text-muted-foreground/75'
 
+  if (extension === 'drawnix') {
+    return <BrainCircuit className={className} />
+  }
   if (['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'rb', 'sh'].includes(extension ?? '')) {
     return <FileCode2 className={className} />
   }
@@ -177,6 +181,12 @@ function TreeEntry({
               {t('filesSidebar.newFile')}
             </StyledContextMenuItem>
             <StyledContextMenuItem
+              onSelect={() => createActions.begin('mindmap', entry.relativePath)}
+            >
+              <BrainCircuit />
+              {t('filesSidebar.newMindMap')}
+            </StyledContextMenuItem>
+            <StyledContextMenuItem
               onSelect={() => createActions.begin('directory', entry.relativePath)}
             >
               <FolderPlus />
@@ -271,6 +281,22 @@ function InlineCreateEntry({
     if (state.error) inputRef.current?.focus()
   }, [state.error])
 
+  let entryIcon = (
+    <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground/75" />
+  )
+  let nameLabel = t('filesSidebar.newFileName')
+  if (state.kind === 'directory') {
+    entryIcon = (
+      <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
+    )
+    nameLabel = t('filesSidebar.newFolderName')
+  } else if (state.kind === 'mindmap') {
+    entryIcon = (
+      <BrainCircuit className="h-3.5 w-3.5 shrink-0 text-muted-foreground/75" />
+    )
+    nameLabel = t('filesSidebar.newMindMapName')
+  }
+
   return (
     <div
       className="py-0.5 pr-2"
@@ -278,9 +304,7 @@ function InlineCreateEntry({
     >
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="w-3.5 shrink-0" />
-        {state.kind === 'directory'
-          ? <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
-          : <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground/75" />}
+        {entryIcon}
         <input
           ref={inputRef}
           value={state.name}
@@ -299,9 +323,7 @@ function InlineCreateEntry({
           onBlur={() => {
             if (!state.submitting) onCancel()
           }}
-          aria-label={state.kind === 'directory'
-            ? t('filesSidebar.newFolderName')
-            : t('filesSidebar.newFileName')}
+          aria-label={nameLabel}
           aria-invalid={Boolean(state.error)}
           className={cn(
             'h-6 min-w-0 flex-1 rounded-[4px] border bg-background px-1.5 text-xs outline-none',
@@ -484,12 +506,12 @@ export function WorkspaceFilesSidebar({
   const handleInlineCreateSubmit = useCallback(async () => {
     if (!inlineCreate || inlineCreate.submitting || !projectId) return
     const pendingCreate = inlineCreate
-    const name = pendingCreate.name
-    const trimmedName = name.trim()
+    const inputName = pendingCreate.name
+    const trimmedName = inputName.trim()
     let validationError: string | undefined
     if (!trimmedName) {
       validationError = t('filesSidebar.createEnterName')
-    } else if (name !== trimmedName) {
+    } else if (inputName !== trimmedName) {
       validationError = t('filesSidebar.createTrimName')
     }
     if (validationError) {
@@ -499,6 +521,13 @@ export function WorkspaceFilesSidebar({
       return
     }
 
+    let name = inputName
+    if (
+      pendingCreate.kind === 'mindmap'
+      && !name.toLowerCase().endsWith('.drawnix')
+    ) {
+      name += '.drawnix'
+    }
     const generation = requestGenerationRef.current
     const request = {
       projectId,
@@ -510,9 +539,14 @@ export function WorkspaceFilesSidebar({
       : previous)
 
     try {
-      const created = pendingCreate.kind === 'directory'
-        ? await window.electronAPI.createProjectDirectory(request)
-        : await window.electronAPI.createProjectFile(request)
+      let created: ProjectDirectoryEntry
+      if (pendingCreate.kind === 'directory') {
+        created = await window.electronAPI.createProjectDirectory(request)
+      } else if (pendingCreate.kind === 'mindmap') {
+        created = await window.electronAPI.createDrawnixProjectFile(request)
+      } else {
+        created = await window.electronAPI.createProjectFile(request)
+      }
       if (generation !== requestGenerationRef.current) return
 
       setInlineCreate(null)
@@ -590,6 +624,11 @@ export function WorkspaceFilesSidebar({
                   icon={<FilePlus2 className="h-3.5 w-3.5" />}
                   tooltip={t('filesSidebar.newFile')}
                   onClick={() => handleBeginCreate('file')}
+                />
+                <PanelHeaderCenterButton
+                  icon={<BrainCircuit className="h-3.5 w-3.5" />}
+                  tooltip={t('filesSidebar.newMindMap')}
+                  onClick={() => handleBeginCreate('mindmap')}
                 />
                 <PanelHeaderCenterButton
                   icon={<FolderPlus className="h-3.5 w-3.5" />}

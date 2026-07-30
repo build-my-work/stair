@@ -5,6 +5,10 @@
  */
 
 import type { BrowserCapabilityRequest } from './browser-capability'
+import type {
+  DrawnixBoardCapabilityRequest,
+  DrawnixBoardCapabilityResponse,
+} from './drawnix-board-capability'
 import type { RpcServer } from './types'
 import type {
   SaveTextFileRequest,
@@ -32,6 +36,9 @@ export const CLIENT_SAVE_TEXT_FILE = 'client:saveTextFile'
 /** Capability: drive a local `BrowserPaneManager` instance for a remote agent. */
 export const CLIENT_BROWSER_INVOKE = 'client:browser:invoke'
 
+/** Capability: read or transform a Drawnix board currently visible in the client. */
+export const CLIENT_DRAWNIX_BOARD_INVOKE = 'client:drawnixBoard:invoke'
+
 /** All capabilities a local Electron client advertises on handshake. */
 export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
   CLIENT_OPEN_EXTERNAL,
@@ -41,6 +48,7 @@ export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
   CLIENT_OPEN_FILE_DIALOG,
   CLIENT_SAVE_TEXT_FILE,
   CLIENT_BROWSER_INVOKE,
+  CLIENT_DRAWNIX_BOARD_INVOKE,
 ]
 
 // ---------------------------------------------------------------------------
@@ -166,4 +174,16 @@ export async function requestClientBrowserInvoke<T>(
   req: BrowserCapabilityRequest,
 ): Promise<T> {
   return server.invokeClient(clientId, CLIENT_BROWSER_INVOKE, req) as Promise<T>
+}
+
+export async function requestClientDrawnixBoardInvoke(
+  server: RpcServer,
+  clientId: string,
+  request: DrawnixBoardCapabilityRequest,
+): Promise<DrawnixBoardCapabilityResponse> {
+  return server.invokeClient(
+    clientId,
+    CLIENT_DRAWNIX_BOARD_INVOKE,
+    request,
+  ) as Promise<DrawnixBoardCapabilityResponse>
 }

@@ -1,0 +1,9 @@
+@import '@drawnix/drawnix/index.css';
+
+.stair-drawnix-host .drawnix .app-toolbar {
+  display: none;
+}
+
+.stair-drawnix-host .drawnix {
+  height: 100%;
+}

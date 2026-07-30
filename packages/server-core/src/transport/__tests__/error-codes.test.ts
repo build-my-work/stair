@@ -12,7 +12,12 @@
 import { describe, it, expect, afterEach } from 'bun:test'
 import { WsRpcServer } from '../server'
 import { WsRpcClient } from '../client'
-import { CLIENT_BROWSER_INVOKE } from '../capabilities'
+import {
+  CLIENT_BROWSER_INVOKE,
+  CLIENT_DRAWNIX_BOARD_INVOKE,
+  LOCAL_CLIENT_CAPABILITIES,
+  requestClientDrawnixBoardInvoke,
+} from '../capabilities'
 import { CodedError } from '@craft-agent/shared/protocol'
 
 const TEST_TOKEN = 'test-token-with-enough-entropy-to-pass'
@@ -116,6 +121,50 @@ describe('Transport — error code preservation', () => {
 })
 
 describe('Transport — capability introspection', () => {
+  it('round-trips a visible Drawnix Board request through the client capability', async () => {
+    const { server, client } = await startPair({
+      clientCapabilities: [CLIENT_DRAWNIX_BOARD_INVOKE],
+    })
+    const requests: unknown[] = []
+    client.handleCapability(CLIENT_DRAWNIX_BOARD_INVOKE, request => {
+      requests.push(request)
+      return {
+        ok: true,
+        snapshot: {
+          relativePath: 'maps/tutorial.drawnix',
+          changeSeq: 2,
+          roots: [],
+        },
+      }
+    })
+    const clientId = server.findClientsWithCapability(
+      CLIENT_DRAWNIX_BOARD_INVOKE,
+    )[0]!
+    const request = {
+      v: 1 as const,
+      action: 'read' as const,
+      projectId: 'project-1',
+      relativePath: 'maps/tutorial.drawnix',
+    }
+
+    expect(await requestClientDrawnixBoardInvoke(
+      server,
+      clientId,
+      request,
+    )).toEqual({
+      ok: true,
+      snapshot: {
+        relativePath: 'maps/tutorial.drawnix',
+        changeSeq: 2,
+        roots: [],
+      },
+    })
+    expect(requests).toEqual([request])
+    expect(LOCAL_CLIENT_CAPABILITIES).toContain(
+      CLIENT_DRAWNIX_BOARD_INVOKE,
+    )
+  })
+
   it('hasClientCapability returns true only for advertised capabilities', async () => {
     const { server } = await startPair({ clientCapabilities: [CLIENT_BROWSER_INVOKE] })
     const ids = server.findClientsWithCapability(CLIENT_BROWSER_INVOKE)

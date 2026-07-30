@@ -501,6 +501,44 @@ describe('panel stack content routes', () => {
     ])
   })
 
+  it('keeps one visible Drawnix Board across physical owners', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    store.set(pushPanelAtom, { route: 'allSessions/session/s2' })
+    const [firstOwner, secondOwner] = getStack(store)
+
+    openProjectFile(
+      store,
+      firstOwner.id,
+      'maps/tutorial.drawnix',
+      'allSessions/session/s1',
+    )
+    const boardPanel = getStack(store).find(entry => (
+      entry.route.kind === 'projectFile'
+      && entry.route.relativePath === 'maps/tutorial.drawnix'
+    ))!
+
+    openProjectFile(
+      store,
+      secondOwner.id,
+      'maps/tutorial.drawnix',
+      'allSessions/session/s2',
+    )
+
+    expect(getStack(store)).toHaveLength(3)
+    expect(getStack(store).filter(entry => (
+      entry.route.kind === 'projectFile'
+      && entry.route.relativePath === 'maps/tutorial.drawnix'
+    ))).toHaveLength(1)
+    expect(store.get(focusedPanelIdAtom)).toBe(boardPanel.id)
+    expect(getStack(store).find(entry => entry.id === boardPanel.id)).toMatchObject({
+      ownerPanelId: firstOwner.id,
+      route: {
+        contextRoute: 'allSessions/session/s1',
+      },
+    })
+  })
+
   it('reuses a matching non-focused orphan for a preferred reference without rebinding it', () => {
     const store = createStore()
     store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
@@ -708,6 +746,39 @@ describe('panel stack content routes', () => {
     expect(restored).toBe(false)
     expect(getStack(store)).toEqual([])
     expect(store.get(focusedPanelIdAtom)).toBeNull()
+  })
+
+  it('rejects a restored layout with duplicate Drawnix Boards', () => {
+    const store = createStore()
+    const restored = store.set(restorePanelLayoutAtom, {
+      version: 2,
+      entries: [
+        {
+          key: 'p0',
+          route: {
+            kind: 'projectFile',
+            projectId: 'project-1',
+            relativePath: 'maps/tutorial.drawnix',
+            contextRoute: 'allSessions/session/s1',
+          },
+          widthRatio: 0.47,
+        },
+        {
+          key: 'p1',
+          route: {
+            kind: 'projectFile',
+            projectId: 'project-1',
+            relativePath: 'maps/tutorial.drawnix',
+            contextRoute: 'allSessions/session/s2',
+          },
+          widthRatio: 0.60,
+        },
+      ],
+      focusedKey: 'p1',
+    })
+
+    expect(restored).toBe(false)
+    expect(getStack(store)).toEqual([])
   })
 
   it('does not create more than eight panels', () => {

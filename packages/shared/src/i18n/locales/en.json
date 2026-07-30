@@ -487,6 +487,8 @@
   "filesSidebar.newFileName": "New file name",
   "filesSidebar.newFolder": "New Folder",
   "filesSidebar.newFolderName": "New folder name",
+  "filesSidebar.newMindMap": "New Mind Map",
+  "filesSidebar.newMindMapName": "New mind map name",
   "filesSidebar.noMatches": "No matching files.",
   "filesSidebar.noProjectDescription": "Select a session linked to a project with a working directory.",
   "filesSidebar.noProjectTitle": "No project folder",

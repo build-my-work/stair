@@ -87,6 +87,14 @@ export interface SessionScopedToolCallbacks {
   createTaskFn?: (
     input: import('@craft-agent/session-tools-core').CreateTaskInput
   ) => Promise<import('@craft-agent/session-tools-core').CreateTaskResult>;
+  /** Read the current live outline of an open Drawnix Project File. */
+  readMindmapFn?: (
+    relativePath: string
+  ) => Promise<import('@craft-agent/session-tools-core').MindmapSnapshot>;
+  /** Apply transforms to the same live Drawnix board. */
+  updateMindmapFn?: (
+    request: import('@craft-agent/session-tools-core').MindmapUpdateRequest
+  ) => Promise<import('@craft-agent/session-tools-core').MindmapSnapshot>;
 }
 
 // Registry of callbacks keyed by sessionId

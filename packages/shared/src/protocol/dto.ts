@@ -627,6 +627,25 @@ export interface ProjectFileTextResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Drawnix Project Files
+// ---------------------------------------------------------------------------
+
+/**
+ * Saves the native JSON emitted by the currently open Drawnix board.
+ * `expectedFingerprint` makes external or stale writes fail closed.
+ */
+export interface SaveDrawnixProjectFileRequest extends ProjectFileRequest {
+  expectedFingerprint: SourceFingerprint
+  content: string
+}
+
+export interface SaveDrawnixProjectFileResponse {
+  metadata: ProjectFileMetadata
+  /** SHA-256 of exactly the UTF-8 bytes persisted by this save. */
+  sourceFingerprint: SourceFingerprint
+}
+
+// ---------------------------------------------------------------------------
 // Project Notes
 // ---------------------------------------------------------------------------
 

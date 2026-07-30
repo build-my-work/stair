@@ -78,3 +78,9 @@ export { handleCreateTask } from './create-task.ts';
 export type { CreateTaskArgs } from './create-task.ts';
 export { handleArchiveSession } from './archive-session.ts';
 export type { ArchiveSessionArgs } from './archive-session.ts';
+
+// Drawnix mind maps
+export { handleMindmapRead } from './mindmap-read.ts';
+export type { MindmapReadArgs } from './mindmap-read.ts';
+export { handleMindmapUpdate } from './mindmap-update.ts';
+export type { MindmapUpdateArgs } from './mindmap-update.ts';

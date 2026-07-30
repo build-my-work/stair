@@ -22,6 +22,7 @@ const {
 
 describe('ProjectFilePage classification', () => {
   it.each([
+    ['maps/tutorial.drawnix', 'drawnix'],
     ['books/os.epub', 'epub'],
     ['docs/guide.pdf', 'pdf'],
     ['images/cover.png', 'image'],
@@ -36,6 +37,7 @@ describe('ProjectFilePage classification', () => {
 
   it.each([
     ['epub', true, 'binary', 'readProjectFileBinary'],
+    ['drawnix', true, 'text', 'readProjectFileText'],
     ['markdown', true, 'text', 'readProjectFileText'],
     ['unknown', false, 'unsupported', null],
   ] as const)(

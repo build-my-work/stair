@@ -136,6 +136,10 @@ export type {
   ResolvedStatusResult,
   CreateTaskInput,
   CreateTaskResult,
+  MindmapOutlineNode,
+  MindmapSnapshot,
+  MindmapUpdateOperation,
+  MindmapUpdateRequest,
 } from './context.ts';
 
 export { createNodeFileSystem } from './context.ts';
@@ -169,6 +173,8 @@ export {
   handleRenderTemplate,
   // Send Developer Feedback
   handleSendDeveloperFeedback,
+  handleMindmapRead,
+  handleMindmapUpdate,
 } from './handlers/index.ts';
 
 export type {
@@ -187,6 +193,8 @@ export type {
   ScriptSandboxArgs,
   RenderTemplateArgs,
   SendDeveloperFeedbackArgs,
+  MindmapReadArgs,
+  MindmapUpdateArgs,
 } from './handlers/index.ts';
 
 // Tool definitions — single source of truth
@@ -204,6 +212,8 @@ export {
   TransformDataSchema,
   ScriptSandboxSchema,
   RenderTemplateSchema,
+  MindmapReadSchema,
+  MindmapUpdateSchema,
   // Browser tool schema
   BrowserToolSchema,
   // Developer feedback schema

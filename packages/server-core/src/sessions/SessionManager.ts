@@ -1,5 +1,9 @@
 import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
-import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
+import {
+  CLIENT_BROWSER_INVOKE,
+  CLIENT_DRAWNIX_BOARD_INVOKE,
+  requestClientDrawnixBoardInvoke,
+} from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
@@ -1362,6 +1366,8 @@ export class SessionManager implements ISessionManager {
   private remoteBpms = new Map<string, RemoteBrowserPaneManager>()
   /** Pinned desktop client per session for `client:browser:invoke` routing. */
   private browserHostByCanvas = new Map<string, string>()
+  /** Pinned desktop client per session for the visible Drawnix board bridge. */
+  private drawnixHostBySession = new Map<string, string>()
   private eventSink: EventSink | null = null
 
   setEventSink(sink: EventSink): void {
@@ -1431,16 +1437,19 @@ export class SessionManager implements ISessionManager {
   private setLastMessageClientId(sid: string, callerClientId: string | undefined): void {
     if (!callerClientId) return
     this.browserHostByCanvas.set(sid, callerClientId)
+    this.drawnixHostBySession.set(sid, callerClientId)
   }
 
   /**
-   * Called by the transport bootstrap on `onClientDisconnected`. Drops any
-   * pins held by `clientId` so the next browser tool call re-resolves via
-   * {@link findClientsWithCapability} instead of trying to ship to a dead client.
+   * Drop pins held by a disconnected client so the next client-hosted tool
+   * call resolves another compatible client.
    */
   onClientDisconnected(clientId: string): void {
     for (const [sid, pinned] of this.browserHostByCanvas) {
       if (pinned === clientId) this.browserHostByCanvas.delete(sid)
+    }
+    for (const [sid, pinned] of this.drawnixHostBySession) {
+      if (pinned === clientId) this.drawnixHostBySession.delete(sid)
     }
   }
 
@@ -1464,6 +1473,27 @@ export class SessionManager implements ISessionManager {
     const fallback = candidates[0]
     if (!fallback) return null
     this.browserHostByCanvas.set(sid, fallback)
+    return fallback
+  }
+
+  private getDrawnixHostClient(sid: string): string | null {
+    if (!this.rpcServer) return null
+    const pinned = this.drawnixHostBySession.get(sid)
+    if (pinned && this.rpcServer.hasClientCapability(
+      pinned,
+      CLIENT_DRAWNIX_BOARD_INVOKE,
+    )) {
+      return pinned
+    }
+    const session = this.sessions.get(sid)
+    if (!session) return null
+    const candidates = this.rpcServer.findClientsWithCapability(
+      CLIENT_DRAWNIX_BOARD_INVOKE,
+      { workspaceId: session.workspace.id },
+    )
+    const fallback = candidates[0]
+    if (!fallback) return null
+    this.drawnixHostBySession.set(sid, fallback)
     return fallback
   }
 
@@ -4451,6 +4481,68 @@ export class SessionManager implements ISessionManager {
           const created = await createTaskFromSpec(this, ws.id, ws.rootPath, parsed.data)
           return { ...created, warnings: [...warnings, ...created.warnings] }
         },
+        readMindmapFn: async (relativePath) => {
+          if (!managed.projectId) {
+            throw new Error(
+              'MINDMAP_NO_PROJECT: This Session is not linked to a Project.',
+            )
+          }
+          const clientId = this.getDrawnixHostClient(managed.id)
+          if (!clientId || !this.rpcServer) {
+            throw new Error(
+              'MINDMAP_NO_CLIENT: No connected Stair client can access an open Drawnix board.',
+            )
+          }
+          const response = await requestClientDrawnixBoardInvoke(
+            this.rpcServer,
+            clientId,
+            {
+              v: 1,
+              action: 'read',
+              projectId: managed.projectId,
+              relativePath,
+            },
+          )
+          if (!response.ok) {
+            throw Object.assign(
+              new Error(`${response.error.code}: ${response.error.message}`),
+              { code: response.error.code },
+            )
+          }
+          return response.snapshot
+        },
+        updateMindmapFn: async (request) => {
+          if (!managed.projectId) {
+            throw new Error(
+              'MINDMAP_NO_PROJECT: This Session is not linked to a Project.',
+            )
+          }
+          const clientId = this.getDrawnixHostClient(managed.id)
+          if (!clientId || !this.rpcServer) {
+            throw new Error(
+              'MINDMAP_NO_CLIENT: No connected Stair client can access an open Drawnix board.',
+            )
+          }
+          const response = await requestClientDrawnixBoardInvoke(
+            this.rpcServer,
+            clientId,
+            {
+              v: 1,
+              action: 'update',
+              projectId: managed.projectId,
+              relativePath: request.relativePath,
+              expectedChangeSeq: request.expectedChangeSeq,
+              operations: request.operations,
+            },
+          )
+          if (!response.ok) {
+            throw Object.assign(
+              new Error(`${response.error.code}: ${response.error.message}`),
+              { code: response.error.code },
+            )
+          }
+          return response.snapshot
+        },
         getSessionInfoFn: (sessionId?: string) => {
           const targetId = sessionId ?? managed.id
           const session = this.sessions.get(targetId)
@@ -5826,6 +5918,7 @@ export class SessionManager implements ISessionManager {
     // Drop the per-session remote bridge + host-client pin on destroy.
     this.remoteBpms.delete(sessionId)
     this.browserHostByCanvas.delete(sessionId)
+    this.drawnixHostBySession.delete(sessionId)
 
     // Dispose agent to clean up ConfigWatchers, event listeners, MCP connections
     if (managed.agent) {

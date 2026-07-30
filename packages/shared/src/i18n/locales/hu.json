@@ -487,6 +487,8 @@
   "filesSidebar.newFileName": "Új fájl neve",
   "filesSidebar.newFolder": "Új mappa",
   "filesSidebar.newFolderName": "Új mappa neve",
+  "filesSidebar.newMindMap": "Új gondolattérkép",
+  "filesSidebar.newMindMapName": "Új gondolattérkép neve",
   "filesSidebar.noMatches": "Nincs egyező fájl.",
   "filesSidebar.noProjectDescription": "Válassz munkakönyvtárral rendelkező projekthez kapcsolt munkamenetet.",
   "filesSidebar.noProjectTitle": "Nincs projektmappa",

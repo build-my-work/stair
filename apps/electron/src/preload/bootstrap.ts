@@ -32,9 +32,16 @@ import {
   CLIENT_OPEN_FILE_DIALOG,
   CLIENT_SAVE_TEXT_FILE,
   CLIENT_BROWSER_INVOKE,
+  CLIENT_DRAWNIX_BOARD_INVOKE,
   LOCAL_CLIENT_CAPABILITIES,
 } from '@craft-agent/server-core/transport'
-import type { ConfirmDialogSpec, FileDialogSpec, BrowserCapabilityRequest } from '@craft-agent/server-core/transport'
+import type {
+  BrowserCapabilityRequest,
+  ConfirmDialogSpec,
+  DrawnixBoardCapabilityRequest,
+  DrawnixBoardCapabilityResponse,
+  FileDialogSpec,
+} from '@craft-agent/server-core/transport'
 import type { SaveTextFileRequest } from '@craft-agent/shared/protocol'
 import type { RpcClient } from '@craft-agent/server-core/transport'
 import type { RemoteServerConfig } from '@craft-agent/core/types'
@@ -191,6 +198,38 @@ client.handleCapability(CLIENT_BROWSER_INVOKE, async (req: BrowserCapabilityRequ
   return await ipcRenderer.invoke('__browser:invoke', req)
 })
 
+let drawnixBoardHandler:
+  | ((request: DrawnixBoardCapabilityRequest) => Promise<DrawnixBoardCapabilityResponse>)
+  | null = null
+
+client.handleCapability(
+  CLIENT_DRAWNIX_BOARD_INVOKE,
+  async (request: DrawnixBoardCapabilityRequest): Promise<DrawnixBoardCapabilityResponse> => {
+    if (!drawnixBoardHandler) {
+      return {
+        ok: false,
+        error: {
+          code: 'MINDMAP_BOARD_UNAVAILABLE',
+          message: 'The Drawnix board bridge is not ready in this client.',
+        },
+      }
+    }
+    try {
+      return await drawnixBoardHandler(request)
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          code: typeof (error as { code?: unknown })?.code === 'string'
+            ? (error as { code: string }).code
+            : 'MINDMAP_BOARD_ERROR',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }
+    }
+  },
+)
+
 // ---------------------------------------------------------------------------
 // Build ElectronAPI proxy
 // ---------------------------------------------------------------------------
@@ -198,6 +237,11 @@ client.handleCapability(CLIENT_BROWSER_INVOKE, async (req: BrowserCapabilityRequ
 const api = buildClientApi(client, CHANNEL_MAP, (ch) => client.isChannelAvailable(ch))
 
 ;(api as any).getRuntimeEnvironment = (): 'electron' | 'web' => 'electron'
+;(api as any).setDrawnixBoardCapabilityHandler = (
+  handler: ((request: DrawnixBoardCapabilityRequest) => Promise<DrawnixBoardCapabilityResponse>) | null,
+) => {
+  drawnixBoardHandler = handler
+}
 
 // ---------------------------------------------------------------------------
 // Transport connection state logging (for remote connections)

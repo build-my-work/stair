@@ -29,6 +29,7 @@ type ApiToChannelMapKeys = Exclude<
   | 'onTransferProgress' // direct IPC listener — chunk upload progress
   | 'changeLanguage' // direct IPC to main process — syncs i18n language
   | 'getFilePath' // renderer-local — webUtils.getPathForFile, no IPC round-trip
+  | 'setDrawnixBoardCapabilityHandler' // renderer-local — handles the visible Board
 > | BrowserPaneKeys
 type ChannelMapKeys = keyof typeof CHANNEL_MAP & string
 
@@ -82,9 +83,17 @@ describe('CHANNEL_MAP runtime contract', () => {
       type: 'invoke',
       channel: RPC_CHANNELS.projectFiles.CREATE_FILE,
     })
+    expect(CHANNEL_MAP.createDrawnixProjectFile).toEqual({
+      type: 'invoke',
+      channel: RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE,
+    })
     expect(CHANNEL_MAP.createProjectDirectory).toEqual({
       type: 'invoke',
       channel: RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
+    })
+    expect(CHANNEL_MAP.saveDrawnixProjectFile).toEqual({
+      type: 'invoke',
+      channel: RPC_CHANNELS.projectFiles.SAVE_DRAWNIX_FILE,
     })
   })
 })

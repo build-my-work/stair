@@ -487,6 +487,8 @@
   "filesSidebar.newFileName": "Name der neuen Datei",
   "filesSidebar.newFolder": "Neuer Ordner",
   "filesSidebar.newFolderName": "Name des neuen Ordners",
+  "filesSidebar.newMindMap": "Neue Mindmap",
+  "filesSidebar.newMindMapName": "Name der neuen Mindmap",
   "filesSidebar.noMatches": "Keine passenden Dateien.",
   "filesSidebar.noProjectDescription": "Wähle eine Sitzung, die mit einem Projekt mit Arbeitsverzeichnis verknüpft ist.",
   "filesSidebar.noProjectTitle": "Kein Projektordner",

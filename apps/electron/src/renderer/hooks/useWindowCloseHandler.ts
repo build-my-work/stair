@@ -3,6 +3,7 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { useModalRegistry } from '@/context/ModalContext'
 import { useDismissibleLayerRegistry } from '@/context/DismissibleLayerContext'
 import { panelStackAtom, closePanelAtom, focusedPanelIdAtom } from '@/atoms/panel-stack'
+import { flushOpenDrawnixBoards } from '@/components/project-files/drawnix-board-registry'
 import type { WindowCloseRequest } from '../../shared/types'
 
 /**
@@ -31,7 +32,15 @@ export function useWindowCloseHandler() {
   useEffect(() => {
     const cleanup = window.electronAPI.onCloseRequested((request: WindowCloseRequest) => {
       if (request.source === 'window-button') {
-        window.electronAPI.confirmCloseWindow()
+        void flushOpenDrawnixBoards()
+          .then(() => window.electronAPI.confirmCloseWindow())
+          .catch(error => {
+            window.electronAPI.debugLog(
+              '[Drawnix] Window close cancelled because save failed:',
+              error instanceof Error ? error.message : String(error),
+            )
+            window.electronAPI.cancelCloseWindow()
+          })
         return
       }
 

@@ -126,6 +126,7 @@ import { resolveEntityColor } from "@craft-agent/shared/colors"
 import * as storage from "@/lib/local-storage"
 import { toast } from "sonner"
 import { navigate, routes } from "@/lib/navigate"
+import { flushOpenDrawnixBoards } from "@/components/project-files/drawnix-board-registry"
 import {
   useNavigation,
   useNavigationState,
@@ -1933,13 +1934,19 @@ function AppShellContent({
   }, [handleCloseRightSidebar, isRightSidebarVisible, updateRightSidebar])
   const handleOpenProjectFile = React.useCallback((relativePath: string) => {
     if (!rightSidebarOwnerRoute || !rightSidebarProject?.config.workingDirectory) return
-    openProjectFile({
-      ownerPanelId: companionOwnerPanelId,
-      projectId: rightSidebarProject.config.id,
-      contextRoute: rightSidebarOwnerRoute,
-      relativePath,
-    })
-    if (isAutoCompact) handleCloseRightSidebar()
+    void flushOpenDrawnixBoards()
+      .then(() => {
+        openProjectFile({
+          ownerPanelId: companionOwnerPanelId,
+          projectId: rightSidebarProject.config.id,
+          contextRoute: rightSidebarOwnerRoute,
+          relativePath,
+        })
+        if (isAutoCompact) handleCloseRightSidebar()
+      })
+      .catch(() => {
+        toast.error('The open Drawnix file could not be saved.')
+      })
   }, [
     handleCloseRightSidebar,
     isAutoCompact,
@@ -1975,18 +1982,24 @@ function AppShellContent({
       return
     }
     if (!focusedPanelRoute) return
-    openProjectFile({
-      ownerPanelId: companionOwnerPanelId,
-      projectId: reference.projectId,
-      relativePath: reference.relativePath,
-      contextRoute: focusedPanelRoute,
-      preferExistingFile: true,
-      intent: {
-        expectedFingerprint: reference.sourceFingerprint,
-        locator: reference.locator,
-      },
-    })
-    if (isAutoCompact) updateRightSidebar(undefined)
+    void flushOpenDrawnixBoards()
+      .then(() => {
+        openProjectFile({
+          ownerPanelId: companionOwnerPanelId,
+          projectId: reference.projectId,
+          relativePath: reference.relativePath,
+          contextRoute: focusedPanelRoute,
+          preferExistingFile: true,
+          intent: {
+            expectedFingerprint: reference.sourceFingerprint,
+            locator: reference.locator,
+          },
+        })
+        if (isAutoCompact) updateRightSidebar(undefined)
+      })
+      .catch(() => {
+        toast.error('The open Drawnix file could not be saved.')
+      })
   }, [
     focusedPanelRoute,
     isAutoCompact,

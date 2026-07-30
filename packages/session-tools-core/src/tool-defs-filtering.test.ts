@@ -10,6 +10,18 @@ import {
 } from './tool-defs.ts';
 
 describe('session tool filtering helpers', () => {
+  it('classifies mind-map reads as read-only and updates as guarded writes', () => {
+    expect(SESSION_TOOL_DEFS.find(def => def.name === 'mindmap_read')).toMatchObject({
+      executionMode: 'registry',
+      safeMode: 'allow',
+      readOnly: true,
+    });
+    expect(SESSION_TOOL_DEFS.find(def => def.name === 'mindmap_update')).toMatchObject({
+      executionMode: 'registry',
+      safeMode: 'block',
+    });
+  });
+
   it('excludes developer feedback tool when includeDeveloperFeedback is false', () => {
     const defs = getSessionToolDefs({ includeDeveloperFeedback: false });
     const names = defs.map(d => d.name);

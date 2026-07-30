@@ -23,6 +23,7 @@ import {
 import { ProjectFileEpubReader } from '@/components/project-files/ProjectFileEpubReader'
 import { ProjectFileTextSelectionSurface } from '@/components/project-files/ProjectFileTextSelection'
 import { ProjectFilePdfReader } from '@/components/project-files/ProjectFilePdfReader'
+import { ProjectFileDrawnixCanvas } from '@/components/project-files/ProjectFileDrawnixCanvas'
 import {
   consumeProjectFileOpenIntentAtom,
   panelStackAtom,
@@ -48,6 +49,7 @@ interface ProjectFilePageProps {
 }
 
 export type ProjectFileKind =
+  | 'drawnix'
   | 'epub'
   | 'pdf'
   | 'image'
@@ -58,6 +60,7 @@ export type ProjectFileKind =
   | 'unknown'
 
 export function getProjectFileKind(relativePath: string): ProjectFileKind {
+  if (relativePath.toLowerCase().endsWith('.drawnix')) return 'drawnix'
   if (relativePath.toLowerCase().endsWith('.epub')) return 'epub'
   return classifyFile(relativePath).type ?? 'unknown'
 }
@@ -183,7 +186,8 @@ export default function ProjectFilePage({
         const result = await loadProjectFilePreview(
           request,
           kind,
-          classification.canPreview && !!classification.type,
+          kind === 'drawnix'
+            || (classification.canPreview && !!classification.type),
         )
         if (result.type === 'binary') {
           const response = result.response
@@ -432,6 +436,22 @@ export default function ProjectFilePage({
             />
           </div>
         </div>
+      )
+    }
+    if (
+      kind === 'drawnix'
+      && content !== null
+      && sourceFingerprint
+    ) {
+      return (
+        <ProjectFileDrawnixCanvas
+          key={`${fileIdentity}\0${sourceFingerprint}`}
+          projectId={route.projectId}
+          relativePath={relativePath}
+          content={content}
+          sourceFingerprint={sourceFingerprint}
+          onReload={() => setReloadToken(token => token + 1)}
+        />
       )
     }
     if (!classification.canPreview || !classification.type) {

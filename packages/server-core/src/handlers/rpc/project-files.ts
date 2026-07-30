@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { Stats } from 'node:fs'
 import {
   lstat,
@@ -6,10 +6,22 @@ import {
   open,
   readdir,
   realpath,
+  rename,
   stat,
+  unlink,
   type FileHandle,
 } from 'node:fs/promises'
-import { extname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from 'node:path'
 import {
   isCanonicalProjectRelativePath,
   type SourceFingerprint,
@@ -27,6 +39,8 @@ import {
   type ProjectFileSearchRequest,
   type ProjectFileSearchResult,
   type ProjectFileTextResponse,
+  type SaveDrawnixProjectFileRequest,
+  type SaveDrawnixProjectFileResponse,
 } from '@craft-agent/shared/protocol'
 import { loadProjectById } from '@craft-agent/shared/projects'
 import { getMimeType } from '@craft-agent/shared/utils'
@@ -41,13 +55,24 @@ export const MAX_PROJECT_FILE_NAME_BYTES = 255
 export const MAX_PROJECT_FILE_TEXT_BYTES = 8 * 1024 * 1024
 export const MAX_PROJECT_FILE_BINARY_BYTES = 32 * 1024 * 1024
 
+export const EMPTY_DRAWNIX_DOCUMENT = `${JSON.stringify({
+  type: 'drawnix',
+  version: 1,
+  source: 'web',
+  elements: [],
+  viewport: { zoom: 1 },
+  theme: { themeColorMode: 'default' },
+}, null, 2)}\n`
+
 export const HANDLED_CHANNELS = [
   RPC_CHANNELS.projectFiles.READ_TEXT,
   RPC_CHANNELS.projectFiles.READ_BINARY,
   RPC_CHANNELS.projectFiles.SEARCH,
   RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
   RPC_CHANNELS.projectFiles.CREATE_FILE,
+  RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE,
   RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
+  RPC_CHANNELS.projectFiles.SAVE_DRAWNIX_FILE,
 ] as const
 
 type ProjectFileErrorCode =
@@ -69,7 +94,9 @@ interface StableProjectFile {
 }
 
 function projectFileError(code: ProjectFileErrorCode, message: string): Error {
-  return new Error(`${code}: ${message}`)
+  const error = new Error(`${code}: ${message}`)
+  Object.assign(error, { code })
+  return error
 }
 
 /** @internal Exported so the read-during-change invariant can be tested deterministically. */
@@ -247,6 +274,7 @@ export async function createProjectEntryWithinRoot(
   rootPath: string,
   request: CreateProjectEntryRequest,
   type: ProjectDirectoryEntry['type'],
+  fileContent = '',
 ): Promise<ProjectDirectoryEntry> {
   const validated = validateCreateEntryRequest(request)
   const parent = await resolveCreateParent(
@@ -267,7 +295,12 @@ export async function createProjectEntryWithinRoot(
       await mkdir(targetPath)
     } else {
       const handle = await open(targetPath, 'wx')
-      await handle.close()
+      try {
+        if (fileContent) await handle.writeFile(fileContent, 'utf8')
+        await handle.sync()
+      } finally {
+        await handle.close()
+      }
     }
   } catch (error) {
     throwCreateError(error)
@@ -279,6 +312,25 @@ export async function createProjectEntryWithinRoot(
     type,
     isSymlink: false,
   }
+}
+
+export async function createDrawnixProjectFileWithinRoot(
+  rootPath: string,
+  request: CreateProjectEntryRequest,
+): Promise<ProjectDirectoryEntry> {
+  const validated = validateCreateEntryRequest(request)
+  if (extname(validated.name).toLowerCase() !== '.drawnix') {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'A Drawnix file name must end in .drawnix',
+    )
+  }
+  return createProjectEntryWithinRoot(
+    rootPath,
+    validated,
+    'file',
+    EMPTY_DRAWNIX_DOCUMENT,
+  )
 }
 
 /**
@@ -563,6 +615,7 @@ async function resolveProjectFile(
 function projectFileMimeType(relativePath: string): string {
   const extension = extname(relativePath).toLowerCase()
   const overrides: Record<string, string> = {
+    '.drawnix': 'application/vnd.drawnix+json',
     '.epub': 'application/epub+zip',
     '.json': 'application/json',
     '.md': 'text/markdown',
@@ -737,6 +790,161 @@ export async function readProjectFileTextWithinRoot(
   }
 }
 
+function validateDrawnixDocument(content: unknown): string {
+  if (typeof content !== 'string') {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Drawnix content must be UTF-8 text',
+    )
+  }
+  if (Buffer.byteLength(content, 'utf8') > MAX_PROJECT_FILE_TEXT_BYTES) {
+    throw projectFileError(
+      'PROJECT_FILE_TOO_LARGE',
+      `Drawnix content exceeds the ${MAX_PROJECT_FILE_TEXT_BYTES}-byte limit`,
+    )
+  }
+
+  let document: unknown
+  try {
+    document = JSON.parse(content)
+  } catch {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Drawnix content must be valid JSON',
+    )
+  }
+  if (!document || typeof document !== 'object' || Array.isArray(document)) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Drawnix content must be a native Drawnix document',
+    )
+  }
+
+  const value = document as Record<string, unknown>
+  const viewport = value.viewport
+  let viewportZoom: unknown
+  if (
+    viewport
+    && typeof viewport === 'object'
+    && !Array.isArray(viewport)
+  ) {
+    viewportZoom = (viewport as Record<string, unknown>).zoom
+  }
+  const hasInvalidTheme = value.theme !== undefined && (
+    !value.theme
+    || typeof value.theme !== 'object'
+    || Array.isArray(value.theme)
+  )
+  if (
+    value.type !== 'drawnix'
+    || typeof value.version !== 'number'
+    || value.source !== 'web'
+    || !Array.isArray(value.elements)
+    || typeof viewportZoom !== 'number'
+    || !Number.isFinite(viewportZoom)
+    || viewportZoom <= 0
+    || hasInvalidTheme
+  ) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Drawnix content must be a native Drawnix document',
+    )
+  }
+  return content
+}
+
+function validateSaveDrawnixRequest(
+  value: unknown,
+): SaveDrawnixProjectFileRequest {
+  const request = validateProjectFileRequest(value)
+  if (extname(request.relativePath).toLowerCase() !== '.drawnix') {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Only .drawnix Project Files can be saved through this API',
+    )
+  }
+
+  const raw = value as Partial<SaveDrawnixProjectFileRequest>
+  if (
+    typeof raw.expectedFingerprint !== 'string'
+    || !/^sha256:[a-f0-9]{64}$/.test(raw.expectedFingerprint)
+  ) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'A valid expected Drawnix fingerprint is required',
+    )
+  }
+
+  return {
+    ...request,
+    expectedFingerprint: raw.expectedFingerprint as SourceFingerprint,
+    content: validateDrawnixDocument(raw.content),
+  }
+}
+
+export async function saveDrawnixProjectFileWithinRoot(
+  rootPath: string,
+  rawRequest: SaveDrawnixProjectFileRequest,
+): Promise<SaveDrawnixProjectFileResponse> {
+  const request = validateSaveDrawnixRequest(rawRequest)
+  const targetPath = await resolveProjectFile(rootPath, request.relativePath)
+  const current = await readStableProjectFile(
+    targetPath,
+    MAX_PROJECT_FILE_TEXT_BYTES,
+  )
+  if (fingerprint(current.bytes) !== request.expectedFingerprint) {
+    throw projectFileError(
+      'PROJECT_FILE_CHANGED',
+      'Drawnix file changed since it was opened; reload it before saving',
+    )
+  }
+
+  const bytes = Buffer.from(request.content, 'utf8')
+  const temporaryPath = join(
+    dirname(targetPath),
+    `.${basename(targetPath)}.${randomUUID()}.tmp`,
+  )
+  let temporaryExists = false
+
+  try {
+    const handle = await open(temporaryPath, 'wx', current.stat.mode & 0o777)
+    temporaryExists = true
+    try {
+      await handle.writeFile(bytes)
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+
+    let beforeRename: Stats
+    try {
+      beforeRename = await stat(targetPath)
+    } catch {
+      throw projectFileError(
+        'PROJECT_FILE_CHANGED',
+        'Drawnix file changed while it was being saved',
+      )
+    }
+    assertStableFile(current.stat, beforeRename)
+
+    await rename(temporaryPath, targetPath)
+    temporaryExists = false
+    const savedStat = await stat(targetPath)
+    return {
+      metadata: toMetadata(
+        request.projectId,
+        request.relativePath,
+        savedStat,
+      ),
+      sourceFingerprint: fingerprint(bytes),
+    }
+  } finally {
+    if (temporaryExists) {
+      await unlink(temporaryPath).catch(() => undefined)
+    }
+  }
+}
+
 async function resolveAuthorizedProjectRoot(
   ctx: RequestContext,
   deps: HandlerDeps,
@@ -844,11 +1052,29 @@ export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps
   )
 
   server.handle(
+    RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE,
+    async (ctx, rawRequest: unknown) => {
+      const request = validateCreateEntryRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(ctx, deps, request.projectId)
+      return createDrawnixProjectFileWithinRoot(rootPath, request)
+    },
+  )
+
+  server.handle(
     RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
     async (ctx, rawRequest: unknown) => {
       const request = validateCreateEntryRequest(rawRequest)
       const rootPath = await resolveAuthorizedProjectRoot(ctx, deps, request.projectId)
       return createProjectEntryWithinRoot(rootPath, request, 'directory')
+    },
+  )
+
+  server.handle(
+    RPC_CHANNELS.projectFiles.SAVE_DRAWNIX_FILE,
+    async (ctx, rawRequest: unknown) => {
+      const request = validateSaveDrawnixRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(ctx, deps, request.projectId)
+      return saveDrawnixProjectFileWithinRoot(rootPath, request)
     },
   )
 }

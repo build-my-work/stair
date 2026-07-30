@@ -348,6 +348,12 @@ export interface SessionToolContext {
    */
   createTask?(input: CreateTaskInput): Promise<CreateTaskResult>;
 
+  /** Read the live outline of an already-open Drawnix Project File. */
+  readMindmap?(relativePath: string): Promise<MindmapSnapshot>;
+
+  /** Apply node-level transforms to that same live Drawnix board. */
+  updateMindmap?(request: MindmapUpdateRequest): Promise<MindmapSnapshot>;
+
   // ============================================================
   // Inter-Session Messaging
   // ============================================================
@@ -412,6 +418,30 @@ export interface SessionToolContext {
    * Used by transform_data and render_template for output files.
    */
   dataPath?: string;
+}
+
+export interface MindmapOutlineNode {
+  id: string;
+  topic: string;
+  children: MindmapOutlineNode[];
+}
+
+export interface MindmapSnapshot {
+  relativePath: string;
+  changeSeq: number;
+  roots: MindmapOutlineNode[];
+}
+
+export type MindmapUpdateOperation =
+  | { type: 'populate_empty'; markdown: string }
+  | { type: 'insert_child'; parentId: string; topic: string }
+  | { type: 'insert_sibling'; nodeId: string; topic: string }
+  | { type: 'set_topic'; nodeId: string; topic: string };
+
+export interface MindmapUpdateRequest {
+  relativePath: string;
+  expectedChangeSeq: number;
+  operations: MindmapUpdateOperation[];
 }
 
 // ============================================================

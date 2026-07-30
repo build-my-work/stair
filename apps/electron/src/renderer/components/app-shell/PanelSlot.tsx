@@ -33,10 +33,14 @@ import {
 } from '@/context/AppShellContext'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
 import { RADIUS_EDGE, RADIUS_INNER } from './panel-constants'
-import { isCompanionPanelRoute } from '@/lib/project-file-route'
+import {
+  isCompanionPanelRoute,
+  isProjectFileRoute,
+} from '@/lib/project-file-route'
 import { getPanelSizePolicy, getPanelWidthPx } from '@/lib/panel-sizing'
 import { navigate, routes } from '@/lib/navigate'
 import { PanelContentRouter } from './PanelContentRouter'
+import { flushOpenDrawnixBoard } from '@/components/project-files/drawnix-board-registry'
 
 /**
  * Compact Project navigation has two drill-in levels:
@@ -112,12 +116,38 @@ export function PanelSlot({
     panelDragState = 'dragging'
   }
 
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback(async () => {
+    if (
+      isProjectFileRoute(entry.route)
+      && entry.route.relativePath.toLowerCase().endsWith('.drawnix')
+    ) {
+      try {
+        await flushOpenDrawnixBoard(
+          entry.route.projectId,
+          entry.route.relativePath,
+        )
+      } catch {
+        return
+      }
+    }
     closePanel(entry.id)
-  }, [closePanel, entry.id])
+  }, [closePanel, entry.id, entry.route])
 
-  const handleBack = useCallback(() => {
+  const handleBack = useCallback(async () => {
     if (isCompanionPanelRoute(entry.route)) {
+      if (
+        isProjectFileRoute(entry.route)
+        && entry.route.relativePath.toLowerCase().endsWith('.drawnix')
+      ) {
+        try {
+          await flushOpenDrawnixBoard(
+            entry.route.projectId,
+            entry.route.relativePath,
+          )
+        } catch {
+          return
+        }
+      }
       backFromCompanion(entry.id)
       return
     }
@@ -125,7 +155,7 @@ export function PanelSlot({
       navigate(compactProjectBackRoute)
       return
     }
-    handleClose()
+    await handleClose()
   }, [
     backFromCompanion,
     compactProjectBackRoute,

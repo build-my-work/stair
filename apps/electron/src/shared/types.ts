@@ -232,6 +232,8 @@ import type {
   ProjectFileSearchRequest,
   ProjectFileSearchResult,
   ProjectFileTextResponse,
+  SaveDrawnixProjectFileRequest,
+  SaveDrawnixProjectFileResponse,
   ConfigureProjectNoteTargetRequest,
   ConfigureProjectNoteTargetResponse,
   AppendProjectNoteRequest,
@@ -391,8 +393,14 @@ export interface ElectronAPI {
   listProjectDirectoryEntries(request: ProjectDirectoryEntriesRequest): Promise<ProjectDirectoryEntriesResult>
   /** Create one empty file inside a Project directory. */
   createProjectFile(request: CreateProjectEntryRequest): Promise<ProjectDirectoryEntry>
+  /** Create one valid empty native Drawnix document and return its Project path. */
+  createDrawnixProjectFile(request: CreateProjectEntryRequest): Promise<ProjectDirectoryEntry>
   /** Create one direct child directory inside a Project. */
   createProjectDirectory(request: CreateProjectEntryRequest): Promise<ProjectDirectoryEntry>
+  /** Persist the currently open Drawnix board with fingerprint compare-and-swap. */
+  saveDrawnixProjectFile(
+    request: SaveDrawnixProjectFileRequest,
+  ): Promise<SaveDrawnixProjectFileResponse>
   // Debug: send renderer logs to main process log file
   debugLog(...args: unknown[]): void
 
@@ -404,6 +412,12 @@ export interface ElectronAPI {
   getVersions(): { node: string; chrome: string; electron: string }
   /** Returns the renderer host environment without going through RPC. */
   getRuntimeEnvironment(): 'electron' | 'web'
+  /** Connect the renderer's open-board registry to the client capability bridge. */
+  setDrawnixBoardCapabilityHandler(
+    handler: ((
+      request: import('@craft-agent/server-core/transport').DrawnixBoardCapabilityRequest,
+    ) => Promise<import('@craft-agent/server-core/transport').DrawnixBoardCapabilityResponse>) | null,
+  ): void
   getHomeDir(): Promise<string>
   isDebugMode(): Promise<boolean>
 
