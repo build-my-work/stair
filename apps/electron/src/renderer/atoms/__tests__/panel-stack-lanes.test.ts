@@ -97,6 +97,36 @@ describe('panel stack content routes', () => {
     ])
   })
 
+  it('reuses a Session panel and rebases its companion to the requested route', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, {
+      route: 'allSessions/session/s1',
+    })
+    const sessionPanelId = getStack(store)[0].id
+    openProjectFile(store, sessionPanelId, 'book.epub')
+
+    const reusedPanelId = store.set(pushPanelAtom, {
+      route: 'projects/project/os/session/s1',
+    })
+
+    expect(reusedPanelId).toBe(sessionPanelId)
+    const stack = getStack(store)
+    expect(stack).toHaveLength(2)
+    expect(stack.map(panel => panel.route)).toEqual([
+      {
+        kind: 'navigation',
+        viewRoute: 'projects/project/os/session/s1',
+      },
+      {
+        kind: 'projectFile',
+        projectId: 'project-1',
+        relativePath: 'book.epub',
+        contextRoute: 'projects/project/os/session/s1',
+      },
+    ])
+    expect(store.get(focusedPanelIdAtom)).toBe(sessionPanelId)
+  })
+
   it('assigns independent defaults without resizing existing panels', () => {
     const store = createStore()
     store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
@@ -220,6 +250,26 @@ describe('panel stack content routes', () => {
       'allSessions/session/s1',
       'allSessions/session/s2',
     ])
+  })
+
+  it('focuses an existing Session instead of replacing the focused panel', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, {
+      route: 'allSessions/session/s1',
+    })
+    const sessionPanelId = getStack(store)[0].id
+    store.set(pushPanelAtom, { route: 'sources/source/github' })
+
+    store.set(
+      updateFocusedPanelRouteAtom,
+      'projects/project/os/session/s1',
+    )
+
+    expect(viewRoutes(store)).toEqual([
+      'projects/project/os/session/s1',
+      'sources/source/github',
+    ])
+    expect(store.get(focusedPanelIdAtom)).toBe(sessionPanelId)
   })
 
   it('opens a Project File immediately after its physical owner', () => {
@@ -503,26 +553,6 @@ describe('panel stack content routes', () => {
     expect(store.get(projectFileOpenIntentsAtom).get(orphan!.id)).toEqual(intent)
   })
 
-  it('isolates companions between duplicate physical owner panels', () => {
-    const store = createStore()
-    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
-    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
-    const [firstOwner, secondOwner] = getStack(store)
-
-    openProjectFile(store, secondOwner.id, 'second.ts')
-    openProjectFile(store, firstOwner.id, 'first.ts')
-
-    const stack = getStack(store)
-    expect(viewRoutes(store)).toEqual([
-      'allSessions/session/s1',
-      'first.ts',
-      'allSessions/session/s1',
-      'second.ts',
-    ])
-    expect(stack[1].ownerPanelId).toBe(firstOwner.id)
-    expect(stack[3].ownerPanelId).toBe(secondOwner.id)
-  })
-
   it('does not infer an owner from route or position', () => {
     const store = createStore()
     store.set(panelStackAtom, [
@@ -562,10 +592,10 @@ describe('panel stack content routes', () => {
     expect([...store.get(visibleSessionIdsAtom)]).toEqual([])
   })
 
-  it('reuses the focused orphan without attaching it to a duplicate route owner', () => {
+  it('reuses the focused orphan without attaching it to an unrelated owner', () => {
     const store = createStore()
     store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
-    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    store.set(pushPanelAtom, { route: 'allSessions/session/s2' })
     const [firstOwner, secondOwner] = getStack(store)
     openProjectFile(store, firstOwner.id, 'first.ts')
     const orphanId = getStack(store)[1].id
@@ -624,9 +654,41 @@ describe('panel stack content routes', () => {
     expect(store.get(focusedPanelIdAtom)).toBe(fileId)
   })
 
-  it('restores duplicate routes, owner, focus, and independent V2 ratios', () => {
+  it('Compact Back closes an orphan when its Session panel already exists', () => {
     const store = createStore()
-    store.set(restorePanelLayoutAtom, {
+    store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
+    const owner = getStack(store)[0]
+    openProjectFile(
+      store,
+      owner.id,
+      'README.md',
+      'projects/project/demo/session/s1',
+    )
+    const fileId = getStack(store)[1].id
+    store.set(closePanelAtom, owner.id)
+    store.set(pushPanelAtom, {
+      route: 'allSessions/session/s1',
+    })
+    const sessionPanelId = getStack(store)[1].id
+    store.set(focusedPanelIdAtom, fileId)
+
+    store.set(backFromCompanionPanelAtom, fileId)
+
+    expect(getStack(store)).toEqual([
+      expect.objectContaining({
+        id: sessionPanelId,
+        route: {
+          kind: 'navigation',
+          viewRoute: 'projects/project/demo/session/s1',
+        },
+      }),
+    ])
+    expect(store.get(focusedPanelIdAtom)).toBe(sessionPanelId)
+  })
+
+  it('rejects a layout with duplicate Session panels', () => {
+    const store = createStore()
+    const restored = store.set(restorePanelLayoutAtom, {
       version: 2,
       entries: [
         {
@@ -639,30 +701,13 @@ describe('panel stack content routes', () => {
           route: { kind: 'navigation', viewRoute: 'allSessions/session/s1' },
           widthRatio: 0.60,
         },
-        {
-          key: 'p2',
-          route: {
-            kind: 'projectFile',
-            projectId: 'project-1',
-            relativePath: 'book.epub',
-            contextRoute: 'allSessions/session/s1',
-          },
-          widthRatio: 0.77,
-          ownerKey: 'p0',
-        },
       ],
       focusedKey: 'p1',
     })
 
-    const [firstOwner, secondOwner, file] = getStack(store)
-    expect(firstOwner.id).not.toBe(secondOwner.id)
-    expect(file.ownerPanelId).toBe(firstOwner.id)
-    expect(store.get(focusedPanelIdAtom)).toBe(secondOwner.id)
-    expect(getStack(store).map(panel => panel.widthRatio)).toEqual([
-      0.47,
-      0.60,
-      0.77,
-    ])
+    expect(restored).toBe(false)
+    expect(getStack(store)).toEqual([])
+    expect(store.get(focusedPanelIdAtom)).toBeNull()
   })
 
   it('does not create more than eight panels', () => {
@@ -671,6 +716,25 @@ describe('panel stack content routes', () => {
       store.set(pushPanelAtom, { route: 'settings' })
     }
     expect(getStack(store)).toHaveLength(8)
+  })
+
+  it('focuses an existing Session when the panel limit is reached', () => {
+    const store = createStore()
+    store.set(pushPanelAtom, {
+      route: 'allSessions/session/s1',
+    })
+    const sessionPanelId = getStack(store)[0].id
+    for (let index = 0; index < 7; index += 1) {
+      store.set(pushPanelAtom, { route: 'settings' })
+    }
+
+    const reusedPanelId = store.set(pushPanelAtom, {
+      route: 'projects/project/os/session/s1',
+    })
+
+    expect(getStack(store)).toHaveLength(8)
+    expect(reusedPanelId).toBe(sessionPanelId)
+    expect(store.get(focusedPanelIdAtom)).toBe(sessionPanelId)
   })
 
   it('opens multiple browser companions after the anchor and dedupes by browser id', () => {

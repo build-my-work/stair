@@ -41,6 +41,8 @@ export interface PanelStackEntry {
   chatTargetSessionId?: string
 }
 
+type NavigationPanelRoute = Extract<PanelContentRoute, { kind: 'navigation' }>
+
 export const panelStackAtom = atom<PanelStackEntry[]>([])
 export const focusedPanelIdAtom = atom<string | null>(null)
 export const projectFileOpenIntentsAtom = atom<Map<string, ProjectFileOpenIntent>>(new Map())
@@ -139,6 +141,55 @@ export function parseSessionIdFromRoute(
   return null
 }
 
+function findSessionNavigationPanel(
+  stack: PanelStackEntry[],
+  route: NavigationPanelRoute,
+): PanelStackEntry | undefined {
+  const sessionId = parseSessionIdFromRoute(route)
+  if (!sessionId) return undefined
+  return stack.find(entry => (
+    entry.route.kind === 'navigation'
+    && parseSessionIdFromRoute(entry.route) === sessionId
+  ))
+}
+
+function rebaseSessionNavigationPanel(
+  stack: PanelStackEntry[],
+  panelId: string,
+  route: NavigationPanelRoute,
+): PanelStackEntry[] {
+  let routeChanged = false
+  const updated = stack.map(entry => {
+    if (
+      entry.id === panelId
+      && entry.route.kind === 'navigation'
+      && entry.route.viewRoute !== route.viewRoute
+    ) {
+      routeChanged = true
+      return { ...entry, route }
+    }
+
+    if (
+      isCompanionPanelRoute(entry.route)
+      && entry.ownerPanelId === panelId
+      && entry.route.contextRoute !== route.viewRoute
+    ) {
+      routeChanged = true
+      return {
+        ...entry,
+        route: {
+          ...entry.route,
+          contextRoute: route.viewRoute,
+        },
+      }
+    }
+
+    return entry
+  })
+
+  return routeChanged ? updated : stack
+}
+
 export const focusedSessionIdAtom = atom((get) => {
   const route = get(focusedPanelRouteAtom)
   if (!route) return null
@@ -167,13 +218,28 @@ export const pushPanelAtom = atom(
     ownerPanelId?: string
   }) => {
     const stack = get(panelStackAtom)
+    const contentRoute = toPanelContentRoute(route)
+    if (contentRoute.kind === 'navigation') {
+      const existing = findSessionNavigationPanel(stack, contentRoute)
+
+      if (existing) {
+        const updated = rebaseSessionNavigationPanel(
+          stack,
+          existing.id,
+          contentRoute,
+        )
+        if (updated !== stack) set(panelStackAtom, updated)
+        set(focusedPanelIdAtom, existing.id)
+        return existing.id
+      }
+    }
+
     if (stack.length >= MAX_PANEL_LAYOUT_ENTRIES) return
     let insertAt = stack.length
     if (afterIndex !== undefined && afterIndex >= 0 && afterIndex < stack.length) {
       insertAt = afterIndex + 1
     }
 
-    const contentRoute = toPanelContentRoute(route)
     const validOwnerId = isCompanionPanelRoute(contentRoute)
       ? findNavigationPanel(stack, ownerPanelId)?.id
       : undefined
@@ -482,8 +548,23 @@ export const backFromCompanionPanelAtom = atom(
       return
     }
 
+    const navigationRoute = buildNavigationPanelRoute(panel.route.contextRoute)
+    const existing = findSessionNavigationPanel(stack, navigationRoute)
+    if (existing) {
+      set(closePanelAtom, panelId)
+      const remaining = get(panelStackAtom)
+      const updated = rebaseSessionNavigationPanel(
+        remaining,
+        existing.id,
+        navigationRoute,
+      )
+      if (updated !== remaining) set(panelStackAtom, updated)
+      set(focusedPanelIdAtom, existing.id)
+      return
+    }
+
     const replacement = createEntry(
-      buildNavigationPanelRoute(panel.route.contextRoute),
+      navigationRoute,
       {
         widthRatio: panel.widthRatio,
         id: panel.id,
@@ -502,6 +583,15 @@ export const backFromCompanionPanelAtom = atom(
 export const restorePanelLayoutAtom = atom(
   null,
   (_get, set, layout: SerializedPanelLayoutV2) => {
+    const sessionIds = new Set<string>()
+    for (const entry of layout.entries) {
+      if (entry.route.kind !== 'navigation') continue
+      const sessionId = parseSessionIdFromRoute(entry.route)
+      if (!sessionId) continue
+      if (sessionIds.has(sessionId)) return false
+      sessionIds.add(sessionId)
+    }
+
     const idByKey = new Map(
       layout.entries.map(entry => [entry.key, generatePanelId()]),
     )
@@ -519,6 +609,7 @@ export const restorePanelLayoutAtom = atom(
 
     set(panelStackAtom, restored)
     set(focusedPanelIdAtom, idByKey.get(layout.focusedKey) ?? null)
+    return true
   },
 )
 
@@ -590,6 +681,19 @@ export const updateFocusedPanelRouteAtom = atom(
 
     const focusedId = get(focusedPanelIdAtom)
     const focused = stack.find(panel => panel.id === focusedId) ?? stack[0]
+    const existing = findSessionNavigationPanel(stack, contentRoute)
+
+    if (existing) {
+      const updated = rebaseSessionNavigationPanel(
+        stack,
+        existing.id,
+        contentRoute,
+      )
+      if (updated !== stack) set(panelStackAtom, updated)
+      set(focusedPanelIdAtom, existing.id)
+      return
+    }
+
     const updated = stack.map(panel =>
       panel.id === focused.id
         ? createEntry(contentRoute, {

@@ -3,7 +3,7 @@ import { buildSemanticHistoryKey, canRunInitialRestore } from '../navigation-his
 
 describe('buildSemanticHistoryKey', () => {
   it('changes when focused panel index changes even if routes are identical', () => {
-    const panelRoutes = ['allSessions/session/s1', 'allSessions/session/s1']
+    const panelRoutes = ['settings', 'settings']
 
     const keyA = buildSemanticHistoryKey({
       workspaceSlug: 'ws',

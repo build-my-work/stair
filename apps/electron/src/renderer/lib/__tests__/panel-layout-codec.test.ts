@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import type { PanelContentRoute } from '../../../shared/routes'
+import type { PanelContentRoute, ViewRoute } from '../../../shared/routes'
 import {
   deserializePanelLayout,
   MAX_ENCODED_PANEL_LAYOUT_BYTES,
@@ -8,9 +8,10 @@ import {
   type SerializedPanelLayoutV2,
 } from '../panel-layout-codec'
 
-const navigation = (
-  viewRoute: 'allSessions/session/s1' | 'projects/project/demo',
-): PanelContentRoute => ({ kind: 'navigation', viewRoute })
+const navigation = (viewRoute: ViewRoute): PanelContentRoute => ({
+  kind: 'navigation',
+  viewRoute,
+})
 
 const epubRoute: PanelContentRoute = {
   kind: 'projectFile',
@@ -32,9 +33,10 @@ function encodeUnknown(value: unknown): string {
 describe('PanelLayoutV2 codec', () => {
   it('round-trips independent ratios, physical owner, Chat target, and focus', () => {
     const route = navigation('allSessions/session/s1')
+    const secondRoute = navigation('allSessions/session/s2')
     const encoded = serializePanelLayout([
       { id: 'owner-a', route, widthRatio: 0.47 },
-      { id: 'owner-b', route, widthRatio: 0.55 },
+      { id: 'owner-b', route: secondRoute, widthRatio: 0.55 },
       {
         id: 'file-a',
         route: epubRoute,
@@ -49,7 +51,7 @@ describe('PanelLayoutV2 codec', () => {
       version: 2,
       entries: [
         { key: 'p0', route, widthRatio: 0.47 },
-        { key: 'p1', route, widthRatio: 0.55 },
+        { key: 'p1', route: secondRoute, widthRatio: 0.55 },
         {
           key: 'p2',
           route: epubRoute,
@@ -76,6 +78,21 @@ describe('PanelLayoutV2 codec', () => {
       }],
       focusedKey: 'p0',
     })
+  })
+
+  it('does not serialize duplicate Session panels', () => {
+    expect(serializePanelLayout([
+      {
+        id: 'all-sessions',
+        route: navigation('allSessions/session/s1'),
+        widthRatio: 0.47,
+      },
+      {
+        id: 'project-session',
+        route: navigation('projects/project/os/session/s1'),
+        widthRatio: 0.55,
+      },
+    ], 'project-session')).toBeNull()
   })
 
   it('rejects a V1 proportion layout so navigation uses its safe fallback', () => {
@@ -112,6 +129,25 @@ describe('PanelLayoutV2 codec', () => {
           { key: 'p0', route: navigation('projects/project/demo'), widthRatio: 0.47 },
         ],
         focusedKey: 'p0',
+      },
+    ],
+    [
+      'duplicate Session panels',
+      {
+        version: 2,
+        entries: [
+          {
+            key: 'p0',
+            route: navigation('allSessions/session/s1'),
+            widthRatio: 0.47,
+          },
+          {
+            key: 'p1',
+            route: navigation('projects/project/os/session/s1'),
+            widthRatio: 0.55,
+          },
+        ],
+        focusedKey: 'p1',
       },
     ],
     [

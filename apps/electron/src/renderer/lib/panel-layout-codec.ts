@@ -1,6 +1,9 @@
 import type { PanelContentRoute } from '../../shared/routes'
 import { isCanonicalProjectRelativePath } from '@craft-agent/core'
-import { isValidViewRoute } from '../../shared/route-parser'
+import {
+  isValidViewRoute,
+  parseRouteToNavigationState,
+} from '../../shared/route-parser'
 import { isCompanionPanelRoute } from './project-file-route'
 
 export const PANEL_LAYOUT_VERSION = 2 as const
@@ -159,10 +162,31 @@ function validateLayoutRelationships(
     return false
   }
 
-  return entries.every(entry => {
-    if (!entry.ownerKey) return true
-    return entryByKey.get(entry.ownerKey)?.route.kind === 'navigation'
-  })
+  const sessionIds = new Set<string>()
+  for (const entry of entries) {
+    if (
+      entry.ownerKey
+      && entryByKey.get(entry.ownerKey)?.route.kind !== 'navigation'
+    ) {
+      return false
+    }
+
+    if (entry.route.kind !== 'navigation') continue
+    const navState = parseRouteToNavigationState(entry.route.viewRoute)
+    if (
+      navState?.navigator !== 'sessions'
+      && navState?.navigator !== 'projects'
+    ) {
+      continue
+    }
+
+    const sessionId = navState.details?.sessionId
+    if (!sessionId) continue
+    if (sessionIds.has(sessionId)) return false
+    sessionIds.add(sessionId)
+  }
+
+  return true
 }
 
 export function serializePanelLayout(
@@ -211,6 +235,7 @@ export function serializePanelLayout(
     }),
     focusedKey,
   }
+  if (!validateLayoutRelationships(layout.entries, focusedKey)) return null
   const encoded = bytesToBase64Url(
     new TextEncoder().encode(JSON.stringify(layout)),
   )

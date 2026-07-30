@@ -29,27 +29,6 @@ describe('focusExistingProjectSessionPanel', () => {
     expect(store.get(focusedPanelIdAtom)).toBe(sessionPanelId)
   })
 
-  it('prefers an already-canonical project panel when duplicate session routes exist', () => {
-    const store = createStore()
-    store.set(pushPanelAtom, { route: 'allSessions/session/session-1' })
-    store.set(pushPanelAtom, { route: 'projects/project/os/session/session-1' })
-    const canonicalPanelId = store.get(panelStackAtom)[1].id
-
-    expect(focusExistingProjectSessionPanel(store, 'os', 'session-1')).toBe(true)
-
-    expect(store.get(panelStackAtom).map(entry => entry.route)).toEqual([
-      {
-        kind: 'navigation',
-        viewRoute: 'allSessions/session/session-1',
-      },
-      {
-        kind: 'navigation',
-        viewRoute: 'projects/project/os/session/session-1',
-      },
-    ])
-    expect(store.get(focusedPanelIdAtom)).toBe(canonicalPanelId)
-  })
-
   it('rebases the file companion owned by a canonicalized session panel', () => {
     const store = createStore()
     store.set(pushPanelAtom, { route: 'allSessions/session/session-1' })

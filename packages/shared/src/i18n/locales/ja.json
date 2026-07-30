@@ -856,7 +856,6 @@
   "sessionMenu.markAsUnread": "未読にする",
   "sessionMenu.noProject": "プロジェクトなし",
   "sessionMenu.openInBrowser": "ブラウザで開く",
-  "sessionMenu.openInNewPanel": "新しいパネルで開く",
   "sessionMenu.openInNewWindow": "新しいウィンドウで開く",
   "sessionMenu.projects": "プロジェクト",
   "sessionMenu.regenerateTitle": "タイトルを再生成",
