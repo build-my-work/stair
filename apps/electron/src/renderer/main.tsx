@@ -126,7 +126,16 @@ function Root() {
   )
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+const rootElement = document.getElementById('root')!
+const hotModule = import.meta.hot
+// Reuse the mounted root when Vite re-evaluates this entry during HMR.
+const reactRoot = hotModule?.data.reactRoot ?? ReactDOM.createRoot(rootElement)
+
+if (hotModule) {
+  hotModule.data.reactRoot = reactRoot
+}
+
+reactRoot.render(
   <React.StrictMode>
     <Sentry.ErrorBoundary fallback={<CrashFallback />}>
       <JotaiProvider>
