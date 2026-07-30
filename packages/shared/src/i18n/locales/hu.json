@@ -492,6 +492,7 @@
   "filesSidebar.noMatches": "Nincs egyező fájl.",
   "filesSidebar.noProjectDescription": "Válassz munkakönyvtárral rendelkező projekthez kapcsolt munkamenetet.",
   "filesSidebar.noProjectTitle": "Nincs projektmappa",
+  "filesSidebar.openInNewPanel": "Megnyitás új panelen",
   "filesSidebar.previewTitle": "Fájl megnyitása",
   "filesSidebar.previewUnavailable": "Ehhez a fájltípushoz nem érhető el előnézet.",
   "filesSidebar.title": "Projektfájlok",

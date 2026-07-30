@@ -61,12 +61,16 @@ function openProjectFile(
   ownerPanelId: string | undefined,
   relativePath: string,
   contextRoute: ViewRoute = 'allSessions/session/s1',
+  options?: {
+    openInNewPanel?: boolean
+  },
 ) {
   store.set(openOrReuseProjectFileAtom, {
     ownerPanelId,
     projectId: 'project-1',
     relativePath,
     contextRoute,
+    ...options,
   })
 }
 
@@ -366,25 +370,79 @@ describe('panel stack content routes', () => {
     expect(restoredStore.get(focusedPanelIdAtom)).toBe(restoredFile.id)
   })
 
-  it('reuses the Project File companion for the same physical owner', () => {
+  it('opens an explicit Project File panel without changing default preview reuse', () => {
     const store = createStore()
     store.set(pushPanelAtom, { route: 'allSessions/session/s1' })
     const owner = getStack(store)[0]
-    openProjectFile(store, owner.id, 'src/first.ts')
-    const companionId = getStack(store)[1].id
+    openProjectFile(store, owner.id, 'maps/tutorial.drawnix')
+    const boardPanelId = getStack(store)[1].id
     store.set(setCompanionChatTargetAtom, {
-      panelId: companionId,
+      panelId: boardPanelId,
       sessionId: 'session-2',
     })
 
-    openProjectFile(store, owner.id, 'src/second.ts')
+    openProjectFile(
+      store,
+      owner.id,
+      'books/tutorial.pdf',
+      'allSessions/session/s1',
+      {
+        openInNewPanel: true,
+      },
+    )
 
-    const stack = getStack(store)
-    expect(stack).toHaveLength(2)
-    expect(stack[1].id).toBe(companionId)
-    expect(stack[1].route.kind).toBe('projectFile')
-    expect(stack[1].chatTargetSessionId).toBeUndefined()
-    expect(viewRoutes(store)[1]).toBe('src/second.ts')
+    let stack = getStack(store)
+    expect(stack).toHaveLength(3)
+    expect(stack.find(panel => panel.id === boardPanelId)).toMatchObject({
+      ownerPanelId: owner.id,
+      route: {
+        kind: 'projectFile',
+        relativePath: 'maps/tutorial.drawnix',
+      },
+      chatTargetSessionId: 'session-2',
+    })
+    expect(viewRoutes(store)).toEqual([
+      'allSessions/session/s1',
+      'maps/tutorial.drawnix',
+      'books/tutorial.pdf',
+    ])
+    const pdfPanelId = stack[2].id
+    expect(store.get(focusedPanelIdAtom)).toBe(pdfPanelId)
+
+    const restoredStore = createStore()
+    const layout = deserializePanelLayout(
+      serializePanelLayout(stack, pdfPanelId)!,
+    )
+    expect(restoredStore.set(restorePanelLayoutAtom, layout!)).toBe(true)
+    const restoredStack = getStack(restoredStore)
+    expect(viewRoutes(restoredStore)).toEqual(viewRoutes(store))
+    expect(restoredStack[1].ownerPanelId).toBe(restoredStack[0].id)
+    expect(restoredStack[2].ownerPanelId).toBe(restoredStack[0].id)
+
+    openProjectFile(
+      store,
+      owner.id,
+      'books/tutorial.pdf',
+      'allSessions/session/s1',
+      {
+        openInNewPanel: true,
+      },
+    )
+
+    expect(getStack(store)).toHaveLength(3)
+    expect(store.get(focusedPanelIdAtom)).toBe(pdfPanelId)
+
+    openProjectFile(store, owner.id, 'books/next.epub')
+
+    stack = getStack(store)
+    expect(stack).toHaveLength(3)
+    expect(viewRoutes(store)).toEqual([
+      'allSessions/session/s1',
+      'maps/tutorial.drawnix',
+      'books/next.epub',
+    ])
+    expect(stack.find(panel => panel.id === boardPanelId)?.chatTargetSessionId)
+      .toBe('session-2')
   })
 
   it('keeps reopen intent runtime-only and consumes it exactly once', () => {

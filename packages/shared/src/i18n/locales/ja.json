@@ -492,6 +492,7 @@
   "filesSidebar.noMatches": "一致するファイルはありません。",
   "filesSidebar.noProjectDescription": "作業ディレクトリが設定されたプロジェクトに紐づくセッションを選択してください。",
   "filesSidebar.noProjectTitle": "プロジェクトフォルダなし",
+  "filesSidebar.openInNewPanel": "新しいパネルで開く",
   "filesSidebar.previewTitle": "ファイルを開く",
   "filesSidebar.previewUnavailable": "このファイル形式はプレビューできません。",
   "filesSidebar.title": "プロジェクトファイル",

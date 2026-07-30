@@ -492,6 +492,7 @@
   "filesSidebar.noMatches": "No matching files.",
   "filesSidebar.noProjectDescription": "Select a session linked to a project with a working directory.",
   "filesSidebar.noProjectTitle": "No project folder",
+  "filesSidebar.openInNewPanel": "Open in New Panel",
   "filesSidebar.previewTitle": "Open file",
   "filesSidebar.previewUnavailable": "Preview is not available for this file type.",
   "filesSidebar.title": "Project files",

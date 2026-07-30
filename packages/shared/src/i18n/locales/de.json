@@ -492,6 +492,7 @@
   "filesSidebar.noMatches": "Keine passenden Dateien.",
   "filesSidebar.noProjectDescription": "Wähle eine Sitzung, die mit einem Projekt mit Arbeitsverzeichnis verknüpft ist.",
   "filesSidebar.noProjectTitle": "Kein Projektordner",
+  "filesSidebar.openInNewPanel": "In neuem Panel öffnen",
   "filesSidebar.previewTitle": "Datei öffnen",
   "filesSidebar.previewUnavailable": "Für diesen Dateityp ist keine Vorschau verfügbar.",
   "filesSidebar.title": "Projektdateien",

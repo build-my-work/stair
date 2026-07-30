@@ -52,6 +52,17 @@ export const panelViewportWidthAtom = atom(
     : document.documentElement.clientWidth,
 )
 
+function withProjectFileOpenIntent(
+  current: Map<string, ProjectFileOpenIntent>,
+  panelId: string,
+  intent?: ProjectFileOpenIntent,
+): Map<string, ProjectFileOpenIntent> {
+  const next = new Map(current)
+  if (intent) next.set(panelId, intent)
+  else next.delete(panelId)
+  return next
+}
+
 export const panelCountAtom = atom((get) => get(panelStackAtom).length)
 
 export const focusedPanelIndexAtom = atom((get) => {
@@ -306,8 +317,8 @@ export const setCompanionChatTargetAtom = atom(
 
 /**
  * Open one reusable Project File companion per physical navigation owner.
+ * An explicit new-panel request keeps the current companion and opens beside it.
  * Drawnix files always reuse the one visible board for that Project File.
- * Reference navigation may also focus an already-open matching file.
  */
 export const openOrReuseProjectFileAtom = atom(
   null,
@@ -318,6 +329,8 @@ export const openOrReuseProjectFileAtom = atom(
     contextRoute: ViewRoute
     /** Keep reference navigation on an already-open copy of this file. */
     preferExistingFile?: boolean
+    /** Preserve the current Project File companion and open beside it. */
+    openInNewPanel?: boolean
     intent?: ProjectFileOpenIntent
   }) => {
     const stack = get(panelStackAtom)
@@ -336,8 +349,9 @@ export const openOrReuseProjectFileAtom = atom(
       relativePath: input.relativePath,
       contextRoute: input.contextRoute,
     })
-    const existingFile = (
+    const matchingOpenFile = (
       input.preferExistingFile
+      || input.openInNewPanel
       || input.relativePath.toLowerCase().endsWith('.drawnix')
     )
       ? stack.find(entry => (
@@ -347,78 +361,90 @@ export const openOrReuseProjectFileAtom = atom(
         ))
       : undefined
 
-    if (existingFile) {
-      set(focusedPanelIdAtom, existingFile.id)
-      set(projectFileOpenIntentsAtom, current => {
-        const next = new Map(current)
-        if (input.intent) next.set(existingFile.id, input.intent)
-        else next.delete(existingFile.id)
-        return next
-      })
+    if (matchingOpenFile) {
+      set(focusedPanelIdAtom, matchingOpenFile.id)
+      set(projectFileOpenIntentsAtom, current =>
+        withProjectFileOpenIntent(current, matchingOpenFile.id, input.intent)
+      )
       return
     }
 
-    const focusedOrphan = focusedPanel
-      && isProjectFileRoute(focusedPanel.route)
-      && focusedOwnerId === null
-      ? focusedPanel
-      : undefined
-    const existingCompanion = focusedOrphan ?? (
-      ownerEntry
-        ? stack.find(
-            entry => (
+    if (!input.openInNewPanel) {
+      const focusedCompanion = focusedPanel
+        && isProjectFileRoute(focusedPanel.route)
+        && (
+          focusedOwnerId === null
+          || focusedOwnerId === ownerEntry?.id
+        )
+        ? focusedPanel
+        : undefined
+      const matchingOwnedFile = ownerEntry
+        ? stack.find(entry => (
+            isProjectFileRoute(entry.route)
+            && entry.ownerPanelId === ownerEntry.id
+            && entry.route.projectId === input.projectId
+            && entry.route.relativePath === input.relativePath
+          ))
+        : undefined
+      const reusableFile = matchingOwnedFile ?? focusedCompanion ?? (
+        ownerEntry
+          ? stack.find(entry => (
               isProjectFileRoute(entry.route)
               && entry.ownerPanelId === ownerEntry.id
-            ),
-          )
-        : undefined
-    )
-
-    if (existingCompanion) {
-      const keepsChatTarget = (
-        isProjectFileRoute(existingCompanion.route)
-        && existingCompanion.route.projectId === nextRoute.projectId
-        && existingCompanion.route.relativePath === nextRoute.relativePath
+            ))
+          : undefined
       )
-      set(panelStackAtom, stack.map(entry =>
-        entry.id === existingCompanion.id
-          ? {
-              ...entry,
-              route: nextRoute,
-              chatTargetSessionId: keepsChatTarget
-                ? existingCompanion.chatTargetSessionId
-                : undefined,
-              ...(ownerEntry
-                ? { ownerPanelId: ownerEntry.id }
-                : { ownerPanelId: undefined }),
+
+      if (reusableFile) {
+        const keepsChatTarget = (
+          isProjectFileRoute(reusableFile.route)
+          && reusableFile.route.projectId === nextRoute.projectId
+          && reusableFile.route.relativePath === nextRoute.relativePath
+        )
+        set(panelStackAtom, stack.map(entry =>
+          entry.id === reusableFile.id
+            ? {
+                ...entry,
+                route: nextRoute,
+                chatTargetSessionId: keepsChatTarget
+                  ? reusableFile.chatTargetSessionId
+                  : undefined,
+                ...(ownerEntry
+                  ? { ownerPanelId: ownerEntry.id }
+                  : { ownerPanelId: undefined }),
             }
-          : entry
-      ))
-      set(focusedPanelIdAtom, existingCompanion.id)
-      set(projectFileOpenIntentsAtom, current => {
-        const next = new Map(current)
-        if (input.intent) next.set(existingCompanion.id, input.intent)
-        else next.delete(existingCompanion.id)
-        return next
-      })
-      return
+            : entry
+        ))
+        set(focusedPanelIdAtom, reusableFile.id)
+        set(projectFileOpenIntentsAtom, current =>
+          withProjectFileOpenIntent(current, reusableFile.id, input.intent)
+        )
+        return
+      }
     }
 
     const ownerIndex = ownerEntry
       ? stack.findIndex(entry => entry.id === ownerEntry.id)
       : -1
+    let insertAfterIndex = ownerIndex >= 0
+      ? ownerIndex
+      : get(focusedPanelIndexAtom)
+    if (input.openInNewPanel && ownerEntry) {
+      for (let index = ownerIndex + 1; index < stack.length; index += 1) {
+        if (stack[index].ownerPanelId !== ownerEntry.id) break
+        insertAfterIndex = index
+      }
+    }
     const panelId = set(pushPanelAtom, {
       route: nextRoute,
-      afterIndex: ownerIndex >= 0 ? ownerIndex : get(focusedPanelIndexAtom),
+      afterIndex: insertAfterIndex,
       ownerPanelId: ownerEntry?.id,
     })
     const intent = input.intent
     if (panelId && intent) {
-      set(projectFileOpenIntentsAtom, current => {
-        const next = new Map(current)
-        next.set(panelId, intent)
-        return next
-      })
+      set(projectFileOpenIntentsAtom, current =>
+        withProjectFileOpenIntent(current, panelId, intent)
+      )
     }
   },
 )

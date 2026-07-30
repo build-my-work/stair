@@ -1,5 +1,46 @@
 @import '@drawnix/drawnix/index.css';
 
+.stair-drawnix-host .plait-board-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.stair-drawnix-host .plait-board-container .viewport-container {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+}
+
+.stair-drawnix-host .plait-board-container .board-active-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.stair-drawnix-host .plait-board-container.theme-colorful .board-host-svg,
+.stair-drawnix-host .plait-board-container.theme-default .board-host-svg {
+  background-color: #fff;
+}
+
+.stair-drawnix-host .plait-board-container.theme-soft .board-host-svg {
+  background-color: #f5f5f5;
+}
+
+.stair-drawnix-host .plait-board-container.theme-retro .board-host-svg {
+  background-color: #f9f8ed;
+}
+
+.stair-drawnix-host .plait-board-container.theme-dark .board-host-svg {
+  background-color: #141414;
+}
+
+.stair-drawnix-host .plait-board-container.theme-starry .board-host-svg {
+  background-color: #0d2537;
+}
+
 .stair-drawnix-host .drawnix .app-toolbar {
   display: none;
 }

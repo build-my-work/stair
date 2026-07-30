@@ -9,16 +9,20 @@ interface WorkspaceFilesSidebarProps {
   projectId?: string
   projectName?: string
   rootPath?: string
+  openFilePaths: ReadonlySet<string>
   onClose: () => void
   onOpenFile: (relativePath: string) => void
+  onOpenFileInNewPanel: (relativePath: string) => void
 }
 
 export function WorkspaceFilesSidebar({
   projectId,
   projectName,
   rootPath,
+  openFilePaths,
   onClose,
   onOpenFile,
+  onOpenFileInNewPanel,
 }: WorkspaceFilesSidebarProps) {
   const { t } = useTranslation()
 
@@ -39,7 +43,9 @@ export function WorkspaceFilesSidebar({
         projectId={projectId}
         projectName={projectName}
         rootPath={rootPath}
+        openFilePaths={openFilePaths}
         onOpenFile={onOpenFile}
+        onOpenFileInNewPanel={onOpenFileInNewPanel}
       />
     </div>
   )

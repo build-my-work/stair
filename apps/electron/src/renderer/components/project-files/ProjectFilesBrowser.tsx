@@ -21,6 +21,7 @@ import {
   Image,
   Link2,
   Loader2,
+  PanelRightOpen,
   RefreshCw,
   Search,
   X,
@@ -75,7 +76,9 @@ interface ProjectFilesBrowserProps {
   selectedFilePath?: string
   disabled?: boolean
   autoFocusSearch?: boolean
+  openFilePaths?: ReadonlySet<string>
   onOpenFile?: (relativePath: string) => void
+  onOpenFileInNewPanel?: (relativePath: string) => void
   onSelectFile?: (relativePath: string) => void
   onActivateFile?: (relativePath: string) => void
   onBusyChange?: (busy: boolean) => void
@@ -112,10 +115,12 @@ interface TreeEntryProps {
   expandedPaths: Set<string>
   selectedDirectoryPath: string
   selectedFilePath?: string
+  openFilePaths?: ReadonlySet<string>
   inlineCreate: InlineCreateState | null
   onToggleDirectory: (path: string) => void
   onSelectDirectory: (path: string) => void
   onFileClick: (relativePath: string) => void
+  onOpenFileInNewPanel?: (relativePath: string) => void
   onFileActivate?: (relativePath: string) => void
   createActions: InlineCreateActions
 }
@@ -129,10 +134,12 @@ function TreeEntry({
   expandedPaths,
   selectedDirectoryPath,
   selectedFilePath,
+  openFilePaths,
   inlineCreate,
   onToggleDirectory,
   onSelectDirectory,
   onFileClick,
+  onOpenFileInNewPanel,
   onFileActivate,
   createActions,
 }: TreeEntryProps) {
@@ -153,6 +160,7 @@ function TreeEntry({
     : selectedFilePath === entry.relativePath
   const entryDisabled = disabled
     || (isDirectory ? !canBrowseDirectory : !canSelectFile)
+  const isOpenInPanel = openFilePaths?.has(entry.relativePath) ?? false
 
   const entryButton = (
     <button
@@ -206,39 +214,66 @@ function TreeEntry({
     </button>
   )
 
+  let entryControl: ReactNode = entryButton
+  if (canCreateWithinDirectory && !disabled) {
+    entryControl = (
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          {entryButton}
+        </ContextMenuTrigger>
+        <StyledContextMenuContent>
+          <StyledContextMenuItem
+            onSelect={() => createActions.begin('file', entry.relativePath)}
+          >
+            <FilePlus2 />
+            {mode === 'note-target'
+              ? t('projectNoteTarget.newFile')
+              : t('filesSidebar.newFile')}
+          </StyledContextMenuItem>
+          {mode === 'manage' && (
+            <StyledContextMenuItem
+              onSelect={() => createActions.begin('mindmap', entry.relativePath)}
+            >
+              <BrainCircuit />
+              {t('filesSidebar.newMindMap')}
+            </StyledContextMenuItem>
+          )}
+          <StyledContextMenuItem
+            onSelect={() => createActions.begin('directory', entry.relativePath)}
+          >
+            <FolderPlus />
+            {t('filesSidebar.newFolder')}
+          </StyledContextMenuItem>
+        </StyledContextMenuContent>
+      </ContextMenu>
+    )
+  } else if (
+    !isDirectory
+    && mode === 'manage'
+    && !disabled
+    && onOpenFileInNewPanel
+  ) {
+    entryControl = (
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          {entryButton}
+        </ContextMenuTrigger>
+        <StyledContextMenuContent>
+          <StyledContextMenuItem
+            disabled={isOpenInPanel}
+            onSelect={() => onOpenFileInNewPanel(entry.relativePath)}
+          >
+            <PanelRightOpen />
+            {t('filesSidebar.openInNewPanel')}
+          </StyledContextMenuItem>
+        </StyledContextMenuContent>
+      </ContextMenu>
+    )
+  }
+
   return (
     <div>
-      {canCreateWithinDirectory && !disabled ? (
-        <ContextMenu>
-          <ContextMenuTrigger asChild>
-            {entryButton}
-          </ContextMenuTrigger>
-          <StyledContextMenuContent>
-            <StyledContextMenuItem
-              onSelect={() => createActions.begin('file', entry.relativePath)}
-            >
-              <FilePlus2 />
-              {mode === 'note-target'
-                ? t('projectNoteTarget.newFile')
-                : t('filesSidebar.newFile')}
-            </StyledContextMenuItem>
-            {mode === 'manage' && (
-              <StyledContextMenuItem
-                onSelect={() => createActions.begin('mindmap', entry.relativePath)}
-              >
-                <BrainCircuit />
-                {t('filesSidebar.newMindMap')}
-              </StyledContextMenuItem>
-            )}
-            <StyledContextMenuItem
-              onSelect={() => createActions.begin('directory', entry.relativePath)}
-            >
-              <FolderPlus />
-              {t('filesSidebar.newFolder')}
-            </StyledContextMenuItem>
-          </StyledContextMenuContent>
-        </ContextMenu>
-      ) : entryButton}
+      {entryControl}
 
       {isDirectory && expanded && (
         <div className="relative">
@@ -284,10 +319,12 @@ function TreeEntry({
               expandedPaths={expandedPaths}
               selectedDirectoryPath={selectedDirectoryPath}
               selectedFilePath={selectedFilePath}
+              openFilePaths={openFilePaths}
               inlineCreate={inlineCreate}
               onToggleDirectory={onToggleDirectory}
               onSelectDirectory={onSelectDirectory}
               onFileClick={onFileClick}
+              onOpenFileInNewPanel={onOpenFileInNewPanel}
               onFileActivate={onFileActivate}
               createActions={createActions}
             />
@@ -407,7 +444,9 @@ export function ProjectFilesBrowser({
   selectedFilePath,
   disabled = false,
   autoFocusSearch = false,
+  openFilePaths,
   onOpenFile,
+  onOpenFileInNewPanel,
   onSelectFile,
   onActivateFile,
   onBusyChange,
@@ -814,7 +853,7 @@ export function ProjectFilesBrowser({
   } else {
     searchContent = searchResults.map(result => {
       const selected = selectedFilePath === result.relativePath
-      return (
+      const resultButton = (
         <button
           key={result.relativePath}
           type="button"
@@ -842,6 +881,24 @@ export function ProjectFilesBrowser({
           </span>
           {selected && <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
         </button>
+      )
+      if (mode !== 'manage' || !onOpenFileInNewPanel) return resultButton
+
+      return (
+        <ContextMenu key={result.relativePath}>
+          <ContextMenuTrigger asChild>
+            {resultButton}
+          </ContextMenuTrigger>
+          <StyledContextMenuContent>
+            <StyledContextMenuItem
+              disabled={openFilePaths?.has(result.relativePath)}
+              onSelect={() => onOpenFileInNewPanel(result.relativePath)}
+            >
+              <PanelRightOpen />
+              {t('filesSidebar.openInNewPanel')}
+            </StyledContextMenuItem>
+          </StyledContextMenuContent>
+        </ContextMenu>
       )
     })
   }
@@ -971,10 +1028,12 @@ export function ProjectFilesBrowser({
                         expandedPaths={expandedPaths}
                         selectedDirectoryPath={selectedDirectoryPath}
                         selectedFilePath={selectedFilePath}
+                        openFilePaths={openFilePaths}
                         inlineCreate={inlineCreate}
                         onToggleDirectory={handleToggleDirectory}
                         onSelectDirectory={setSelectedDirectoryPath}
                         onFileClick={handleFileClick}
+                        onOpenFileInNewPanel={onOpenFileInNewPanel}
                         onFileActivate={handleFileActivate}
                         createActions={createActions}
                       />

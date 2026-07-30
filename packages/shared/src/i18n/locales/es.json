@@ -492,6 +492,7 @@
   "filesSidebar.noMatches": "No hay archivos coincidentes.",
   "filesSidebar.noProjectDescription": "Selecciona una sesión vinculada a un proyecto con un directorio de trabajo.",
   "filesSidebar.noProjectTitle": "Sin carpeta de proyecto",
+  "filesSidebar.openInNewPanel": "Abrir en un panel nuevo",
   "filesSidebar.previewTitle": "Abrir archivo",
   "filesSidebar.previewUnavailable": "La vista previa no está disponible para este tipo de archivo.",
   "filesSidebar.title": "Archivos del proyecto",

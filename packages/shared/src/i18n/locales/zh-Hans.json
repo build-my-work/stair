@@ -492,6 +492,7 @@
   "filesSidebar.noMatches": "没有匹配的文件。",
   "filesSidebar.noProjectDescription": "请选择已绑定项目且项目已配置工作目录的会话。",
   "filesSidebar.noProjectTitle": "没有项目目录",
+  "filesSidebar.openInNewPanel": "在新面板中打开",
   "filesSidebar.previewTitle": "打开文件",
   "filesSidebar.previewUnavailable": "暂不支持预览此文件类型。",
   "filesSidebar.title": "项目文件",

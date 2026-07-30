@@ -1908,6 +1908,21 @@ function AppShellContent({
     [rightSidebarOwnerRoute, sessionMetaMap, projects],
   )
   const rightSidebarProject = routeProject
+  const openProjectFilePaths = React.useMemo(() => {
+    const projectId = rightSidebarProject?.config.id
+    if (!projectId) return new Set<string>()
+
+    const openPaths = new Set<string>()
+    for (const entry of panelStack) {
+      if (
+        entry.route.kind === 'projectFile'
+        && entry.route.projectId === projectId
+      ) {
+        openPaths.add(entry.route.relativePath)
+      }
+    }
+    return openPaths
+  }, [panelStack, rightSidebarProject?.config.id])
   const companionOwnerPanelId = focusedPanelId
     ? getPanelOwnerPanelId(panelStack, focusedPanelId) ?? undefined
     : undefined
@@ -1922,7 +1937,10 @@ function AppShellContent({
       updateRightSidebar({ type: 'files' })
     }
   }, [handleCloseRightSidebar, isRightSidebarVisible, updateRightSidebar])
-  const handleOpenProjectFile = React.useCallback((relativePath: string) => {
+  const handleOpenProjectFile = React.useCallback((
+    relativePath: string,
+    openInNewPanel = false,
+  ) => {
     if (!rightSidebarOwnerRoute || !rightSidebarProject?.config.workingDirectory) return
     void flushOpenDrawnixBoards()
       .then(() => {
@@ -1931,6 +1949,7 @@ function AppShellContent({
           projectId: rightSidebarProject.config.id,
           contextRoute: rightSidebarOwnerRoute,
           relativePath,
+          openInNewPanel,
         })
         if (isAutoCompact) handleCloseRightSidebar()
       })
@@ -1946,6 +1965,10 @@ function AppShellContent({
     rightSidebarProject?.config.id,
     rightSidebarProject?.config.workingDirectory,
   ])
+  const handleOpenProjectFileInNewPanel = React.useCallback(
+    (relativePath: string) => handleOpenProjectFile(relativePath, true),
+    [handleOpenProjectFile],
+  )
   const handleOpenProjectFileReference = React.useCallback((
     reference: MessageReference,
   ) => {
@@ -4356,8 +4379,10 @@ function AppShellContent({
                   projectId={rightSidebarProject?.config.id}
                   projectName={rightSidebarProject?.config.name}
                   rootPath={rightSidebarProject?.config.workingDirectory}
+                  openFilePaths={openProjectFilePaths}
                   onClose={handleCloseRightSidebar}
                   onOpenFile={handleOpenProjectFile}
+                  onOpenFileInNewPanel={handleOpenProjectFileInNewPanel}
                 />
               </div>
 
@@ -4419,8 +4444,10 @@ function AppShellContent({
                   projectId={rightSidebarProject?.config.id}
                   projectName={rightSidebarProject?.config.name}
                   rootPath={rightSidebarProject?.config.workingDirectory}
+                  openFilePaths={openProjectFilePaths}
                   onClose={handleCloseRightSidebar}
                   onOpenFile={handleOpenProjectFile}
+                  onOpenFileInNewPanel={handleOpenProjectFileInNewPanel}
                 />
               </motion.div>
             </>
