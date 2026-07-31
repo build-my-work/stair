@@ -1,4 +1,5 @@
 export const PROJECT_NOTE_TARGET_EXTENSIONS = ['md', 'markdown', 'txt'] as const
+export const PROJECT_NOTE_RECENT_TARGET_LIMIT = 5
 
 const PROJECT_NOTE_TARGET_EXTENSION_SET = new Set<string>(
   PROJECT_NOTE_TARGET_EXTENSIONS,

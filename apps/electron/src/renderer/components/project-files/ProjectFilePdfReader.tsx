@@ -43,6 +43,7 @@ export function ProjectFilePdfReader({
   sourceFingerprint: SourceFingerprint
   onAddNote: (
     reference: ProjectFileSelectionReferenceV1,
+    mode?: 'current' | 'choose-target',
   ) => boolean | Promise<boolean>
 }) {
   const rootRef = React.useRef<HTMLDivElement>(null)
@@ -108,7 +109,9 @@ export function ProjectFilePdfReader({
     })
   }, [])
 
-  const addNote = React.useCallback(async () => {
+  const addNote = React.useCallback(async (
+    mode: 'current' | 'choose-target' = 'current',
+  ) => {
     if (!selection || adding) return
     const reference: ProjectFileSelectionReferenceV1 = {
       version: 1,
@@ -132,7 +135,7 @@ export function ProjectFilePdfReader({
 
     setAdding(true)
     try {
-      const added = await onAddNote(reference)
+      const added = await onAddNote(reference, mode)
       if (added) {
         window.getSelection()?.removeAllRanges()
         dismiss()
@@ -205,6 +208,7 @@ export function ProjectFilePdfReader({
           collisionBoundary={rootRef.current}
           adding={adding}
           onAddNote={() => void addNote()}
+          onAddNoteTo={() => void addNote('choose-target')}
           onDismiss={dismiss}
         />
       )}

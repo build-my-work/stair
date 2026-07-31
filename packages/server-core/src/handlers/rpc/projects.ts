@@ -69,8 +69,18 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
-    const { updateProject } = await import('@craft-agent/shared/projects')
+    const { loadProject, updateProject } = await import('@craft-agent/shared/projects')
+    const previous = loadProject(workspace.rootPath, projectSlug)
     const updated = updateProject(workspace.rootPath, projectSlug, patch)
+    if (
+      previous
+      && previous.config.workingDirectory !== updated.workingDirectory
+    ) {
+      await deps.sessionManager.clearProjectNoteTargetsForProject(
+        workspace.id,
+        updated.id,
+      )
+    }
     await broadcastChanged(workspaceId, workspace.rootPath)
     return updated
   })
@@ -87,8 +97,10 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
       return
     }
 
-    const { unbindProjectFromSessions } = await import('@craft-agent/shared/sessions')
-    const touched = await unbindProjectFromSessions(workspace.rootPath, project.config.id)
+    const touched = await deps.sessionManager.unbindSessionsFromProject(
+      workspace.id,
+      project.config.id,
+    )
     deleteProject(workspace.rootPath, projectSlug)
     await broadcastChanged(workspaceId, workspace.rootPath)
     log.info(`Deleted project ${projectSlug} (unbound ${touched} sessions)`)

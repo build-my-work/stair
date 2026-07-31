@@ -53,8 +53,11 @@ export const SESSION_PERSISTENT_FIELDS = [
   'transferredSessionSummaryApplied',
   // Automation origin
   'triggeredBy',
-  // Project binding and this Session's Add Note destination
-  'projectId', 'projectNoteTargetPath',
+  // Project binding and this Session's Add Note destinations
+  'projectId',
+  'projectNoteTargetPath',
+  'projectNoteTargetRootFingerprint',
+  'projectNoteRecentTargetPaths',
   // Kanban: task/subtask hierarchy + board column
   'parentSessionId',
   'kanbanColumn',
@@ -212,6 +215,10 @@ export interface SessionConfig {
   projectId?: string;
   /** Canonical path, relative to the bound Project root, used by Add Note. */
   projectNoteTargetPath?: string;
+  /** Identity of the canonical Project root where the current target was selected. */
+  projectNoteTargetRootFingerprint?: string;
+  /** Most recently configured Add Note targets for this Session, newest first. */
+  projectNoteRecentTargetPaths?: string[];
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -321,6 +328,10 @@ export interface SessionHeader {
   projectId?: string;
   /** Canonical path, relative to the bound Project root, used by Add Note. */
   projectNoteTargetPath?: string;
+  /** Identity of the canonical Project root where the current target was selected. */
+  projectNoteTargetRootFingerprint?: string;
+  /** Most recently configured Add Note targets for this Session, newest first. */
+  projectNoteRecentTargetPaths?: string[];
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -419,6 +430,10 @@ export interface SessionMetadata {
   projectId?: string;
   /** Canonical path, relative to the bound Project root, used by Add Note. */
   projectNoteTargetPath?: string;
+  /** Identity of the canonical Project root where the current target was selected. */
+  projectNoteTargetRootFingerprint?: string;
+  /** Most recently configured Add Note targets for this Session, newest first. */
+  projectNoteRecentTargetPaths?: string[];
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */

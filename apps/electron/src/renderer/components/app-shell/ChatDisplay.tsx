@@ -521,6 +521,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   const onAddSelectionNote = appShellContext.onAddSelectionNote
   const handleAddNoteSelection = useCallback(async (
     selection: ChatTextSelection,
+    mode: 'current' | 'choose-target' = 'current',
   ): Promise<boolean> => {
     if (!session?.id || !onAddSelectionNote) {
       toast.error('Add Note is unavailable.')
@@ -529,6 +530,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     return onAddSelectionNote(
       session.id,
       buildChatSelectionReference(session.id, selection),
+      mode,
     )
   }, [onAddSelectionNote, session?.id])
 
@@ -2195,6 +2197,7 @@ interface MessageBubbleProps {
   onOpenProjectFileReference?: (reference: MessageReference) => void
   onAddNoteSelection?: (
     selection: ChatTextSelection,
+    mode?: 'current' | 'choose-target',
   ) => boolean | Promise<boolean>
   sessionId?: string
   /**

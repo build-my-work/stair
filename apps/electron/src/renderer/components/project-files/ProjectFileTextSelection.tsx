@@ -1,5 +1,6 @@
 import * as React from 'react'
-import { Loader2, NotebookPen } from 'lucide-react'
+import { ChevronRight, Loader2, NotebookPen } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import {
   MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
@@ -139,14 +140,17 @@ export function ProjectFileSelectionPopover({
   collisionBoundary,
   adding,
   onAddNote,
+  onAddNoteTo,
   onDismiss,
 }: {
   selection: ProjectFileDomSelection
   collisionBoundary: HTMLElement | null
   adding: boolean
   onAddNote: () => void
+  onAddNoteTo: () => void
   onDismiss: () => void
 }) {
+  const { t } = useTranslation()
   const virtualAnchor = React.useMemo(() => ({
     current: {
       getBoundingClientRect: () => selection.anchorRect,
@@ -154,7 +158,12 @@ export function ProjectFileSelectionPopover({
   }), [selection.anchorRect])
 
   return (
-    <Popover open onOpenChange={open => { if (!open) onDismiss() }}>
+    <Popover
+      open
+      onOpenChange={open => {
+        if (!open && !adding) onDismiss()
+      }}
+    >
       <PopoverAnchor virtualRef={virtualAnchor} />
       <PopoverContent
         data-project-file-selection-menu
@@ -170,18 +179,31 @@ export function ProjectFileSelectionPopover({
         onOpenAutoFocus={event => event.preventDefault()}
         onCloseAutoFocus={event => event.preventDefault()}
       >
-        <Button
-          type="button"
-          variant="ghost"
-          disabled={adding}
-          onClick={onAddNote}
-          className="h-9 gap-1.5 rounded-[8px] px-2.5 text-xs"
-        >
-          {adding
-            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            : <NotebookPen className="h-3.5 w-3.5" />}
-          Add Note
-        </Button>
+        <div className="flex items-center">
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={adding}
+            onClick={onAddNote}
+            className="h-9 gap-1.5 rounded-r-none px-2.5 text-xs"
+          >
+            {adding
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <NotebookPen className="h-3.5 w-3.5" />}
+            Add Note
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={adding}
+            onClick={onAddNoteTo}
+            title={t('projectNoteTarget.chooseFile')}
+            aria-label={t('projectNoteTarget.chooseFile')}
+            className="h-9 rounded-l-none border-l border-border/45 px-1.5"
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </PopoverContent>
     </Popover>
   )
@@ -202,6 +224,7 @@ export function ProjectFileTextSelectionSurface({
   sourceFingerprint: SourceFingerprint
   onAddNote: (
     reference: ProjectFileSelectionReferenceV1,
+    mode?: 'current' | 'choose-target',
   ) => boolean | Promise<boolean>
   className?: string
   children: React.ReactNode
@@ -217,10 +240,12 @@ export function ProjectFileTextSelectionSurface({
 
   React.useEffect(() => {
     if (!selection) return
-    const closeOnScroll = () => dismiss()
+    const closeOnScroll = () => {
+      if (!adding) dismiss()
+    }
     document.addEventListener('scroll', closeOnScroll, true)
     return () => document.removeEventListener('scroll', closeOnScroll, true)
-  }, [dismiss, selection])
+  }, [adding, dismiss, selection])
 
   const handleMouseUp = React.useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (
@@ -249,7 +274,9 @@ export function ProjectFileTextSelectionSurface({
     })
   }, [])
 
-  const addNote = React.useCallback(async () => {
+  const addNote = React.useCallback(async (
+    mode: 'current' | 'choose-target' = 'current',
+  ) => {
     if (!selection || adding) return
     setAdding(true)
     try {
@@ -261,6 +288,7 @@ export function ProjectFileTextSelectionSurface({
           sourceFingerprint,
           selection,
         }),
+        mode,
       )
       if (added) {
         window.getSelection()?.removeAllRanges()
@@ -295,6 +323,7 @@ export function ProjectFileTextSelectionSurface({
           collisionBoundary={rootRef.current}
           adding={adding}
           onAddNote={() => void addNote()}
+          onAddNoteTo={() => void addNote('choose-target')}
           onDismiss={dismiss}
         />
       )}

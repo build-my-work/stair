@@ -83,6 +83,7 @@ export interface AppShellContextType {
   onAddSelectionNote?: (
     sessionId: string,
     selection: import('@craft-agent/core').SelectionReference,
+    mode?: 'current' | 'choose-target',
   ) => Promise<boolean>
   /** Choose a Project when needed, then open the target picker without creating a free-form note. */
   onConfigureProjectNoteTarget?: (sessionId: string) => void

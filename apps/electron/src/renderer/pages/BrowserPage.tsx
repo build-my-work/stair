@@ -240,7 +240,8 @@ export default function BrowserPage({
 
     try {
       switch (payload.action) {
-        case 'add-note': {
+        case 'add-note':
+        case 'add-note-to': {
           if (!chatTargetSessionId) {
             throw new Error('Choose a target Session before using Add Note.')
           }
@@ -250,6 +251,9 @@ export default function BrowserPage({
           const accepted = await onAddSelectionNote(
             chatTargetSessionId,
             payload.reference,
+            payload.action === 'add-note-to'
+              ? 'choose-target'
+              : 'current',
           )
           if (!accepted) {
             await window.electronAPI.browserPane.revealSelection(payload.reference)
@@ -280,6 +284,16 @@ export default function BrowserPage({
       }
       selectChatTarget(sessionId)
     } catch (error) {
+      if (
+        payload.action === 'add-note'
+        || payload.action === 'add-note-to'
+      ) {
+        try {
+          await window.electronAPI.browserPane.revealSelection(payload.reference)
+        } catch {
+          // Preserve the original Add Note error below.
+        }
+      }
       toast.error(
         error instanceof Error
           ? error.message

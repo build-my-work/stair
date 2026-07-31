@@ -1,6 +1,8 @@
 import * as React from 'react'
 import * as PopoverPrimitive from '@radix-ui/react-popover'
+import { useTranslation } from 'react-i18next'
 import {
+  ChevronRight,
   Highlighter,
   Loader2,
   MessageSquarePlus,
@@ -24,6 +26,7 @@ interface EpubSelectionToolbarProps {
   addingNote: boolean
   onCreateHighlight: () => void
   onAddNote: () => void
+  onAddNoteTo: () => void
   onAddChat: () => void
   onAddNewChat: () => void
   onDismiss: () => void
@@ -36,10 +39,12 @@ export function EpubSelectionToolbar({
   addingNote,
   onCreateHighlight,
   onAddNote,
+  onAddNoteTo,
   onAddChat,
   onAddNewChat,
   onDismiss,
 }: EpubSelectionToolbarProps) {
+  const { t } = useTranslation()
   const virtualAnchor = React.useMemo(() => ({
     current: {
       getBoundingClientRect: () => DOMRect.fromRect(anchorRect),
@@ -51,7 +56,7 @@ export function EpubSelectionToolbar({
     <Popover
       open
       onOpenChange={open => {
-        if (!open) onDismiss()
+        if (!open && !selectionActionPending) onDismiss()
       }}
     >
       <PopoverAnchor virtualRef={virtualAnchor} />
@@ -68,19 +73,32 @@ export function EpubSelectionToolbar({
         onOpenAutoFocus={event => event.preventDefault()}
         onCloseAutoFocus={event => event.preventDefault()}
       >
-        <Button
-          type="button"
-          variant="ghost"
-          className="h-12 min-w-16 flex-col gap-0.5 rounded-lg px-2 text-[10px]"
-          disabled={selectionActionPending}
-          title="Append this selection to the target Session's note file"
-          onClick={onAddNote}
-        >
-          {addingNote
-            ? <Loader2 className="size-4 animate-spin" />
-            : <NotebookPen className="size-4" />}
-          Add Note
-        </Button>
+        <div className="flex items-stretch">
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-12 min-w-16 flex-col gap-0.5 rounded-r-none px-2 text-[10px]"
+            disabled={selectionActionPending}
+            title="Append this selection to the target Session's note file"
+            onClick={onAddNote}
+          >
+            {addingNote
+              ? <Loader2 className="size-4 animate-spin" />
+              : <NotebookPen className="size-4" />}
+            Add Note
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-12 rounded-l-none border-l border-border/45 px-1.5"
+            disabled={selectionActionPending}
+            title={t('projectNoteTarget.chooseFile')}
+            aria-label={t('projectNoteTarget.chooseFile')}
+            onClick={onAddNoteTo}
+          >
+            <ChevronRight className="size-3.5" />
+          </Button>
+        </div>
         <Button
           type="button"
           variant="ghost"

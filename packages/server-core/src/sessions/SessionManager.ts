@@ -62,6 +62,7 @@ import {
   getSessionPath as getSessionStoragePath,
   ensureSessionDir,
   getSessionFilePath,
+  readSessionHeader,
   generateSessionId,
   sessionPersistenceQueue,
   getHeaderMetadataSignature,
@@ -73,6 +74,7 @@ import {
   type StoredSession,
   type StoredMessage,
   type SessionMetadata,
+  type SessionMetadataWriteAuthority,
   type SessionStatus,
   type SessionHeader,
   pickSessionFields,
@@ -88,7 +90,7 @@ import { isParentTaskTool } from '@craft-agent/shared/utils/toolNames'
 import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
-import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
+import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, PROJECT_NOTE_RECENT_TARGET_LIMIT, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
 import {
   isProjectFileReferenceV1,
   messageToStored,
@@ -877,6 +879,10 @@ interface ManagedSession {
   projectId?: string
   // Canonical path under the bound Project root used by Add Note
   projectNoteTargetPath?: string
+  // Identity of the canonical Project root shared by the current target and MRU
+  projectNoteTargetRootFingerprint?: string
+  // Most recently configured Add Note targets for this Session, newest first
+  projectNoteRecentTargetPaths?: string[]
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
   // Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus
@@ -921,6 +927,9 @@ interface ManagedSession {
   // Guard: suppress external metadata revert after programmatic writes (setSessionStatus/setSessionLabels).
   // fs.watch fires during atomic write (unlink+rename) and can read stale data, reverting in-memory state.
   _metadataWriteGuardUntil?: number
+  _metadataWriteGuardTimer?: ReturnType<typeof setTimeout>
+  // Runtime ordering guard for async Add Note target persistence.
+  _projectNoteTargetMutationRevision?: number
   // Whether an async operation is ongoing (sharing, updating share, revoking, title regeneration)
   // Used for shimmer effect on session title
   isAsyncOperationOngoing?: boolean
@@ -1032,20 +1041,37 @@ interface ManagedSession {
   }
 }
 
-/** Update the Project binding while preserving the target-belongs-to-Project invariant. */
+interface SessionMetadataReconcileSnapshot {
+  labels: string
+  isFlagged: boolean
+  sessionStatus?: string
+  name?: string
+  projectRouting: string
+  kanbanColumn?: string
+}
+
+/** Update the Project binding while preserving the targets-belong-to-Project invariant. */
 function setManagedProjectBinding(
   managed: ManagedSession,
   projectId: string | undefined,
 ): boolean {
   const projectChanged = managed.projectId !== projectId
-  const targetWasCleared = projectChanged
-    && managed.projectNoteTargetPath !== undefined
+  const targetsWereCleared = projectChanged
+    && (
+      managed.projectNoteTargetPath !== undefined
+      || managed.projectNoteTargetRootFingerprint !== undefined
+      || managed.projectNoteRecentTargetPaths !== undefined
+    )
 
   if (projectChanged) {
+    managed._projectNoteTargetMutationRevision =
+      (managed._projectNoteTargetMutationRevision ?? 0) + 1
     managed.projectNoteTargetPath = undefined
+    managed.projectNoteTargetRootFingerprint = undefined
+    managed.projectNoteRecentTargetPaths = undefined
   }
   managed.projectId = projectId
-  return targetWasCleared
+  return targetsWereCleared
 }
 
 const PI_SDK_MESSAGE_ID_CACHE_LIMIT = 256
@@ -1642,12 +1668,25 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
-    if (managed.projectNoteTargetPath !== header.projectNoteTargetPath) {
+    const noteTargetChanged =
+      managed.projectNoteTargetPath !== header.projectNoteTargetPath
+      || managed.projectNoteTargetRootFingerprint
+        !== header.projectNoteTargetRootFingerprint
+      || JSON.stringify(managed.projectNoteRecentTargetPaths ?? [])
+        !== JSON.stringify(header.projectNoteRecentTargetPaths ?? [])
+    if (noteTargetChanged) {
+      managed._projectNoteTargetMutationRevision =
+        (managed._projectNoteTargetMutationRevision ?? 0) + 1
       managed.projectNoteTargetPath = header.projectNoteTargetPath
+      managed.projectNoteTargetRootFingerprint =
+        header.projectNoteTargetRootFingerprint
+      managed.projectNoteRecentTargetPaths =
+        header.projectNoteRecentTargetPaths
       this.sendEvent({
         type: 'project_note_target_changed',
         sessionId,
         relativePath: header.projectNoteTargetPath ?? null,
+        recentPaths: header.projectNoteRecentTargetPaths ?? [],
       }, managed.workspace.id)
       changed = true
     }
@@ -1663,6 +1702,7 @@ export class SessionManager implements ISessionManager {
 
       // Prevent stale pending writes from reverting externally-updated metadata.
       sessionPersistenceQueue.cancel(sessionId)
+      sessionPersistenceQueue.observeHeader(header)
       this.persistSession(managed)
     }
 
@@ -2119,6 +2159,7 @@ export class SessionManager implements ISessionManager {
           }
 
           this.sessions.set(meta.id, managed)
+          sessionPersistenceQueue.observeHeader(meta)
 
           // Initialize session metadata in AutomationSystem for diffing
           const automationSystem = this.automationSystems.get(workspaceRootPath)
@@ -2146,6 +2187,97 @@ export class SessionManager implements ISessionManager {
   // atomic write completes. See onSessionMetadataChange.
   private setMetadataWriteGuard(managed: ManagedSession): void {
     managed._metadataWriteGuardUntil = Date.now() + METADATA_WRITE_GUARD_MS
+    if (managed._metadataWriteGuardTimer) {
+      clearTimeout(managed._metadataWriteGuardTimer)
+    }
+    managed._metadataWriteGuardTimer = setTimeout(() => {
+      managed._metadataWriteGuardTimer = undefined
+      managed._metadataWriteGuardUntil = undefined
+      if (
+        this.sessions.get(managed.id) !== managed
+        || !managed.pendingExternalMetadata
+      ) {
+        return
+      }
+
+      const latestHeader = readSessionHeader(
+        getSessionFilePath(managed.workspace.rootPath, managed.id),
+      )
+      if (!latestHeader) {
+        managed.pendingExternalMetadata = undefined
+        return
+      }
+
+      managed.pendingExternalMetadata = latestHeader
+      if (!managed.isProcessing) {
+        managed.pendingExternalMetadata = undefined
+        this.applyExternalSessionMetadata(managed, latestHeader)
+      }
+    }, METADATA_WRITE_GUARD_MS + 1)
+    managed._metadataWriteGuardTimer.unref?.()
+  }
+
+  private captureSessionMetadataForReconcile(
+    managed: ManagedSession,
+  ): SessionMetadataReconcileSnapshot {
+    return {
+      labels: JSON.stringify(managed.labels ?? []),
+      isFlagged: managed.isFlagged ?? false,
+      sessionStatus: managed.sessionStatus,
+      name: managed.name,
+      projectRouting: JSON.stringify([
+        managed.projectId,
+        managed.projectNoteTargetPath,
+        managed.projectNoteTargetRootFingerprint,
+        managed.projectNoteRecentTargetPaths ?? [],
+      ]),
+      kanbanColumn: managed.kanbanColumn,
+    }
+  }
+
+  private async flushAndReconcileSessionMetadata(
+    managed: ManagedSession,
+    snapshot: SessionMetadataReconcileSnapshot,
+  ): Promise<SessionHeader | null> {
+    await this.flushSession(managed.id)
+    const header = readSessionHeader(
+      getSessionFilePath(managed.workspace.rootPath, managed.id),
+    )
+    if (!header) return null
+
+    const reconciled = { ...header }
+    if (JSON.stringify(managed.labels ?? []) !== snapshot.labels) {
+      reconciled.labels = managed.labels
+    }
+    if ((managed.isFlagged ?? false) !== snapshot.isFlagged) {
+      reconciled.isFlagged = managed.isFlagged
+    }
+    if (managed.sessionStatus !== snapshot.sessionStatus) {
+      reconciled.sessionStatus = managed.sessionStatus
+    }
+    if (managed.name !== snapshot.name) {
+      reconciled.name = managed.name
+    }
+    if (
+      JSON.stringify([
+        managed.projectId,
+        managed.projectNoteTargetPath,
+        managed.projectNoteTargetRootFingerprint,
+        managed.projectNoteRecentTargetPaths ?? [],
+      ]) !== snapshot.projectRouting
+    ) {
+      reconciled.projectId = managed.projectId
+      reconciled.projectNoteTargetPath = managed.projectNoteTargetPath
+      reconciled.projectNoteTargetRootFingerprint =
+        managed.projectNoteTargetRootFingerprint
+      reconciled.projectNoteRecentTargetPaths =
+        managed.projectNoteRecentTargetPaths
+    }
+    if (managed.kanbanColumn !== snapshot.kanbanColumn) {
+      reconciled.kanbanColumn = managed.kanbanColumn
+    }
+    this.applyExternalSessionMetadata(managed, reconciled)
+    return header
   }
 
   /**
@@ -2160,11 +2292,14 @@ export class SessionManager implements ISessionManager {
    * `loadStoredSession` is synchronous (sync fs reads), so the entire path
    * stays sync — no microtask race window between the load and the enqueue.
    */
-  private persistSession(managed: ManagedSession): void {
+  private persistSession(
+    managed: ManagedSession,
+    authority?: SessionMetadataWriteAuthority,
+  ): void {
     if (!managed.messagesLoaded) {
       this.hydrateMessagesForColdPersist(managed)
     }
-    this.enqueuePersist(managed)
+    this.enqueuePersist(managed, authority)
   }
 
   // Cold-persist hydration. Mirrors the messages/queue-recovery half of
@@ -2217,7 +2352,10 @@ export class SessionManager implements ISessionManager {
 
   // Build the StoredSession snapshot and hand it to the persistence queue.
   // Caller must ensure `managed.messagesLoaded` is true.
-  private enqueuePersist(managed: ManagedSession): void {
+  private enqueuePersist(
+    managed: ManagedSession,
+    authority?: SessionMetadataWriteAuthority,
+  ): void {
     try {
       // Filter out transient status messages (progress indicators like "Compacting...")
       // Error messages are now persisted with rich fields for diagnostics
@@ -2235,7 +2373,7 @@ export class SessionManager implements ISessionManager {
       } as StoredSession
 
       // Queue for async persistence with debouncing
-      sessionPersistenceQueue.enqueue(storedSession)
+      sessionPersistenceQueue.enqueue(storedSession, authority)
     } catch (error) {
       sessionLog.error(`Failed to queue session ${managed.id} for persistence:`, error)
     }
@@ -5864,6 +6002,13 @@ export class SessionManager implements ISessionManager {
       return
     }
 
+    if (managed._metadataWriteGuardTimer) {
+      clearTimeout(managed._metadataWriteGuardTimer)
+      managed._metadataWriteGuardTimer = undefined
+    }
+    managed._metadataWriteGuardUntil = undefined
+    managed.pendingExternalMetadata = undefined
+
     // Get workspace slug before deleting
     const workspaceRootPath = managed.workspace.rootPath
 
@@ -6911,7 +7056,9 @@ export class SessionManager implements ISessionManager {
     }
 
     // 4. Apply deferred external metadata updates captured while processing.
-    if (managed.pendingExternalMetadata) {
+    const hasMetadataWriteGuard =
+      managed._metadataWriteGuardTimer !== undefined
+    if (managed.pendingExternalMetadata && !hasMetadataWriteGuard) {
       const pendingHeader = managed.pendingExternalMetadata
       managed.pendingExternalMetadata = undefined
       sessionLog.info(`Applying deferred external metadata for session ${sessionId} after processing stop`)
@@ -7492,11 +7639,22 @@ export class SessionManager implements ISessionManager {
    * Pass `null` to unbind. The session's working directory is NOT changed retroactively —
    * the project binding is only used as a default for newly created sessions.
    */
-  async setSessionProjectId(sessionId: string, projectId: string | null): Promise<void> {
+  async setSessionProjectId(
+    sessionId: string,
+    projectId: string | null,
+    expectedCurrentProjectId?: string,
+  ): Promise<void> {
     const managed = this.sessions.get(sessionId)
-    if (managed) {
+    if (
+      managed
+      && (expectedCurrentProjectId === undefined
+        || managed.projectId === expectedCurrentProjectId)
+    ) {
       const nextProjectId = projectId ?? undefined
+      const projectChanged = managed.projectId !== nextProjectId
       const targetWasCleared = setManagedProjectBinding(managed, nextProjectId)
+      const metadataAtFlush =
+        this.captureSessionMetadataForReconcile(managed)
       this.setMetadataWriteGuard(managed)
 
       this.sendEvent({
@@ -7509,11 +7667,19 @@ export class SessionManager implements ISessionManager {
           type: 'project_note_target_changed',
           sessionId: managed.id,
           relativePath: null,
+          recentPaths: [],
         }, managed.workspace.id)
       }
 
-      this.persistSession(managed)
-      await this.flushSession(managed.id)
+      this.persistSession(
+        managed,
+        projectChanged
+          ? expectedCurrentProjectId === undefined
+            ? 'project-binding'
+            : 'project-binding-if-current'
+          : undefined,
+      )
+      await this.flushAndReconcileSessionMetadata(managed, metadataAtFlush)
       const watcher = this.configWatchers.get(managed.workspace.rootPath)
       watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
     }
@@ -7611,6 +7777,8 @@ export class SessionManager implements ISessionManager {
     // the connection_changed event below keeps the renderer in sync.
     managed.taskSlug = taskSlug
     managed.taskDraft = false
+    const projectBindingChanged = reconcile?.projectId !== undefined
+      && managed.projectId !== reconcile.projectId
     const noteTargetCleared = reconcile?.projectId === undefined
       ? false
       : setManagedProjectBinding(managed, reconcile.projectId)
@@ -7625,9 +7793,14 @@ export class SessionManager implements ISessionManager {
     if (cwdChanged) this.updateWorkingDirectory(sessionId, reconcile!.workingDirectory!)
     if (modeChanged) this.setSessionPermissionMode(sessionId, reconcile!.permissionMode!)
 
+    const metadataAtFlush =
+      this.captureSessionMetadataForReconcile(managed)
     this.setMetadataWriteGuard(managed)
-    this.persistSession(managed)
-    await this.flushSession(managed.id)
+    this.persistSession(
+      managed,
+      projectBindingChanged ? 'project-binding' : undefined,
+    )
+    await this.flushAndReconcileSessionMetadata(managed, metadataAtFlush)
 
     // One-shot board promotion: clearing taskDraft (sent as `false`, never `undefined` — undefined
     // is dropped over the JSON wire) reveals the already-announced tile; taskSlug/projectId
@@ -7640,6 +7813,7 @@ export class SessionManager implements ISessionManager {
         type: 'project_note_target_changed',
         sessionId,
         relativePath: null,
+        recentPaths: [],
       }, managed.workspace.id)
     }
     if (renamed) {
@@ -7707,6 +7881,8 @@ export class SessionManager implements ISessionManager {
     // the connection_changed event below keeps the renderer in sync.
     managed.taskSlug = taskSlug
     managed.taskDraft = false
+    const projectBindingChanged = reconcile?.projectId !== undefined
+      && managed.projectId !== reconcile.projectId
     const noteTargetCleared = reconcile?.projectId === undefined
       ? false
       : setManagedProjectBinding(managed, reconcile.projectId)
@@ -7721,9 +7897,14 @@ export class SessionManager implements ISessionManager {
     if (cwdChanged) this.updateWorkingDirectory(sessionId, reconcile!.workingDirectory!)
     if (modeChanged) this.setSessionPermissionMode(sessionId, reconcile!.permissionMode!)
 
+    const metadataAtFlush =
+      this.captureSessionMetadataForReconcile(managed)
     this.setMetadataWriteGuard(managed)
-    this.persistSession(managed)
-    await this.flushSession(managed.id)
+    this.persistSession(
+      managed,
+      projectBindingChanged ? 'project-binding' : undefined,
+    )
+    await this.flushAndReconcileSessionMetadata(managed, metadataAtFlush)
 
     const changes: { taskDraft: boolean; taskSlug: string; projectId?: string } = { taskDraft: false, taskSlug }
     if (reconcile?.projectId !== undefined) changes.projectId = reconcile.projectId
@@ -7733,6 +7914,7 @@ export class SessionManager implements ISessionManager {
         type: 'project_note_target_changed',
         sessionId,
         relativePath: null,
+        recentPaths: [],
       }, managed.workspace.id)
     }
     if (renamed) {
@@ -7782,20 +7964,165 @@ export class SessionManager implements ISessionManager {
     sessionId: string,
     expectedProjectId: string,
     relativePath: string | null,
-  ): Promise<boolean> {
+    rootFingerprint: string | null,
+  ): Promise<{
+    relativePath: string | null
+    recentPaths: string[]
+  } | null> {
     const managed = this.sessions.get(sessionId)
-    if (!managed || managed.projectId !== expectedProjectId) return false
+    if (!managed || managed.projectId !== expectedProjectId) return null
 
+    const revision = (managed._projectNoteTargetMutationRevision ?? 0) + 1
+    managed._projectNoteTargetMutationRevision = revision
     managed.projectNoteTargetPath = relativePath ?? undefined
+    if (relativePath) {
+      if (
+        managed.projectNoteTargetRootFingerprint !== undefined
+        && managed.projectNoteTargetRootFingerprint !== rootFingerprint
+      ) {
+        managed.projectNoteRecentTargetPaths = undefined
+      }
+      managed.projectNoteTargetRootFingerprint = rootFingerprint ?? undefined
+      managed.projectNoteRecentTargetPaths = [
+        relativePath,
+        ...(managed.projectNoteRecentTargetPaths ?? [])
+          .filter(path => path !== relativePath),
+      ].slice(0, PROJECT_NOTE_RECENT_TARGET_LIMIT)
+    } else if (!managed.projectNoteRecentTargetPaths?.length) {
+      managed.projectNoteTargetRootFingerprint = undefined
+    }
+    const configured = {
+      relativePath: managed.projectNoteTargetPath ?? null,
+      recentPaths: [...(managed.projectNoteRecentTargetPaths ?? [])],
+    }
+    const configuredRootFingerprint =
+      managed.projectNoteTargetRootFingerprint
+    const metadataAtFlush =
+      this.captureSessionMetadataForReconcile(managed)
     this.setMetadataWriteGuard(managed)
     this.sendEvent({
       type: 'project_note_target_changed',
       sessionId: managed.id,
-      relativePath: managed.projectNoteTargetPath ?? null,
+      ...configured,
     }, managed.workspace.id)
     this.persistSession(managed)
-    await this.flushSession(managed.id)
-    return true
+    const persistedHeader = await this.flushAndReconcileSessionMetadata(
+      managed,
+      metadataAtFlush,
+    )
+    if (
+      managed._projectNoteTargetMutationRevision !== revision
+      || managed.projectId !== expectedProjectId
+    ) {
+      return null
+    }
+
+    if (!persistedHeader) {
+      const sessionFile = getSessionFilePath(
+        managed.workspace.rootPath,
+        managed.id,
+      )
+      if (!existsSync(sessionFile)) return configured
+      managed._projectNoteTargetMutationRevision = revision + 1
+      managed.projectNoteTargetPath = undefined
+      managed.projectNoteTargetRootFingerprint = undefined
+      managed.projectNoteRecentTargetPaths = undefined
+      this.sendEvent({
+        type: 'project_note_target_changed',
+        sessionId: managed.id,
+        relativePath: null,
+        recentPaths: [],
+      }, managed.workspace.id)
+      return null
+    }
+
+    if (
+      persistedHeader.projectId !== expectedProjectId
+      || persistedHeader.projectNoteTargetPath
+        !== (relativePath ?? undefined)
+      || persistedHeader.projectNoteTargetRootFingerprint
+        !== configuredRootFingerprint
+    ) {
+      return null
+    }
+
+    const persisted = {
+      relativePath: persistedHeader.projectNoteTargetPath ?? null,
+      recentPaths: persistedHeader.projectNoteRecentTargetPaths ?? [],
+    }
+    if (
+      JSON.stringify(configured.recentPaths)
+      !== JSON.stringify(persisted.recentPaths)
+    ) {
+      managed.projectNoteRecentTargetPaths = persisted.recentPaths
+    }
+    return persisted
+  }
+
+  async clearSessionProjectNoteTargetsIfMatches(
+    sessionId: string,
+    expectedProjectId: string,
+    expectedRelativePath: string,
+    expectedRootFingerprint: string,
+  ): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (
+      !managed
+      || managed.projectId !== expectedProjectId
+      || managed.projectNoteTargetPath !== expectedRelativePath
+      || managed.projectNoteTargetRootFingerprint
+        !== expectedRootFingerprint
+    ) {
+      return
+    }
+
+    managed.projectNoteRecentTargetPaths = undefined
+    await this.setSessionProjectNoteTarget(
+      sessionId,
+      expectedProjectId,
+      null,
+      null,
+    )
+  }
+
+  async clearProjectNoteTargetsForProject(
+    workspaceId: string,
+    projectId: string,
+  ): Promise<void> {
+    const affected = [...this.sessions.values()].filter(managed =>
+      managed.workspace.id === workspaceId
+      && managed.projectId === projectId)
+
+    await Promise.all(affected.map(async managed => {
+      managed._projectNoteTargetMutationRevision =
+        (managed._projectNoteTargetMutationRevision ?? 0) + 1
+      managed.projectNoteTargetPath = undefined
+      managed.projectNoteTargetRootFingerprint = undefined
+      managed.projectNoteRecentTargetPaths = undefined
+      const metadataAtFlush =
+        this.captureSessionMetadataForReconcile(managed)
+      this.setMetadataWriteGuard(managed)
+      this.sendEvent({
+        type: 'project_note_target_changed',
+        sessionId: managed.id,
+        relativePath: null,
+        recentPaths: [],
+      }, managed.workspace.id)
+      this.persistSession(managed, 'project-note-routing')
+      await this.flushAndReconcileSessionMetadata(managed, metadataAtFlush)
+    }))
+  }
+
+  async unbindSessionsFromProject(
+    workspaceId: string,
+    projectId: string,
+  ): Promise<number> {
+    const affected = [...this.sessions.values()].filter(managed =>
+      managed.workspace.id === workspaceId
+      && managed.projectId === projectId)
+    await Promise.all(affected.map(managed =>
+      this.setSessionProjectId(managed.id, null, projectId)))
+    return affected.filter(managed => managed.projectId === undefined).length
   }
 
   /**
@@ -9349,9 +9676,15 @@ export class SessionManager implements ISessionManager {
     this.pendingPermissionRequests.clear()
     this.adminRememberApprovals.clear()
 
-    // Clean up session-scoped tool callbacks for all sessions
-    for (const sessionId of this.sessions.keys()) {
-      unregisterSessionScopedToolCallbacks(sessionId)
+    // Clean up session-scoped timers and tool callbacks for all sessions
+    for (const managed of this.sessions.values()) {
+      if (managed._metadataWriteGuardTimer) {
+        clearTimeout(managed._metadataWriteGuardTimer)
+        managed._metadataWriteGuardTimer = undefined
+      }
+      managed._metadataWriteGuardUntil = undefined
+      managed.pendingExternalMetadata = undefined
+      unregisterSessionScopedToolCallbacks(managed.id)
     }
 
     sessionLog.info('Cleanup complete')

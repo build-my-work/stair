@@ -12,6 +12,7 @@ import type {
 function makeState(
   projectNoteTargetPath?: string,
   projectId?: string,
+  projectNoteRecentTargetPaths?: string[],
 ): SessionState {
   return {
     session: {
@@ -23,6 +24,7 @@ function makeState(
       isProcessing: false,
       projectId,
       projectNoteTargetPath,
+      projectNoteRecentTargetPaths,
     },
     streaming: null,
   }
@@ -34,6 +36,7 @@ describe('handleProjectNoteTargetChanged', () => {
       type: 'project_note_target_changed',
       sessionId: 'session-1',
       relativePath: 'notes/research.md',
+      recentPaths: ['notes/research.md', 'notes/earlier.md'],
     }
     const configured = handleProjectNoteTargetChanged(
       makeState(),
@@ -41,16 +44,20 @@ describe('handleProjectNoteTargetChanged', () => {
     )
     expect(configured.state.session.projectNoteTargetPath)
       .toBe('notes/research.md')
+    expect(configured.state.session.projectNoteRecentTargetPaths)
+      .toEqual(['notes/research.md', 'notes/earlier.md'])
 
     const clearEvent: ProjectNoteTargetChangedEvent = {
       ...setEvent,
       relativePath: null,
+      recentPaths: [],
     }
     const cleared = handleProjectNoteTargetChanged(
       configured.state,
       clearEvent,
     )
     expect(cleared.state.session.projectNoteTargetPath).toBeUndefined()
+    expect(cleared.state.session.projectNoteRecentTargetPaths).toBeUndefined()
   })
 })
 
@@ -63,12 +70,17 @@ describe('handleProjectIdChanged', () => {
     }
 
     const result = handleProjectIdChanged(
-      makeState('notes/old-project.md', 'project-1'),
+      makeState(
+        'notes/old-project.md',
+        'project-1',
+        ['notes/old-project.md', 'notes/older.md'],
+      ),
       event,
     )
 
     expect(result.state.session.projectId).toBe('project-2')
     expect(result.state.session.projectNoteTargetPath).toBeUndefined()
+    expect(result.state.session.projectNoteRecentTargetPaths).toBeUndefined()
   })
 
   it('keeps the target for a duplicate Project event', () => {
@@ -79,11 +91,17 @@ describe('handleProjectIdChanged', () => {
     }
 
     const result = handleProjectIdChanged(
-      makeState('notes/current.md', 'project-1'),
+      makeState(
+        'notes/current.md',
+        'project-1',
+        ['notes/current.md', 'notes/earlier.md'],
+      ),
       event,
     )
 
     expect(result.state.session.projectNoteTargetPath)
       .toBe('notes/current.md')
+    expect(result.state.session.projectNoteRecentTargetPaths)
+      .toEqual(['notes/current.md', 'notes/earlier.md'])
   })
 })

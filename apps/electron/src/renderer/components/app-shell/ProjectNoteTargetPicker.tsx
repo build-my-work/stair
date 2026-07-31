@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { FileText, Loader2, NotebookPen } from 'lucide-react'
+import { Check, FileText, Loader2, NotebookPen } from 'lucide-react'
 import { isProjectNoteTargetPath } from '@craft-agent/shared/protocol'
 
 import { ProjectFilesBrowser } from '@/components/project-files/ProjectFilesBrowser'
@@ -19,10 +19,20 @@ interface ProjectNoteTargetPickerProps {
   rootPath?: string
   sessionName: string
   currentPath?: string
+  recentPaths?: string[]
+  intent: 'configure' | 'append'
   quote?: string
   onSelect: (relativePath: string) => Promise<void>
   onCancel: () => void
   onRestoreFocus?: () => void
+}
+
+function getPathParts(relativePath: string) {
+  const parts = relativePath.split('/')
+  return {
+    name: parts.pop() ?? relativePath,
+    parent: parts.join('/'),
+  }
 }
 
 export function ProjectNoteTargetPicker({
@@ -32,6 +42,8 @@ export function ProjectNoteTargetPicker({
   rootPath,
   sessionName,
   currentPath,
+  recentPaths = [],
+  intent,
   quote,
   onSelect,
   onCancel,
@@ -44,6 +56,7 @@ export function ProjectNoteTargetPicker({
       : undefined,
   )
   const [isSubmitting, setIsSubmitting] = React.useState(false)
+  const isSubmittingRef = React.useRef(false)
   const [browserBusy, setBrowserBusy] = React.useState(false)
   const [submitError, setSubmitError] = React.useState<string>()
   const returnFocusRef = React.useRef<HTMLElement | null>(
@@ -55,7 +68,8 @@ export function ProjectNoteTargetPicker({
   )
 
   const handleSelect = React.useCallback(async (relativePath: string) => {
-    if (!rootPath || isSubmitting || browserBusy) return
+    if (!rootPath || isSubmittingRef.current || browserBusy) return
+    isSubmittingRef.current = true
     setIsSubmitting(true)
     setSubmitError(undefined)
     try {
@@ -66,15 +80,37 @@ export function ProjectNoteTargetPicker({
         message.replace(/^PROJECT_NOTE_[A-Z_]+:\s*/, '')
         || t('projectNoteTarget.setError'),
       )
+      isSubmittingRef.current = false
       setIsSubmitting(false)
     }
-  }, [browserBusy, isSubmitting, onSelect, rootPath, t])
+  }, [browserBusy, onSelect, rootPath, t])
+  const quickTargets = React.useMemo(() => {
+    const validCurrentPath = currentPath
+      && isProjectNoteTargetPath(currentPath)
+      ? currentPath
+      : undefined
+    const recent = recentPaths
+      .filter(path =>
+        path !== validCurrentPath
+        && isProjectNoteTargetPath(path))
+      .slice(0, validCurrentPath ? 4 : 5)
+    return {
+      current: validCurrentPath,
+      recent,
+    }
+  }, [currentPath, recentPaths])
+  const defaultSelectedPath = quickTargets.current
+
+  React.useEffect(() => {
+    setSelectedPath(defaultSelectedPath)
+    setSubmitError(undefined)
+  }, [defaultSelectedPath, projectId])
 
   return (
     <Dialog
       open={open}
       onOpenChange={nextOpen => {
-        if (!nextOpen && !isSubmitting) onCancel()
+        if (!nextOpen && !isSubmitting && !browserBusy) onCancel()
       }}
     >
       <DialogContent
@@ -119,6 +155,77 @@ export function ProjectNoteTargetPicker({
           )}
         </div>
 
+        {(quickTargets.current || quickTargets.recent.length > 0) && (
+          <div className="shrink-0 border-b border-border/55 bg-background px-4 py-3">
+            {quickTargets.current && (
+              <div>
+                <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+                  {t('projectNoteTarget.currentTarget')}
+                </div>
+                <button
+                  type="button"
+                  disabled={!rootPath || isSubmitting || browserBusy}
+                  aria-label={`${t('projectNoteTarget.currentTarget')}: ${quickTargets.current}`}
+                  onClick={() => {
+                    setSelectedPath(quickTargets.current)
+                    setSubmitError(undefined)
+                    void handleSelect(quickTargets.current!)
+                  }}
+                  className="flex h-10 w-full min-w-0 items-center gap-2 rounded-[7px] px-2 text-left outline-none transition-colors hover:bg-foreground/[0.045] focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                >
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-medium">
+                      {getPathParts(quickTargets.current).name}
+                    </span>
+                    <span className="block truncate font-mono text-[10px] text-muted-foreground/65">
+                      {getPathParts(quickTargets.current).parent || '.'}
+                    </span>
+                  </span>
+                  <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                </button>
+              </div>
+            )}
+
+            {quickTargets.recent.length > 0 && (
+              <div className={quickTargets.current ? 'mt-2.5' : undefined}>
+                <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+                  {t('projectNoteTarget.recentTargets')}
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  {quickTargets.recent.map(path => {
+                    const { name, parent } = getPathParts(path)
+                    return (
+                      <button
+                        key={path}
+                        type="button"
+                        disabled={!rootPath || isSubmitting || browserBusy}
+                        aria-label={`${t('projectNoteTarget.recentTargets')}: ${path}`}
+                        onClick={() => {
+                          setSelectedPath(path)
+                          setSubmitError(undefined)
+                          void handleSelect(path)
+                        }}
+                        className="flex h-10 min-w-0 items-center gap-2 rounded-[7px] px-2 text-left outline-none transition-colors hover:bg-foreground/[0.045] focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                      >
+                        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-xs font-medium">
+                            {name}
+                          </span>
+                          <span className="block truncate font-mono text-[10px] text-muted-foreground/65">
+                            {parent || '.'}
+                          </span>
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         <ProjectFilesBrowser
           mode="note-target"
           projectId={projectId}
@@ -153,7 +260,7 @@ export function ProjectNoteTargetPicker({
               type="button"
               variant="outline"
               size="sm"
-              disabled={isSubmitting}
+              disabled={isSubmitting || browserBusy}
               onClick={onCancel}
             >
               {t('common.cancel')}
@@ -167,7 +274,9 @@ export function ProjectNoteTargetPicker({
               }}
             >
               {isSubmitting && <Loader2 className="animate-spin" />}
-              {t('projectNoteTarget.useFile')}
+              {intent === 'append'
+                ? t('projectNoteTarget.addNoteHere')
+                : t('projectNoteTarget.setAsTarget')}
             </Button>
           </div>
         </div>

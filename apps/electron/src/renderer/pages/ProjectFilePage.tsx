@@ -340,6 +340,7 @@ export default function ProjectFilePage({
 
   const handleAddNoteReference = useCallback(async (
     reference: ProjectFileSelectionReferenceV1,
+    mode: 'current' | 'choose-target' = 'current',
   ) => {
     if (!chatTargetSessionId) {
       toast.error('Choose a target Session before using Add Note.')
@@ -349,7 +350,7 @@ export default function ProjectFilePage({
       toast.error('Add Note is unavailable.')
       return false
     }
-    return onAddSelectionNote(chatTargetSessionId, reference)
+    return onAddSelectionNote(chatTargetSessionId, reference, mode)
   }, [
     chatTargetSessionId,
     onAddSelectionNote,

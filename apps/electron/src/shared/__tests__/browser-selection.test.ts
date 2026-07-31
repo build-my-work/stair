@@ -75,15 +75,16 @@ describe('browser selection', () => {
       700,
       48,
     )).toEqual({
-      x: 788,
+      x: 772,
       y: 80,
-      width: 204,
+      width: 220,
       height: 56,
     })
   })
 
   it('accepts every browser selection action rendered by the overlay', () => {
     expect(isBrowserSelectionAction('add-note')).toBe(true)
+    expect(isBrowserSelectionAction('add-note-to')).toBe(true)
     expect(isBrowserSelectionAction('add-chat')).toBe(true)
     expect(isBrowserSelectionAction('new-chat')).toBe(true)
     expect(isBrowserSelectionAction('unsupported')).toBe(false)

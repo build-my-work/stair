@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import {
   mkdir,
   mkdtemp,
@@ -24,7 +25,13 @@ import {
   type AppendProjectNoteRequest,
   type Session,
 } from '@craft-agent/shared/protocol'
-import { createProject } from '@craft-agent/shared/projects'
+import { createProject, updateProject } from '@craft-agent/shared/projects'
+import {
+  ensureSessionDir,
+  getSessionFilePath,
+  type StoredSession,
+  writeSessionJsonl,
+} from '@craft-agent/shared/sessions'
 import type {
   HandlerFn,
   RequestContext,
@@ -58,6 +65,27 @@ function createHandlerHarness(sessionManager: Partial<HandlerDeps['sessionManage
     platform: {},
   } as HandlerDeps)
   return handlers
+}
+
+function persistTestSession(
+  workspaceRoot: string,
+  session: Session,
+): void {
+  ensureSessionDir(workspaceRoot, session.id)
+  writeSessionJsonl(getSessionFilePath(workspaceRoot, session.id), {
+    ...session,
+    workspaceRootPath: workspaceRoot,
+    createdAt: 1,
+    lastUsedAt: 1,
+    messages: [],
+    tokenUsage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      contextTokens: 0,
+      costUsd: 0,
+    },
+  } as unknown as StoredSession)
 }
 
 function createAppendRequest(
@@ -186,8 +214,10 @@ describe('Project Notes', () => {
 
   it('configures and appends to a text target through the RPC handlers', async () => {
     const workspaceRoot = join(sandbox, 'workspace')
+    const changedRoot = join(sandbox, 'changed-root')
     await mkdir(workspaceRoot)
     await Promise.all([
+      mkdir(changedRoot),
       writeFile(join(root, 'notes.markdown'), ''),
       writeFile(join(root, 'notes.txt'), ''),
     ])
@@ -211,16 +241,58 @@ describe('Project Notes', () => {
       projectId: project.id,
       messages: [],
     } as unknown as Session
+    let rejectTargetConfiguration = false
+    let changeProjectRootDuringConfiguration = false
     const handlers = createHandlerHarness({
       getSession: async () => session,
       setSessionProjectNoteTarget: async (
         sessionId,
         projectId,
         relativePath,
+        rootFingerprint,
       ) => {
-        if (sessionId !== session.id || projectId !== project.id) return false
+        if (sessionId !== session.id || projectId !== project.id) return null
+        if (rejectTargetConfiguration) return null
         session.projectNoteTargetPath = relativePath ?? undefined
-        return true
+        session.projectNoteTargetRootFingerprint =
+          relativePath ? rootFingerprint ?? undefined : undefined
+        if (relativePath) {
+          session.projectNoteRecentTargetPaths = [
+            relativePath,
+            ...(session.projectNoteRecentTargetPaths ?? [])
+              .filter(path => path !== relativePath),
+          ].slice(0, 5)
+        }
+        persistTestSession(workspaceRoot, session)
+        if (changeProjectRootDuringConfiguration) {
+          changeProjectRootDuringConfiguration = false
+          updateProject(workspaceRoot, project.slug, {
+            workingDirectory: changedRoot,
+          })
+        }
+        return {
+          relativePath,
+          recentPaths: session.projectNoteRecentTargetPaths ?? [],
+        }
+      },
+      clearSessionProjectNoteTargetsIfMatches: async (
+        sessionId,
+        projectId,
+        relativePath,
+        rootFingerprint,
+      ) => {
+        if (
+          session.id !== sessionId
+          || session.projectId !== projectId
+          || session.projectNoteTargetPath !== relativePath
+          || session.projectNoteTargetRootFingerprint !== rootFingerprint
+        ) {
+          return
+        }
+        session.projectNoteTargetPath = undefined
+        session.projectNoteTargetRootFingerprint = undefined
+        session.projectNoteRecentTargetPaths = undefined
+        persistTestSession(workspaceRoot, session)
       },
     })
     const configure = handlers.get(RPC_CHANNELS.projectNotes.CONFIGURE_TARGET)!
@@ -236,19 +308,51 @@ describe('Project Notes', () => {
         sessionId: session.id,
         projectId: project.id,
         relativePath: 'notes.markdown',
-      })).resolves.toMatchObject({ relativePath: 'notes.markdown' })
+      })).resolves.toMatchObject({
+        relativePath: 'notes.markdown',
+        recentPaths: ['notes.markdown'],
+      })
       await expect(configure(ctx, {
         sessionId: session.id,
         projectId: project.id,
         relativePath: 'notes.txt',
-      })).resolves.toMatchObject({ relativePath: 'notes.txt' })
+      })).resolves.toMatchObject({
+        relativePath: 'notes.txt',
+        recentPaths: ['notes.txt', 'notes.markdown'],
+      })
+      await expect(configure(ctx, {
+        sessionId: session.id,
+        projectId: project.id,
+        relativePath: 'notes.markdown',
+      })).resolves.toMatchObject({
+        relativePath: 'notes.markdown',
+        recentPaths: ['notes.markdown', 'notes.txt'],
+      })
 
       await expect(append(ctx, {
         ...createAppendRequest('request-txt', session.id, project.id),
-        expectedTargetPath: 'notes.txt',
-      })).resolves.toMatchObject({ relativePath: 'notes.txt' })
-      expect(await readFile(join(root, 'notes.txt'), 'utf8'))
+        expectedTargetPath: 'notes.markdown',
+      })).resolves.toMatchObject({ relativePath: 'notes.markdown' })
+      expect(await readFile(join(root, 'notes.markdown'), 'utf8'))
         .toContain('> Evidence')
+
+      rejectTargetConfiguration = true
+      await expect(configure(ctx, {
+        sessionId: session.id,
+        projectId: project.id,
+        relativePath: 'notes.txt',
+      })).rejects.toThrow(/^PROJECT_NOTE_TARGET_CHANGED:/)
+
+      rejectTargetConfiguration = false
+      changeProjectRootDuringConfiguration = true
+      await expect(configure(ctx, {
+        sessionId: session.id,
+        projectId: project.id,
+        relativePath: 'notes.txt',
+      })).rejects.toThrow(/^PROJECT_NOTE_TARGET_CHANGED:/)
+      expect(session.projectNoteTargetPath).toBeUndefined()
+      expect(session.projectNoteTargetRootFingerprint).toBeUndefined()
+      expect(session.projectNoteRecentTargetPaths).toBeUndefined()
     } finally {
       workspaceLookup.mockRestore()
     }
@@ -321,18 +425,28 @@ describe('Project Notes', () => {
     expect(resolveExpectedProjectNoteTarget({
       projectId: 'project-1',
       projectNoteTargetPath: 'notes.md',
-    }, 'project-1', 'notes.md')).toBe('notes.md')
+      projectNoteTargetRootFingerprint: 'root-1',
+    }, 'project-1', 'notes.md', 'root-1')).toBe('notes.md')
 
     expect(() => resolveExpectedProjectNoteTarget({
       projectId: 'project-2',
       projectNoteTargetPath: 'notes.md',
-    }, 'project-1', 'notes.md')).toThrow(
+      projectNoteTargetRootFingerprint: 'root-1',
+    }, 'project-1', 'notes.md', 'root-1')).toThrow(
       /^PROJECT_NOTE_SESSION_PROJECT_CHANGED:/,
     )
     expect(() => resolveExpectedProjectNoteTarget({
       projectId: 'project-1',
       projectNoteTargetPath: 'other.md',
-    }, 'project-1', 'notes.md')).toThrow(/^PROJECT_NOTE_TARGET_CHANGED:/)
+      projectNoteTargetRootFingerprint: 'root-1',
+    }, 'project-1', 'notes.md', 'root-1'))
+      .toThrow(/^PROJECT_NOTE_TARGET_CHANGED:/)
+    expect(() => resolveExpectedProjectNoteTarget({
+      projectId: 'project-1',
+      projectNoteTargetPath: 'notes.md',
+      projectNoteTargetRootFingerprint: 'root-1',
+    }, 'project-1', 'notes.md', 'root-2'))
+      .toThrow(/^PROJECT_NOTE_TARGET_CHANGED:/)
   })
 
   it('authorizes the caller workspace before returning a cached append', async () => {
@@ -368,14 +482,19 @@ describe('Project Notes', () => {
         return null
       })
     let getSessionCalls = 0
+    const rootFingerprint = createHash('sha256')
+      .update(await fsPromises.realpath(root))
+      .digest('hex')
     const session = {
       id: 'session-1',
       name: 'Research',
       workspaceId: workspaceA.id,
       projectId: project.id,
       projectNoteTargetPath: 'notes.md',
+      projectNoteTargetRootFingerprint: rootFingerprint,
       messages: [],
     } as unknown as Session
+    persistTestSession(workspaceRootA, session)
     const handlers = createHandlerHarness({
       getSession: async () => {
         getSessionCalls += 1
@@ -398,6 +517,22 @@ describe('Project Notes', () => {
         projectId: project.id,
         relativePath: 'notes.md',
       })
+
+      persistTestSession(workspaceRootA, {
+        ...session,
+        projectNoteTargetPath: 'other.md',
+        projectNoteRecentTargetPaths: ['other.md', 'notes.md'],
+      })
+      await expect(append({
+        clientId: 'client-a',
+        workspaceId: workspaceA.id,
+        webContentsId: null,
+      }, createAppendRequest(
+        'request-stale-target',
+        session.id,
+        project.id,
+      ))).rejects.toThrow(/^PROJECT_NOTE_TARGET_CHANGED:/)
+
       await expect(append({
         clientId: 'client-b',
         workspaceId: workspaceB.id,
@@ -405,7 +540,7 @@ describe('Project Notes', () => {
       }, request)).rejects.toThrow(
         /^PROJECT_NOTE_SESSION_WORKSPACE_MISMATCH:/,
       )
-      expect(getSessionCalls).toBe(2)
+      expect(getSessionCalls).toBe(3)
     } finally {
       workspaceLookup.mockRestore()
     }
@@ -427,14 +562,19 @@ describe('Project Notes', () => {
     }
     const workspaceLookup = spyOn(config, 'getWorkspaceByNameOrId')
       .mockImplementation(id => id === workspace.id ? workspace : null)
+    const rootFingerprint = createHash('sha256')
+      .update(await fsPromises.realpath(root))
+      .digest('hex')
     const session = {
       id: 'session-1',
       name: 'Research',
       workspaceId: workspace.id,
       projectId: project.id,
       projectNoteTargetPath: 'notes.md',
+      projectNoteTargetRootFingerprint: rootFingerprint,
       messages: [],
     } as unknown as Session
+    persistTestSession(workspaceRoot, session)
     const handlers = createHandlerHarness({
       getSession: async () => session,
     })

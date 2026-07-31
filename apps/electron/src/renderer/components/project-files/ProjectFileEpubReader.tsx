@@ -97,6 +97,7 @@ interface ProjectFileEpubReaderProps {
   ) => boolean | Promise<boolean>
   onAddNoteReference: (
     reference: ProjectFileSelectionReferenceV1,
+    mode?: 'current' | 'choose-target',
   ) => boolean | Promise<boolean>
   onExportMarkdown: (exported: {
     suggestedFilename: string
@@ -875,7 +876,9 @@ export function ProjectFileEpubReader({
     sourceFingerprint,
   ])
 
-  const addSelectionToNote = React.useCallback(async () => {
+  const addSelectionToNote = React.useCallback(async (
+    mode: 'current' | 'choose-target' = 'current',
+  ) => {
     const selection = pendingSelection?.snapshot
     if (!selection || addingNote || addingReferenceTo) return
 
@@ -888,6 +891,7 @@ export function ProjectFileEpubReader({
           fileName: metadata.name,
           selection,
         }),
+        mode,
       )
       if (added) dismissSelection()
     } catch (error) {
@@ -1237,6 +1241,7 @@ export function ProjectFileEpubReader({
               addingNote={addingNote}
               onCreateHighlight={() => void createRedWavyHighlight()}
               onAddNote={() => void addSelectionToNote()}
+              onAddNoteTo={() => void addSelectionToNote('choose-target')}
               onAddChat={() => void addSelectionToChat('current')}
               onAddNewChat={() => void addSelectionToChat('new')}
               onDismiss={dismissSelection}

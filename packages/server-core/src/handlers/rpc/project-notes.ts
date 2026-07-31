@@ -11,6 +11,10 @@ import {
 } from '@craft-agent/core/types'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import {
+  getSessionFilePath,
+  readSessionHeader,
+} from '@craft-agent/shared/sessions'
+import {
   isProjectNoteTargetPath,
   RPC_CHANNELS,
   type AppendProjectNoteRequest,
@@ -579,9 +583,15 @@ function requestSignature(request: AppendProjectNoteRequest): string {
 }
 
 export function resolveExpectedProjectNoteTarget(
-  session: Pick<Session, 'projectId' | 'projectNoteTargetPath'>,
+  session: Pick<
+    Session,
+    | 'projectId'
+    | 'projectNoteTargetPath'
+    | 'projectNoteTargetRootFingerprint'
+  >,
   projectId: string,
   expectedTargetPath: string,
+  rootFingerprint: string,
 ): string {
   if (!session.projectId) {
     throw projectNoteError(
@@ -605,6 +615,12 @@ export function resolveExpectedProjectNoteTarget(
     throw projectNoteError(
       'PROJECT_NOTE_TARGET_CHANGED',
       'The Add Note target changed before the note was written',
+    )
+  }
+  if (session.projectNoteTargetRootFingerprint !== rootFingerprint) {
+    throw projectNoteError(
+      'PROJECT_NOTE_TARGET_CHANGED',
+      'The Project root changed after the note target was selected',
     )
   }
   return expectedTargetPath
@@ -656,27 +672,74 @@ export function registerProjectNoteHandlers(
         )
       }
 
+      let rootFingerprint: string | null = null
       if (request.relativePath) {
         const rootPath = await resolveProjectWorkingDirectory(
           workspace.rootPath,
           request.projectId,
         )
         await ensureProjectNoteTarget(rootPath, request.relativePath)
+        const currentRootPath = await resolveProjectWorkingDirectory(
+          workspace.rootPath,
+          request.projectId,
+        )
+        if (currentRootPath !== rootPath) {
+          throw projectNoteError(
+            'PROJECT_NOTE_TARGET_CHANGED',
+            'Project root changed while choosing an Add Note target',
+          )
+        }
+        rootFingerprint = createHash('sha256')
+          .update(currentRootPath)
+          .digest('hex')
       }
-      const applied = await deps.sessionManager.setSessionProjectNoteTarget(
+      const configured = await deps.sessionManager.setSessionProjectNoteTarget(
         session.id,
         request.projectId,
         request.relativePath,
+        rootFingerprint,
       )
-      if (!applied) {
+      if (!configured) {
+        const currentSession = await deps.sessionManager.getSession(session.id)
+        if (currentSession?.projectId === request.projectId) {
+          throw projectNoteError(
+            'PROJECT_NOTE_TARGET_CHANGED',
+            'Add Note target changed while it was being configured',
+          )
+        }
         throw projectNoteError(
           'PROJECT_NOTE_SESSION_PROJECT_CHANGED',
           'Session Project changed while choosing an Add Note target',
         )
       }
+      if (request.relativePath && rootFingerprint) {
+        try {
+          const latestRootPath = await resolveProjectWorkingDirectory(
+            workspace.rootPath,
+            request.projectId,
+          )
+          if (
+            createHash('sha256').update(latestRootPath).digest('hex')
+            !== rootFingerprint
+          ) {
+            throw projectNoteError(
+              'PROJECT_NOTE_TARGET_CHANGED',
+              'Project root changed while choosing an Add Note target',
+            )
+          }
+        } catch (error) {
+          await deps.sessionManager.clearSessionProjectNoteTargetsIfMatches(
+            session.id,
+            request.projectId,
+            request.relativePath,
+            rootFingerprint,
+          )
+          throw error
+        }
+      }
       return {
         projectId: request.projectId,
-        relativePath: request.relativePath,
+        ...configured,
       }
     },
   )
@@ -703,17 +766,27 @@ export function registerProjectNoteHandlers(
       }
 
       const operation = (async (): Promise<AppendProjectNoteResponse> => {
-        const targetPath = resolveExpectedProjectNoteTarget(
-          session,
-          request.projectId,
-          request.expectedTargetPath,
-        )
-
         await validateSelectionSource(request.selection, session, workspace)
         const rootPath = await resolveProjectWorkingDirectory(
           workspace.rootPath,
           request.projectId,
         )
+        const persistedSession = readSessionHeader(
+          getSessionFilePath(workspace.rootPath, session.id),
+        )
+        if (!persistedSession) {
+          throw projectNoteError(
+            'PROJECT_NOTE_TARGET_CHANGED',
+            'Session note target metadata is unavailable',
+          )
+        }
+        const targetPath = resolveExpectedProjectNoteTarget(
+          persistedSession,
+          request.projectId,
+          request.expectedTargetPath,
+          createHash('sha256').update(rootPath).digest('hex'),
+        )
+
         const appendedAt = new Date().toISOString()
         const entry = serializeProjectNote(request.selection, session, appendedAt)
         await appendProjectNoteWithinRoot(

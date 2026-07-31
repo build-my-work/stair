@@ -19,6 +19,7 @@ export type {
   SessionHeader,
   SessionPersistentField,
 } from './types.ts';
+export type { SessionMetadataWriteAuthority } from './persistence-queue.ts';
 
 // Field constants
 export { SESSION_PERSISTENT_FIELDS } from './types.ts';
@@ -126,4 +127,3 @@ export {
   validateBundle,
   MAX_BUNDLE_SIZE_BYTES,
 } from './bundle.ts';
-

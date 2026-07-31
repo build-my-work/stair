@@ -20,7 +20,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as ReactDOM from 'react-dom'
-import { BookOpenText, Clock, Globe2, Loader2, NotebookPen } from 'lucide-react'
+import { BookOpenText, ChevronRight, Clock, Globe2, Loader2, NotebookPen } from 'lucide-react'
 import {
   isMessageReference,
   MAX_CHAT_SELECTION_CONTEXT_CHARS,
@@ -393,6 +393,7 @@ export interface UserMessageBubbleProps {
   /** Append an existing user-message text selection to Project notes. */
   onAddNoteSelection?: (
     selection: ChatTextSelection,
+    mode?: 'current' | 'choose-target',
   ) => boolean | Promise<boolean>
   /** Compact mode - reduces padding for popover embedding */
   compactMode?: boolean
@@ -550,14 +551,17 @@ export function UserMessageBubble({
     if (!noteSelection) return
 
     const closeOnPointerDown = (event: PointerEvent) => {
+      if (addingNote) return
       const target = event.target instanceof Element ? event.target : null
       if (target?.closest('[data-ca-user-note-menu]')) return
       setNoteSelection(null)
     }
     const closeOnKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setNoteSelection(null)
+      if (!addingNote && event.key === 'Escape') setNoteSelection(null)
     }
-    const closeOnScroll = () => setNoteSelection(null)
+    const closeOnScroll = () => {
+      if (!addingNote) setNoteSelection(null)
+    }
 
     document.addEventListener('pointerdown', closeOnPointerDown, true)
     document.addEventListener('keydown', closeOnKeyDown)
@@ -567,7 +571,7 @@ export function UserMessageBubble({
       document.removeEventListener('keydown', closeOnKeyDown)
       document.removeEventListener('scroll', closeOnScroll, true)
     }
-  }, [noteSelection])
+  }, [addingNote, noteSelection])
 
   const handleTextSelection = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     const root = contentBubbleRef.current
@@ -591,11 +595,13 @@ export function UserMessageBubble({
     })
   }, [isPending, isQueued, messageId, onAddNoteSelection])
 
-  const addSelectedTextToNotes = useCallback(async () => {
+  const addSelectedTextToNotes = useCallback(async (
+    mode: 'current' | 'choose-target' = 'current',
+  ) => {
     if (!noteSelection || !onAddNoteSelection || addingNote) return
     setAddingNote(true)
     try {
-      const added = await onAddNoteSelection(noteSelection.selection)
+      const added = await onAddNoteSelection(noteSelection.selection, mode)
       if (added) {
         window.getSelection()?.removeAllRanges()
         setNoteSelection(null)
@@ -765,12 +771,22 @@ export function UserMessageBubble({
             type="button"
             disabled={addingNote}
             onClick={() => void addSelectedTextToNotes()}
-            className="inline-flex h-[30px] items-center gap-1.5 rounded-[8px] px-2.5 text-[13px] font-medium text-foreground/85 hover:bg-foreground/5 hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
+            className="inline-flex h-[30px] items-center gap-1.5 rounded-l-[8px] px-2.5 text-[13px] font-medium text-foreground/85 hover:bg-foreground/5 hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
           >
             {addingNote
               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
               : <NotebookPen className="h-3.5 w-3.5" />}
             Add Note
+          </button>
+          <button
+            type="button"
+            disabled={addingNote}
+            onClick={() => void addSelectedTextToNotes('choose-target')}
+            title={t('projectNoteTarget.chooseFile')}
+            aria-label={t('projectNoteTarget.chooseFile')}
+            className="inline-flex h-[30px] items-center rounded-r-[8px] border-l border-border/45 px-1.5 text-foreground/70 hover:bg-foreground/5 hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
           </button>
         </div>,
         document.body,

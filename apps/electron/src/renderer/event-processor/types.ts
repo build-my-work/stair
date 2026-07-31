@@ -162,6 +162,7 @@ export interface ProjectNoteTargetChangedEvent {
   type: 'project_note_target_changed'
   sessionId: string
   relativePath: string | null
+  recentPaths: string[]
 }
 
 /**
@@ -180,7 +181,7 @@ export interface SessionStatusChangedEvent {
 export interface SessionMetadataChangedEvent {
   type: 'session_metadata_changed'
   sessionId: string
-  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'projectNoteTargetPath'>>
+  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'projectNoteTargetPath' | 'projectNoteRecentTargetPaths'>>
 }
 
 /**

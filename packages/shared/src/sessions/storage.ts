@@ -41,7 +41,10 @@ import { validateSessionStatus } from '../statuses/validation.ts';
 import { debug } from '../utils/debug.ts';
 import { getStatusCategory } from '../statuses/storage.ts';
 import { readSessionHeader, readSessionJsonl } from './jsonl.ts';
-import { sessionPersistenceQueue } from './persistence-queue.ts';
+import {
+  sessionPersistenceQueue,
+  type SessionMetadataWriteAuthority,
+} from './persistence-queue.ts';
 
 // Re-export types for convenience
 export type { SessionConfig } from './types.ts';
@@ -314,8 +317,11 @@ export async function getOrCreateSessionById(
  *
  * Writes in JSONL format: line 1 = header, lines 2+ = messages
  */
-export async function saveSession(session: StoredSession): Promise<void> {
-  sessionPersistenceQueue.enqueue(session);
+export async function saveSession(
+  session: StoredSession,
+  authority?: SessionMetadataWriteAuthority
+): Promise<void> {
+  sessionPersistenceQueue.enqueue(session, authority);
   await sessionPersistenceQueue.flush(session.id);
 }
 
@@ -555,6 +561,8 @@ export async function updateSessionMetadata(
     | 'archivedAt'
     | 'projectId'
     | 'projectNoteTargetPath'
+    | 'projectNoteTargetRootFingerprint'
+    | 'projectNoteRecentTargetPaths'
   >>
 ): Promise<void> {
   const session = loadSession(workspaceRootPath, sessionId);
@@ -579,6 +587,13 @@ export async function updateSessionMetadata(
   if ('projectId' in updates) session.projectId = updates.projectId;
   if ('projectNoteTargetPath' in updates) {
     session.projectNoteTargetPath = updates.projectNoteTargetPath;
+  }
+  if ('projectNoteTargetRootFingerprint' in updates) {
+    session.projectNoteTargetRootFingerprint =
+      updates.projectNoteTargetRootFingerprint;
+  }
+  if ('projectNoteRecentTargetPaths' in updates) {
+    session.projectNoteRecentTargetPaths = updates.projectNoteRecentTargetPaths;
   }
 
   await saveSession(session);
@@ -629,9 +644,21 @@ export async function setSessionProjectId(
   sessionId: string,
   projectId: string | null
 ): Promise<void> {
-  await updateSessionMetadata(workspaceRootPath, sessionId, {
-    projectId: projectId === null ? undefined : projectId,
-  });
+  const session = loadSession(workspaceRootPath, sessionId);
+  if (!session) return;
+
+  const nextProjectId = projectId ?? undefined;
+  const projectChanged = session.projectId !== nextProjectId;
+  if (projectChanged) {
+    session.projectNoteTargetPath = undefined;
+    session.projectNoteTargetRootFingerprint = undefined;
+    session.projectNoteRecentTargetPaths = undefined;
+  }
+  session.projectId = nextProjectId;
+  await saveSession(
+    session,
+    projectChanged ? 'project-binding' : undefined
+  );
 }
 
 /**
@@ -650,7 +677,9 @@ export async function unbindProjectFromSessions(
     if (full?.projectId === projectId) {
       full.projectId = undefined;
       full.projectNoteTargetPath = undefined;
-      await saveSession(full);
+      full.projectNoteTargetRootFingerprint = undefined;
+      full.projectNoteRecentTargetPaths = undefined;
+      await saveSession(full, 'project-binding');
       touched++;
     }
   }

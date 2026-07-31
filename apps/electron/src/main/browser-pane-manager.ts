@@ -2460,12 +2460,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
       #selection-actions button {
         display: flex;
-        flex: 1 0 64px;
+        flex: 1 0 58px;
         flex-direction: column;
         align-items: center;
         justify-content: center;
         gap: 2px;
-        min-width: 64px;
+        min-width: 58px;
         height: 48px;
         border: 0;
         border-radius: 8px;
@@ -2479,6 +2479,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         cursor: pointer;
         white-space: nowrap;
         transition: background-color 150ms ease;
+      }
+      #selection-actions button[data-browser-selection-action="add-note-to"] {
+        flex: 0 0 28px;
+        min-width: 28px;
+        padding: 0;
       }
       #selection-actions button svg {
         width: 16px;
@@ -2534,6 +2539,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           <path d="M9 15h6" />
         </svg>
         <span>Add Note</span>
+      </button>
+      <button
+        type="button"
+        title="Choose a note file for this selection"
+        aria-label="Add Note to another file"
+        data-browser-selection-action="add-note-to"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m9 18 6-6-6-6" />
+        </svg>
       </button>
       <button
         type="button"

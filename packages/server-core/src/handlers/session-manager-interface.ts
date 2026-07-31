@@ -92,7 +92,25 @@ export interface ISessionManager {
     sessionId: string,
     expectedProjectId: string,
     relativePath: string | null,
-  ): Promise<boolean>
+    rootFingerprint: string | null,
+  ): Promise<{
+    relativePath: string | null
+    recentPaths: string[]
+  } | null>
+  clearSessionProjectNoteTargetsIfMatches(
+    sessionId: string,
+    expectedProjectId: string,
+    expectedRelativePath: string,
+    expectedRootFingerprint: string,
+  ): Promise<void>
+  clearProjectNoteTargetsForProject(
+    workspaceId: string,
+    projectId: string,
+  ): Promise<void>
+  unbindSessionsFromProject(
+    workspaceId: string,
+    projectId: string,
+  ): Promise<number>
   setKanbanColumn(sessionId: string, column: string | null): Promise<void>
   setTaskNodeCount(sessionId: string, count: number): Promise<void>
   adoptGeneratedTaskOrchestrator(

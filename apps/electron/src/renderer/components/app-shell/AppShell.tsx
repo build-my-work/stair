@@ -174,7 +174,6 @@ import { getProjectForRoute } from "@/lib/project-working-directory"
 import type { LoadedProject } from "@craft-agent/shared/projects/types"
 import { focusExistingProjectSessionPanel } from "./project-session-panel-navigation"
 import { ProjectNoteTargetPicker } from "./ProjectNoteTargetPicker"
-import { withProjectNoteTargetTimeout } from "./project-note-target-timeout"
 import { ProjectNoteProjectPicker } from "./ProjectNoteProjectPicker"
 
 /**
@@ -1597,13 +1596,18 @@ function AppShellContent({
   const handleAddSelectionNote = React.useCallback(async (
     sessionId: string,
     selection: SelectionReference,
+    mode: 'current' | 'choose-target' = 'current',
   ): Promise<boolean> => {
     const meta = store.get(sessionMetaMapAtom).get(sessionId)
     if (!meta) {
       toast.error('This Session is no longer available.')
       return false
     }
-    if (!meta.projectId || !meta.projectNoteTargetPath) {
+    if (
+      mode === 'choose-target'
+      || !meta.projectId
+      || !meta.projectNoteTargetPath
+    ) {
       return await beginProjectNoteTargetRequest(
         sessionId,
         meta.projectId,
@@ -1708,6 +1712,7 @@ function AppShellContent({
         ...currentMeta,
         projectId,
         projectNoteTargetPath: undefined,
+        projectNoteRecentTargetPaths: undefined,
       })
       return next
     })
@@ -1747,13 +1752,11 @@ function AppShellContent({
         throw new Error('This Session is no longer assigned to a Project.')
       }
 
-      const configured = await withProjectNoteTargetTimeout(
-        window.electronAPI.configureProjectNoteTarget({
-          sessionId: pending.sessionId,
-          projectId,
-          relativePath,
-        }),
-      )
+      const configured = await window.electronAPI.configureProjectNoteTarget({
+        sessionId: pending.sessionId,
+        projectId,
+        relativePath,
+      })
 
       const activeRequest = projectNoteTargetRequestRef.current
       const latestMeta = store.get(sessionMetaMapAtom).get(pending.sessionId)
@@ -1779,6 +1782,9 @@ function AppShellContent({
             next.set(pending.sessionId, {
               ...current,
               projectNoteTargetPath: configured.relativePath ?? undefined,
+              projectNoteRecentTargetPaths: configured.recentPaths.length > 0
+                ? configured.recentPaths
+                : undefined,
             })
           }
           return next
@@ -4726,9 +4732,9 @@ function AppShellContent({
           projectName={projectNoteTargetProject?.config.name}
           rootPath={projectNoteTargetProject?.config.workingDirectory}
           sessionName={projectNoteTargetMeta?.name ?? 'Session'}
-          currentPath={projectNoteTargetRequest.selection
-            ? undefined
-            : projectNoteTargetMeta?.projectNoteTargetPath}
+          currentPath={projectNoteTargetMeta?.projectNoteTargetPath}
+          recentPaths={projectNoteTargetMeta?.projectNoteRecentTargetPaths}
+          intent={projectNoteTargetRequest.selection ? 'append' : 'configure'}
           quote={projectNoteTargetRequest.selection?.quote}
           onSelect={handleProjectNoteTargetSelect}
           onCancel={handleProjectNoteTargetCancel}

@@ -6,11 +6,6 @@ import { toPortablePath } from '../utils/paths.js'
 import { createSessionHeader, makeSessionPathPortable, readSessionHeader } from './jsonl.js'
 import { debug } from '../utils/debug.js'
 
-interface PendingWrite {
-  data: StoredSession
-  timer: ReturnType<typeof setTimeout>
-}
-
 interface HeaderMetadataSignature {
   name?: string
   labels?: string[]
@@ -19,23 +14,77 @@ interface HeaderMetadataSignature {
   permissionMode?: string
   projectId?: string
   projectNoteTargetPath?: string
+  projectNoteTargetRootFingerprint?: string
+  projectNoteRecentTargetPaths?: string[]
   hasUnread?: boolean
   lastReadMessageId?: string
 }
 
-function getHeaderMetadataSignature(header: SessionHeader): string {
-  const signature: HeaderMetadataSignature = {
+const HEADER_METADATA_KEYS = [
+  'name',
+  'labels',
+  'isFlagged',
+  'sessionStatus',
+  'permissionMode',
+  'projectId',
+  'projectNoteTargetPath',
+  'projectNoteTargetRootFingerprint',
+  'projectNoteRecentTargetPaths',
+  'hasUnread',
+  'lastReadMessageId',
+] as const satisfies ReadonlyArray<keyof HeaderMetadataSignature>
+
+type HeaderMetadataKey = typeof HEADER_METADATA_KEYS[number]
+
+const PROJECT_ROUTING_KEYS = [
+  'projectId',
+  'projectNoteTargetPath',
+  'projectNoteTargetRootFingerprint',
+  'projectNoteRecentTargetPaths',
+] as const satisfies ReadonlyArray<HeaderMetadataKey>
+
+// These fields have dedicated in-process state machines and are not reconciled
+// by SessionManager's external-header handler. Keep the local value so disk and
+// runtime cannot silently diverge after an unrelated metadata write.
+const LOCAL_RUNTIME_METADATA_KEYS = [
+  'permissionMode',
+  'hasUnread',
+  'lastReadMessageId',
+] as const satisfies ReadonlyArray<HeaderMetadataKey>
+
+export type SessionMetadataWriteAuthority =
+  | 'project-binding'
+  | 'project-binding-if-current'
+  | 'project-note-routing'
+
+interface PendingWrite {
+  data: StoredSession
+  timer: ReturnType<typeof setTimeout>
+  authority?: SessionMetadataWriteAuthority
+}
+
+function getHeaderMetadata(
+  header: HeaderMetadataSignature,
+): HeaderMetadataSignature {
+  return {
     name: header.name,
-    labels: header.labels,
+    labels: header.labels ? [...header.labels] : undefined,
     isFlagged: header.isFlagged,
     sessionStatus: header.sessionStatus,
     permissionMode: header.permissionMode,
     projectId: header.projectId,
     projectNoteTargetPath: header.projectNoteTargetPath,
+    projectNoteTargetRootFingerprint: header.projectNoteTargetRootFingerprint,
+    projectNoteRecentTargetPaths: header.projectNoteRecentTargetPaths
+      ? [...header.projectNoteRecentTargetPaths]
+      : undefined,
     hasUnread: header.hasUnread,
     lastReadMessageId: header.lastReadMessageId,
   }
-  return JSON.stringify(signature)
+}
+
+function getHeaderMetadataSignature(header: HeaderMetadataSignature): string {
+  return JSON.stringify(getHeaderMetadata(header))
 }
 
 function mergeHeaderWithExternalMetadata(localHeader: SessionHeader, diskHeader: SessionHeader): SessionHeader {
@@ -48,6 +97,9 @@ function mergeHeaderWithExternalMetadata(localHeader: SessionHeader, diskHeader:
     permissionMode: diskHeader.permissionMode,
     projectId: diskHeader.projectId,
     projectNoteTargetPath: diskHeader.projectNoteTargetPath,
+    projectNoteTargetRootFingerprint:
+      diskHeader.projectNoteTargetRootFingerprint,
+    projectNoteRecentTargetPaths: diskHeader.projectNoteRecentTargetPaths,
     hasUnread: diskHeader.hasUnread,
     lastReadMessageId: diskHeader.lastReadMessageId,
   }
@@ -66,6 +118,8 @@ class SessionPersistenceQueue {
   private pending = new Map<string, PendingWrite>()
   private writeInProgress = new Map<string, Promise<void>>()
   private lastWrittenHeaderSignature = new Map<string, string>()
+  private lastObservedHeaderMetadata =
+    new Map<string, HeaderMetadataSignature>()
   private debounceMs: number
 
   constructor(debounceMs = 500) {
@@ -76,31 +130,42 @@ class SessionPersistenceQueue {
    * Queue a session for persistence. If a write is already pending for this
    * session, it will be replaced with the new data and the timer reset.
    */
-  enqueue(session: StoredSession): void {
+  enqueue(
+    session: StoredSession,
+    authority?: SessionMetadataWriteAuthority,
+  ): void {
     const existing = this.pending.get(session.id)
     if (existing) {
       clearTimeout(existing.timer)
     }
 
     const timer = setTimeout(() => {
-      void this.write(session.id)
+      void this.flush(session.id)
     }, this.debounceMs)
 
-    this.pending.set(session.id, { data: session, timer })
+    this.pending.set(session.id, {
+      data: session,
+      timer,
+      authority: authority === 'project-binding'
+        || existing?.authority === 'project-binding'
+        ? 'project-binding'
+        : authority ?? existing?.authority,
+    })
   }
 
   /**
    * Write a session to disk immediately in JSONL format.
    * Uses atomic write (write-to-temp-then-rename) to prevent corruption on crash.
    */
-  private async write(sessionId: string): Promise<void> {
-    const entry = this.pending.get(sessionId)
-    if (!entry) return
-
-    this.pending.delete(sessionId)
-
+  private async write(
+    sessionId: string,
+    data: StoredSession,
+    authority?: SessionMetadataWriteAuthority,
+  ): Promise<{
+    localHeader: SessionHeader
+    persistedHeader: SessionHeader
+  } | null> {
     try {
-      const { data } = entry
       ensureSessionsDir(data.workspaceRootPath)
       ensureSessionDir(data.workspaceRootPath, sessionId)
 
@@ -120,7 +185,10 @@ class SessionPersistenceQueue {
       const localHeader = createSessionHeader(storageSession)
       const localSig = getHeaderMetadataSignature(localHeader)
       const diskHeader = readSessionHeader(filePath)
-      const previousSig = this.lastWrittenHeaderSignature.get(sessionId)
+      const baseline = this.lastObservedHeaderMetadata.get(sessionId)
+      const previousSig = baseline
+        ? getHeaderMetadataSignature(baseline)
+        : undefined
       const diskSig = diskHeader ? getHeaderMetadataSignature(diskHeader) : undefined
 
       // Queue writes should never clobber session metadata changed externally
@@ -129,11 +197,54 @@ class SessionPersistenceQueue {
       //
       // Preserve disk metadata only when disk diverged from our last written
       // signature, which indicates an external mutation.
-      const hasMetadataMismatch = !!diskHeader && !!diskSig && diskSig !== localSig
-      const hasExternalMetadataChange = !!diskHeader && !!diskSig && !!previousSig && diskSig !== previousSig
-      const header = hasExternalMetadataChange && diskHeader
-        ? mergeHeaderWithExternalMetadata(localHeader, diskHeader)
-        : localHeader
+      const hasMetadataMismatch =
+        !!diskHeader && !!diskSig && diskSig !== localSig
+      const hasExternalMetadataChange =
+        !!diskHeader && !!diskSig && !!previousSig && diskSig !== previousSig
+      let header = localHeader
+      if (hasExternalMetadataChange && diskHeader && baseline) {
+        header = { ...localHeader }
+        const diskProjectChanged =
+          diskHeader.projectId !== baseline.projectId
+        const preserveLocalRouting =
+          authority === 'project-binding'
+          || (
+            (
+              authority === 'project-binding-if-current'
+              // This authority is reserved for invalidation after the canonical
+              // Project root changes, so every route under that Project is stale.
+              || authority === 'project-note-routing'
+            )
+            && !diskProjectChanged
+          )
+        const routingChangedOnDisk = PROJECT_ROUTING_KEYS.some(key =>
+          JSON.stringify(diskHeader[key])
+          !== JSON.stringify(baseline[key]))
+
+        for (const key of HEADER_METADATA_KEYS) {
+          if (PROJECT_ROUTING_KEYS.includes(
+            key as typeof PROJECT_ROUTING_KEYS[number],
+          )) {
+            if (routingChangedOnDisk && !preserveLocalRouting) {
+              ;(header as unknown as Record<string, unknown>)[key] =
+                diskHeader[key]
+            }
+            continue
+          }
+          if (LOCAL_RUNTIME_METADATA_KEYS.includes(
+            key as typeof LOCAL_RUNTIME_METADATA_KEYS[number],
+          )) {
+            continue
+          }
+          if (
+            JSON.stringify(diskHeader[key])
+            !== JSON.stringify(baseline[key])
+          ) {
+            ;(header as unknown as Record<string, unknown>)[key] =
+              diskHeader[key]
+          }
+        }
+      }
 
       if (hasMetadataMismatch) {
         const baseline = previousSig ? `, previousSig=${previousSig.slice(0, 12)}` : ', previousSig=<none>'
@@ -165,9 +276,18 @@ class SessionPersistenceQueue {
       // On Windows, rename fails if target exists. Delete first for cross-platform compatibility.
       try { await unlink(filePath) } catch { /* ignore if doesn't exist */ }
       await rename(tmpFile, filePath)
+      this.lastObservedHeaderMetadata.set(
+        sessionId,
+        getHeaderMetadata(header),
+      )
       debug(`[PersistenceQueue] Wrote session ${sessionId}`)
+      return {
+        localHeader,
+        persistedHeader: header,
+      }
     } catch (error) {
       console.error(`[PersistenceQueue] Failed to write session ${sessionId}:`, error)
+      return null
     }
   }
 
@@ -177,24 +297,94 @@ class SessionPersistenceQueue {
    * to prevent race conditions on the shared .tmp file.
    */
   async flush(sessionId: string): Promise<void> {
-    const entry = this.pending.get(sessionId)
-    if (entry) {
-      clearTimeout(entry.timer)
+    while (true) {
+      const pending = this.pending.get(sessionId)
+      if (pending) clearTimeout(pending.timer)
 
-      // Wait for any in-progress write to complete first
-      const inProgress = this.writeInProgress.get(sessionId)
-      if (inProgress) {
-        await inProgress
+      let activeWrite = this.writeInProgress.get(sessionId)
+      if (!activeWrite && pending) {
+        let drainPromise: Promise<void>
+        drainPromise = Promise.resolve()
+          .then(async () => {
+            while (true) {
+              const next = this.pending.get(sessionId)
+              if (!next) return
+
+              clearTimeout(next.timer)
+              this.pending.delete(sessionId)
+              const result = await this.write(
+                sessionId,
+                next.data,
+                next.authority,
+              )
+              const queuedAfterWrite = this.pending.get(sessionId)
+              if (!result || !queuedAfterWrite) continue
+
+              const queuedHeader = createSessionHeader(queuedAfterWrite.data)
+              const nextData = { ...queuedAfterWrite.data }
+              const localRouting = PROJECT_ROUTING_KEYS.map(
+                key => result.localHeader[key],
+              )
+              const queuedRouting = PROJECT_ROUTING_KEYS.map(
+                key => queuedHeader[key],
+              )
+              const externalScopeChanged =
+                result.persistedHeader.projectId
+                  !== result.localHeader.projectId
+                || result.persistedHeader.projectNoteTargetRootFingerprint
+                  !== result.localHeader.projectNoteTargetRootFingerprint
+              const queuedScopeIsStale =
+                queuedHeader.projectId === result.localHeader.projectId
+                && queuedHeader.projectNoteTargetRootFingerprint
+                  === result.localHeader.projectNoteTargetRootFingerprint
+              if (
+                JSON.stringify(queuedRouting) === JSON.stringify(localRouting)
+                || (
+                  externalScopeChanged
+                  && queuedScopeIsStale
+                )
+              ) {
+                for (const key of PROJECT_ROUTING_KEYS) {
+                  ;(nextData as unknown as Record<string, unknown>)[key] =
+                    result.persistedHeader[key]
+                }
+              }
+              for (const key of HEADER_METADATA_KEYS) {
+                if (PROJECT_ROUTING_KEYS.includes(
+                  key as typeof PROJECT_ROUTING_KEYS[number],
+                )) {
+                  continue
+                }
+                if (
+                  JSON.stringify(queuedHeader[key])
+                    === JSON.stringify(result.localHeader[key])
+                  && JSON.stringify(result.persistedHeader[key])
+                    !== JSON.stringify(result.localHeader[key])
+                ) {
+                  ;(nextData as unknown as Record<string, unknown>)[key] =
+                    result.persistedHeader[key]
+                }
+              }
+              queuedAfterWrite.data = nextData
+            }
+          })
+          .finally(() => {
+            if (this.writeInProgress.get(sessionId) === drainPromise) {
+              this.writeInProgress.delete(sessionId)
+            }
+          })
+        this.writeInProgress.set(sessionId, drainPromise)
+        activeWrite = drainPromise
       }
 
-      // Start new write and track it
-      const writePromise = this.write(sessionId)
-      this.writeInProgress.set(sessionId, writePromise)
+      if (!activeWrite) return
+      await activeWrite
 
-      try {
-        await writePromise
-      } finally {
-        this.writeInProgress.delete(sessionId)
+      if (
+        !this.pending.has(sessionId)
+        && !this.writeInProgress.has(sessionId)
+      ) {
+        return
       }
     }
   }
@@ -210,14 +400,18 @@ class SessionPersistenceQueue {
       debug(`[PersistenceQueue] Cancelled pending write for session ${sessionId}`)
     }
     this.lastWrittenHeaderSignature.delete(sessionId)
+    this.lastObservedHeaderMetadata.delete(sessionId)
   }
 
   /**
    * Flush all pending sessions. Call this on app quit.
    */
   async flushAll(): Promise<void> {
-    const sessionIds = [...this.pending.keys()]
-    await Promise.all(sessionIds.map(id => this.flush(id)))
+    const sessionIds = new Set([
+      ...this.pending.keys(),
+      ...this.writeInProgress.keys(),
+    ])
+    await Promise.all([...sessionIds].map(id => this.flush(id)))
   }
 
   /**
@@ -233,6 +427,20 @@ class SessionPersistenceQueue {
    */
   getLastWrittenSignature(sessionId: string): string | undefined {
     return this.lastWrittenHeaderSignature.get(sessionId)
+  }
+
+  /**
+   * Record the header version that was loaded into memory. This gives the
+   * first local write a baseline for detecting metadata changed by another
+   * process after startup.
+   */
+  observeHeader(header: HeaderMetadataSignature & { id: string }): void {
+    const metadata = getHeaderMetadata(header)
+    this.lastWrittenHeaderSignature.set(
+      header.id,
+      getHeaderMetadataSignature(metadata),
+    )
+    this.lastObservedHeaderMetadata.set(header.id, metadata)
   }
 
   /**

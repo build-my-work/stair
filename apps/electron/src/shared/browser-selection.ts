@@ -19,6 +19,7 @@ export const BROWSER_OVERLAY_ACTION_CHANNEL = 'browser-overlay:selection-action'
 
 const BROWSER_SELECTION_ACTIONS = [
   'add-note',
+  'add-note-to',
   'add-chat',
   'new-chat',
 ] as const
@@ -165,7 +166,7 @@ export function calculateBrowserSelectionOverlayBounds(
   toolbarHeight: number,
   zoomFactor = 1,
 ): BrowserSelectionRect {
-  const width = 204
+  const width = 220
   const height = 56
   const gap = 10
   const margin = 8

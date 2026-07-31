@@ -691,6 +691,9 @@ export function handleProjectIdChanged(
         projectNoteTargetPath: session.projectId === event.projectId
           ? session.projectNoteTargetPath
           : undefined,
+        projectNoteRecentTargetPaths: session.projectId === event.projectId
+          ? session.projectNoteRecentTargetPaths
+          : undefined,
       },
       streaming,
     },
@@ -709,6 +712,9 @@ export function handleProjectNoteTargetChanged(
       session: {
         ...session,
         projectNoteTargetPath: event.relativePath ?? undefined,
+        projectNoteRecentTargetPaths: event.recentPaths.length > 0
+          ? event.recentPaths
+          : undefined,
       },
       streaming,
     },

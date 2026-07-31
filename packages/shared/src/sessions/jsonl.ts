@@ -73,6 +73,16 @@ function normalizeHeaderPermissionModes<T extends SessionHeader>(header: T): T {
   return header;
 }
 
+const SESSION_HEADER_READ_CHUNK_BYTES = 8 * 1024;
+const MAX_SESSION_HEADER_BYTES = 1024 * 1024;
+
+function parseSessionHeaderLine(firstLine: string, sessionFile: string): SessionHeader {
+  const parsed = safeJsonParse(
+    expandSessionPath(firstLine, dirname(sessionFile))
+  ) as SessionHeader;
+  return normalizeHeaderPermissionModes(parsed);
+}
+
 /**
  * Read only the header (first line) from a session.jsonl file.
  * Uses low-level fs to read minimal bytes for fast list loading.
@@ -80,16 +90,41 @@ function normalizeHeaderPermissionModes<T extends SessionHeader>(header: T): T {
 export function readSessionHeader(sessionFile: string): SessionHeader | null {
   try {
     const fd = openSync(sessionFile, 'r');
-    const buffer = Buffer.alloc(8192); // 8KB is plenty for metadata header
-    const bytesRead = readSync(fd, buffer, 0, 8192, 0);
-    closeSync(fd);
+    try {
+      const chunks: Buffer[] = [];
+      let offset = 0;
+      let foundNewline = false;
 
-    const content = buffer.toString('utf-8', 0, bytesRead);
-    const firstNewline = content.indexOf('\n');
-    const firstLine = firstNewline > 0 ? content.slice(0, firstNewline) : content;
+      while (offset < MAX_SESSION_HEADER_BYTES) {
+        const buffer = Buffer.alloc(
+          Math.min(
+            SESSION_HEADER_READ_CHUNK_BYTES,
+            MAX_SESSION_HEADER_BYTES - offset
+          )
+        );
+        const bytesRead = readSync(fd, buffer, 0, buffer.length, offset);
+        if (bytesRead === 0) break;
 
-    const parsed = safeJsonParse(expandSessionPath(firstLine, dirname(sessionFile))) as SessionHeader;
-    return normalizeHeaderPermissionModes(parsed);
+        const newlineIndex = buffer.indexOf(0x0a, 0);
+        if (newlineIndex >= 0 && newlineIndex < bytesRead) {
+          chunks.push(buffer.subarray(0, newlineIndex));
+          foundNewline = true;
+          break;
+        }
+        chunks.push(buffer.subarray(0, bytesRead));
+        offset += bytesRead;
+      }
+
+      if (!foundNewline && offset >= MAX_SESSION_HEADER_BYTES) {
+        throw new Error('Session header exceeds the read limit');
+      }
+      return parseSessionHeaderLine(
+        Buffer.concat(chunks).toString('utf-8'),
+        sessionFile
+      );
+    } finally {
+      closeSync(fd);
+    }
   } catch (error) {
     debug('[jsonl] Failed to read session header:', sessionFile, error);
     return null;
@@ -109,9 +144,7 @@ export function readSessionJsonl(sessionFile: string): StoredSession | null {
     if (!firstLine) return null;
 
     const sessionDir = dirname(sessionFile);
-    const header = normalizeHeaderPermissionModes(
-      safeJsonParse(expandSessionPath(firstLine, sessionDir)) as SessionHeader
-    );
+    const header = parseSessionHeaderLine(firstLine, sessionFile);
     // Parse messages resiliently: skip lines that fail to parse (e.g. truncated by crash)
     // rather than losing the entire session's messages.
     // Expand session path tokens before parsing so embedded paths resolve correctly.
@@ -245,13 +278,42 @@ export async function readSessionHeaderAsync(sessionFile: string): Promise<Sessi
   try {
     const handle = await open(sessionFile, 'r');
     try {
-      const buffer = Buffer.alloc(8192);
-      const { bytesRead } = await handle.read(buffer, 0, 8192, 0);
-      const content = buffer.toString('utf-8', 0, bytesRead);
-      const firstNewline = content.indexOf('\n');
-      const firstLine = firstNewline > 0 ? content.slice(0, firstNewline) : content;
-      const parsed = safeJsonParse(expandSessionPath(firstLine, dirname(sessionFile))) as SessionHeader;
-      return normalizeHeaderPermissionModes(parsed);
+      const chunks: Buffer[] = [];
+      let offset = 0;
+      let foundNewline = false;
+
+      while (offset < MAX_SESSION_HEADER_BYTES) {
+        const buffer = Buffer.alloc(
+          Math.min(
+            SESSION_HEADER_READ_CHUNK_BYTES,
+            MAX_SESSION_HEADER_BYTES - offset
+          )
+        );
+        const { bytesRead } = await handle.read(
+          buffer,
+          0,
+          buffer.length,
+          offset
+        );
+        if (bytesRead === 0) break;
+
+        const newlineIndex = buffer.indexOf(0x0a, 0);
+        if (newlineIndex >= 0 && newlineIndex < bytesRead) {
+          chunks.push(buffer.subarray(0, newlineIndex));
+          foundNewline = true;
+          break;
+        }
+        chunks.push(buffer.subarray(0, bytesRead));
+        offset += bytesRead;
+      }
+
+      if (!foundNewline && offset >= MAX_SESSION_HEADER_BYTES) {
+        throw new Error('Session header exceeds the read limit');
+      }
+      return parseSessionHeaderLine(
+        Buffer.concat(chunks).toString('utf-8'),
+        sessionFile
+      );
     } finally {
       await handle.close();
     }

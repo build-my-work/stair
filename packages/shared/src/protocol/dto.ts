@@ -112,6 +112,10 @@ export interface Session {
   projectId?: string
   /** Canonical path, relative to the bound Project root, used by Add Note. */
   projectNoteTargetPath?: string
+  /** Identity of the canonical Project root where the current target was selected. */
+  projectNoteTargetRootFingerprint?: string
+  /** Most recently configured Add Note targets for this Session, newest first. */
+  projectNoteRecentTargetPaths?: string[]
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */
@@ -408,7 +412,12 @@ export type SessionEvent =
   | { type: 'sources_changed'; sessionId: string; enabledSourceSlugs: string[] }
   | { type: 'labels_changed'; sessionId: string; labels: string[] }
   | { type: 'project_id_changed'; sessionId: string; projectId: string | null }
-  | { type: 'project_note_target_changed'; sessionId: string; relativePath: string | null }
+  | {
+      type: 'project_note_target_changed'
+      sessionId: string
+      relativePath: string | null
+      recentPaths: string[]
+    }
   | { type: 'connection_changed'; sessionId: string; connectionSlug: string; supportsBranching?: boolean }
   | { type: 'task_backgrounded'; sessionId: string; toolUseId: string; taskId: string; intent?: string; turnId?: string; kind?: 'workflow'; workflowId?: string }
   | { type: 'shell_backgrounded'; sessionId: string; toolUseId: string; shellId: string; intent?: string; command?: string; turnId?: string }
@@ -424,7 +433,7 @@ export type SessionEvent =
   | { type: 'name_changed'; sessionId: string; name?: string }
   | { type: 'session_model_changed'; sessionId: string; model: string | null }
   | { type: 'session_status_changed'; sessionId: string; sessionStatus: SessionStatus }
-  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'projectNoteTargetPath'>> }
+  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'projectNoteTargetPath' | 'projectNoteRecentTargetPaths'>> }
   | { type: 'session_deleted'; sessionId: string }
   | { type: 'session_created'; sessionId: string }
   | { type: 'session_shared'; sessionId: string; sharedUrl: string }
@@ -660,6 +669,7 @@ export interface ConfigureProjectNoteTargetRequest {
 export interface ConfigureProjectNoteTargetResponse {
   projectId: string
   relativePath: string | null
+  recentPaths: string[]
 }
 
 export interface AppendProjectNoteRequest {
@@ -1043,7 +1053,7 @@ export interface BrowserPresentRequest {
 
 export interface BrowserSelectionActionPayload {
   eventId: string
-  action: 'add-note' | 'add-chat' | 'new-chat'
+  action: 'add-note' | 'add-note-to' | 'add-chat' | 'new-chat'
   browserId: string
   reference: WebSelectionReferenceV1
 }

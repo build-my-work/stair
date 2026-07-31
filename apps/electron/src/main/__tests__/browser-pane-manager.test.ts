@@ -1636,9 +1636,9 @@ describe('BrowserPaneManager', () => {
         quote: 'selected text',
       })
       expect(instance.nativeOverlayView.setBounds).toHaveBeenCalledWith({
-        x: 38,
+        x: 30,
         y: 82,
-        width: 204,
+        width: 220,
         height: 56,
       })
 

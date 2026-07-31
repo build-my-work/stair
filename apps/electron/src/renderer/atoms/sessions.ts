@@ -79,6 +79,8 @@ export interface SessionMeta {
   projectId?: string
   /** Canonical path under the bound Project root used by Add Note. */
   projectNoteTargetPath?: string
+  /** Most recently configured Add Note targets for this Session, newest first. */
+  projectNoteRecentTargetPaths?: string[]
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */

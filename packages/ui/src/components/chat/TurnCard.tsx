@@ -365,6 +365,7 @@ export interface TurnCardProps {
   /** Callback to append an existing response/plan text selection to Project notes. */
   onAddNoteSelection?: (
     selection: ChatTextSelection,
+    mode?: 'current' | 'choose-target',
   ) => boolean | Promise<boolean>
   /** Callback to remove a persisted annotation from a response message */
   onRemoveAnnotation?: (messageId: string, annotationId: string) => void
@@ -1438,6 +1439,7 @@ export interface ResponseCardProps {
   /** Callback to append the selected response/plan text to Project notes. */
   onAddNoteSelection?: (
     selection: ChatTextSelection,
+    mode?: 'current' | 'choose-target',
   ) => boolean | Promise<boolean>
   /** Callback to remove persisted annotation */
   onRemoveAnnotation?: (messageId: string, annotationId: string) => void
@@ -2387,7 +2389,10 @@ export function ResponseCard({
   }, [selectionMenuView, handleCancelFollowUp])
 
   useAnnotationIslandEvents({
-    enabled: allowAnnotationIsland && hasAnnotationInteraction(interactionState) && isSelectionMenuVisible,
+    enabled: allowAnnotationIsland
+      && hasAnnotationInteraction(interactionState)
+      && isSelectionMenuVisible
+      && !addingNote,
     openedAtRef: selectionMenuOpenedAtRef,
     isCompactView: selectionMenuView === 'compact',
     isTargetInsideAnnotationIsland,
@@ -2395,19 +2400,24 @@ export function ResponseCard({
     onClose: closeSelectionMenu,
   })
 
-  const handleAddSelectionNote = useCallback(async () => {
+  const handleAddSelectionNote = useCallback(async (
+    mode: 'current' | 'choose-target' = 'current',
+  ) => {
     if (!onAddNoteSelection || !messageId || !pendingSelection || addingNote) return
     setAddingNote(true)
     try {
-      const added = await onAddNoteSelection({
-        messageId,
-        role: variant === 'plan' ? 'plan' : 'assistant',
-        selectedText: pendingSelection.selectedText,
-        start: pendingSelection.start,
-        end: pendingSelection.end,
-        prefix: pendingSelection.prefix,
-        suffix: pendingSelection.suffix,
-      })
+      const added = await onAddNoteSelection(
+        {
+          messageId,
+          role: variant === 'plan' ? 'plan' : 'assistant',
+          selectedText: pendingSelection.selectedText,
+          start: pendingSelection.start,
+          end: pendingSelection.end,
+          prefix: pendingSelection.prefix,
+          suffix: pendingSelection.suffix,
+        },
+        mode,
+      )
       if (added) {
         clearDomSelection()
         closeSelectionMenu()
@@ -2439,6 +2449,9 @@ export function ResponseCard({
       onOpenFollowUp={handleOpenFollowUpView}
       onAddNote={pendingSelection && onAddNoteSelection
         ? () => void handleAddSelectionNote()
+        : undefined}
+      onAddNoteTo={pendingSelection && onAddNoteSelection
+        ? () => void handleAddSelectionNote('choose-target')
         : undefined}
       addingNote={addingNote}
       onCancel={handleCancelFollowUp}

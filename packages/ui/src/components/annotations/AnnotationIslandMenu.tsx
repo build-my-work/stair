@@ -1,6 +1,6 @@
 import * as React from 'react'
 import * as ReactDOM from 'react-dom'
-import { CornerDownRight, Loader2, NotebookPen } from 'lucide-react'
+import { ChevronRight, CornerDownRight, Loader2, NotebookPen } from 'lucide-react'
 import {
   Island,
   IslandContentView,
@@ -27,6 +27,7 @@ export interface AnnotationIslandMenuProps {
   onDraftChange: (next: string) => void
   onOpenFollowUp: () => void
   onAddNote?: () => void
+  onAddNoteTo?: () => void
   addingNote?: boolean
   onCancel: () => void
   onRequestBack?: () => boolean
@@ -52,6 +53,7 @@ export function AnnotationIslandMenu({
   onDraftChange,
   onOpenFollowUp,
   onAddNote,
+  onAddNoteTo,
   addingNote = false,
   onCancel,
   onRequestBack,
@@ -112,29 +114,49 @@ export function AnnotationIslandMenu({
         replayOnVisible="always"
         transitionConfig={transitionConfig}
         dialogBehavior="back-or-close"
-        onRequestBack={onRequestBack}
-        onRequestClose={onCancel}
+        onRequestBack={addingNote ? undefined : onRequestBack}
+        onRequestClose={addingNote ? () => {} : onCancel}
         overlayZIndex={resolvedOverlayZIndex}
       >
         <IslandContentView id="compact" anchorX="center" anchorY="bottom">
           <div className="p-1 flex items-center gap-1">
             {onAddNote && (
-              <button
-                type="button"
-                disabled={addingNote}
-                onClick={onAddNote}
-                className={cn(
-                  'h-[30px] px-2.5 rounded-[8px] text-[13px] font-medium inline-flex items-center gap-1.5',
-                  'text-foreground/85 hover:text-foreground hover:bg-foreground/5',
-                  'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-                  'disabled:pointer-events-none disabled:opacity-60',
+              <div className="flex items-center">
+                <button
+                  type="button"
+                  disabled={addingNote}
+                  onClick={onAddNote}
+                  className={cn(
+                    'h-[30px] rounded-l-[8px] px-2.5 text-[13px] font-medium inline-flex items-center gap-1.5',
+                    'text-foreground/85 hover:text-foreground hover:bg-foreground/5',
+                    'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                    'disabled:pointer-events-none disabled:opacity-60',
+                    !onAddNoteTo && 'rounded-r-[8px]',
+                  )}
+                >
+                  {addingNote
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <NotebookPen className="h-3.5 w-3.5" />}
+                  <span>Add Note</span>
+                </button>
+                {onAddNoteTo && (
+                  <button
+                    type="button"
+                    disabled={addingNote}
+                    onClick={onAddNoteTo}
+                    title={t('projectNoteTarget.chooseFile')}
+                    aria-label={t('projectNoteTarget.chooseFile')}
+                    className={cn(
+                      'inline-flex h-[30px] items-center rounded-r-[8px] px-1.5 text-foreground/70',
+                      'border-l border-border/45 hover:bg-foreground/5 hover:text-foreground',
+                      'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                      'disabled:pointer-events-none disabled:opacity-60',
+                    )}
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
                 )}
-              >
-                {addingNote
-                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  : <NotebookPen className="h-3.5 w-3.5" />}
-                <span>Add Note</span>
-              </button>
+              </div>
             )}
             <button
               type="button"
