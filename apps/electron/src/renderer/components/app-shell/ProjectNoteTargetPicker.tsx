@@ -1,10 +1,11 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Check, FileText, Loader2, NotebookPen } from 'lucide-react'
+import { Check, FileText, Loader2 } from 'lucide-react'
 import { isProjectNoteTargetPath } from '@craft-agent/shared/protocol'
 
 import { ProjectFilesBrowser } from '@/components/project-files/ProjectFilesBrowser'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import {
   Dialog,
   DialogContent,
@@ -17,11 +18,9 @@ interface ProjectNoteTargetPickerProps {
   projectId: string
   projectName?: string
   rootPath?: string
-  sessionName: string
   currentPath?: string
   recentPaths?: string[]
   intent: 'configure' | 'append'
-  quote?: string
   onSelect: (relativePath: string) => Promise<void>
   onCancel: () => void
   onRestoreFocus?: () => void
@@ -40,11 +39,9 @@ export function ProjectNoteTargetPicker({
   projectId,
   projectName,
   rootPath,
-  sessionName,
   currentPath,
   recentPaths = [],
   intent,
-  quote,
   onSelect,
   onCancel,
   onRestoreFocus,
@@ -84,22 +81,19 @@ export function ProjectNoteTargetPicker({
       setIsSubmitting(false)
     }
   }, [browserBusy, onSelect, rootPath, t])
-  const quickTargets = React.useMemo(() => {
-    const validCurrentPath = currentPath
-      && isProjectNoteTargetPath(currentPath)
-      ? currentPath
-      : undefined
-    const recent = recentPaths
-      .filter(path =>
-        path !== validCurrentPath
-        && isProjectNoteTargetPath(path))
-      .slice(0, validCurrentPath ? 4 : 5)
-    return {
-      current: validCurrentPath,
-      recent,
-    }
+  const recentTargets = React.useMemo(() => {
+    const seen = new Set<string>()
+    return [currentPath, ...recentPaths]
+      .filter((path): path is string => {
+        if (!path || !isProjectNoteTargetPath(path) || seen.has(path)) {
+          return false
+        }
+        seen.add(path)
+        return true
+      })
+      .slice(0, 5)
   }, [currentPath, recentPaths])
-  const defaultSelectedPath = quickTargets.current
+  const defaultSelectedPath = recentTargets[0]
 
   React.useEffect(() => {
     setSelectedPath(defaultSelectedPath)
@@ -116,7 +110,7 @@ export function ProjectNoteTargetPicker({
       <DialogContent
         showCloseButton={false}
         aria-busy={browserBusy || isSubmitting}
-        className="flex h-[min(720px,calc(100vh-2rem))] w-[min(760px,calc(100vw-2rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+        className="flex h-[min(620px,calc(100vh-2rem))] w-[min(680px,calc(100vw-2rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
         onEscapeKeyDown={event => {
           if (browserBusy) event.preventDefault()
         }}
@@ -129,100 +123,70 @@ export function ProjectNoteTargetPicker({
           }
         }}
       >
-        <div className="shrink-0 border-b border-border/55 px-4 py-3.5">
-          <div className="flex items-start gap-2.5">
-            <div className="mt-0.5 rounded-[7px] bg-foreground/5 p-1.5">
-              <NotebookPen className="h-4 w-4 text-muted-foreground" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <DialogTitle className="text-sm font-medium">
-                {t('projectNoteTarget.title')}
-              </DialogTitle>
-              <DialogDescription className="mt-1 text-xs leading-5">
-                {projectName
-                  ? t('projectNoteTarget.descriptionProject', {
-                      sessionName,
-                      projectName,
-                    })
-                  : t('projectNoteTarget.description', { sessionName })}
-              </DialogDescription>
-            </div>
-          </div>
-          {quote && (
-            <blockquote className="mt-3 line-clamp-2 border-l-2 border-foreground/15 pl-2.5 text-[11px] leading-4 text-muted-foreground">
-              {quote}
-            </blockquote>
-          )}
+        <div className="shrink-0 border-b border-border/55 px-4 py-3">
+          <DialogTitle className="text-sm font-medium">
+            {t('projectNoteTarget.title')}
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            {t('projectNoteTarget.searchHint')}
+          </DialogDescription>
         </div>
 
-        {(quickTargets.current || quickTargets.recent.length > 0) && (
-          <div className="shrink-0 border-b border-border/55 bg-background px-4 py-3">
-            {quickTargets.current && (
-              <div>
-                <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
-                  {t('projectNoteTarget.currentTarget')}
-                </div>
-                <button
-                  type="button"
-                  disabled={!rootPath || isSubmitting || browserBusy}
-                  aria-label={`${t('projectNoteTarget.currentTarget')}: ${quickTargets.current}`}
-                  onClick={() => {
-                    setSelectedPath(quickTargets.current)
-                    setSubmitError(undefined)
-                    void handleSelect(quickTargets.current!)
-                  }}
-                  className="flex h-10 w-full min-w-0 items-center gap-2 rounded-[7px] px-2 text-left outline-none transition-colors hover:bg-foreground/[0.045] focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-                >
-                  <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs font-medium">
-                      {getPathParts(quickTargets.current).name}
+        {recentTargets.length > 0 && (
+          <div className="shrink-0 border-b border-border/55 px-4 py-3">
+            <div className="mb-1.5 text-xs font-medium text-muted-foreground">
+              {t('projectNoteTarget.recentTargets')}
+            </div>
+            <div className="space-y-0.5">
+              {recentTargets.map(path => {
+                const { name, parent } = getPathParts(path)
+                const selected = selectedPath === path
+                return (
+                  <button
+                    key={path}
+                    type="button"
+                    disabled={!rootPath || isSubmitting || browserBusy}
+                    aria-label={`${t('projectNoteTarget.recentTargets')}: ${path}`}
+                    aria-pressed={selected}
+                    onClick={() => {
+                      setSelectedPath(path)
+                      setSubmitError(undefined)
+                    }}
+                    onDoubleClick={() => void handleSelect(path)}
+                    onKeyDown={event => {
+                      if (event.key !== 'Enter') return
+                      event.preventDefault()
+                      void handleSelect(path)
+                    }}
+                    className={cn(
+                      'flex h-10 w-full min-w-0 items-center gap-2 rounded-[7px] px-2 text-left outline-none transition-colors',
+                      'focus-visible:ring-1 focus-visible:ring-accent/40 disabled:pointer-events-none disabled:opacity-50',
+                      selected
+                        ? 'bg-accent/[0.09] ring-1 ring-inset ring-accent/20'
+                        : 'hover:bg-foreground/[0.04]',
+                    )}
+                  >
+                    <FileText
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0',
+                        selected ? 'text-accent' : 'text-muted-foreground',
+                      )}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium">
+                        {name}
+                      </span>
+                      <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                        {parent || '.'}
+                      </span>
                     </span>
-                    <span className="block truncate font-mono text-[10px] text-muted-foreground/65">
-                      {getPathParts(quickTargets.current).parent || '.'}
-                    </span>
-                  </span>
-                  <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                </button>
-              </div>
-            )}
-
-            {quickTargets.recent.length > 0 && (
-              <div className={quickTargets.current ? 'mt-2.5' : undefined}>
-                <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
-                  {t('projectNoteTarget.recentTargets')}
-                </div>
-                <div className="grid grid-cols-2 gap-1">
-                  {quickTargets.recent.map(path => {
-                    const { name, parent } = getPathParts(path)
-                    return (
-                      <button
-                        key={path}
-                        type="button"
-                        disabled={!rootPath || isSubmitting || browserBusy}
-                        aria-label={`${t('projectNoteTarget.recentTargets')}: ${path}`}
-                        onClick={() => {
-                          setSelectedPath(path)
-                          setSubmitError(undefined)
-                          void handleSelect(path)
-                        }}
-                        className="flex h-10 min-w-0 items-center gap-2 rounded-[7px] px-2 text-left outline-none transition-colors hover:bg-foreground/[0.045] focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-                      >
-                        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-xs font-medium">
-                            {name}
-                          </span>
-                          <span className="block truncate font-mono text-[10px] text-muted-foreground/65">
-                            {parent || '.'}
-                          </span>
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
+                    {selected && (
+                      <Check className="h-3.5 w-3.5 shrink-0 text-accent" />
+                    )}
+                  </button>
+                )
+              })}
+            </div>
           </div>
         )}
 
@@ -242,20 +206,17 @@ export function ProjectNoteTargetPicker({
           onBusyChange={setBrowserBusy}
         />
 
-        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border/55 px-3 py-2.5">
-          <div className="flex min-w-0 flex-1 items-center gap-2 text-xs">
-            <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <span
-              className={submitError
-                ? 'truncate text-destructive'
-                : 'truncate font-mono text-muted-foreground'}
-              role={submitError ? 'alert' : undefined}
-              title={submitError || selectedPath}
+        <div className="flex shrink-0 items-center gap-3 border-t border-border/55 px-3 py-2.5">
+          {submitError && (
+            <p
+              className="min-w-0 flex-1 truncate text-xs text-destructive"
+              role="alert"
+              title={submitError}
             >
-              {submitError || selectedPath || t('projectNoteTarget.searchHint')}
-            </span>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
+              {submitError}
+            </p>
+          )}
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             <Button
               type="button"
               variant="outline"

@@ -447,7 +447,6 @@ function selectionSourceLabel(
 export function serializeProjectNote(
   selection: SelectionReference,
   session: Pick<Session, 'id' | 'name'>,
-  appendedAt: string,
 ): string {
   const quoteLines = selection.quote
     .trim()
@@ -458,7 +457,7 @@ export function serializeProjectNote(
   return [
     ...quoteLines,
     '>',
-    `> — ${selectionSourceLabel(selection, session)} · ${appendedAt}`,
+    `> — ${selectionSourceLabel(selection, session)}`,
   ].join('\n') + '\n'
 }
 
@@ -788,7 +787,7 @@ export function registerProjectNoteHandlers(
         )
 
         const appendedAt = new Date().toISOString()
-        const entry = serializeProjectNote(request.selection, session, appendedAt)
+        const entry = serializeProjectNote(request.selection, session)
         await appendProjectNoteWithinRoot(
           rootPath,
           targetPath,

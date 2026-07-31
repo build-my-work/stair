@@ -10,6 +10,7 @@ import {
   BrainCircuit,
   Braces,
   Check,
+  ChevronDown,
   ChevronRight,
   File,
   FileCode2,
@@ -22,6 +23,7 @@ import {
   Link2,
   Loader2,
   PanelRightOpen,
+  Plus,
   RefreshCw,
   Search,
   X,
@@ -34,6 +36,12 @@ import {
 } from '@craft-agent/shared/protocol'
 import { cn } from '@/lib/utils'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -155,12 +163,25 @@ function TreeEntry({
     )
   const expanded = isDirectory && expandedPaths.has(entry.relativePath)
   const directoryState = isDirectory ? directoryStates.get(entry.relativePath) : undefined
-  const selected = isDirectory
-    ? canCreateWithinDirectory && selectedDirectoryPath === entry.relativePath
-    : selectedFilePath === entry.relativePath
+  const directorySelected = canCreateWithinDirectory
+    && selectedDirectoryPath === entry.relativePath
+  const fileSelected = !isDirectory && selectedFilePath === entry.relativePath
+  const selected = directorySelected || fileSelected
   const entryDisabled = disabled
     || (isDirectory ? !canBrowseDirectory : !canSelectFile)
   const isOpenInPanel = openFilePaths?.has(entry.relativePath) ?? false
+  let entryStateClassName = selected
+    ? 'bg-foreground/[0.065] text-foreground'
+    : 'text-foreground/85 hover:bg-foreground/[0.045]'
+  if (mode === 'note-target') {
+    if (fileSelected) {
+      entryStateClassName = 'bg-accent/[0.09] text-foreground ring-1 ring-inset ring-accent/20'
+    } else if (directorySelected) {
+      entryStateClassName = 'font-medium text-foreground hover:bg-foreground/[0.04]'
+    } else {
+      entryStateClassName = 'text-foreground/85 hover:bg-foreground/[0.04]'
+    }
+  }
 
   const entryButton = (
     <button
@@ -179,12 +200,18 @@ function TreeEntry({
       onDoubleClick={() => {
         if (!isDirectory) onFileActivate?.(entry.relativePath)
       }}
+      onKeyDown={event => {
+        if (isDirectory || event.key !== 'Enter') return
+        event.preventDefault()
+        onFileActivate?.(entry.relativePath)
+      }}
       className={cn(
         'group flex h-7 w-full min-w-0 items-center gap-1.5 rounded-[6px] pr-2 text-left text-[13px]',
-        'outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring',
-        selected
-          ? 'bg-foreground/[0.065] text-foreground'
-          : 'text-foreground/85 hover:bg-foreground/[0.045]',
+        'outline-none transition-colors focus-visible:ring-1',
+        mode === 'note-target'
+          ? 'focus-visible:ring-accent/40'
+          : 'focus-visible:ring-ring',
+        entryStateClassName,
         entryDisabled && 'cursor-not-allowed opacity-40 hover:bg-transparent',
       )}
       aria-pressed={selected}
@@ -210,7 +237,14 @@ function TreeEntry({
       )}
       <span className="min-w-0 flex-1 truncate">{entry.name}</span>
       {entry.isSymlink && <Link2 className="h-3 w-3 shrink-0 text-muted-foreground/45" />}
-      {!isDirectory && selected && <Check className="h-3.5 w-3.5 shrink-0" />}
+      {fileSelected && (
+        <Check
+          className={cn(
+            'h-3.5 w-3.5 shrink-0',
+            mode === 'note-target' && 'text-accent',
+          )}
+        />
+      )}
     </button>
   )
 
@@ -539,7 +573,14 @@ export function ProjectFilesBrowser({
       })
       if (generation !== requestGenerationRef.current) return
       setDirectoryState(relativePath, {
-        entries: result.entries,
+        entries: mode === 'note-target'
+          ? result.entries.filter(entry =>
+              !entry.isSymlink
+              && (
+                entry.type === 'directory'
+                || isProjectNoteTargetPath(entry.relativePath)
+              ))
+          : result.entries,
         loading: false,
         truncated: result.truncated,
       })
@@ -553,7 +594,7 @@ export function ProjectFilesBrowser({
         error: message,
       })
     }
-  }, [projectId, setDirectoryState])
+  }, [mode, projectId, setDirectoryState])
 
   const refreshTree = useCallback(() => {
     requestGenerationRef.current += 1
@@ -853,6 +894,12 @@ export function ProjectFilesBrowser({
   } else {
     searchContent = searchResults.map(result => {
       const selected = selectedFilePath === result.relativePath
+      let resultStateClassName = 'hover:bg-foreground/[0.04]'
+      if (selected) {
+        resultStateClassName = mode === 'note-target'
+          ? 'bg-accent/[0.09] ring-1 ring-inset ring-accent/20'
+          : 'bg-foreground/[0.065]'
+      }
       const resultButton = (
         <button
           key={result.relativePath}
@@ -863,12 +910,18 @@ export function ProjectFilesBrowser({
           aria-pressed={selected}
           className={cn(
             'flex w-full min-w-0 items-start gap-2 rounded-[6px] px-2 py-1.5 text-left',
-            'outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring',
-            selected
-              ? 'bg-foreground/[0.065]'
-              : 'hover:bg-foreground/[0.045]',
+            'outline-none transition-colors focus-visible:ring-1',
+            mode === 'note-target'
+              ? 'focus-visible:ring-accent/40'
+              : 'focus-visible:ring-ring',
+            resultStateClassName,
             interactionDisabled && 'cursor-not-allowed opacity-50',
           )}
+          onKeyDown={event => {
+            if (mode !== 'note-target' || event.key !== 'Enter') return
+            event.preventDefault()
+            handleFileActivate(result.relativePath)
+          }}
         >
           <span className="mt-0.5">{fileIcon(result.name)}</span>
           <span className="min-w-0 flex-1">
@@ -879,7 +932,14 @@ export function ProjectFilesBrowser({
               {result.relativePath}
             </span>
           </span>
-          {selected && <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+          {selected && (
+            <Check
+              className={cn(
+                'mt-0.5 h-3.5 w-3.5 shrink-0',
+                mode === 'note-target' && 'text-accent',
+              )}
+            />
+          )}
         </button>
       )
       if (mode !== 'manage' || !onOpenFileInNewPanel) return resultButton
@@ -903,8 +963,20 @@ export function ProjectFilesBrowser({
     })
   }
 
+  let rootButtonStateClassName = 'hover:bg-foreground/[0.035] focus-visible:ring-1 focus-visible:ring-ring'
+  if (mode === 'note-target') {
+    rootButtonStateClassName = 'hover:bg-foreground/[0.035] focus-visible:ring-1 focus-visible:ring-accent/40'
+  } else if (selectedDirectoryPath === '') {
+    rootButtonStateClassName = 'bg-foreground/[0.055] focus-visible:ring-1 focus-visible:ring-ring'
+  }
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-foreground-2">
+    <div
+      className={cn(
+        'flex min-h-0 flex-1 flex-col',
+        mode === 'note-target' ? 'bg-background' : 'bg-foreground-2',
+      )}
+    >
       {!projectId || !rootPath ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
           <Folder className="h-7 w-7 text-muted-foreground/45" />
@@ -914,18 +986,16 @@ export function ProjectFilesBrowser({
       ) : (
         <>
           <div className="shrink-0 border-b border-border/45 px-3 py-3">
-            <div className="mb-2 flex min-w-0 items-start gap-2">
+            <div className="mb-2 flex min-w-0 items-center gap-2">
               <button
                 type="button"
                 disabled={interactionDisabled}
                 onClick={() => setSelectedDirectoryPath('')}
                 aria-pressed={selectedDirectoryPath === ''}
+                title={rootPath}
                 className={cn(
-                  'flex min-w-0 flex-1 items-start gap-2 rounded-[6px] px-1 py-1 text-left outline-none transition-colors',
-                  selectedDirectoryPath === ''
-                    ? 'bg-foreground/[0.055]'
-                    : 'hover:bg-foreground/[0.035]',
-                  'focus-visible:ring-1 focus-visible:ring-ring',
+                  'flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-1 text-left outline-none transition-colors',
+                  rootButtonStateClassName,
                   interactionDisabled && 'cursor-not-allowed opacity-50',
                 )}
                 aria-label={t('filesSidebar.useAsLocation', {
@@ -935,43 +1005,82 @@ export function ProjectFilesBrowser({
                 <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-xs font-medium">{projectName || rootLabel}</div>
-                  <div
-                    className="mt-0.5 break-all font-mono text-[10px] leading-4 text-muted-foreground/60"
-                    title={rootPath}
-                  >
-                    {rootPath}
-                  </div>
+                  {mode === 'manage' && (
+                    <div className="mt-0.5 break-all font-mono text-[10px] leading-4 text-muted-foreground/60">
+                      {rootPath}
+                    </div>
+                  )}
                 </div>
               </button>
               <div className="flex shrink-0 items-center gap-1">
-                <PanelHeaderCenterButton
-                  icon={<FilePlus2 className="h-3.5 w-3.5" />}
-                  tooltip={mode === 'note-target'
-                    ? t('projectNoteTarget.newFile')
-                    : t('filesSidebar.newFile')}
-                  disabled={interactionDisabled}
-                  onClick={() => handleBeginCreate('file')}
-                />
-                {mode === 'manage' && (
-                  <PanelHeaderCenterButton
-                    icon={<BrainCircuit className="h-3.5 w-3.5" />}
-                    tooltip={t('filesSidebar.newMindMap')}
-                    disabled={interactionDisabled}
-                    onClick={() => handleBeginCreate('mindmap')}
-                  />
+                {mode === 'note-target' ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        disabled={interactionDisabled}
+                        className={cn(
+                          'inline-flex h-7 items-center gap-1 rounded-[6px] border border-foreground/10 bg-background px-2 text-xs font-medium',
+                          'outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:ring-1 focus-visible:ring-accent/40',
+                          'disabled:pointer-events-none disabled:opacity-50',
+                        )}
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        {t('projectNoteTarget.new')}
+                        <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    {/* This portal must sit above the picker dialog's modal layer. */}
+                    <DropdownMenuContent
+                      align="end"
+                      className="min-w-[140px]"
+                      style={{ zIndex: 'calc(var(--z-modal, 200) + 1)' }}
+                      onCloseAutoFocus={event => event.preventDefault()}
+                    >
+                      <DropdownMenuItem
+                        className="text-xs"
+                        onSelect={() => handleBeginCreate('file')}
+                      >
+                        <FilePlus2 />
+                        {t('filesSidebar.newFile')}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="text-xs"
+                        onSelect={() => handleBeginCreate('directory')}
+                      >
+                        <FolderPlus />
+                        {t('filesSidebar.newFolder')}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : (
+                  <>
+                    <PanelHeaderCenterButton
+                      icon={<FilePlus2 className="h-3.5 w-3.5" />}
+                      tooltip={t('filesSidebar.newFile')}
+                      disabled={interactionDisabled}
+                      onClick={() => handleBeginCreate('file')}
+                    />
+                    <PanelHeaderCenterButton
+                      icon={<BrainCircuit className="h-3.5 w-3.5" />}
+                      tooltip={t('filesSidebar.newMindMap')}
+                      disabled={interactionDisabled}
+                      onClick={() => handleBeginCreate('mindmap')}
+                    />
+                    <PanelHeaderCenterButton
+                      icon={<FolderPlus className="h-3.5 w-3.5" />}
+                      tooltip={t('filesSidebar.newFolder')}
+                      disabled={interactionDisabled}
+                      onClick={() => handleBeginCreate('directory')}
+                    />
+                    <PanelHeaderCenterButton
+                      icon={<RefreshCw className="h-3.5 w-3.5" />}
+                      tooltip={t('common.refresh')}
+                      disabled={interactionDisabled}
+                      onClick={refreshTree}
+                    />
+                  </>
                 )}
-                <PanelHeaderCenterButton
-                  icon={<FolderPlus className="h-3.5 w-3.5" />}
-                  tooltip={t('filesSidebar.newFolder')}
-                  disabled={interactionDisabled}
-                  onClick={() => handleBeginCreate('directory')}
-                />
-                <PanelHeaderCenterButton
-                  icon={<RefreshCw className="h-3.5 w-3.5" />}
-                  tooltip={t('common.refresh')}
-                  disabled={interactionDisabled}
-                  onClick={refreshTree}
-                />
               </div>
             </div>
             <label className="relative block">

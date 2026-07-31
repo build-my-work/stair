@@ -4731,11 +4731,9 @@ function AppShellContent({
           projectId={projectNoteTargetRequest.projectId}
           projectName={projectNoteTargetProject?.config.name}
           rootPath={projectNoteTargetProject?.config.workingDirectory}
-          sessionName={projectNoteTargetMeta?.name ?? 'Session'}
           currentPath={projectNoteTargetMeta?.projectNoteTargetPath}
           recentPaths={projectNoteTargetMeta?.projectNoteRecentTargetPaths}
           intent={projectNoteTargetRequest.selection ? 'append' : 'configure'}
-          quote={projectNoteTargetRequest.selection?.quote}
           onSelect={handleProjectNoteTargetSelect}
           onCancel={handleProjectNoteTargetCancel}
           onRestoreFocus={projectNoteTargetRequest.selection

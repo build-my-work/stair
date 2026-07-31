@@ -358,7 +358,7 @@ describe('Project Notes', () => {
     }
   })
 
-  it('writes source attribution without allowing selected HTML through', () => {
+  it('writes source attribution without timestamps or unsafe selected HTML', () => {
     const web = serializeProjectNote({
       version: 1,
       kind: 'web-selection',
@@ -372,12 +372,15 @@ describe('Project Notes', () => {
     }, {
       id: 'session-1',
       name: 'Research',
-    }, '2026-07-29T00:00:00.000Z')
+    })
 
-    expect(web).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
-    expect(web).toContain('!\\[image\\](file:///tmp/private)')
-    expect(web).toContain('[Example \\[article\\] spoof](<https://example.com/article>)')
-    expect(web).toContain('2026-07-29T00:00:00.000Z')
+    expect(web).toBe([
+      '> &lt;script&gt;alert(1)&lt;/script&gt;',
+      '> !\\[image\\](file:///tmp/private)',
+      '>',
+      '> — [Example \\[article\\] spoof](<https://example.com/article>)',
+      '',
+    ].join('\n'))
     expect(web).not.toContain('<script>')
     expect(web).not.toContain('![image]')
 
@@ -397,8 +400,8 @@ describe('Project Notes', () => {
     }, {
       id: 'session-1',
       name: 'Research\nspoof',
-    }, '2026-07-29T00:00:00.000Z')
-    expect(chat).toContain('Chat · Plan · Research spoof')
+    })
+    expect(chat).toBe('> Do the work\n>\n> — Chat · Plan · Research spoof\n')
 
     const projectFile = serializeProjectNote({
       version: 1,
@@ -417,8 +420,9 @@ describe('Project Notes', () => {
     }, {
       id: 'session-1',
       name: 'Research',
-    }, '2026-07-29T00:00:00.000Z')
-    expect(projectFile).toContain('``papers/`review`.pdf`` · pages 2-3')
+    })
+    expect(projectFile)
+      .toBe('> Evidence\n>\n> — ``papers/`review`.pdf`` · pages 2-3\n')
   })
 
   it('binds append to the Project and target path the user confirmed', () => {
