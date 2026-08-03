@@ -113,6 +113,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     projectFiles,
     projectNotes,
     epubState,
+    pdfState,
     saveTextFile,
   ] = await Promise.all([
     import('@craft-agent/server-core/handlers/rpc/auth'),
@@ -136,6 +137,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/project-files'),
     import('@craft-agent/server-core/handlers/rpc/project-notes'),
     import('@craft-agent/server-core/handlers/rpc/epub-state'),
+    import('@craft-agent/server-core/handlers/rpc/pdf-state'),
     import('@craft-agent/server-core/handlers/rpc/save-text-file'),
   ])
 
@@ -169,6 +171,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     ...projectFiles.HANDLED_CHANNELS,
     ...projectNotes.HANDLED_CHANNELS,
     ...epubState.HANDLED_CHANNELS,
+    ...pdfState.HANDLED_CHANNELS,
     ...saveTextFile.HANDLED_CHANNELS,
     ...browser.HANDLED_CHANNELS,
     ...guiSystem.GUI_HANDLED_CHANNELS,

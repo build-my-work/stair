@@ -20,6 +20,7 @@ import { registerProjectsHandlers } from './projects'
 import { registerProjectFileHandlers } from './project-files'
 import { registerProjectNoteHandlers } from './project-notes'
 import { registerEpubStateHandlers } from './epub-state'
+import { registerPdfStateHandlers } from './pdf-state'
 import { registerSkillsHandlers } from './skills'
 import { registerSourcesHandlers } from './sources'
 import { registerStatusesHandlers } from './statuses'
@@ -50,6 +51,7 @@ export function registerCoreRpcHandlers(
   registerProjectFileHandlers(server, deps)
   registerProjectNoteHandlers(server, deps)
   registerEpubStateHandlers(server, deps)
+  registerPdfStateHandlers(server, deps)
   registerSkillsHandlers(server, deps)
   registerSourcesHandlers(server, deps)
   registerStatusesHandlers(server, deps)

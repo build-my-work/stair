@@ -1,7 +1,9 @@
 import * as React from "react"
-import { X, Image as ImageIcon, BookOpenText, Globe2 } from "lucide-react"
+import { X, Image as ImageIcon, BookOpenText, FileText, Globe2 } from "lucide-react"
 import { Spinner, FileTypeIcon, getFileTypeLabel } from "@craft-agent/ui"
 import {
+  isEpubProjectFileReferenceV1,
+  isPdfProjectFileReferenceV1,
   messageReferenceKey,
   type MessageReference,
 } from "@craft-agent/core"
@@ -98,9 +100,28 @@ function ReferenceBubble({
   const label = reference.kind === 'project-file'
     ? reference.fileName
     : reference.title
+  const epubReference = isEpubProjectFileReferenceV1(reference)
+    ? reference
+    : null
+  const pdfReference = isPdfProjectFileReferenceV1(reference)
+    ? reference
+    : null
+  let projectLocation: string | undefined
+  let ReferenceIcon = Globe2
+  if (epubReference) {
+    projectLocation = epubReference.chapterTitle
+      || epubReference.tocPath.at(-1)?.title
+    ReferenceIcon = BookOpenText
+  } else if (pdfReference) {
+    const { startPage, endPage } = pdfReference.locator
+    projectLocation = startPage === endPage
+      ? `Page ${startPage}`
+      : `Pages ${startPage}–${endPage}`
+    ReferenceIcon = FileText
+  }
   const detail = reference.kind === 'project-file'
     ? [
-        reference.chapterTitle || reference.tocPath.at(-1)?.title,
+        projectLocation,
         `“${reference.quote}”`,
       ].filter(Boolean).join(' · ')
     : `“${reference.quote}”`
@@ -134,9 +155,7 @@ function ReferenceBubble({
         title={detail}
       >
         <div className="h-12 w-9 rounded-[6px] bg-background shadow-minimal flex items-center justify-center shrink-0">
-          {reference.kind === 'project-file'
-            ? <BookOpenText className="h-5 w-5 text-muted-foreground" />
-            : <Globe2 className="h-5 w-5 text-muted-foreground" />}
+          <ReferenceIcon className="h-5 w-5 text-muted-foreground" />
         </div>
         <div className="flex min-w-0 max-w-[180px] flex-col">
           <span className="truncate text-xs font-medium">

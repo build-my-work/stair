@@ -244,6 +244,10 @@ import type {
   ApplyEpubStateMutationResponse,
   EpubStateRequest,
   GetEpubStateResponse,
+  ApplyPdfStateMutationRequest,
+  ApplyPdfStateMutationResponse,
+  PdfStateRequest,
+  GetPdfStateResponse,
   SaveTextFileRequest,
   SaveTextFileResponse,
   RemoteSessionTransferPayload,
@@ -377,6 +381,12 @@ export interface ElectronAPI {
   applyEpubStateMutation(
     request: ApplyEpubStateMutationRequest,
   ): Promise<ApplyEpubStateMutationResponse>
+  getPdfDocumentState(
+    request: PdfStateRequest,
+  ): Promise<GetPdfStateResponse>
+  applyPdfStateMutation(
+    request: ApplyPdfStateMutationRequest,
+  ): Promise<ApplyPdfStateMutationResponse>
   configureProjectNoteTarget(
     request: ConfigureProjectNoteTargetRequest,
   ): Promise<ConfigureProjectNoteTargetResponse>

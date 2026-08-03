@@ -20,9 +20,11 @@ import {
   type ReactNode,
 } from 'react'
 import * as ReactDOM from 'react-dom'
-import { BookOpenText, ChevronRight, Clock, Globe2, Loader2, NotebookPen } from 'lucide-react'
+import { BookOpenText, ChevronRight, Clock, FileText, Globe2, Loader2, NotebookPen } from 'lucide-react'
 import {
+  isEpubProjectFileReferenceV1,
   isMessageReference,
+  isPdfProjectFileReferenceV1,
   MAX_CHAT_SELECTION_CONTEXT_CHARS,
   messageReferenceKey,
   type ContentBadge,
@@ -331,14 +333,32 @@ function MessageReferencePreview({
   onClick?: (reference: MessageReference) => void
 }) {
   const isProjectFile = reference.kind === 'project-file'
+  const epubReference = isEpubProjectFileReferenceV1(reference)
+    ? reference
+    : null
+  const pdfReference = isPdfProjectFileReferenceV1(reference)
+    ? reference
+    : null
   const label = isProjectFile ? reference.fileName : reference.title
+  let projectLocation: string | undefined
+  let ReferenceIcon = Globe2
+  if (epubReference) {
+    projectLocation = epubReference.chapterTitle
+      || epubReference.tocPath.at(-1)?.title
+    ReferenceIcon = BookOpenText
+  } else if (pdfReference) {
+    const { startPage, endPage } = pdfReference.locator
+    projectLocation = startPage === endPage
+      ? `Page ${startPage}`
+      : `Pages ${startPage}–${endPage}`
+    ReferenceIcon = FileText
+  }
   const detail = isProjectFile
     ? [
-        reference.chapterTitle || reference.tocPath.at(-1)?.title,
+        projectLocation,
         `“${reference.quote}”`,
       ].filter(Boolean).join(' · ')
     : `“${reference.quote}”`
-  const ReferenceIcon = isProjectFile ? BookOpenText : Globe2
 
   return (
     <button

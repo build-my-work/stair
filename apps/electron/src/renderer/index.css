@@ -1288,6 +1288,19 @@ html.dark[data-scenic] .fullscreen-overlay-background {
   border: none !important;
 }
 
+/* Stair-owned PDF marks are sidecar overlays, not mutations to the PDF bytes. */
+.pdf-selection-mark-wavy {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='3' viewBox='0 0 6 3'%3E%3Cpath d='M0 2 Q1.5 0 3 2 T6 2' fill='none' stroke='%23ef4444' stroke-width='1.2'/%3E%3C/svg%3E");
+  background-position: left bottom;
+  background-repeat: repeat-x;
+  background-size: 6px 3px;
+}
+
+.pdf-selection-mark-solid {
+  border-bottom: 2px solid rgb(59 130 246 / 90%);
+  box-sizing: border-box;
+}
+
 /* ============================================================================
  * CONTAINER QUERY RESPONSIVE RULES
  *

@@ -132,6 +132,30 @@ describe('Project File reference open intent', () => {
     })
   })
 
+  test('preserves a PDF text-quote locator for the reader', () => {
+    const pdfLocator = {
+      type: 'pdf-text-quote' as const,
+      exact: 'selected PDF text',
+      startPage: 2,
+      endPage: 2,
+      anchor: {
+        pageNumber: 2,
+        x: 0.1,
+        y: 0.2,
+        width: 0.3,
+        height: 0.04,
+      },
+    }
+
+    expect(resolveProjectFileOpenIntent({
+      expectedFingerprint: currentFingerprint,
+      locator: pdfLocator,
+    }, currentFingerprint)).toEqual({
+      locator: pdfLocator,
+      stale: false,
+    })
+  })
+
   test('marks replacement bytes stale without exposing the old locator', () => {
     expect(resolveProjectFileOpenIntent({
       expectedFingerprint: `sha256:${'b'.repeat(64)}`,

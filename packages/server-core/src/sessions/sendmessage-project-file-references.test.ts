@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import type {
   MessageReference,
-  ProjectFileReferenceV1,
+  EpubProjectFileReferenceV1,
   WebSelectionReferenceV1,
 } from '@craft-agent/core/types'
 import { getSessionFilePath } from '@craft-agent/shared/sessions/storage'
@@ -55,7 +55,7 @@ describe('SessionManager Project File references', () => {
   let workspaceRoot = ''
   let projectRoot = ''
   let projectId = ''
-  let reference: ProjectFileReferenceV1
+  let reference: EpubProjectFileReferenceV1
   let managers: Set<SessionManager>
   const workspaceId = 'workspace-reference-test'
 

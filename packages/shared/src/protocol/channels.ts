@@ -115,6 +115,8 @@ export const RPC_CHANNELS = {
     SAVE_DRAWNIX_FILE: 'projectFiles:saveDrawnixFile',
     GET_EPUB_STATE: 'projectFiles:getEpubState',
     APPLY_EPUB_STATE_MUTATION: 'projectFiles:applyEpubStateMutation',
+    GET_PDF_STATE: 'projectFiles:getPdfState',
+    APPLY_PDF_STATE_MUTATION: 'projectFiles:applyPdfStateMutation',
   },
   projectNotes: {
     CONFIGURE_TARGET: 'projectNotes:configureTarget',

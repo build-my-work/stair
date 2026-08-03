@@ -21,7 +21,7 @@ import {
 
 import type {
   EpubHighlightV1,
-  ProjectFileReferenceV1,
+  EpubProjectFileReferenceV1,
   ProjectFileSelectionReferenceV1,
   ProjectFileIdentity,
   SourceFingerprint,
@@ -90,10 +90,10 @@ interface ProjectFileEpubReaderProps {
   onReady: () => void
   onChatTargetChange: (sessionId: string) => void
   onAddChatReference: (
-    reference: ProjectFileReferenceV1,
+    reference: EpubProjectFileReferenceV1,
   ) => boolean | Promise<boolean>
   onAddNewChatReference: (
-    reference: ProjectFileReferenceV1,
+    reference: EpubProjectFileReferenceV1,
   ) => boolean | Promise<boolean>
   onAddNoteReference: (
     reference: ProjectFileSelectionReferenceV1,

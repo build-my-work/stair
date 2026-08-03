@@ -57,6 +57,29 @@ const webReference: MessageReference = {
   },
 }
 
+const pdfReference: MessageReference = {
+  version: 1,
+  kind: 'project-file',
+  projectId: 'project-1',
+  relativePath: 'papers/operating-systems.pdf',
+  sourceFingerprint: `sha256:${'b'.repeat(64)}`,
+  fileName: 'operating-systems.pdf',
+  quote: 'The selected PDF passage',
+  locator: {
+    type: 'pdf-text-quote',
+    exact: 'The selected PDF passage',
+    startPage: 3,
+    endPage: 4,
+    anchor: {
+      pageNumber: 3,
+      x: 0.1,
+      y: 0.2,
+      width: 0.3,
+      height: 0.04,
+    },
+  },
+}
+
 const attachment: StoredAttachment = {
   id: 'attachment-1',
   type: 'pdf',
@@ -130,6 +153,32 @@ describe('Project File reference previews', () => {
     expect(messageHtml).toContain('The selected web passage')
     expect(messageHtml).toContain(
       'aria-label="Open reference from Example article"',
+    )
+  })
+
+  it('renders PDF page ranges in draft and sent-message previews', () => {
+    const draftHtml = render(
+      <AttachmentPreview
+        attachments={[]}
+        references={[pdfReference]}
+        onRemove={() => {}}
+        onRemoveReference={() => {}}
+      />,
+    )
+    const messageHtml = render(
+      <UserMessageBubble
+        content=""
+        references={[pdfReference]}
+        onReferenceClick={() => {}}
+      />,
+    )
+
+    expect(draftHtml).toContain('operating-systems.pdf')
+    expect(draftHtml).toContain('Pages 3–4')
+    expect(draftHtml).toContain('The selected PDF passage')
+    expect(messageHtml).toContain('Pages 3–4')
+    expect(messageHtml).toContain(
+      'aria-label="Open reference from operating-systems.pdf"',
     )
   })
 

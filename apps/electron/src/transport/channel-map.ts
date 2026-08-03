@@ -104,6 +104,8 @@ export const CHANNEL_MAP = {
   saveDrawnixProjectFile: invoke(RPC_CHANNELS.projectFiles.SAVE_DRAWNIX_FILE),
   getEpubDocumentState: invoke(RPC_CHANNELS.projectFiles.GET_EPUB_STATE),
   applyEpubStateMutation: invoke(RPC_CHANNELS.projectFiles.APPLY_EPUB_STATE_MUTATION),
+  getPdfDocumentState: invoke(RPC_CHANNELS.projectFiles.GET_PDF_STATE),
+  applyPdfStateMutation: invoke(RPC_CHANNELS.projectFiles.APPLY_PDF_STATE_MUTATION),
   configureProjectNoteTarget: invoke(RPC_CHANNELS.projectNotes.CONFIGURE_TARGET),
   appendProjectNote: invoke(RPC_CHANNELS.projectNotes.APPEND),
 

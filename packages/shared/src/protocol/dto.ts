@@ -20,6 +20,9 @@ import type {
   EpubDocumentStateV1,
   EpubHighlightV1,
   EpubStateMutation,
+  PdfDocumentStateV1,
+  PdfHighlightV1,
+  PdfStateMutation,
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
@@ -719,6 +722,22 @@ export interface ApplyEpubStateMutationResponse {
 }
 
 export type GetEpubStateResponse = EpubDocumentStateV1 | null
+
+export interface PdfStateRequest extends ProjectFileRequest {
+  sourceFingerprint: SourceFingerprint
+}
+
+export interface ApplyPdfStateMutationRequest extends PdfStateRequest {
+  mutation: PdfStateMutation
+}
+
+export interface ApplyPdfStateMutationResponse {
+  revision: number
+  applied: boolean
+  canonicalHighlight?: PdfHighlightV1
+}
+
+export type GetPdfStateResponse = PdfDocumentStateV1 | null
 
 // ---------------------------------------------------------------------------
 // Native text save dialog

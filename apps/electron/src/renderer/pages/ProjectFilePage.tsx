@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -43,7 +44,7 @@ import type {
 import {
   isCanonicalProjectRelativePath,
   type MessageReference,
-  type ProjectFileReferenceV1,
+  type ProjectFileOpenIntent,
   type ProjectFileSelectionReferenceV1,
   type SourceFingerprint,
 } from '@craft-agent/core'
@@ -175,7 +176,7 @@ export default function ProjectFilePage({
   const [showSavedStatus, setShowSavedStatus] = useState(false)
   const textDocumentControllerRef = useRef<ProjectTextDocumentController | null>(null)
   const [initialLocator, setInitialLocator] =
-    useState<ProjectFileReferenceV1['locator']>()
+    useState<ProjectFileOpenIntent['locator']>()
   const [staleReference, setStaleReference] = useState(false)
   const fileName = relativePath.split(/[\\/]/).pop() || t('filesSidebar.previewTitle')
   const fileIdentity = `${route.projectId}\0${relativePath}`
@@ -417,12 +418,12 @@ export default function ProjectFilePage({
     t,
   ])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!openIntent) {
       setInitialLocator(undefined)
       return
     }
-    if (!sourceFingerprint || kind !== 'epub') return
+    if (!sourceFingerprint || (kind !== 'epub' && kind !== 'pdf')) return
     const resolution = resolveProjectFileOpenIntent(
       openIntent,
       sourceFingerprint,
@@ -460,7 +461,7 @@ export default function ProjectFilePage({
     reference: MessageReference,
   ) => {
     if (!onAddDraftReference(sessionId, reference)) return false
-    toast.success('EPUB selection added to the chat draft')
+    toast.success('Project File selection added to the chat draft')
     focusSession(sessionId)
     return true
   }, [focusSession, onAddDraftReference])
@@ -663,7 +664,9 @@ export default function ProjectFilePage({
               metadata={metadata}
               bytes={bytes}
               sourceFingerprint={sourceFingerprint}
-              initialLocator={initialLocator}
+              initialLocator={initialLocator?.type === 'epub-cfi'
+                ? initialLocator
+                : undefined}
               chatTargetSessionId={chatTargetSessionId}
               chatTargets={chatTargets}
               onChatTargetChange={selectChatTarget}
@@ -723,11 +726,42 @@ export default function ProjectFilePage({
       && selectionSource
     ) {
       return (
-        <ProjectFilePdfReader
-          key={`${fileIdentity}\0${sourceFingerprint}`}
-          {...selectionSource}
-          bytes={bytes}
-        />
+        <div className="flex h-full min-h-0 flex-col">
+          {staleReference && (
+            <div className="flex shrink-0 items-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              This reference belongs to an older version of the PDF. The current
+              file is open without jumping to the saved location.
+            </div>
+          )}
+          <div className="min-h-0 flex-1">
+            <ProjectFilePdfReader
+              key={`${fileIdentity}\0${sourceFingerprint}`}
+              panelId={panelId}
+              {...selectionSource}
+              bytes={bytes}
+              initialLocator={initialLocator?.type === 'pdf-text-quote'
+                ? initialLocator
+                : undefined}
+              chatTargetSessionId={chatTargetSessionId}
+              chatTargets={chatTargets}
+              onChatTargetChange={selectChatTarget}
+              onAddChatReference={handleAddChatReference}
+              onAddNewChatReference={createAndSelectSessionWithReference}
+              onExportMarkdown={async ({ suggestedFilename, content }) => {
+                await saveTextFile({
+                  suggestedName: suggestedFilename,
+                  content,
+                })
+              }}
+              onReady={() => {
+                if (openIntent?.expectedFingerprint === sourceFingerprint) {
+                  consumeOpenIntent(panelId)
+                }
+              }}
+            />
+          </div>
+        </div>
       )
     }
     if (

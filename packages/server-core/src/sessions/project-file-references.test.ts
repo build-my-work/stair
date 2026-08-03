@@ -5,7 +5,8 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import type {
-  ProjectFileReferenceV1,
+  EpubProjectFileReferenceV1,
+  PdfProjectFileReferenceV1,
   WebSelectionReferenceV1,
 } from '@craft-agent/core/types'
 import { createProject } from '@craft-agent/shared/projects'
@@ -25,13 +26,17 @@ describe('Project File message references', () => {
   let projectRoot = ''
   let projectId = ''
   let bookBytes: Buffer
+  let pdfBytes: Buffer
 
   beforeEach(async () => {
     workspaceRoot = await mkdtemp(join(tmpdir(), 'project-file-reference-workspace-'))
     projectRoot = join(workspaceRoot, 'book-project')
     await mkdir(join(projectRoot, 'books'), { recursive: true })
+    await mkdir(join(projectRoot, 'papers'), { recursive: true })
     bookBytes = createMinimalEpubFixture('original')
+    pdfBytes = Buffer.from('%PDF-1.7\nPDF reference fixture\n%%EOF\n')
     await writeFile(join(projectRoot, 'books', 'os.epub'), bookBytes)
+    await writeFile(join(projectRoot, 'papers', 'os.pdf'), pdfBytes)
     projectId = createProject(workspaceRoot, {
       name: 'Book',
       workingDirectory: projectRoot,
@@ -43,8 +48,8 @@ describe('Project File message references', () => {
   })
 
   function reference(
-    patch: Partial<ProjectFileReferenceV1> = {},
-  ): ProjectFileReferenceV1 {
+    patch: Partial<EpubProjectFileReferenceV1> = {},
+  ): EpubProjectFileReferenceV1 {
     return {
       version: 1,
       kind: 'project-file',
@@ -68,6 +73,35 @@ describe('Project File message references', () => {
         cfiRange: 'epubcfi(/6/4!/4/2:0,/1:0,/1:13)',
       },
       ...patch,
+    }
+  }
+
+  function pdfReference(): PdfProjectFileReferenceV1 {
+    return {
+      version: 1,
+      kind: 'project-file',
+      projectId,
+      relativePath: 'papers/os.pdf',
+      sourceFingerprint: `sha256:${createHash('sha256').update(pdfBytes).digest('hex')}`,
+      fileName: 'os.pdf',
+      quote: 'selected PDF text',
+      contextBefore: 'before',
+      contextAfter: 'after',
+      locator: {
+        type: 'pdf-text-quote',
+        exact: 'selected PDF text',
+        prefix: 'before',
+        suffix: 'after',
+        startPage: 2,
+        endPage: 2,
+        anchor: {
+          pageNumber: 2,
+          x: 0.1,
+          y: 0.2,
+          width: 0.3,
+          height: 0.04,
+        },
+      },
     }
   }
 
@@ -161,6 +195,33 @@ describe('Project File message references', () => {
     }])
     expect(normalized).toEqual([webReference()])
     expect(normalized?.[0]).not.toHaveProperty('ignoredWireField')
+  })
+
+  it('normalizes and validates PDF message references', async () => {
+    const reference = pdfReference()
+    const normalized = normalizeMessageReferences([{
+      ...reference,
+      ignoredWireField: 'removed',
+      locator: {
+        ...reference.locator,
+        ignoredWireField: 'removed',
+        anchor: {
+          ...reference.locator.anchor,
+          ignoredWireField: 'removed',
+        },
+      },
+    }])
+    expect(normalized).toEqual([reference])
+    expect(normalized?.[0]).not.toHaveProperty('ignoredWireField')
+    await expect(validateMessageReferencesForSend({
+      workspaceRootPath: workspaceRoot,
+      sessionProjectId: projectId,
+    }, [reference])).resolves.toEqual([reference])
+
+    const formatted = formatMessageWithReferences('', [reference])
+    expect(formatted).toContain('pdf-text-quote')
+    expect(formatted).toContain('"startPage":2')
+    expect(formatted).toContain('"pageNumber":2')
   })
 
   it('formats complete bounded references as escaped untrusted user-turn data', () => {

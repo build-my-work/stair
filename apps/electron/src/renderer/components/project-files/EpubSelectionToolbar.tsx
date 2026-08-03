@@ -30,6 +30,7 @@ interface EpubSelectionToolbarProps {
   onAddChat: () => void
   onAddNewChat: () => void
   onDismiss: () => void
+  ariaLabel?: string
 }
 
 export function EpubSelectionToolbar({
@@ -43,6 +44,7 @@ export function EpubSelectionToolbar({
   onAddChat,
   onAddNewChat,
   onDismiss,
+  ariaLabel = 'EPUB selection actions',
 }: EpubSelectionToolbarProps) {
   const { t } = useTranslation()
   const virtualAnchor = React.useMemo(() => ({
@@ -68,7 +70,7 @@ export function EpubSelectionToolbar({
         collisionPadding={8}
         arrowPadding={8}
         className="flex w-auto items-stretch gap-0.5 p-1"
-        aria-label="EPUB selection actions"
+        aria-label={ariaLabel}
         onPointerDown={event => event.preventDefault()}
         onOpenAutoFocus={event => event.preventDefault()}
         onCloseAutoFocus={event => event.preventDefault()}

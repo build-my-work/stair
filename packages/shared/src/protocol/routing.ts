@@ -306,6 +306,8 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projectFiles.SAVE_DRAWNIX_FILE,
   RPC_CHANNELS.projectFiles.GET_EPUB_STATE,
   RPC_CHANNELS.projectFiles.APPLY_EPUB_STATE_MUTATION,
+  RPC_CHANNELS.projectFiles.GET_PDF_STATE,
+  RPC_CHANNELS.projectFiles.APPLY_PDF_STATE_MUTATION,
 
   // projectNotes — Session-authorized append-only Project Markdown writes
   RPC_CHANNELS.projectNotes.CONFIGURE_TARGET,

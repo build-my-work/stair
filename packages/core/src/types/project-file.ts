@@ -6,12 +6,36 @@ export interface ProjectFileIdentity {
   relativePath: string;
 }
 
+export interface EpubCfiLocatorV1 {
+  type: 'epub-cfi';
+  cfiRange: string;
+}
+
+/** Rectangle coordinates normalized to the rendered PDF page bounds. */
+export interface PdfPageRectV1 {
+  pageNumber: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface PdfTextQuoteLocatorV1 {
+  type: 'pdf-text-quote';
+  exact: string;
+  prefix?: string;
+  suffix?: string;
+  startPage: number;
+  endPage: number;
+  /** First selected rectangle, used to reveal a sent reference precisely. */
+  anchor?: PdfPageRectV1;
+}
+
 export interface ProjectFileOpenIntent {
   expectedFingerprint: SourceFingerprint;
-  locator: {
-    type: 'epub-cfi';
-    cfiRange: string;
-  };
+  locator:
+    | EpubCfiLocatorV1
+    | (PdfTextQuoteLocatorV1 & { anchor: PdfPageRectV1 });
 }
 
 export interface EpubTocPathEntryV1 {
@@ -82,11 +106,59 @@ export type EpubStateMutation =
       highlightId: string;
     };
 
-export type ProjectFileSelectionLocatorV1 =
+export interface PdfHighlightV1 {
+  id: string;
+  quote: string;
+  contextBefore?: string;
+  contextAfter?: string;
+  startPage: number;
+  endPage: number;
+  rects: PdfPageRectV1[];
+  style:
+    | {
+        type: 'wavy';
+        color: 'red';
+      }
+    | {
+        type: 'solid';
+        color: 'blue';
+      };
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PdfProgressV1 {
+  pageNumber: number;
+  pageOffsetRatio: number;
+  percentage?: number;
+  updatedAt: number;
+}
+
+export interface PdfDocumentStateV1 extends ProjectFileIdentity {
+  version: 1;
+  sourceFingerprint: SourceFingerprint;
+  revision: number;
+  progress?: PdfProgressV1;
+  highlights: PdfHighlightV1[];
+  updatedAt: number;
+}
+
+export type PdfStateMutation =
   | {
-      type: 'epub-cfi';
-      cfiRange: string;
+      type: 'set-progress';
+      progress: Omit<PdfProgressV1, 'updatedAt'>;
     }
+  | {
+      type: 'upsert-highlight';
+      highlight: Omit<PdfHighlightV1, 'createdAt' | 'updatedAt'>;
+    }
+  | {
+      type: 'delete-highlight';
+      highlightId: string;
+    };
+
+export type ProjectFileSelectionLocatorV1 =
+  | EpubCfiLocatorV1
   | {
       type: 'text-quote';
       exact: string;
@@ -95,21 +167,14 @@ export type ProjectFileSelectionLocatorV1 =
       start?: number;
       end?: number;
     }
-  | {
-      type: 'pdf-text-quote';
-      exact: string;
-      prefix?: string;
-      suffix?: string;
-      startPage: number;
-      endPage: number;
-    };
+  | PdfTextQuoteLocatorV1;
 
 /**
  * A text selection captured from a Project File.
  *
  * This is deliberately broader than ProjectFileReferenceV1: selections can
  * come from EPUB, PDF, Markdown, or other rendered UTF-8 text files, while
- * ProjectFileReferenceV1 remains the EPUB-only message attachment contract.
+ * Message attachments are the narrower EPUB/PDF reference union below.
  */
 export interface ProjectFileSelectionReferenceV1 extends ProjectFileIdentity {
   version: 1;
@@ -125,13 +190,21 @@ export interface ProjectFileSelectionReferenceV1 extends ProjectFileIdentity {
   locator: ProjectFileSelectionLocatorV1;
 }
 
-export interface ProjectFileReferenceV1 extends ProjectFileSelectionReferenceV1 {
+export interface EpubProjectFileReferenceV1 extends ProjectFileSelectionReferenceV1 {
   tocPath: EpubTocPathEntryV1[];
-  locator: {
-    type: 'epub-cfi';
-    cfiRange: string;
-  };
+  locator: EpubCfiLocatorV1;
 }
+
+export type PdfProjectFileReferenceV1 = Omit<
+  ProjectFileSelectionReferenceV1,
+  'chapterKey' | 'chapterTitle' | 'tocPath' | 'locator'
+> & {
+  locator: PdfTextQuoteLocatorV1 & { anchor: PdfPageRectV1 };
+};
+
+export type ProjectFileReferenceV1 =
+  | EpubProjectFileReferenceV1
+  | PdfProjectFileReferenceV1;
 
 export interface WebSelectionReferenceV1 {
   version: 1;
@@ -186,6 +259,7 @@ export const MAX_PROJECT_FILE_REFERENCE_CFI_CHARS = 4_096;
 export const MAX_PROJECT_FILE_REFERENCE_QUOTE_CHARS = 4_000;
 export const MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS = 1_000;
 export const MAX_PROJECT_FILE_REFERENCE_TOC_DEPTH = 32;
+export const MAX_PDF_RECTS_PER_HIGHLIGHT = 512;
 export const MAX_WEB_SELECTION_REFERENCE_CHARS = 16 * 1024;
 export const MAX_WEB_SELECTION_URL_CHARS = 8_192;
 export const MAX_WEB_SELECTION_TITLE_CHARS = 512;
@@ -246,6 +320,52 @@ function isValidTextRange(start: unknown, end: unknown): boolean {
     && Number.isSafeInteger(end)
     && (start as number) >= 0
     && (end as number) > (start as number);
+}
+
+function isPdfPageRect(value: unknown): value is PdfPageRectV1 {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const rect = value as PdfPageRectV1;
+  const geometry = [rect.x, rect.y, rect.width, rect.height];
+  return Number.isSafeInteger(rect.pageNumber)
+    && rect.pageNumber >= 1
+    && geometry.every(number => typeof number === 'number' && Number.isFinite(number))
+    && rect.x >= 0
+    && rect.y >= 0
+    && rect.width > 0
+    && rect.height > 0
+    && rect.x + rect.width <= 1.000001
+    && rect.y + rect.height <= 1.000001;
+}
+
+function isPdfTextQuoteSelectionLocator(
+  value: unknown,
+  quote: string,
+): value is PdfTextQuoteLocatorV1 {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const locator = value as PdfTextQuoteLocatorV1;
+  if (
+    locator.type !== 'pdf-text-quote'
+    || locator.exact !== quote
+    || !isOptionalSelectionContext(
+      locator.prefix,
+      MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
+    )
+    || !isOptionalSelectionContext(
+      locator.suffix,
+      MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
+    )
+    || !Number.isSafeInteger(locator.startPage)
+    || !Number.isSafeInteger(locator.endPage)
+    || locator.startPage < 1
+    || locator.endPage < locator.startPage
+  ) {
+    return false;
+  }
+  return locator.anchor === undefined || (
+    isPdfPageRect(locator.anchor)
+    && locator.anchor.pageNumber >= locator.startPage
+    && locator.anchor.pageNumber <= locator.endPage
+  );
 }
 
 function isTextQuoteSelectionLocator(
@@ -316,28 +436,36 @@ export function isProjectFileSelectionReferenceV1(
     case 'text-quote':
       return isTextQuoteSelectionLocator(reference.locator, reference.quote);
     case 'pdf-text-quote':
-      return reference.locator.exact === reference.quote
-        && isOptionalSelectionContext(
-          reference.locator.prefix,
-          MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
-        )
-        && isOptionalSelectionContext(
-          reference.locator.suffix,
-          MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS,
-        )
-        && Number.isSafeInteger(reference.locator.startPage)
-        && Number.isSafeInteger(reference.locator.endPage)
-        && reference.locator.startPage >= 1
-        && reference.locator.endPage >= reference.locator.startPage;
+      return isPdfTextQuoteSelectionLocator(reference.locator, reference.quote);
     default:
       return false;
   }
 }
 
-export function isProjectFileReferenceV1(value: unknown): value is ProjectFileReferenceV1 {
+export function isEpubProjectFileReferenceV1(
+  value: unknown,
+): value is EpubProjectFileReferenceV1 {
   if (!isProjectFileSelectionReferenceV1(value)) return false;
   return value.locator.type === 'epub-cfi'
     && isValidTocPath(value.tocPath);
+}
+
+export function isPdfProjectFileReferenceV1(
+  value: unknown,
+): value is PdfProjectFileReferenceV1 {
+  if (!isProjectFileSelectionReferenceV1(value)) return false;
+  return value.locator.type === 'pdf-text-quote'
+    && isPdfPageRect(value.locator.anchor)
+    && value.chapterKey === undefined
+    && value.chapterTitle === undefined
+    && value.tocPath === undefined;
+}
+
+export function isProjectFileReferenceV1(
+  value: unknown,
+): value is ProjectFileReferenceV1 {
+  return isEpubProjectFileReferenceV1(value)
+    || isPdfProjectFileReferenceV1(value);
 }
 
 function isBoundedTrimmedText(
@@ -437,11 +565,26 @@ export function isMessageReference(value: unknown): value is MessageReference {
 }
 
 export function projectFileReferenceKey(reference: ProjectFileReferenceV1): string {
-  return JSON.stringify([
+  const identity = [
     reference.kind,
     reference.projectId,
     reference.relativePath,
     reference.sourceFingerprint,
+  ];
+  if (reference.locator.type === 'pdf-text-quote') {
+    return JSON.stringify([
+      ...identity,
+      reference.locator.type,
+      reference.locator.exact,
+      reference.locator.prefix ?? '',
+      reference.locator.suffix ?? '',
+      reference.locator.startPage,
+      reference.locator.endPage,
+      reference.locator.anchor,
+    ]);
+  }
+  return JSON.stringify([
+    ...identity,
     reference.locator.type,
     reference.locator.cfiRange,
   ]);

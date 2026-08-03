@@ -93,6 +93,7 @@ import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/share
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, PROJECT_NOTE_RECENT_TARGET_LIMIT, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
 import {
   isProjectFileReferenceV1,
+  isEpubProjectFileReferenceV1,
   messageToStored,
   storedToMessage,
   type Message,
@@ -6332,8 +6333,9 @@ export class SessionManager implements ISessionManager {
         let referenceTitle = ''
         if (firstReference) {
           if (isProjectFileReferenceV1(firstReference)) {
-            referenceTitle = firstReference.chapterTitle?.trim()
-              || firstReference.fileName
+            referenceTitle = isEpubProjectFileReferenceV1(firstReference)
+              ? firstReference.chapterTitle?.trim() || firstReference.fileName
+              : firstReference.fileName
           } else {
             referenceTitle = firstReference.title
           }

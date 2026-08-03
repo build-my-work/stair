@@ -8,7 +8,7 @@ import {
   type EpubStateMutation,
   type EpubTocPathEntryV1,
   type ProjectFileIdentity,
-  type ProjectFileReferenceV1,
+  type EpubProjectFileReferenceV1,
   type SourceFingerprint,
 } from '@craft-agent/core/types'
 import type { ApplyEpubStateMutationResponse } from '@craft-agent/shared/protocol'
@@ -155,7 +155,7 @@ export function buildProjectFileReferenceFromSelection(input: {
   sourceFingerprint: SourceFingerprint
   fileName: string
   selection: EpubSelectionSnapshot
-}): ProjectFileReferenceV1 {
+}): EpubProjectFileReferenceV1 {
   const normalizedSelection = copyEpubSelectionFields(input.selection)
   const {
     cfiRange,

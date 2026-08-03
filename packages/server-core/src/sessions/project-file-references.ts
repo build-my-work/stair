@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer'
 
 import {
   MAX_MESSAGE_REFERENCES,
+  isPdfProjectFileReferenceV1,
   isProjectFileReferenceV1,
   isWebSelectionReferenceV1,
   type MessageReference,
@@ -83,16 +84,9 @@ function normalizeProjectFileReference(
     )
   }
 
-  const tocPath = value.tocPath.map(entry => ({
-    key: entry.key,
-    title: entry.title,
-    orderPath: [...entry.orderPath],
-    ...(entry.href === undefined ? {} : { href: entry.href }),
-  }))
-
-  return {
-    version: 1,
-    kind: 'project-file',
+  const base = {
+    version: 1 as const,
+    kind: 'project-file' as const,
     projectId: value.projectId,
     relativePath: value.relativePath,
     sourceFingerprint: value.sourceFingerprint,
@@ -104,6 +98,41 @@ function normalizeProjectFileReference(
     ...(value.contextAfter === undefined
       ? {}
       : { contextAfter: value.contextAfter }),
+  }
+
+  if (isPdfProjectFileReferenceV1(value)) {
+    return {
+      ...base,
+      locator: {
+        type: 'pdf-text-quote',
+        exact: value.locator.exact,
+        ...(value.locator.prefix === undefined
+          ? {}
+          : { prefix: value.locator.prefix }),
+        ...(value.locator.suffix === undefined
+          ? {}
+          : { suffix: value.locator.suffix }),
+        startPage: value.locator.startPage,
+        endPage: value.locator.endPage,
+        anchor: {
+          pageNumber: value.locator.anchor.pageNumber,
+          x: value.locator.anchor.x,
+          y: value.locator.anchor.y,
+          width: value.locator.anchor.width,
+          height: value.locator.anchor.height,
+        },
+      },
+    }
+  }
+
+  const tocPath = value.tocPath.map(entry => ({
+    key: entry.key,
+    title: entry.title,
+    orderPath: [...entry.orderPath],
+    ...(entry.href === undefined ? {} : { href: entry.href }),
+  }))
+  return {
+    ...base,
     ...(value.chapterKey === undefined ? {} : { chapterKey: value.chapterKey }),
     ...(value.chapterTitle === undefined
       ? {}

@@ -4,12 +4,14 @@ import {
   isCanonicalProjectRelativePath,
   isChatMessageSelectionReferenceV1,
   isMessageReference,
+  isPdfProjectFileReferenceV1,
   isProjectFileSelectionReferenceV1,
   isProjectFileReferenceV1,
   isSelectionReference,
   isWebSelectionReferenceV1,
   messageReferenceKey,
   type ProjectFileReferenceV1,
+  type PdfProjectFileReferenceV1,
   type ProjectFileSelectionReferenceV1,
   type ChatMessageSelectionReferenceV1,
   type WebSelectionReferenceV1,
@@ -35,6 +37,35 @@ function reference(): ProjectFileReferenceV1 {
     locator: {
       type: 'epub-cfi',
       cfiRange: 'epubcfi(/6/4!/4/2:0)',
+    },
+  }
+}
+
+function pdfReference(): PdfProjectFileReferenceV1 {
+  return {
+    version: 1,
+    kind: 'project-file',
+    projectId: 'project-1',
+    relativePath: 'papers/os.pdf',
+    sourceFingerprint: `sha256:${'c'.repeat(64)}`,
+    fileName: 'os.pdf',
+    quote: 'selected PDF text',
+    contextBefore: 'before',
+    contextAfter: 'after',
+    locator: {
+      type: 'pdf-text-quote',
+      exact: 'selected PDF text',
+      prefix: 'before',
+      suffix: 'after',
+      startPage: 2,
+      endPage: 3,
+      anchor: {
+        pageNumber: 2,
+        x: 0.1,
+        y: 0.2,
+        width: 0.3,
+        height: 0.04,
+      },
     },
   }
 }
@@ -167,6 +198,28 @@ describe('isProjectFileReferenceV1', () => {
       expect(isProjectFileReferenceV1(invalid)).toBe(false)
     }
   })
+
+  it('accepts PDF references with a normalized page anchor', () => {
+    const reference = pdfReference()
+    expect(isPdfProjectFileReferenceV1(reference)).toBe(true)
+    expect(isProjectFileReferenceV1(reference)).toBe(true)
+    expect(isMessageReference(reference)).toBe(true)
+  })
+
+  it('rejects malformed PDF reference anchors', () => {
+    const reference = pdfReference()
+    for (const anchor of [
+      undefined,
+      { ...reference.locator.anchor, pageNumber: 4 },
+      { ...reference.locator.anchor, x: -0.1 },
+      { ...reference.locator.anchor, width: 1 },
+    ]) {
+      expect(isProjectFileReferenceV1({
+        ...reference,
+        locator: { ...reference.locator, anchor },
+      })).toBe(false)
+    }
+  })
 })
 
 describe('WebSelectionReferenceV1', () => {
@@ -214,7 +267,7 @@ describe('SelectionReference', () => {
     expect(isSelectionReference(chatSelection())).toBe(true)
   })
 
-  it('keeps non-EPUB Project File selections out of MessageReference', () => {
+  it('keeps plain text Project File selections out of MessageReference', () => {
     expect(isProjectFileSelectionReferenceV1(textFileSelection())).toBe(true)
     expect(isProjectFileReferenceV1(textFileSelection())).toBe(false)
     expect(isMessageReference(textFileSelection())).toBe(false)
@@ -233,10 +286,25 @@ describe('SelectionReference', () => {
       },
     }
     expect(isProjectFileSelectionReferenceV1(pdf)).toBe(true)
+    expect(isProjectFileReferenceV1(pdf)).toBe(false)
     expect(isProjectFileSelectionReferenceV1({
       ...pdf,
       locator: { ...pdf.locator, startPage: 0 },
     })).toBe(false)
+  })
+
+  it('builds distinct stable keys for PDF selections', () => {
+    const reference = pdfReference()
+    expect(messageReferenceKey(reference))
+      .toBe(messageReferenceKey({ ...reference, fileName: 'renamed.pdf' }))
+    expect(messageReferenceKey(reference))
+      .not.toBe(messageReferenceKey({
+        ...reference,
+        locator: {
+          ...reference.locator,
+          anchor: { ...reference.locator.anchor, y: 0.4 },
+        },
+      }))
   })
 
   it('requires chat selections to point to an existing non-empty range', () => {
