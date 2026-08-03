@@ -229,6 +229,8 @@ export {
 // File classification (for link interceptor)
 export {
   classifyFile,
+  isEditableProjectTextFile,
+  MAX_EDITABLE_PROJECT_FILE_BYTES,
   type FilePreviewType,
   type FileClassification,
 } from './lib/file-classification'

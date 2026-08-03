@@ -111,6 +111,7 @@ export const RPC_CHANNELS = {
     CREATE_FILE: 'projectFiles:createFile',
     CREATE_DRAWNIX_FILE: 'projectFiles:createDrawnixFile',
     CREATE_DIRECTORY: 'projectFiles:createDirectory',
+    SAVE_TEXT_FILE: 'projectFiles:saveTextFile',
     SAVE_DRAWNIX_FILE: 'projectFiles:saveDrawnixFile',
     GET_EPUB_STATE: 'projectFiles:getEpubState',
     APPLY_EPUB_STATE_MUTATION: 'projectFiles:applyEpubStateMutation',

@@ -40,7 +40,7 @@ import {
 import { getPanelSizePolicy, getPanelWidthPx } from '@/lib/panel-sizing'
 import { navigate, routes } from '@/lib/navigate'
 import { PanelContentRouter } from './PanelContentRouter'
-import { flushOpenDrawnixBoard } from '@/components/project-files/drawnix-board-registry'
+import { flushOpenProjectFile } from '@/components/project-files/project-file-document-registry'
 
 /**
  * Compact Project navigation has two drill-in levels:
@@ -117,12 +117,9 @@ export function PanelSlot({
   }
 
   const handleClose = useCallback(async () => {
-    if (
-      isProjectFileRoute(entry.route)
-      && entry.route.relativePath.toLowerCase().endsWith('.drawnix')
-    ) {
+    if (isProjectFileRoute(entry.route)) {
       try {
-        await flushOpenDrawnixBoard(
+        await flushOpenProjectFile(
           entry.route.projectId,
           entry.route.relativePath,
         )
@@ -135,12 +132,9 @@ export function PanelSlot({
 
   const handleBack = useCallback(async () => {
     if (isCompanionPanelRoute(entry.route)) {
-      if (
-        isProjectFileRoute(entry.route)
-        && entry.route.relativePath.toLowerCase().endsWith('.drawnix')
-      ) {
+      if (isProjectFileRoute(entry.route)) {
         try {
-          await flushOpenDrawnixBoard(
+          await flushOpenProjectFile(
             entry.route.projectId,
             entry.route.relativePath,
           )

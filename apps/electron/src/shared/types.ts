@@ -232,6 +232,8 @@ import type {
   ProjectFileSearchRequest,
   ProjectFileSearchResult,
   ProjectFileTextResponse,
+  SaveProjectTextFileRequest,
+  SaveProjectTextFileResponse,
   SaveDrawnixProjectFileRequest,
   SaveDrawnixProjectFileResponse,
   ConfigureProjectNoteTargetRequest,
@@ -397,6 +399,10 @@ export interface ElectronAPI {
   createDrawnixProjectFile(request: CreateProjectEntryRequest): Promise<ProjectDirectoryEntry>
   /** Create one direct child directory inside a Project. */
   createProjectDirectory(request: CreateProjectEntryRequest): Promise<ProjectDirectoryEntry>
+  /** Persist an editable UTF-8 Project File with fingerprint compare-and-swap. */
+  saveProjectTextFile(
+    request: SaveProjectTextFileRequest,
+  ): Promise<SaveProjectTextFileResponse>
   /** Persist the currently open Drawnix board with fingerprint compare-and-swap. */
   saveDrawnixProjectFile(
     request: SaveDrawnixProjectFileRequest,

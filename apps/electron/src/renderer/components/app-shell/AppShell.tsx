@@ -126,7 +126,11 @@ import { resolveEntityColor } from "@craft-agent/shared/colors"
 import * as storage from "@/lib/local-storage"
 import { toast } from "sonner"
 import { navigate, routes } from "@/lib/navigate"
-import { flushOpenDrawnixBoards } from "@/components/project-files/drawnix-board-registry"
+import {
+  flushOpenProjectFile,
+  flushOpenProjectFiles,
+  notifyOpenProjectFileChanged,
+} from "@/components/project-files/project-file-document-registry"
 import {
   useNavigation,
   useNavigationState,
@@ -1517,19 +1521,24 @@ function AppShellContent({
     React.useRef<ProjectNoteTargetCompletion | null>(null)
   const projectNoteTargetMountedRef = React.useRef(true)
 
-  const appendSelectionToConfiguredTarget = React.useCallback((
+  const appendSelectionToConfiguredTarget = React.useCallback(async (
     sessionId: string,
     projectId: string,
     expectedTargetPath: string,
     selection: SelectionReference,
     requestId = createProjectNoteRequestId(),
-  ) => window.electronAPI.appendProjectNote({
-    requestId,
-    sessionId,
-    projectId,
-    expectedTargetPath,
-    selection,
-  }), [])
+  ) => {
+    await flushOpenProjectFile(projectId, expectedTargetPath)
+    const result = await window.electronAPI.appendProjectNote({
+      requestId,
+      sessionId,
+      projectId,
+      expectedTargetPath,
+      selection,
+    })
+    await notifyOpenProjectFileChanged(projectId, expectedTargetPath)
+    return result
+  }, [])
 
   const beginProjectNoteTargetRequest = React.useCallback((
     sessionId: string,
@@ -1948,7 +1957,7 @@ function AppShellContent({
     openInNewPanel = false,
   ) => {
     if (!rightSidebarOwnerRoute || !rightSidebarProject?.config.workingDirectory) return
-    void flushOpenDrawnixBoards()
+    void flushOpenProjectFiles()
       .then(() => {
         openProjectFile({
           ownerPanelId: companionOwnerPanelId,
@@ -1960,7 +1969,7 @@ function AppShellContent({
         if (isAutoCompact) handleCloseRightSidebar()
       })
       .catch(() => {
-        toast.error('The open Drawnix file could not be saved.')
+        toast.error('The open Project File could not be saved.')
       })
   }, [
     handleCloseRightSidebar,
@@ -2001,7 +2010,7 @@ function AppShellContent({
       return
     }
     if (!focusedPanelRoute) return
-    void flushOpenDrawnixBoards()
+    void flushOpenProjectFiles()
       .then(() => {
         openProjectFile({
           ownerPanelId: companionOwnerPanelId,
@@ -2017,7 +2026,7 @@ function AppShellContent({
         if (isAutoCompact) updateRightSidebar(undefined)
       })
       .catch(() => {
-        toast.error('The open Drawnix file could not be saved.')
+        toast.error('The open Project File could not be saved.')
       })
   }, [
     focusedPanelRoute,

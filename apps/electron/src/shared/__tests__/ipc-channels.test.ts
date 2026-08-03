@@ -209,6 +209,7 @@ const EXPECTED_CHANNELS: string[] = [
   'projectFiles:readBinary',
   'projectFiles:readText',
   'projectFiles:saveDrawnixFile',
+  'projectFiles:saveTextFile',
   'projectFiles:search',
   'projectNotes:append',
   'projectNotes:configureTarget',

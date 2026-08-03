@@ -33,6 +33,10 @@ export interface ShikiCodeEditorProps {
   className?: string
   /** Placeholder text when empty */
   placeholder?: string
+  /** Stable textarea id used by an accessible label */
+  textareaId?: string
+  /** Accessible label for the textarea */
+  ariaLabel?: string
 }
 
 // Map aliases to Shiki language names
@@ -49,15 +53,17 @@ function isValidLanguage(lang: string): lang is BundledLanguage {
 
 // Simple cache for highlighted code
 const highlightCache = new Map<string, string>()
-const CACHE_MAX_SIZE = 50
+const CACHE_MAX_SIZE = 10
 
 function getCacheKey(code: string, lang: string, theme: string): string {
-  // Use hash for large content
-  if (code.length > 500) {
-    const hash = code.length.toString() + code.substring(0, 100) + code.substring(code.length - 100)
-    return `${theme}:${lang}:${hash}`
-  }
   return `${theme}:${lang}:${code}`
+}
+
+function escapeHtml(code: string): string {
+  return code
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
 }
 
 /**
@@ -71,10 +77,15 @@ export function ShikiCodeEditor({
   onReady,
   className,
   placeholder,
+  textareaId,
+  ariaLabel,
 }: ShikiCodeEditorProps) {
   const { isDark, shikiTheme } = useTheme()
   const hasCalledReady = useRef(false)
+  const currentValueRef = useRef(value)
+  const highlightedSourceRef = useRef('')
   const [highlightedCode, setHighlightedCode] = useState<string>('')
+  currentValueRef.current = value
 
   // Resolve language alias
   const resolvedLang = LANGUAGE_ALIASES[language.toLowerCase()] || language.toLowerCase()
@@ -96,7 +107,7 @@ export function ShikiCodeEditor({
       // Extract just the content inside <pre><code>...</code></pre>
       // Shiki returns: <pre class="..." style="..."><code>...</code></pre>
       const match = html.match(/<pre[^>]*><code[^>]*>([\s\S]*?)<\/code><\/pre>/)
-      const content = match ? match[1] : code
+      const content = match ? match[1] : escapeHtml(code)
 
       // Cache the result
       if (highlightCache.size >= CACHE_MAX_SIZE) {
@@ -108,7 +119,7 @@ export function ShikiCodeEditor({
       return content
     } catch (error) {
       console.warn(`Shiki highlighting failed:`, error)
-      return code
+      return escapeHtml(code)
     }
   }, [resolvedLang, theme])
 
@@ -119,6 +130,7 @@ export function ShikiCodeEditor({
     async function doHighlight() {
       const result = await highlight(value)
       if (!cancelled) {
+        highlightedSourceRef.current = value
         setHighlightedCode(result)
 
         // Call onReady once
@@ -152,13 +164,15 @@ export function ShikiCodeEditor({
 
     // Trigger async highlight
     highlight(code).then(result => {
-      if (result !== highlightedCode) {
+      if (code === currentValueRef.current && result !== highlightedCode) {
+        highlightedSourceRef.current = code
         setHighlightedCode(result)
       }
     })
 
-    // Return plain text or cached highlighted code for now
-    return highlightedCode || code
+    return highlightedSourceRef.current === code
+      ? highlightedCode
+      : escapeHtml(code)
   }, [resolvedLang, theme, highlight, highlightedCode])
 
   // Background color (must match CSS --background values)
@@ -171,11 +185,15 @@ export function ShikiCodeEditor({
       className={cn('h-full w-full overflow-auto', className)}
       style={{ backgroundColor }}
     >
+      {textareaId && ariaLabel && (
+        <label htmlFor={textareaId} className="sr-only">{ariaLabel}</label>
+      )}
       <Editor
         value={value}
         onValueChange={handleValueChange}
         highlight={syncHighlight}
         disabled={readOnly}
+        textareaId={textareaId}
         padding={24}
         placeholder={placeholder}
         style={{

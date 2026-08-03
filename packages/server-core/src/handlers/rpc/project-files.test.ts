@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto'
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
   realpath,
   rm,
   symlink,
+  stat,
   truncate,
   writeFile,
 } from 'node:fs/promises'
@@ -13,6 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import type { MessageEnvelope } from '@craft-agent/shared/protocol'
+import { MAX_EDITABLE_PROJECT_FILE_BYTES } from '@craft-agent/shared/file-classification'
 import { createProject } from '@craft-agent/shared/projects'
 import { deserializeEnvelope, serializeEnvelope } from '../../transport'
 import {
@@ -29,6 +32,7 @@ import {
   readProjectFileTextWithinRoot,
   resolveProjectWorkingDirectory,
   saveDrawnixProjectFileWithinRoot,
+  saveProjectTextFileWithinRoot,
   searchProjectFilesWithinRoot,
 } from './project-files'
 import { searchFilesWithinRoot } from './files'
@@ -443,6 +447,88 @@ describe('Project File reads', () => {
     expect(await readFile(join(root, 'tutorial.drawnix'), 'utf8')).toBe(changed)
   })
 
+  it('saves editable text atomically while preserving BOM, CRLF, trailing newline, and mode', async () => {
+    const file = join(root, 'notes.md')
+    const original = Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from('first\r\nsecond\r\n', 'utf8'),
+    ])
+    await writeFile(file, original)
+    await chmod(file, 0o640)
+    const opened = await readProjectFileTextWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'notes.md',
+    })
+
+    const saved = await saveProjectTextFileWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'notes.md',
+      expectedFingerprint: opened.sourceFingerprint,
+      content: 'first changed\nsecond\n',
+    })
+    const persisted = await readFile(file)
+
+    expect(persisted).toEqual(Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from('first changed\r\nsecond\r\n', 'utf8'),
+    ]))
+    expect(saved.sourceFingerprint).toBe(
+      `sha256:${createHash('sha256').update(persisted).digest('hex')}`,
+    )
+    expect((await stat(file)).mode & 0o777).toBe(0o640)
+  })
+
+  it('rejects stale, unsupported, and oversized ordinary-text saves', async () => {
+    await Promise.all([
+      writeFile(join(root, 'notes.md'), 'opened'),
+      writeFile(join(root, 'diagram.svg'), '<svg></svg>'),
+      writeFile(join(root, 'large.txt'), ''),
+    ])
+    const opened = await readProjectFileTextWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'notes.md',
+    })
+    await writeFile(join(root, 'notes.md'), 'external change')
+
+    await expect(saveProjectTextFileWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'notes.md',
+      expectedFingerprint: opened.sourceFingerprint,
+      content: 'editor draft',
+    })).rejects.toThrow(/^PROJECT_FILE_CHANGED:/)
+    expect(await readFile(join(root, 'notes.md'), 'utf8')).toBe('external change')
+
+    const svg = await readProjectFileTextWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'diagram.svg',
+    })
+    await expect(saveProjectTextFileWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'diagram.svg',
+      expectedFingerprint: svg.sourceFingerprint,
+      content: '<svg><path /></svg>',
+    })).rejects.toThrow(/^PROJECT_FILE_INVALID_REQUEST:/)
+
+    const largeOpened = await readProjectFileTextWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'large.txt',
+    })
+    await truncate(join(root, 'large.txt'), MAX_EDITABLE_PROJECT_FILE_BYTES + 1)
+    await expect(saveProjectTextFileWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'large.txt',
+      expectedFingerprint: largeOpened.sourceFingerprint,
+      content: 'small replacement',
+    })).rejects.toThrow(/^PROJECT_FILE_TOO_LARGE:/)
+
+    await expect(saveProjectTextFileWithinRoot(root, {
+      projectId: 'project-1',
+      relativePath: 'notes.md',
+      expectedFingerprint: opened.sourceFingerprint,
+      content: 'x'.repeat(MAX_EDITABLE_PROJECT_FILE_BYTES + 1),
+    })).rejects.toThrow(/^PROJECT_FILE_TOO_LARGE:/)
+  })
+
   it('rejects invalid Drawnix saves and detects external changes', async () => {
     await writeFile(join(root, 'tutorial.drawnix'), EMPTY_DRAWNIX_DOCUMENT)
     const opened = await readProjectFileTextWithinRoot(root, {
@@ -509,6 +595,7 @@ describe('Project File reads', () => {
       'projectFiles:createFile',
       'projectFiles:createDrawnixFile',
       'projectFiles:createDirectory',
+      'projectFiles:saveTextFile',
       'projectFiles:saveDrawnixFile',
     ])
   })

@@ -91,6 +91,10 @@ describe('CHANNEL_MAP runtime contract', () => {
       type: 'invoke',
       channel: RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
     })
+    expect(CHANNEL_MAP.saveProjectTextFile).toEqual({
+      type: 'invoke',
+      channel: RPC_CHANNELS.projectFiles.SAVE_TEXT_FILE,
+    })
     expect(CHANNEL_MAP.saveDrawnixProjectFile).toEqual({
       type: 'invoke',
       channel: RPC_CHANNELS.projectFiles.SAVE_DRAWNIX_FILE,

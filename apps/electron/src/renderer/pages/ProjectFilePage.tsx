@@ -1,9 +1,36 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react'
 import { useAtomValue, useSetAtom, useStore } from 'jotai'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, FileQuestion } from 'lucide-react'
+import {
+  AlertTriangle,
+  Check,
+  Eye,
+  FileQuestion,
+  FileWarning,
+  Loader2,
+  Pencil,
+} from 'lucide-react'
 import { toast } from 'sonner'
-import { Markdown, ShikiCodeViewer, Spinner, classifyFile } from '@craft-agent/ui'
+import {
+  Markdown,
+  MAX_EDITABLE_PROJECT_FILE_BYTES,
+  ShikiCodeViewer,
+  Spinner,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  classifyFile,
+  getLanguageFromPath,
+  isEditableProjectTextFile,
+} from '@craft-agent/ui'
 import { Panel } from '@/components/app-shell/Panel'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { useAppShellContext } from '@/context/AppShellContext'
@@ -24,6 +51,15 @@ import { ProjectFileEpubReader } from '@/components/project-files/ProjectFileEpu
 import { ProjectFileTextSelectionSurface } from '@/components/project-files/ProjectFileTextSelection'
 import { ProjectFilePdfReader } from '@/components/project-files/ProjectFilePdfReader'
 import { ProjectFileDrawnixCanvas } from '@/components/project-files/ProjectFileDrawnixCanvas'
+import { ShikiCodeEditor } from '@/components/shiki/ShikiCodeEditor'
+import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
+import {
+  registerOpenProjectFileDocument,
+} from '@/components/project-files/project-file-document-registry'
+import {
+  ProjectTextDocumentController,
+  type ProjectTextDocumentState,
+} from '@/components/project-files/project-text-document-controller'
 import {
   consumeProjectFileOpenIntentAtom,
   panelStackAtom,
@@ -46,6 +82,11 @@ import { getSessionTitle } from '@/utils/session'
 interface ProjectFilePageProps {
   route: ProjectFileRoute
   panelId: string
+}
+
+const CLEAN_TEXT_DOCUMENT_STATE: ProjectTextDocumentState = {
+  status: 'clean',
+  error: null,
 }
 
 export type ProjectFileKind =
@@ -127,11 +168,24 @@ export default function ProjectFilePage({
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editorContent, setEditorContent] = useState('')
+  const [textDocumentState, setTextDocumentState] =
+    useState<ProjectTextDocumentState>(CLEAN_TEXT_DOCUMENT_STATE)
+  const [showSavedStatus, setShowSavedStatus] = useState(false)
+  const textDocumentControllerRef = useRef<ProjectTextDocumentController | null>(null)
   const [initialLocator, setInitialLocator] =
     useState<ProjectFileReferenceV1['locator']>()
   const [staleReference, setStaleReference] = useState(false)
   const fileName = relativePath.split(/[\\/]/).pop() || t('filesSidebar.previewTitle')
   const fileIdentity = `${route.projectId}\0${relativePath}`
+  const canEditText = content !== null
+    && metadata !== null
+    && sourceFingerprint !== null
+    && metadata.projectId === route.projectId
+    && metadata.relativePath === relativePath
+    && metadata.byteLength <= MAX_EDITABLE_PROJECT_FILE_BYTES
+    && isEditableProjectTextFile(relativePath)
   const referenceTargets = useMemo(
     () => listProjectReferenceTargets(sessionMetaMap, route.projectId),
     [route.projectId, sessionMetaMap],
@@ -153,9 +207,126 @@ export default function ProjectFilePage({
     [referenceTargets],
   )
 
+  useEffect(() => {
+    setIsEditing(false)
+    setEditorContent('')
+    setTextDocumentState(CLEAN_TEXT_DOCUMENT_STATE)
+  }, [fileIdentity])
+
+  useEffect(() => {
+    if (textDocumentState.status !== 'saved') {
+      setShowSavedStatus(false)
+      return
+    }
+    setShowSavedStatus(true)
+    const timer = setTimeout(() => setShowSavedStatus(false), 1_500)
+    return () => clearTimeout(timer)
+  }, [textDocumentState.status])
+
+  useEffect(() => {
+    if (
+      !isEditing
+      || !canEditText
+      || content === null
+      || !sourceFingerprint
+    ) {
+      return
+    }
+
+    setEditorContent(content)
+    setTextDocumentState(CLEAN_TEXT_DOCUMENT_STATE)
+    const controller = new ProjectTextDocumentController(
+      route.projectId,
+      relativePath,
+      content,
+      sourceFingerprint,
+      request => window.electronAPI.saveProjectTextFile(request),
+      setTextDocumentState,
+      () => setReloadToken(token => token + 1),
+    )
+    textDocumentControllerRef.current = controller
+    const unregister = registerOpenProjectFileDocument(
+      route.projectId,
+      relativePath,
+      controller,
+    )
+
+    return () => {
+      unregister()
+      if (textDocumentControllerRef.current === controller) {
+        textDocumentControllerRef.current = null
+      }
+      controller.dispose()
+      void controller.flush().catch(flushError => {
+        window.electronAPI.debugLog(
+          '[Project Files] Failed to flush text while closing:',
+          flushError instanceof Error ? flushError.message : String(flushError),
+        )
+      })
+    }
+  }, [
+    canEditText,
+    content,
+    isEditing,
+    relativePath,
+    route.projectId,
+    sourceFingerprint,
+  ])
+
   const selectChatTarget = useCallback((sessionId: string) => {
     setChatTarget({ panelId, sessionId })
   }, [panelId, setChatTarget])
+
+  const handleStartEditing = useCallback(() => {
+    if (!canEditText || content === null) return
+    setEditorContent(content)
+    setTextDocumentState(CLEAN_TEXT_DOCUMENT_STATE)
+    setIsEditing(true)
+  }, [canEditText, content])
+
+  const handleEditorContentChange = useCallback((nextContent: string) => {
+    setEditorContent(nextContent)
+    textDocumentControllerRef.current?.updateContent(nextContent)
+  }, [])
+
+  const handleShowPreview = useCallback(async () => {
+    try {
+      await textDocumentControllerRef.current?.flush()
+      setIsEditing(false)
+      setReloadToken(token => token + 1)
+    } catch {
+      // The editor keeps the draft visible and shows the detailed save error.
+    }
+  }, [])
+
+  const handleEditorKeyDown = useCallback((
+    event: ReactKeyboardEvent<HTMLDivElement>,
+  ) => {
+    if (
+      (event.metaKey || event.ctrlKey)
+      && event.key.toLowerCase() === 's'
+    ) {
+      event.preventDefault()
+      void textDocumentControllerRef.current?.flush().catch(() => undefined)
+    }
+  }, [])
+
+  const handleSaveDraftAs = useCallback(async () => {
+    const extensionIndex = fileName.lastIndexOf('.')
+    const suggestedName = extensionIndex > 0
+      ? `${fileName.slice(0, extensionIndex)}.draft${fileName.slice(extensionIndex)}`
+      : `${fileName}.draft.txt`
+    const result = await saveTextFile({
+      suggestedName,
+      content: editorContent,
+    })
+    if (result.saved) toast.success(t('projectFileEditor.draftSaved'))
+  }, [editorContent, fileName, t])
+
+  const handleReloadTextFromDisk = useCallback(() => {
+    setIsEditing(false)
+    setReloadToken(token => token + 1)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -391,6 +562,82 @@ export default function ProjectFilePage({
         </div>
       )
     }
+    if (isEditing && canEditText) {
+      let editorLanguage = 'text'
+      if (classification.type === 'markdown') {
+        editorLanguage = 'markdown'
+      } else if (classification.type === 'json') {
+        editorLanguage = 'json'
+      } else if (classification.type === 'code') {
+        editorLanguage = getLanguageFromPath(relativePath)
+      }
+      const saveError = textDocumentState.error
+      const isConflict = textDocumentState.status === 'conflict'
+
+      return (
+        <div
+          className="flex h-full min-h-0 flex-col bg-background"
+          onKeyDownCapture={handleEditorKeyDown}
+        >
+          {saveError && (
+            <div className="flex shrink-0 items-start gap-2 border-b border-amber-500/25 bg-amber-500/10 px-4 py-3 text-xs">
+              {isConflict
+                ? <FileWarning className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />}
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-foreground">
+                  {t(isConflict
+                    ? 'projectFileEditor.conflictTitle'
+                    : 'projectFileEditor.saveFailedTitle')}
+                </p>
+                <p className="mt-0.5 break-words text-muted-foreground">
+                  {saveError.message.replace(/^PROJECT_FILE_[A-Z_]+:\s*/, '')}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {!isConflict && (
+                    <button
+                      type="button"
+                      className="rounded-md bg-background px-2.5 py-1 shadow-minimal hover:bg-foreground/[0.04]"
+                      onClick={() => textDocumentControllerRef.current?.retry()}
+                    >
+                      {t('common.retry')}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="rounded-md bg-background px-2.5 py-1 shadow-minimal hover:bg-foreground/[0.04]"
+                    onClick={() => {
+                      void handleSaveDraftAs().catch(saveDraftError => {
+                        toast.error(saveDraftError instanceof Error
+                          ? saveDraftError.message
+                          : String(saveDraftError))
+                      })
+                    }}
+                  >
+                    {t('projectFileEditor.saveDraftAs')}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md bg-background px-2.5 py-1 shadow-minimal hover:bg-foreground/[0.04]"
+                    onClick={handleReloadTextFromDisk}
+                  >
+                    {t('projectFileEditor.reloadDisk')}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          <ShikiCodeEditor
+            value={editorContent}
+            language={editorLanguage}
+            onChange={handleEditorContentChange}
+            className="min-h-0 flex-1"
+            textareaId={`project-file-editor-${panelId}`}
+            ariaLabel={t('projectFileEditor.editorLabel', { fileName })}
+          />
+        </div>
+      )
+    }
     if (
       kind === 'epub'
       && bytes
@@ -510,6 +757,7 @@ export default function ProjectFilePage({
           code={content ?? ''}
           filePath={relativePath}
           language={classification.type === 'json' ? 'json' : undefined}
+          showLineNumbers={false}
           theme={resolvedMode}
           shikiTheme={shikiTheme}
           className="min-h-full"
@@ -517,6 +765,72 @@ export default function ProjectFilePage({
       </ProjectFileTextSelectionSurface>
     )
   })()
+
+  let headerActions: ReactNode = null
+  if (canEditText && !isEditing) {
+    headerActions = (
+      <HeaderIconButton
+        icon={<Pencil className="h-3.5 w-3.5" />}
+        tooltip={t('projectFileEditor.edit')}
+        aria-label={t('projectFileEditor.edit')}
+        onClick={handleStartEditing}
+      />
+    )
+  } else if (canEditText) {
+    let statusLabel = t('projectFileEditor.editing')
+    let statusIcon = <Pencil className="h-3.5 w-3.5" />
+    let statusClassName = 'text-muted-foreground'
+
+    switch (textDocumentState.status) {
+      case 'dirty':
+        statusLabel = t('projectFileEditor.unsaved')
+        break
+      case 'saving':
+        statusLabel = t('projectFileEditor.saving')
+        statusIcon = <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        break
+      case 'saved':
+        if (showSavedStatus) {
+          statusLabel = t('projectFileEditor.saved')
+          statusIcon = <Check className="h-3.5 w-3.5" />
+          statusClassName = 'text-emerald-600 dark:text-emerald-400'
+        }
+        break
+      case 'error':
+        statusLabel = t('projectFileEditor.saveFailed')
+        statusIcon = <AlertTriangle className="h-3.5 w-3.5" />
+        statusClassName = 'text-amber-600 dark:text-amber-400'
+        break
+      case 'conflict':
+        statusLabel = t('projectFileEditor.conflict')
+        statusIcon = <FileWarning className="h-3.5 w-3.5" />
+        statusClassName = 'text-amber-600 dark:text-amber-400'
+        break
+    }
+
+    headerActions = (
+      <div className="flex items-center gap-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              role="status"
+              aria-label={statusLabel}
+              className={`inline-flex h-7 w-7 items-center justify-center ${statusClassName}`}
+            >
+              {statusIcon}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{statusLabel}</TooltipContent>
+        </Tooltip>
+        <HeaderIconButton
+          icon={<Eye className="h-3.5 w-3.5" />}
+          tooltip={t('projectFileEditor.preview')}
+          aria-label={t('projectFileEditor.preview')}
+          onClick={() => void handleShowPreview()}
+        />
+      </div>
+    )
+  }
 
   return (
     <Panel
@@ -531,6 +845,7 @@ export default function ProjectFilePage({
             {relativePath}
           </span>
         )}
+        actions={headerActions}
         rightSidebarButton={rightSidebarButton}
       />
       <div key={fileIdentity} className="min-h-0 flex-1">{preview}</div>

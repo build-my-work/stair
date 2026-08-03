@@ -3,7 +3,10 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { useModalRegistry } from '@/context/ModalContext'
 import { useDismissibleLayerRegistry } from '@/context/DismissibleLayerContext'
 import { panelStackAtom, closePanelAtom, focusedPanelIdAtom } from '@/atoms/panel-stack'
-import { flushOpenDrawnixBoards } from '@/components/project-files/drawnix-board-registry'
+import {
+  flushOpenProjectFile,
+  flushOpenProjectFiles,
+} from '@/components/project-files/project-file-document-registry'
 import type { WindowCloseRequest } from '../../shared/types'
 
 /**
@@ -32,11 +35,11 @@ export function useWindowCloseHandler() {
   useEffect(() => {
     const cleanup = window.electronAPI.onCloseRequested((request: WindowCloseRequest) => {
       if (request.source === 'window-button') {
-        void flushOpenDrawnixBoards()
+        void flushOpenProjectFiles()
           .then(() => window.electronAPI.confirmCloseWindow())
           .catch(error => {
             window.electronAPI.debugLog(
-              '[Drawnix] Window close cancelled because save failed:',
+              '[Project Files] Window close cancelled because save failed:',
               error instanceof Error ? error.message : String(error),
             )
             window.electronAPI.cancelCloseWindow()
@@ -62,8 +65,22 @@ export function useWindowCloseHandler() {
         ? panelStack.find(p => p.id === focusedPanelId)
         : panelStack[panelStack.length - 1]
       if (target) {
-        closePanel(target.id)
         window.electronAPI.cancelCloseWindow()
+        if (target.route.kind === 'projectFile') {
+          void flushOpenProjectFile(
+            target.route.projectId,
+            target.route.relativePath,
+          )
+            .then(() => closePanel(target.id))
+            .catch(error => {
+              window.electronAPI.debugLog(
+                '[Project Files] Panel close cancelled because save failed:',
+                error instanceof Error ? error.message : String(error),
+              )
+            })
+        } else {
+          closePanel(target.id)
+        }
       } else {
         // No panels, no modals — close the window
         window.electronAPI.confirmCloseWindow()

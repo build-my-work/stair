@@ -2,7 +2,7 @@
  * ShikiCodeViewer - Read-only code viewer using Shiki syntax highlighting
  *
  * Platform-agnostic component for displaying code with:
- * - Line numbers
+ * - Optional line numbers
  * - Syntax highlighting via Shiki
  * - Light/dark theme support
  * - Scrollable with custom scrollbar styling
@@ -23,6 +23,8 @@ export interface ShikiCodeViewerProps {
   filePath?: string
   /** Starting line number (default: 1) */
   startLine?: number
+  /** Whether to show the line-number gutter (default: true) */
+  showLineNumbers?: boolean
   /** Theme mode */
   theme?: 'light' | 'dark'
   /** Shiki theme name (e.g., 'github-dark', 'dracula'). Defaults to github-dark/github-light based on theme mode */
@@ -60,13 +62,14 @@ function getLanguageFromPath(filePath: string, explicit?: string): string {
 }
 
 /**
- * ShikiCodeViewer - Syntax highlighted code viewer with line numbers
+ * ShikiCodeViewer - Syntax highlighted code viewer
  */
 export function ShikiCodeViewer({
   code,
   language,
   filePath,
   startLine = 1,
+  showLineNumbers = true,
   theme = 'light',
   shikiTheme,
   onReady,
@@ -84,7 +87,10 @@ export function ShikiCodeViewer({
   }, [language, filePath])
 
   // Split code into lines for line numbers
-  const lines = useMemo(() => code.split('\n'), [code])
+  const lines = useMemo(
+    () => showLineNumbers ? code.split('\n') : [],
+    [code, showLineNumbers],
+  )
 
   // Highlight code with Shiki
   useEffect(() => {
@@ -143,25 +149,26 @@ export function ShikiCodeViewer({
       style={{ backgroundColor }}
     >
       <div className="min-h-full flex">
-        {/* Line numbers gutter */}
-        <div
-          className="sticky left-0 shrink-0 select-none text-right pr-4 pt-4 pb-4"
-          style={{
-            backgroundColor,
-            borderRight: `1px solid ${borderColor}`,
-            minWidth: '60px',
-          }}
-        >
-          {lines.map((_, index) => (
-            <div
-              key={index}
-              className="font-mono text-[13px] leading-[1.6] px-2"
-              style={{ color: lineNumberColor }}
-            >
-              {startLine + index}
-            </div>
-          ))}
-        </div>
+        {showLineNumbers && (
+          <div
+            className="sticky left-0 shrink-0 select-none text-right pr-4 pt-4 pb-4"
+            style={{
+              backgroundColor,
+              borderRight: `1px solid ${borderColor}`,
+              minWidth: '60px',
+            }}
+          >
+            {lines.map((_, index) => (
+              <div
+                key={index}
+                className="font-mono text-[13px] leading-[1.6] px-2"
+                style={{ color: lineNumberColor }}
+              >
+                {startLine + index}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Code content */}
         <div className="flex-1 min-w-0 p-4 overflow-x-auto">

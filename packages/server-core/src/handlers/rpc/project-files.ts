@@ -39,9 +39,15 @@ import {
   type ProjectFileSearchRequest,
   type ProjectFileSearchResult,
   type ProjectFileTextResponse,
+  type SaveProjectTextFileRequest,
+  type SaveProjectTextFileResponse,
   type SaveDrawnixProjectFileRequest,
   type SaveDrawnixProjectFileResponse,
 } from '@craft-agent/shared/protocol'
+import {
+  MAX_EDITABLE_PROJECT_FILE_BYTES,
+  isEditableProjectTextFile,
+} from '@craft-agent/shared/file-classification'
 import { loadProjectById } from '@craft-agent/shared/projects'
 import { getMimeType } from '@craft-agent/shared/utils'
 import { validatePathFormat } from '../../utils/path-validation'
@@ -54,6 +60,7 @@ export const MAX_PROJECT_FILE_PATH_BYTES = 2_048
 export const MAX_PROJECT_FILE_NAME_BYTES = 255
 export const MAX_PROJECT_FILE_TEXT_BYTES = 8 * 1024 * 1024
 export const MAX_PROJECT_FILE_BINARY_BYTES = 32 * 1024 * 1024
+const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf])
 
 export const EMPTY_DRAWNIX_DOCUMENT = `${JSON.stringify({
   type: 'drawnix',
@@ -72,6 +79,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.projectFiles.CREATE_FILE,
   RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE,
   RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
+  RPC_CHANNELS.projectFiles.SAVE_TEXT_FILE,
   RPC_CHANNELS.projectFiles.SAVE_DRAWNIX_FILE,
 ] as const
 
@@ -97,6 +105,36 @@ function projectFileError(code: ProjectFileErrorCode, message: string): Error {
   const error = new Error(`${code}: ${message}`)
   Object.assign(error, { code })
   return error
+}
+
+const projectFileWriteQueues = new Map<string, Promise<void>>()
+
+/** Serialize renderer edits and Add Note appends targeting the same Project File. */
+export async function withProjectFileWriteQueue<T>(
+  rootPath: string,
+  relativePath: string,
+  operation: (canonicalRoot: string, canonicalPath: string) => Promise<T>,
+): Promise<T> {
+  const canonicalRoot = await realpath(resolve(rootPath))
+  const canonicalPath = canonicalizeProjectFileRelativePath(relativePath)
+  const targetKey = `${canonicalRoot}\0${canonicalPath}`
+  const previous = projectFileWriteQueues.get(targetKey) ?? Promise.resolve()
+  let release: () => void = () => {}
+  const current = new Promise<void>(resolveCurrent => {
+    release = resolveCurrent
+  })
+  const queued = previous.catch(() => {}).then(() => current)
+  projectFileWriteQueues.set(targetKey, queued)
+
+  await previous.catch(() => {})
+  try {
+    return await operation(canonicalRoot, canonicalPath)
+  } finally {
+    release()
+    if (projectFileWriteQueues.get(targetKey) === queued) {
+      projectFileWriteQueues.delete(targetKey)
+    }
+  }
 }
 
 /** @internal Exported so the read-during-change invariant can be tested deterministically. */
@@ -790,6 +828,164 @@ export async function readProjectFileTextWithinRoot(
   }
 }
 
+function validateSaveProjectTextRequest(
+  value: unknown,
+): SaveProjectTextFileRequest {
+  const request = validateProjectFileRequest(value)
+  if (!isEditableProjectTextFile(request.relativePath)) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'This Project File type is not editable as ordinary text',
+    )
+  }
+
+  const raw = value as Partial<SaveProjectTextFileRequest>
+  if (
+    typeof raw.expectedFingerprint !== 'string'
+    || !/^sha256:[a-f0-9]{64}$/.test(raw.expectedFingerprint)
+  ) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'A valid expected text fingerprint is required',
+    )
+  }
+  if (typeof raw.content !== 'string') {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Project text content must be a string',
+    )
+  }
+  if (Buffer.byteLength(raw.content, 'utf8') > MAX_EDITABLE_PROJECT_FILE_BYTES) {
+    throw projectFileError(
+      'PROJECT_FILE_TOO_LARGE',
+      `Editable Project text exceeds the ${MAX_EDITABLE_PROJECT_FILE_BYTES}-byte limit`,
+    )
+  }
+
+  return {
+    ...request,
+    expectedFingerprint: raw.expectedFingerprint as SourceFingerprint,
+    content: raw.content,
+  }
+}
+
+function encodeProjectTextContent(currentBytes: Buffer, content: string): Buffer {
+  const hasUtf8Bom = currentBytes.subarray(0, UTF8_BOM.length).equals(UTF8_BOM)
+
+  let currentText: string
+  try {
+    currentText = new TextDecoder('utf-8', { fatal: true }).decode(currentBytes)
+  } catch {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_TEXT',
+      'Project file is not valid UTF-8 text',
+    )
+  }
+
+  const withoutCrLf = currentText.replaceAll('\r\n', '')
+  const hasCrLf = currentText.includes('\r\n')
+  const hasLoneLf = withoutCrLf.includes('\n')
+  const hasLoneCr = withoutCrLf.includes('\r')
+  let persistedContent = content
+
+  let preservedLineEnding: '\r\n' | '\r' | null = null
+  if (hasCrLf && !hasLoneLf && !hasLoneCr) {
+    preservedLineEnding = '\r\n'
+  } else if (hasLoneCr && !hasCrLf && !hasLoneLf) {
+    preservedLineEnding = '\r'
+  }
+
+  if (preservedLineEnding) {
+    persistedContent = content
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n')
+      .replaceAll('\n', preservedLineEnding)
+  }
+
+  const contentBytes = Buffer.from(persistedContent, 'utf8')
+  const bytes = hasUtf8Bom
+    ? Buffer.concat([UTF8_BOM, contentBytes])
+    : contentBytes
+  if (bytes.length > MAX_EDITABLE_PROJECT_FILE_BYTES) {
+    throw projectFileError(
+      'PROJECT_FILE_TOO_LARGE',
+      `Editable Project text exceeds the ${MAX_EDITABLE_PROJECT_FILE_BYTES}-byte limit`,
+    )
+  }
+  return bytes
+}
+
+export async function saveProjectTextFileWithinRoot(
+  rootPath: string,
+  rawRequest: SaveProjectTextFileRequest,
+): Promise<SaveProjectTextFileResponse> {
+  const request = validateSaveProjectTextRequest(rawRequest)
+
+  return withProjectFileWriteQueue(
+    rootPath,
+    request.relativePath,
+    async (canonicalRoot, canonicalPath) => {
+      const targetPath = await resolveProjectFile(canonicalRoot, canonicalPath)
+      const current = await readStableProjectFile(
+        targetPath,
+        MAX_EDITABLE_PROJECT_FILE_BYTES,
+      )
+      if (fingerprint(current.bytes) !== request.expectedFingerprint) {
+        throw projectFileError(
+          'PROJECT_FILE_CHANGED',
+          'Project text file changed since it was opened; reload it before saving',
+        )
+      }
+
+      const bytes = encodeProjectTextContent(current.bytes, request.content)
+      const temporaryPath = join(
+        dirname(targetPath),
+        `.${basename(targetPath)}.${randomUUID()}.tmp`,
+      )
+      let temporaryExists = false
+
+      try {
+        const handle = await open(temporaryPath, 'wx', current.stat.mode & 0o777)
+        temporaryExists = true
+        try {
+          await handle.writeFile(bytes)
+          await handle.chmod(current.stat.mode & 0o777)
+          await handle.sync()
+        } finally {
+          await handle.close()
+        }
+
+        let beforeRename: Stats
+        try {
+          beforeRename = await stat(targetPath)
+        } catch {
+          throw projectFileError(
+            'PROJECT_FILE_CHANGED',
+            'Project text file changed while it was being saved',
+          )
+        }
+        assertStableFile(current.stat, beforeRename)
+
+        await rename(temporaryPath, targetPath)
+        temporaryExists = false
+        const savedStat = await stat(targetPath)
+        return {
+          metadata: toMetadata(
+            request.projectId,
+            request.relativePath,
+            savedStat,
+          ),
+          sourceFingerprint: fingerprint(bytes),
+        }
+      } finally {
+        if (temporaryExists) {
+          await unlink(temporaryPath).catch(() => undefined)
+        }
+      }
+    },
+  )
+}
+
 function validateDrawnixDocument(content: unknown): string {
   if (typeof content !== 'string') {
     throw projectFileError(
@@ -1066,6 +1262,15 @@ export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps
       const request = validateCreateEntryRequest(rawRequest)
       const rootPath = await resolveAuthorizedProjectRoot(ctx, deps, request.projectId)
       return createProjectEntryWithinRoot(rootPath, request, 'directory')
+    },
+  )
+
+  server.handle(
+    RPC_CHANNELS.projectFiles.SAVE_TEXT_FILE,
+    async (ctx, rawRequest: unknown) => {
+      const request = validateSaveProjectTextRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(ctx, deps, request.projectId)
+      return saveProjectTextFileWithinRoot(rootPath, request)
     },
   )
 

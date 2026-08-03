@@ -55,6 +55,7 @@
     "./version": "./src/version/index.ts",
     "./branding": "./src/branding.ts",
     "./feature-flags": "./src/feature-flags.ts",
+    "./file-classification": "./src/file-classification.ts",
     "./interceptor": "./src/interceptor-common.ts",
     "./search": "./src/search/index.ts",
     "./tools": "./src/tools/index.ts",

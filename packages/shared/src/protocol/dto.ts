@@ -636,6 +636,21 @@ export interface ProjectFileTextResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Editable text Project Files
+// ---------------------------------------------------------------------------
+
+export interface SaveProjectTextFileRequest extends ProjectFileRequest {
+  expectedFingerprint: SourceFingerprint
+  content: string
+}
+
+export interface SaveProjectTextFileResponse {
+  metadata: ProjectFileMetadata
+  /** SHA-256 of exactly the bytes persisted by this save. */
+  sourceFingerprint: SourceFingerprint
+}
+
+// ---------------------------------------------------------------------------
 // Drawnix Project Files
 // ---------------------------------------------------------------------------
 

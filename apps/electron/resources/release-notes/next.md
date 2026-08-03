@@ -5,6 +5,7 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 ## Features
 
 - **EPUB chat-reference underlines** — Add Chat now leaves a persistent blue straight underline on the selected passage, New Chat starts and targets a separate discussion, a compact header menu switches future references between Project chats, and a new References view beside Contents and Highlights lists every referenced passage for quick navigation.
+- **Project text editing** — Edit supported Markdown, plain-text, code, and configuration files directly from Project Files with conflict-aware automatic saving and safe draft recovery actions.
 
 ## Improvements
 

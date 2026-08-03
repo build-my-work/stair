@@ -30,6 +30,7 @@ import {
   canonicalizeProjectFileRelativePath,
   readProjectFileBinaryWithinRoot,
   resolveProjectWorkingDirectory,
+  withProjectFileWriteQueue,
 } from './project-files'
 
 export const HANDLED_CHANNELS = [
@@ -461,31 +462,6 @@ export function serializeProjectNote(
   ].join('\n') + '\n'
 }
 
-const targetWriteQueues = new Map<string, Promise<void>>()
-
-async function withTargetWriteQueue<T>(
-  targetKey: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const previous = targetWriteQueues.get(targetKey) ?? Promise.resolve()
-  let release: () => void = () => {}
-  const current = new Promise<void>(resolveCurrent => {
-    release = resolveCurrent
-  })
-  const queued = previous.catch(() => {}).then(() => current)
-  targetWriteQueues.set(targetKey, queued)
-
-  await previous.catch(() => {})
-  try {
-    return await operation()
-  } finally {
-    release()
-    if (targetWriteQueues.get(targetKey) === queued) {
-      targetWriteQueues.delete(targetKey)
-    }
-  }
-}
-
 function separatorBeforeAppend(bytes: Buffer): string {
   if (bytes.length === 0) return ''
   const trailingBytes = bytes.subarray(Math.max(0, bytes.length - 2)).toString()
@@ -500,10 +476,7 @@ export async function appendProjectNoteWithinRoot(
   entry: string,
 ): Promise<void> {
   const canonicalPath = validateProjectNoteTargetPath(relativePath)
-  const canonicalRoot = await realpath(resolve(rootPath))
-  const queueKey = `${canonicalRoot}\0${canonicalPath}`
-
-  return withTargetWriteQueue(queueKey, async () => {
+  return withProjectFileWriteQueue(rootPath, canonicalPath, async (canonicalRoot) => {
     const { handle, bytes } = await openExistingTarget(canonicalRoot, canonicalPath)
     try {
       const payload = Buffer.from(`${separatorBeforeAppend(bytes)}${entry}`, 'utf8')

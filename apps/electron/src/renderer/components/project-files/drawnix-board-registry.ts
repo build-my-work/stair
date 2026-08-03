@@ -4,6 +4,7 @@ import type {
   DrawnixMindmapSnapshot,
 } from '@craft-agent/server-core/transport'
 import { isCanonicalProjectRelativePath } from '@craft-agent/core'
+import { registerOpenProjectFileDocument } from './project-file-document-registry'
 
 export interface OpenDrawnixBoardController {
   read(): Promise<DrawnixMindmapSnapshot>
@@ -36,9 +37,16 @@ export function registerOpenDrawnixBoard(
       `${relativePath} already has a visible Drawnix board.`,
     )
   }
+  if (existing === controller) return () => {}
+  const unregisterDocument = registerOpenProjectFileDocument(
+    projectId,
+    relativePath,
+    controller,
+  )
   openBoards.set(key, controller)
   return () => {
     if (openBoards.get(key) === controller) openBoards.delete(key)
+    unregisterDocument()
   }
 }
 
