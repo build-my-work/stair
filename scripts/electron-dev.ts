@@ -275,7 +275,7 @@ function getOAuthDefines(): Record<string, string> {
 
 // Get environment variables for electron process
 function getElectronEnv(): Record<string, string> {
-  const vitePort = process.env.CRAFT_VITE_PORT || "5173";
+  const vitePort = process.env.CRAFT_VITE_PORT || "5188";
 
   // Codex binary path is resolved at runtime by the binary-resolver module.
   // It checks: CODEX_PATH env var > bundled binary > local dev fork > system PATH.
@@ -437,7 +437,7 @@ async function main(): Promise<void> {
   // Build WhatsApp worker bundle so the adapter can spawn it on demand
   await buildWaWorker();
 
-  const vitePort = process.env.CRAFT_VITE_PORT || "5173";
+  const vitePort = process.env.CRAFT_VITE_PORT || "5188";
   const oauthDefines = getOAuthDefines();
 
   // Kill any existing process on the Vite port
