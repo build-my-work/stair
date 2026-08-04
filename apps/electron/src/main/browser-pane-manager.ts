@@ -35,7 +35,18 @@ import {
   type BrowserSurfaceState,
 } from '../shared/types'
 import type { WebSelectionReferenceV1 } from '@craft-agent/core/types'
-import { DEFAULT_THEME, loadAppTheme, getAllowRemoteEvaluate } from '@craft-agent/shared/config'
+import {
+  DEFAULT_THEME,
+  getAllowRemoteEvaluate,
+  getWorkspaces,
+  loadAppTheme,
+} from '@craft-agent/shared/config'
+import {
+  loadBrowserBookmarks,
+  removeBrowserBookmark,
+  toggleBrowserBookmark,
+  type BrowserBookmark,
+} from '@craft-agent/shared/browser-bookmarks'
 import { CodedError } from '@craft-agent/shared/protocol'
 import { getBrowserLiveFxCornerRadii } from '../shared/browser-live-fx'
 import {
@@ -210,6 +221,10 @@ const TOOLBAR_CHANNELS = {
   GO_FORWARD: 'browser-toolbar:go-forward',
   RELOAD: 'browser-toolbar:reload',
   STOP: 'browser-toolbar:stop',
+  LIST_BOOKMARKS: 'browser-toolbar:list-bookmarks',
+  TOGGLE_BOOKMARK: 'browser-toolbar:toggle-bookmark',
+  REMOVE_BOOKMARK: 'browser-toolbar:remove-bookmark',
+  BOOKMARKS_CHANGED: 'browser-toolbar:bookmarks-changed',
   MENU_GEOMETRY: 'browser-toolbar:menu-geometry',
   FORCE_CLOSE_MENU: 'browser-toolbar:force-close-menu',
   HIDE: 'browser-toolbar:hide',
@@ -464,6 +479,57 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   setSessionPathResolver(fn: (sessionId: string) => string | null): void {
     this.sessionPathResolver = fn
+  }
+
+  private resolveBookmarkWorkspaceRoot(instance: BrowserInstance): string {
+    const workspaces = getWorkspaces()
+    const findWorkspace = (workspaceId: string | null) => {
+      if (!workspaceId) return undefined
+      return workspaces.find(workspace => (
+        workspace.id === workspaceId
+        || workspace.remoteServer?.remoteWorkspaceId === workspaceId
+      ))
+    }
+
+    let workspace = findWorkspace(instance.workspaceId)
+      ?? findWorkspace(this.resolveLaunchWorkspaceId())
+    if (!workspace && workspaces.length === 1) {
+      workspace = workspaces[0]
+    }
+    if (!workspace) {
+      throw new Error('BROWSER_BOOKMARKS_NO_WORKSPACE: Browser Workspace is unavailable')
+    }
+
+    if (!instance.workspaceId) {
+      instance.workspaceId = workspace.id
+      this.emitStateChange(instance)
+    }
+    return workspace.rootPath
+  }
+
+  private pushBookmarksForWorkspace(
+    workspaceRootPath: string,
+    bookmarks: BrowserBookmark[],
+  ): void {
+    for (const instance of this.instances.values()) {
+      if (
+        instance.window.isDestroyed()
+        || instance.toolbarView.webContents.isDestroyed()
+      ) {
+        continue
+      }
+      try {
+        if (this.resolveBookmarkWorkspaceRoot(instance) !== workspaceRootPath) {
+          continue
+        }
+        instance.toolbarView.webContents.send(
+          TOOLBAR_CHANNELS.BOOKMARKS_CHANGED,
+          bookmarks,
+        )
+      } catch {
+        // Browser instances without a resolvable Workspace cannot share bookmarks.
+      }
+    }
   }
 
   onStateChange(callback: (info: BrowserInstanceInfo) => void): void {
@@ -3143,6 +3209,36 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const inst = findInstance(instanceId)
       if (inst) this.stop(inst.id)
     })
+
+    ipcMain.handle(TOOLBAR_CHANNELS.LIST_BOOKMARKS, async (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst) return []
+      return loadBrowserBookmarks(this.resolveBookmarkWorkspaceRoot(inst))
+    })
+
+    ipcMain.handle(TOOLBAR_CHANNELS.TOGGLE_BOOKMARK, async (_event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst) throw new Error('Browser instance is unavailable')
+      const workspaceRootPath = this.resolveBookmarkWorkspaceRoot(inst)
+      const result = toggleBrowserBookmark(workspaceRootPath, {
+        url: inst.currentUrl,
+        title: inst.title,
+      })
+      this.pushBookmarksForWorkspace(workspaceRootPath, result.bookmarks)
+      return result
+    })
+
+    ipcMain.handle(
+      TOOLBAR_CHANNELS.REMOVE_BOOKMARK,
+      async (_event, instanceId: string, bookmarkId: string) => {
+        const inst = findInstance(instanceId)
+        if (!inst) throw new Error('Browser instance is unavailable')
+        const workspaceRootPath = this.resolveBookmarkWorkspaceRoot(inst)
+        const bookmarks = removeBrowserBookmark(workspaceRootPath, bookmarkId)
+        this.pushBookmarksForWorkspace(workspaceRootPath, bookmarks)
+        return bookmarks
+      },
+    )
 
     ipcMain.handle(TOOLBAR_CHANNELS.MENU_GEOMETRY, async (_event, instanceId: string, open: boolean, height?: number) => {
       const inst = findInstance(instanceId)

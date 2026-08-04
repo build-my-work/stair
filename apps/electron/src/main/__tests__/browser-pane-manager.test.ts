@@ -6,6 +6,9 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 let toolbarLoadFailuresRemaining = 0
 let emptyStateLoadFailure: (Error & { code?: string }) | null = null
@@ -525,6 +528,63 @@ describe('BrowserPaneManager', () => {
     await destroyHandler({}, 'd-ipc-destroy')
 
     expect(manager.listInstances()).toHaveLength(0)
+  })
+
+  it('persists toolbar bookmarks and syncs browsers in the same Workspace', async () => {
+    const workspaceA = mkdtempSync(join(tmpdir(), 'browser-bookmarks-a-'))
+    const workspaceB = mkdtempSync(join(tmpdir(), 'browser-bookmarks-b-'))
+    try {
+      manager.createInstance('bookmark-current', { workspaceId: 'ws-a' })
+      manager.createInstance('bookmark-peer', { workspaceId: 'ws-a' })
+      manager.createInstance('bookmark-other-workspace', { workspaceId: 'ws-b' })
+      const testManager = manager as any
+      testManager.resolveBookmarkWorkspaceRoot = (instance: { workspaceId: string }) => (
+        instance.workspaceId === 'ws-a' ? workspaceA : workspaceB
+      )
+      manager.registerToolbarIpc()
+
+      const registrations = new Map(
+        (mockIpcMainHandle.mock.calls as unknown as Array<[
+          string,
+          (...args: any[]) => Promise<any>,
+        ]>),
+      )
+      const toggle = registrations.get('browser-toolbar:toggle-bookmark')
+      const list = registrations.get('browser-toolbar:list-bookmarks')
+      const remove = registrations.get('browser-toolbar:remove-bookmark')
+      expect(toggle).toBeTruthy()
+      expect(list).toBeTruthy()
+      expect(remove).toBeTruthy()
+      if (!toggle || !list || !remove) {
+        throw new Error('Expected browser bookmark IPC registrations')
+      }
+
+      const current = testManager.instances.get('bookmark-current')
+      current.currentUrl = 'https://example.com/article'
+      current.title = 'Example article'
+
+      const toggled = await toggle({}, 'bookmark-current')
+      expect(toggled.isBookmarked).toBe(true)
+      expect(await list({}, 'bookmark-peer')).toEqual(toggled.bookmarks)
+
+      const peer = testManager.instances.get('bookmark-peer')
+      expect(peer.toolbarView.webContents.send).toHaveBeenCalledWith(
+        'browser-toolbar:bookmarks-changed',
+        toggled.bookmarks,
+      )
+      const otherWorkspace = testManager.instances.get('bookmark-other-workspace')
+      expect(otherWorkspace.toolbarView.webContents.send).not.toHaveBeenCalledWith(
+        'browser-toolbar:bookmarks-changed',
+        toggled.bookmarks,
+      )
+
+      const removed = await remove({}, 'bookmark-current', toggled.bookmarks[0].id)
+      expect(removed).toEqual([])
+      expect(await list({}, 'bookmark-current')).toEqual([])
+    } finally {
+      rmSync(workspaceA, { recursive: true, force: true })
+      rmSync(workspaceB, { recursive: true, force: true })
+    }
   })
 
   it('emits removed callback exactly once when destroy triggers closed', () => {
