@@ -4,7 +4,7 @@ import { useTheme } from '@/hooks/useTheme'
 import type { ThemeOverrides } from '@config/theme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
 import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
-import type { DraftAttachmentRef } from '@craft-agent/shared/config'
+import type { DraftAttachmentRef, WebLinkOpenTarget } from '@craft-agent/shared/config'
 import type { MessageReference } from '@craft-agent/core'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
 import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
@@ -70,7 +70,14 @@ import {
   showBackgroundFinishedChipAtom,
   pushBackgroundFinishedAtom,
 } from '@/atoms/background-finished'
-import { visibleSessionIdsAtom } from '@/atoms/panel-stack'
+import {
+  focusedPanelIdAtom,
+  focusedPanelRouteAtom,
+  getPanelOwnerPanelId,
+  openOrFocusBrowserPanelAtom,
+  panelStackAtom,
+  visibleSessionIdsAtom,
+} from '@/atoms/panel-stack'
 import { getSessionTitle } from '@/utils/session'
 import { extractBadges } from '@/lib/mentions'
 import { getDefaultStore } from 'jotai'
@@ -1807,9 +1814,8 @@ export default function App() {
     }
   }, [])
 
-  // Centralized link interceptor: classifies file types and decides whether to
-  // show an in-app preview overlay or open externally. Replaces the old
-  // handleOpenFile/handleOpenUrl that always opened in external apps.
+  // Centralized content-link interceptor: classifies file types and applies the
+  // configured destination for user-clicked HTTP(S) links.
   const linkInterceptor = useLinkInterceptor({
     openFileExternal: async (path) => {
       try {
@@ -1824,6 +1830,53 @@ export default function App() {
     },
     openUrl: async (url) => {
       try {
+        let isWebLink = false
+        try {
+          const protocol = new URL(url).protocol
+          isWebLink = protocol === 'http:' || protocol === 'https:'
+        } catch {
+          // Let the existing system URL handler report malformed links.
+        }
+
+        let webLinkOpenTarget: WebLinkOpenTarget = 'system'
+        if (isWebLink && window.electronAPI.getRuntimeEnvironment() === 'electron') {
+          webLinkOpenTarget = await window.electronAPI.getWebLinkOpenTarget().catch((error) => {
+            console.warn('Failed to load web link opening preference:', error)
+            return 'system'
+          })
+        }
+
+        if (webLinkOpenTarget !== 'built-in') {
+          await window.electronAPI.openUrl(url)
+          return
+        }
+
+        let browserId: string | null = null
+        try {
+          browserId = await window.electronAPI.browserPane.create()
+          await window.electronAPI.browserPane.navigate(browserId, url)
+
+          const focusedPanelId = store.get(focusedPanelIdAtom)
+          const ownerPanelId = focusedPanelId
+            ? getPanelOwnerPanelId(store.get(panelStackAtom), focusedPanelId) ?? undefined
+            : undefined
+          const browserPanelId = store.set(openOrFocusBrowserPanelAtom, {
+            browserId,
+            contextRoute: store.get(focusedPanelRouteAtom) ?? routes.view.allSessions(),
+            ownerPanelId,
+          })
+          if (!browserPanelId) {
+            throw new Error('No panel slot is available for the built-in browser.')
+          }
+          return
+        } catch (browserError) {
+          if (browserId) {
+            await window.electronAPI.browserPane.destroy(browserId).catch(() => undefined)
+          }
+          console.error('Failed to open URL in built-in browser:', browserError)
+          toast.warning(t('toast.builtInBrowserFallback'))
+        }
+
         await window.electronAPI.openUrl(url)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error'

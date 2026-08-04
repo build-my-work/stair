@@ -31,6 +31,7 @@ import type { ThinkingLevel } from '../agent/thinking-levels.ts';
 import { isValidThinkingLevel, normalizeThinkingLevel } from '../agent/thinking-levels.ts';
 import { parsePermissionMode, PERMISSION_MODE_ORDER } from '../agent/mode-types.ts';
 import { type ConfigDefaults } from './config-defaults-schema.ts';
+import type { WebLinkOpenTarget } from './types.ts';
 import { isValidThemeFile } from './validators.ts';
 
 // Re-export CONFIG_DIR for convenience (centralized in paths.ts)
@@ -85,6 +86,7 @@ export interface StoredConfig {
   richToolDescriptions?: boolean;  // Add intent/action metadata to all tool calls (default: true)
   // Tools
   browserToolEnabled?: boolean;  // Enable built-in browser tool (default: true). Disable for Playwright/Puppeteer.
+  webLinkOpenTarget?: WebLinkOpenTarget;  // Open user-clicked HTTP(S) content links in the system or built-in browser.
   allowRemoteEvaluate?: boolean;  // Allow remote agents to call `browser_tool evaluate` on local browser (default: true).
   // Prompt caching & context
   extendedPromptCache?: boolean;  // Use 1h prompt cache TTL instead of 5m (default: false)
@@ -132,6 +134,7 @@ const FALLBACK_CONFIG_DEFAULTS: ConfigDefaults = {
     richToolDescriptions: true,
     extendedPromptCache: false,
     browserToolEnabled: true,
+    webLinkOpenTarget: 'system',
     allowRemoteEvaluate: true,
   },
   workspaceDefaults: {
@@ -525,6 +528,27 @@ export function setBrowserToolEnabled(enabled: boolean): void {
   // Clear session tool caches so all sessions pick up the change immediately.
   // Lazy import to avoid circular dependency (storage ← session-scoped-tools ← storage).
   import('../agent/session-scoped-tools.ts').then(m => m.invalidateAllSessionToolsCaches()).catch(() => {});
+}
+
+/**
+ * Get where user-clicked HTTP(S) content links should open.
+ * Defaults to the system browser for backward compatibility.
+ */
+export function getWebLinkOpenTarget(): WebLinkOpenTarget {
+  const storedTarget = loadStoredConfig()?.webLinkOpenTarget;
+  if (storedTarget === 'built-in' || storedTarget === 'system') {
+    return storedTarget;
+  }
+  const target = loadConfigDefaults().defaults.webLinkOpenTarget;
+  return target === 'built-in' ? 'built-in' : 'system';
+}
+
+/** Set where user-clicked HTTP(S) content links should open. */
+export function setWebLinkOpenTarget(target: WebLinkOpenTarget): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.webLinkOpenTarget = target;
+  saveConfig(config);
 }
 
 /**

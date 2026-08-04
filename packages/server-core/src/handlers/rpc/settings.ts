@@ -43,6 +43,8 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.settings.SET_DEFAULT_THINKING_LEVEL,
   RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
   RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
+  RPC_CHANNELS.tools.GET_WEB_LINK_OPEN_TARGET,
+  RPC_CHANNELS.tools.SET_WEB_LINK_OPEN_TARGET,
   RPC_CHANNELS.settings.GET_NETWORK_PROXY,
   RPC_CHANNELS.dialog.OPEN_FOLDER,
   RPC_CHANNELS.rtk.GET_ENABLED,
@@ -380,6 +382,19 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
   server.handle(RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED, async (_ctx, enabled: boolean) => {
     const { setBrowserToolEnabled } = await import('@craft-agent/shared/config/storage')
     setBrowserToolEnabled(enabled)
+  })
+
+  server.handle(RPC_CHANNELS.tools.GET_WEB_LINK_OPEN_TARGET, async () => {
+    const { getWebLinkOpenTarget } = await import('@craft-agent/shared/config/storage')
+    return getWebLinkOpenTarget()
+  })
+
+  server.handle(RPC_CHANNELS.tools.SET_WEB_LINK_OPEN_TARGET, async (_ctx, target: unknown) => {
+    if (target !== 'system' && target !== 'built-in') {
+      throw new Error(`Invalid web link opening target: ${String(target)}`)
+    }
+    const { setWebLinkOpenTarget } = await import('@craft-agent/shared/config/storage')
+    setWebLinkOpenTarget(target)
   })
 
   // ============================================================

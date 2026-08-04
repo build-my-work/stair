@@ -143,6 +143,8 @@ export default function ProjectFilePage({
     onAddDraftReference,
     onAddSelectionNote,
     onCreateSession,
+    onOpenFile,
+    onOpenUrl,
     rightSidebarButton,
   } = useAppShellContext()
   const { resolvedMode, shikiTheme } = useTheme()
@@ -775,7 +777,13 @@ export default function ProjectFilePage({
           className="h-full overflow-y-auto px-8 py-8"
         >
           <div className="mx-auto max-w-[900px] rounded-[12px] bg-background px-8 py-7 shadow-minimal">
-            <Markdown mode="minimal">{content ?? ''}</Markdown>
+            <Markdown
+              mode="minimal"
+              onFileClick={onOpenFile}
+              onUrlClick={onOpenUrl}
+            >
+              {content ?? ''}
+            </Markdown>
           </div>
         </ProjectFileTextSelectionSurface>
       )

@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
 
 let toolbarLoadFailuresRemaining = 0
+let emptyStateLoadFailure: (Error & { code?: string }) | null = null
 const mockShellOpenExternal = mock(async () => {})
 const mockIpcMainHandle = mock(() => {})
 const mockIpcMainOn = mock(() => {})
@@ -35,7 +36,12 @@ function createMockWebContents(options?: {
         throw new Error('mock toolbar load failure')
       }
     }),
-    loadFile: mock(async (_path: string, _opts?: unknown) => {
+    loadFile: mock(async (path: string, _opts?: unknown) => {
+      if (path.includes('browser-empty-state.html') && emptyStateLoadFailure) {
+        const error = emptyStateLoadFailure
+        emptyStateLoadFailure = null
+        throw error
+      }
       if (options?.toolbar && toolbarLoadFailuresRemaining > 0) {
         toolbarLoadFailuresRemaining--
         throw new Error('mock toolbar load failure')
@@ -318,6 +324,7 @@ describe('BrowserPaneManager', () => {
 
   beforeEach(() => {
     toolbarLoadFailuresRemaining = 0
+    emptyStateLoadFailure = null
     mockShellOpenExternal.mockClear()
     mockIpcMainHandle.mockClear()
     mockIpcMainOn.mockClear()
@@ -727,6 +734,20 @@ describe('BrowserPaneManager', () => {
     await manager.navigate('nav-1', 'example.com')
     const instance = (manager as any).instances.get('nav-1')
     expect(instance.pageView.webContents.loadURL).toHaveBeenCalledWith('https://example.com')
+  })
+
+  it('does not replace navigation when the empty-state load is superseded', async () => {
+    emptyStateLoadFailure = Object.assign(new Error('navigation superseded'), {
+      code: 'ERR_ABORTED',
+    })
+    manager.createInstance('nav-empty-state-race')
+
+    await manager.navigate('nav-empty-state-race', 'https://example.com/article')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const instance = (manager as any).instances.get('nav-empty-state-race')
+    expect(instance.pageView.webContents.loadURL).toHaveBeenCalledWith('https://example.com/article')
+    expect(instance.pageView.webContents.loadURL).not.toHaveBeenCalledWith('about:blank')
   })
 
   it('navigate treats plain text as search query', async () => {

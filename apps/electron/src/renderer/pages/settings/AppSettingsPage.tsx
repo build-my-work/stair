@@ -22,12 +22,14 @@ import { routes } from '@/lib/navigate'
 import { Spinner } from '@craft-agent/ui'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import type { NetworkProxySettings } from '../../../shared/types'
+import type { WebLinkOpenTarget } from '@craft-agent/shared/config'
 
 import {
   SettingsSection,
   SettingsCard,
   SettingsCardFooter,
   SettingsRow,
+  SettingsSegmentedControl,
   SettingsToggle,
   SettingsInput,
 } from '@/components/settings'
@@ -103,6 +105,7 @@ export default function AppSettingsPage() {
 
   // Tools state
   const [browserToolEnabled, setBrowserToolEnabled] = useState(true)
+  const [webLinkOpenTarget, setWebLinkOpenTarget] = useState<WebLinkOpenTarget>('system')
 
   // Proxy state
   const [proxyForm, setProxyForm] = useState<ProxyFormState>(EMPTY_PROXY_FORM)
@@ -128,15 +131,23 @@ export default function AppSettingsPage() {
   const loadSettings = useCallback(async () => {
     if (!window.electronAPI) return
     try {
-      const [notificationsOn, keepAwakeOn, browserToolOn, proxySettings] = await Promise.all([
+      const [
+        notificationsOn,
+        keepAwakeOn,
+        browserToolOn,
+        linkTarget,
+        proxySettings,
+      ] = await Promise.all([
         window.electronAPI.getNotificationsEnabled(),
         window.electronAPI.getKeepAwakeWhileRunning(),
         window.electronAPI.getBrowserToolEnabled(),
+        window.electronAPI.getWebLinkOpenTarget(),
         window.electronAPI.getNetworkProxySettings(),
       ])
       setNotificationsEnabled(notificationsOn)
       setKeepAwakeEnabled(keepAwakeOn)
       setBrowserToolEnabled(browserToolOn)
+      setWebLinkOpenTarget(linkTarget)
       const form = toProxyFormState(proxySettings)
       setProxyForm(form)
       setSavedProxyForm(form)
@@ -162,6 +173,11 @@ export default function AppSettingsPage() {
   const handleBrowserToolEnabledChange = useCallback(async (enabled: boolean) => {
     setBrowserToolEnabled(enabled)
     await window.electronAPI.setBrowserToolEnabled(enabled)
+  }, [])
+
+  const handleWebLinkOpenTargetChange = useCallback(async (target: WebLinkOpenTarget) => {
+    setWebLinkOpenTarget(target)
+    await window.electronAPI.setWebLinkOpenTarget(target)
   }, [])
 
   // Proxy handlers
@@ -239,6 +255,28 @@ export default function AppSettingsPage() {
                     checked={browserToolEnabled}
                     onCheckedChange={handleBrowserToolEnabledChange}
                   />
+                  {isElectron && (
+                    <SettingsRow
+                      label={t("settings.tools.webLinkOpenTarget")}
+                      description={t("settings.tools.webLinkOpenTargetDesc")}
+                    >
+                      <SettingsSegmentedControl
+                        size="sm"
+                        value={webLinkOpenTarget}
+                        onValueChange={handleWebLinkOpenTargetChange}
+                        options={[
+                          {
+                            value: 'system',
+                            label: t("settings.tools.systemBrowser"),
+                          },
+                          {
+                            value: 'built-in',
+                            label: t("settings.tools.builtInBrowser"),
+                          },
+                        ]}
+                      />
+                    </SettingsRow>
+                  )}
                 </SettingsCard>
               </SettingsSection>
 

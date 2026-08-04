@@ -20,3 +20,6 @@ export interface NetworkProxySettings {
   httpsProxy?: string;
   noProxy?: string;
 }
+
+/** Where user-clicked HTTP(S) content links should open. */
+export type WebLinkOpenTarget = 'system' | 'built-in';

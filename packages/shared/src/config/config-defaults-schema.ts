@@ -7,6 +7,7 @@
 
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
+import type { WebLinkOpenTarget } from './types.ts';
 
 export interface ConfigDefaults {
   version: string;
@@ -21,6 +22,7 @@ export interface ConfigDefaults {
     richToolDescriptions: boolean;
     extendedPromptCache: boolean;
     browserToolEnabled: boolean;
+    webLinkOpenTarget: WebLinkOpenTarget;
     /**
      * Allow remote agents to call `browser_tool evaluate <expression>`.
      * When false, the local dispatcher rejects with `BROWSER_REMOTE_EVALUATE_BLOCKED`.

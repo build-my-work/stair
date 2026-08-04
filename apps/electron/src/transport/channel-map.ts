@@ -329,6 +329,8 @@ export const CHANNEL_MAP = {
   // Tools settings
   getBrowserToolEnabled: invoke(RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED),
   setBrowserToolEnabled: invoke(RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED),
+  getWebLinkOpenTarget: invoke(RPC_CHANNELS.tools.GET_WEB_LINK_OPEN_TARGET),
+  setWebLinkOpenTarget: invoke(RPC_CHANNELS.tools.SET_WEB_LINK_OPEN_TARGET),
 
   // Prompt caching & context
   getExtendedPromptCache: invoke(RPC_CHANNELS.caching.GET_EXTENDED_PROMPT_CACHE),

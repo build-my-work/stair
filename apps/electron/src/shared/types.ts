@@ -646,6 +646,8 @@ export interface ElectronAPI {
   // Tools settings
   getBrowserToolEnabled(): Promise<boolean>
   setBrowserToolEnabled(enabled: boolean): Promise<void>
+  getWebLinkOpenTarget(): Promise<import('@craft-agent/shared/config').WebLinkOpenTarget>
+  setWebLinkOpenTarget(target: import('@craft-agent/shared/config').WebLinkOpenTarget): Promise<void>
 
   // Appearance settings
   getRichToolDescriptions(): Promise<boolean>

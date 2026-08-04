@@ -659,6 +659,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         }
       })
     void this.loadEmptyStatePage(instance).catch((error) => {
+      const errorCode = typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code)
+        : ''
+      if (errorCode === 'ERR_ABORTED') {
+        mainLog.debug(`[browser-pane] empty-state load superseded id=${instance.id}`)
+        return
+      }
       mainLog.warn(`[browser-pane] empty-state load failed id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
       void pageView.webContents.loadURL('about:blank')
     })

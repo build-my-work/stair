@@ -6,6 +6,7 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 - **EPUB chat-reference underlines** — Add Chat now leaves a persistent blue straight underline on the selected passage, New Chat starts and targets a separate discussion, a compact header menu switches future references between Project chats, and a new References view beside Contents and Highlights lists every referenced passage for quick navigation.
 - **Project text editing** — Edit supported Markdown, plain-text, code, and configuration files directly from Project Files with conflict-aware automatic saving and safe draft recovery actions.
+- **Web link opening preference** — Choose whether HTTP(S) links from chats, Markdown Project Files, and document previews open in the system browser or Stair's built-in browser, with automatic fallback when the built-in browser cannot open a link.
 
 ## Improvements
 

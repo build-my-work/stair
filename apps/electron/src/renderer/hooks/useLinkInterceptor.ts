@@ -1,14 +1,14 @@
 /**
  * useLinkInterceptor - Centralized hook for intercepting file/URL open requests.
  *
- * Replaces the old handleOpenFile/handleOpenUrl in App.tsx that always opened externally.
- * Now classifies file types and decides whether to show an in-app preview overlay
- * or fall back to opening in the default external application.
+ * Classifies file links for in-app previews and delegates URL requests to the
+ * app-level router, which applies the configured web-link destination.
  *
  * Architecture:
  *   Markdown click → PlatformContext → App.tsx → useLinkInterceptor
  *     ├── canPreview? → set previewState (renders overlay in App.tsx)
- *     └── can't preview? → electronAPI.openFile (opens externally)
+ *     ├── can't preview? → electronAPI.openFile (opens externally)
+ *     └── URL → configured system or built-in browser
  *
  * Uses refs for options to keep returned callbacks referentially stable,
  * preventing unnecessary re-renders of consumers (AppShellContext, PlatformProvider).
@@ -76,7 +76,7 @@ export type FilePreviewState =
 interface LinkInterceptorOptions {
   /** Open file in default external application (e.g., VS Code) */
   openFileExternal: (path: string) => Promise<void>
-  /** Open URL in default browser */
+  /** Open URL using the app's configured content-link destination */
   openUrl: (url: string) => Promise<void>
   /** Reveal file in system file manager */
   showInFolder: (path: string) => Promise<void>
@@ -93,7 +93,7 @@ interface LinkInterceptorOptions {
 interface LinkInterceptorResult {
   /** Replacement for App.tsx handleOpenFile — classifies and routes */
   handleOpenFile: (path: string) => void
-  /** Replacement for App.tsx handleOpenUrl — always opens externally */
+  /** Replacement for App.tsx handleOpenUrl — delegates to the configured URL router */
   handleOpenUrl: (url: string) => void
   /** Open file directly in external app, bypassing classification/preview */
   openFileExternal: (path: string) => void
@@ -173,7 +173,7 @@ export function useLinkInterceptor(options: LinkInterceptorOptions): LinkInterce
     optionsRef.current.openFileExternal(path)
   }, []) // Stable: uses optionsRef
 
-  /** URLs always open externally — no in-app browser for security */
+  /** URL destination and security policy are owned by the injected app-level router. */
   const handleOpenUrl = useCallback((url: string) => {
     optionsRef.current.openUrl(url)
   }, []) // Stable: uses optionsRef
