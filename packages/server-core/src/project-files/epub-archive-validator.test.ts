@@ -157,7 +157,16 @@ describe('validateEpubArchive', () => {
     )
   })
 
-  it('requires the EPUB mimetype entry first, stored, and exact', async () => {
+  it('allows a compressed EPUB mimetype entry but requires it first and exact', async () => {
+    const compressedMimetype = await validateEpubArchive(
+      makeZip(validEntries().map(entry => (
+        entry.name === 'mimetype'
+          ? { ...entry, compression: 8 }
+          : entry
+      ))),
+    )
+    expect(compressedMimetype.entryCount).toBe(2)
+
     await expectValidationCode(
       makeZip([
         {

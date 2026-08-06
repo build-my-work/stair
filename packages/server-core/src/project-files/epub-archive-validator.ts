@@ -319,12 +319,11 @@ function inspectCentralDirectory(
   }
   if (
     firstEntry?.fileName !== EPUB_MIMETYPE_ENTRY
-    || firstEntry.compressionMethod !== 0
     || firstEntry.localHeaderOffset !== 0
   ) {
     throw validationError(
       'EPUB_ARCHIVE_INVALID_MIMETYPE',
-      'EPUB mimetype must be the first uncompressed archive entry',
+      'EPUB mimetype must be the first archive entry',
     )
   }
 
