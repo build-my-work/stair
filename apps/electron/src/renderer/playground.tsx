@@ -19,7 +19,7 @@ import './index.css'
 
 // Initialize i18n before any React rendering. `useTranslation()` reads from
 // the shared global instance, so we don't need an <I18nextProvider>.
-setupI18n([initReactI18next])
+setupI18n([initReactI18next], { productName: __APP_PRODUCT_NAME__ })
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

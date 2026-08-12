@@ -321,7 +321,7 @@ function KanbanViewPreview({
   const createTask = (title: string) => {
     setTasks(prev => [
       ...prev,
-      { id: `task-new-${Date.now()}`, title, column: 'todo', statusId: 'todo', model: DEFAULT_SUBTASK_MODEL, subtasks: [] },
+      { id: `task-new-${Date.now()}`, title, column: 'todo', statusId: 'todo', model: DEFAULT_SUBTASK_MODEL, projectId: 'p-eng', subtasks: [] },
     ])
   }
 

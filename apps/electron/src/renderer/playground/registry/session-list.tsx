@@ -49,6 +49,7 @@ const sampleSessions: SessionMeta[] = [
     id: 'session-1',
     name: 'Fix authentication bug in login flow',
     workspaceId: 'workspace-1',
+    projectId: 'project-general',
     lastMessageAt: Date.now() - 1000 * 60 * 5, // 5 min ago
     sessionStatus: 'in-progress',
     hasUnread: true,
@@ -58,6 +59,7 @@ const sampleSessions: SessionMeta[] = [
     id: 'session-2',
     name: 'Implement search functionality',
     workspaceId: 'workspace-1',
+    projectId: 'project-general',
     lastMessageAt: Date.now() - 1000 * 60 * 30, // 30 min ago
     sessionStatus: 'todo',
     isFlagged: true,
@@ -67,6 +69,7 @@ const sampleSessions: SessionMeta[] = [
     id: 'session-3',
     name: 'Review pull request #42',
     workspaceId: 'workspace-1',
+    projectId: 'project-general',
     lastMessageAt: Date.now() - 1000 * 60 * 60, // 1 hour ago
     sessionStatus: 'done',
     isFlagged: true,
@@ -76,6 +79,7 @@ const sampleSessions: SessionMeta[] = [
     id: 'session-4',
     name: 'Debug API response handling',
     workspaceId: 'workspace-1',
+    projectId: 'project-general',
     lastMessageAt: Date.now() - 1000 * 60 * 60 * 2, // 2 hours ago
     sessionStatus: 'todo',
     isFlagged: true,

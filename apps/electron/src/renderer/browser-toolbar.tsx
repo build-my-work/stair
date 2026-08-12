@@ -24,7 +24,8 @@ import './index.css'
 
 // This is a standalone entry (browser-toolbar.html) — i18n must be initialized
 // here or BrowserControls and the menu below render raw translation keys.
-setupI18n([LanguageDetector, initReactI18next])
+document.title = __APP_PRODUCT_NAME__
+setupI18n([LanguageDetector, initReactI18next], { productName: __APP_PRODUCT_NAME__ })
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */

@@ -411,6 +411,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       const skeletonSession = {
         id: sessionMeta.id,
         workspaceId: sessionMeta.workspaceId,
+        projectId: sessionMeta.projectId,
         workspaceName: '',
         name: sessionMeta.name,
         preview: sessionMeta.preview,

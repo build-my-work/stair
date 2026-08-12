@@ -17,6 +17,7 @@ function createSession(overrides?: Partial<Session>): Session {
   return {
     id: 'session-1',
     workspaceId: 'workspace-1',
+    projectId: 'proj-default',
     workspaceName: 'Workspace',
     lastMessageAt: Date.now(),
     messages: [],

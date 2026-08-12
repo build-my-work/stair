@@ -14,7 +14,6 @@ import type {
   SourcesChangedEvent,
   CodingModeChangedEvent,
   LabelsChangedEvent,
-  ProjectIdChangedEvent,
   SessionStatusChangedEvent,
   SessionMetadataChangedEvent,
   SessionFlaggedEvent,
@@ -720,27 +719,6 @@ export function handleLabelsChanged(
 }
 
 /**
- * Handle project_id_changed - update session's projectId binding
- */
-export function handleProjectIdChanged(
-  state: SessionState,
-  event: ProjectIdChangedEvent
-): ProcessResult {
-  const { session, streaming } = state
-
-  return {
-    state: {
-      session: {
-        ...session,
-        projectId: event.projectId ?? undefined,
-      },
-      streaming,
-    },
-    effects: [],
-  }
-}
-
-/**
  * Handle session_status_changed - update session's sessionStatus (external metadata change or agent tool)
  */
 export function handleSessionStatusChanged(
@@ -1053,4 +1031,3 @@ export function handleUsageUpdate(
     effects: [],
   }
 }
-

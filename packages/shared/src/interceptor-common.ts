@@ -10,8 +10,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, appendFileSync, mkdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { CONFIG_DIR } from './config/paths.ts';
 
 // ============================================================================
 // CONSTANTS
@@ -25,13 +25,6 @@ export const INTERCEPTOR_LOGGING_ENABLED = !IS_PACKAGED;
 
 export const DEBUG = INTERCEPTOR_LOGGING_ENABLED &&
   (process.argv.includes('--debug') || process.env.CRAFT_DEBUG === '1');
-
-/**
- * Config directory. Re-derived from the environment rather than imported from
- * config/paths.ts because this module is preloaded standalone into the Pi
- * subprocess; keep the rule in sync with `resolveConfigDir()`.
- */
-const CONFIG_DIR = process.env.CRAFT_CONFIG_DIR?.trim() || join(homedir(), '.craft-agent');
 
 /** Config file path for reading settings in the SDK subprocess */
 export const CONFIG_FILE = join(CONFIG_DIR, 'config.json');

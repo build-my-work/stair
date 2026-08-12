@@ -15,6 +15,7 @@ import type { BrowserInstanceInfo } from '../../../shared/types'
 import { BROWSER_LIVE_FX_BORDER, getBrowserLiveFxCornerRadii } from '../../../shared/browser-live-fx'
 import { routes } from '../../../shared/routes'
 import { isLinux, isMac, isWindows } from '@/lib/platform'
+import { buildProductDeepLink } from '@/lib/product-deep-link'
 
 interface BrowserTraceSidebarSampleProps {
   scenario: 'core' | 'all-native-tools' | 'browser-tool-wrapper' | 'full-matrix'
@@ -223,7 +224,7 @@ function BrowserAgentEmptyState({
 }) {
   const handlePromptSelect = useCallback(async (prompt: string) => {
     const deepLinkRoute = routes.action.newSession({ input: prompt, send: true })
-    const deepLinkUrl = `craftagents://${deepLinkRoute}`
+    const deepLinkUrl = buildProductDeepLink(deepLinkRoute)
 
     try {
       if (typeof window !== 'undefined' && window.electronAPI?.openUrl) {

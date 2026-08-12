@@ -74,6 +74,7 @@ const errorMessages: Message[] = [
 const createSession = (messages: Message[], isProcessing = false): Session => ({
   id: 'playground-session',
   workspaceId: 'playground-workspace',
+  projectId: 'playground-general',
   workspaceName: 'Playground',
   messages,
   isProcessing,

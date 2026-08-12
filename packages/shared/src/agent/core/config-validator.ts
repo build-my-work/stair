@@ -12,6 +12,7 @@
  */
 
 import type { ConfigValidationResult, ConfigFileType, ConfigValidatorConfig } from './types.ts';
+import { CONFIG_DIR } from '../../config/paths.ts';
 
 /**
  * Patterns for detecting known config file types.
@@ -27,26 +28,31 @@ const CONFIG_FILE_PATTERNS: { pattern: RegExp; type: ConfigFileType }[] = [
 ];
 
 /**
- * Craft Agent specific config files that have known schemas.
+ * Product-specific config files that have known schemas.
  */
+const normalizedConfigDir = (process.platform === 'win32' ? CONFIG_DIR.toLowerCase() : CONFIG_DIR)
+  .replace(/\\/g, '/')
+  .replace(/\/+$/u, '');
+const configDirPattern = normalizedConfigDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 const CRAFT_AGENT_CONFIG_PATTERNS = [
   // Main config
-  /\.craft-agent\/config\.json$/,
+  new RegExp(`^${configDirPattern}/config\\.json$`, 'i'),
   // Preferences
-  /\.craft-agent\/preferences\.json$/,
+  new RegExp(`^${configDirPattern}/preferences\\.json$`, 'i'),
   // Source configs
-  /\.craft-agent\/workspaces\/[^/]+\/sources\/[^/]+\/config\.json$/,
+  new RegExp(`^${configDirPattern}/workspaces/[^/]+/sources/[^/]+/config\\.json$`, 'i'),
   // Permissions
-  /\.craft-agent\/workspaces\/[^/]+\/permissions\.json$/,
-  /\.craft-agent\/permissions\/[^/]+\.json$/,
+  new RegExp(`^${configDirPattern}/workspaces/[^/]+/permissions\\.json$`, 'i'),
+  new RegExp(`^${configDirPattern}/permissions/[^/]+\\.json$`, 'i'),
   // Theme
-  /\.craft-agent\/workspaces\/[^/]+\/theme\.json$/,
+  new RegExp(`^${configDirPattern}/workspaces/[^/]+/theme\\.json$`, 'i'),
   // Statuses
-  /\.craft-agent\/workspaces\/[^/]+\/statuses\/config\.json$/,
+  new RegExp(`^${configDirPattern}/workspaces/[^/]+/statuses/config\\.json$`, 'i'),
   // Labels
-  /\.craft-agent\/workspaces\/[^/]+\/labels\.json$/,
+  new RegExp(`^${configDirPattern}/workspaces/[^/]+/labels\\.json$`, 'i'),
   // Tool icons
-  /\.craft-agent\/tool-icons\/tool-icons\.json$/,
+  new RegExp(`^${configDirPattern}/tool-icons/tool-icons\\.json$`, 'i'),
 ];
 
 /**
@@ -98,10 +104,10 @@ export class ConfigValidator {
   }
 
   /**
-   * Check if a file path is a Craft Agent config file.
+   * Check if a file path is a product config file.
    *
    * @param filePath - Path to check
-   * @returns true if this is a Craft Agent config
+   * @returns true if this is a product config
    */
   isCraftAgentConfig(filePath: string): boolean {
     const normalizedPath = process.platform === 'win32'

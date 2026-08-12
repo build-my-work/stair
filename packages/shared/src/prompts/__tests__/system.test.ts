@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test'
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test'
 
 // Stub the preferences module so we can toggle `getCoAuthorPreference` per test
 // without touching disk. `formatPreferencesForPrompt` is stubbed to '' because
@@ -21,6 +21,12 @@ import type { ProjectPromptContext } from '../../projects/types.ts'
 
 const GIT_CONVENTIONS_HEADING = '## Git Conventions'
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: Craft Agent <agents-noreply@craft.do>'
+const originalAppName = process.env.CRAFT_APP_NAME
+
+afterEach(() => {
+  if (originalAppName === undefined) delete process.env.CRAFT_APP_NAME
+  else process.env.CRAFT_APP_NAME = originalAppName
+})
 
 describe('system prompt guidance', () => {
   it('keeps the default static prompt below the budget', () => {
@@ -191,6 +197,25 @@ describe('includeCoAuthoredBy handling', () => {
 
     expect(prompt).toContain(GIT_CONVENTIONS_HEADING)
     expect(prompt).toContain(CO_AUTHOR_TRAILER)
+  })
+
+  it('只在 Stair 入口使用 Stair 自称和共著者', () => {
+    process.env.CRAFT_APP_NAME = 'Stair'
+
+    const prompt = getSystemPrompt(
+      undefined,
+      undefined,
+      '/tmp/workspace',
+      '/tmp/workspace',
+      undefined,
+      'Craft Agents Backend',
+      true,
+    )
+
+    expect(prompt).toContain('You are Stair')
+    expect(prompt).toContain('Co-Authored-By: Stair <stair@users.noreply.github.com>')
+    expect(prompt).toContain('Craft Agents Backend')
+    expect(prompt).not.toContain(CO_AUTHOR_TRAILER)
   })
 })
 

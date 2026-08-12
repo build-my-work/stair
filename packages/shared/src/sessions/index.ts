@@ -52,8 +52,6 @@ export {
   unflagSession,
   setSessionStatus,
   setSessionLabels,
-  setSessionProjectId,
-  unbindProjectFromSessions,
   // Pending plan execution (Accept & Compact flow)
   setPendingPlanExecution,
   markCompactionComplete,
@@ -126,5 +124,4 @@ export {
   validateBundle,
   MAX_BUNDLE_SIZE_BYTES,
 } from './bundle.ts';
-
 

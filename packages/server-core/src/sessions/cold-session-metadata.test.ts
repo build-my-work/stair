@@ -62,6 +62,7 @@ describe('cold-session metadata persistence', () => {
     mkdirSync(dirname(filePath), { recursive: true })
     const stored: StoredSession = {
       id: sessionId,
+      projectId: 'project-general',
       workspaceRootPath: tmpRoot,
       name: opts.name ?? 'cold session',
       sessionStatus: opts.sessionStatus ?? 'todo',
@@ -75,6 +76,7 @@ describe('cold-session metadata persistence', () => {
     const managed = createManagedSession(
       {
         id: sessionId,
+        projectId: stored.projectId,
         name: stored.name,
         sessionStatus: stored.sessionStatus,
         labels: stored.labels,

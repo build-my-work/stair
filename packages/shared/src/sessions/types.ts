@@ -233,8 +233,8 @@ export interface SessionConfig {
     /** 1 for a session an automation created from a user event; +1 per automation-created hop. */
     depth?: number;
   };
-  /** Workspace-scoped project id this session belongs to (undefined = unbound). */
-  projectId?: string;
+  /** Immutable workspace-scoped Project id this Session belongs to. */
+  projectId: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -354,8 +354,8 @@ export interface SessionHeader {
     /** 1 for a session an automation created from a user event; +1 per automation-created hop. */
     depth?: number;
   };
-  /** Workspace-scoped project id this session belongs to (undefined = unbound). */
-  projectId?: string;
+  /** Immutable workspace-scoped Project id this Session belongs to. */
+  projectId: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -456,8 +456,8 @@ export interface SessionMetadata {
   archivedAt?: number;
   /** Message ID that this session was branched from (hard context cutoff marker). */
   branchFromMessageId?: string;
-  /** Workspace-scoped project id this session belongs to (undefined = unbound). */
-  projectId?: string;
+  /** Immutable workspace-scoped Project id this Session belongs to. */
+  projectId: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */

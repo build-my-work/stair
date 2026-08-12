@@ -2,7 +2,12 @@ import { useEffect } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { useModalRegistry } from '@/context/ModalContext'
 import { useDismissibleLayerRegistry } from '@/context/DismissibleLayerContext'
-import { panelStackAtom, closePanelAtom, focusedPanelIdAtom } from '@/atoms/panel-stack'
+import {
+  focusedWorkbenchPanelIdAtom,
+  workbenchAtom,
+  workbenchPanelsAtom,
+} from '@/workbench/workbench-state'
+import { closeWorkbenchPanelAtom } from '@/workbench/workbench-commands'
 import type { WindowCloseRequest } from '../../shared/types'
 
 /**
@@ -21,13 +26,13 @@ import type { WindowCloseRequest } from '../../shared/types'
  *
  * This hook should be called once at the app root level.
  */
-export function useWindowCloseHandler() {
+export function useWindowCloseHandler(isSessionWorkbenchVisible = false) {
   const { hasOpenLayers, closeTop } = useDismissibleLayerRegistry()
   const { hasOpenModals, closeTopModal } = useModalRegistry()
-  const panelStack = useAtomValue(panelStackAtom)
-  const focusedPanelId = useAtomValue(focusedPanelIdAtom)
-  const closePanel = useSetAtom(closePanelAtom)
-
+  const workbench = useAtomValue(workbenchAtom)
+  const panels = useAtomValue(workbenchPanelsAtom)
+  const focusedPanelId = useAtomValue(focusedWorkbenchPanelIdAtom)
+  const closePanel = useSetAtom(closeWorkbenchPanelAtom)
   useEffect(() => {
     const cleanup = window.electronAPI.onCloseRequested((request: WindowCloseRequest) => {
       if (request.source === 'window-button') {
@@ -50,10 +55,10 @@ export function useWindowCloseHandler() {
 
       // Close the focused panel (or last if no focus tracked)
       const target = focusedPanelId
-        ? panelStack.find(p => p.id === focusedPanelId)
-        : panelStack[panelStack.length - 1]
-      if (target) {
-        closePanel(target.id)
+        ? panels.find(panel => panel.id === focusedPanelId)
+        : panels[panels.length - 1]
+      if (isSessionWorkbenchVisible && target && workbench.activeProjectId) {
+        closePanel({ projectId: workbench.activeProjectId, panelId: target.id })
         window.electronAPI.cancelCloseWindow()
       } else {
         // No panels, no modals — close the window
@@ -62,5 +67,5 @@ export function useWindowCloseHandler() {
     })
 
     return cleanup
-  }, [hasOpenLayers, closeTop, hasOpenModals, closeTopModal, panelStack, focusedPanelId, closePanel])
+  }, [hasOpenLayers, closeTop, hasOpenModals, closeTopModal, panels, focusedPanelId, closePanel, workbench.activeProjectId, isSessionWorkbenchVisible])
 }

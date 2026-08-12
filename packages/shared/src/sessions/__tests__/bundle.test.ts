@@ -20,6 +20,7 @@ function makeStoredSession(overrides: Partial<StoredSession> = {}): StoredSessio
   return {
     id: '260101-test-session',
     workspaceRootPath: '/tmp/ws',
+    projectId: 'proj_default',
     createdAt: 1000,
     lastUsedAt: 2000,
     name: 'Test Session',
@@ -210,7 +211,7 @@ describe('validateBundle', () => {
     const bundle = {
       version: 1,
       session: {
-        header: { id: 'test', createdAt: 1000 },
+        header: { id: 'test', createdAt: 1000, projectId: 'proj_default' },
         messages: [],
       },
       files: [],
@@ -248,5 +249,13 @@ describe('validateBundle', () => {
 
   it('rejects header without createdAt', () => {
     expect(validateBundle({ version: 1, session: { header: { id: 'x' }, messages: [] }, files: [] })).toBe(false)
+  })
+
+  it('rejects an unowned Session header', () => {
+    expect(validateBundle({
+      version: 1,
+      session: { header: { id: 'x', createdAt: 1 }, messages: [] },
+      files: [],
+    })).toBe(false)
   })
 })

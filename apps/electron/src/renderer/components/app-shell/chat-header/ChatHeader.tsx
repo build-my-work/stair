@@ -21,6 +21,7 @@ import { useAppShellContext } from '@/context/AppShellContext'
 import { kanbanEditorTargetAtom } from '@/atoms/kanban'
 import type { SessionMeta } from '@/atoms/sessions'
 import { navigate, routes } from '@/lib/navigate'
+import { buildProductDeepLink } from '@/lib/product-deep-link'
 import { cn } from '@/lib/utils'
 import { getSessionStatus } from '@/utils/session'
 import { PanelHeader } from '../PanelHeader'
@@ -170,7 +171,7 @@ export const ChatHeader = React.memo(function ChatHeader({
     const route = routes.view.allSessions(sessionId)
     const separator = route.includes('?') ? '&' : '?'
     try {
-      await window.electronAPI?.openUrl(`craftagents://${route}${separator}window=focused`)
+      await window.electronAPI?.openUrl(buildProductDeepLink(`${route}${separator}window=focused`))
     } catch (error) {
       console.error('[ChatHeader] openUrl failed:', error)
     }

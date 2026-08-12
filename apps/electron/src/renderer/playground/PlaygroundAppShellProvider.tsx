@@ -34,6 +34,7 @@ export const playgroundAppShellValue: AppShellContextType = {
   workspaces: [PLAYGROUND_WORKSPACE],
   activeWorkspaceId: PLAYGROUND_WORKSPACE.id,
   activeWorkspaceSlug: PLAYGROUND_WORKSPACE.slug,
+  defaultProjectId: 'playground-project',
   llmConnections: [],
   refreshLlmConnections: async () => {},
   pendingPermissions: new Map(),

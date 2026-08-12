@@ -12,6 +12,12 @@ export const RADIUS_EDGE = isMac ? 14 : 8
 /** Corner radius for card corners that don't touch the window edge (= --radius-lg, spec §7.1) */
 export const RADIUS_INNER = 12
 
+/** Bottom corner radius for compact and window-edge Panel geometry. */
+export function getPanelBottomRadius(isCompact: boolean, isAtEdge: boolean): number {
+  if (isCompact) return 0
+  return isAtEdge ? RADIUS_EDGE : RADIUS_INNER
+}
+
 /** Minimum width for any content panel */
 export const PANEL_MIN_WIDTH = 440
 

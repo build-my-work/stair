@@ -36,6 +36,10 @@ function resolveDebugMode(): boolean {
 
 export const isDebugMode = resolveDebugMode()
 
+if (process.env.CRAFT_CONFIG_DIR?.trim()) {
+  log.transports.file.resolvePathFn = () => join(CONFIG_DIR, 'logs', 'main.log')
+}
+
 // Configure transports based on debug mode
 if (isDebugMode) {
   // JSON format for file (agent-parseable)

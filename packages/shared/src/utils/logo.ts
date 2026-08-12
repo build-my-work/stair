@@ -8,6 +8,7 @@
 import { debug } from './debug.ts';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { CONFIG_DIR } from '../config/paths.ts';
 import { readJsonFileSync } from './files.ts';
 import { CONFIG_DIR } from '../config/paths.ts';
 

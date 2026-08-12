@@ -12,12 +12,8 @@ interface FabNewChatProps {
  * Floating action button for creating a new chat on compact/mobile layouts.
  * Bottom-right, thumb-reach. Hidden on desktop — the top-bar menu + ⌘N handle it there.
  *
- * Rendered through a portal to `document.body` so `position: fixed` is truly
- * viewport-relative. Without the portal, the FAB lives inside the navigator
- * panel which is wrapped in a transformed `motion.div` (CompactPanelTransition),
- * and any ancestor with `transform` becomes the containing block for `fixed`
- * descendants — the FAB would otherwise pin to the top of the screen instead
- * of the bottom.
+ * Rendered through a portal to `document.body` so `position: fixed` stays
+ * viewport-relative regardless of the compact Workbench container hierarchy.
  */
 export function FabNewChat({ onClick, className }: FabNewChatProps) {
   const { t } = useTranslation()

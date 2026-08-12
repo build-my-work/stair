@@ -139,19 +139,21 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     // Load workspace config
     const { loadWorkspaceConfig } = await import('@craft-agent/shared/workspaces')
     const config = loadWorkspaceConfig(workspace.rootPath)
+    if (!config) return null
 
     return {
-      name: config?.name,
-      model: config?.defaults?.model,
-      permissionMode: config?.defaults?.permissionMode,
-      cyclablePermissionModes: config?.defaults?.cyclablePermissionModes,
-      thinkingLevel: normalizeThinkingLevel(config?.defaults?.thinkingLevel),
-      codingMode: config?.defaults?.codingMode === true,
-      workingDirectory: config?.defaults?.workingDirectory,
-      localMcpEnabled: config?.localMcpServers?.enabled ?? true,
-      defaultLlmConnection: config?.defaults?.defaultLlmConnection,
-      enabledSourceSlugs: config?.defaults?.enabledSourceSlugs ?? [],
-      chatStarters: config?.chatStarters ?? [],
+      defaultProjectId: config.defaultProjectId,
+      name: config.name,
+      model: config.defaults?.model,
+      permissionMode: config.defaults?.permissionMode,
+      cyclablePermissionModes: config.defaults?.cyclablePermissionModes,
+      thinkingLevel: normalizeThinkingLevel(config.defaults?.thinkingLevel),
+      codingMode: config.defaults?.codingMode === true,
+      workingDirectory: config.defaults?.workingDirectory,
+      localMcpEnabled: config.localMcpServers?.enabled ?? true,
+      defaultLlmConnection: config.defaults?.defaultLlmConnection,
+      enabledSourceSlugs: config.defaults?.enabledSourceSlugs ?? [],
+      chatStarters: config.chatStarters ?? [],
     }
   })
 

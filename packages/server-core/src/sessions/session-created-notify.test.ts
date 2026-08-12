@@ -13,11 +13,15 @@ describe('notifySessionCreated', () => {
       calls.push({ channel, target, payload })
     })
 
-    sm.notifySessionCreated('ws-1', 'sess-1')
+    sm.notifySessionCreated('ws-1', 'sess-1', 'project-a')
 
     expect(calls).toHaveLength(1)
     expect(calls[0]!.channel).toBe(RPC_CHANNELS.sessions.EVENT)
     expect(calls[0]!.target).toEqual({ to: 'workspace', workspaceId: 'ws-1' })
-    expect(calls[0]!.payload[0]).toEqual({ type: 'session_created', sessionId: 'sess-1' })
+    expect(calls[0]!.payload[0]).toEqual({
+      type: 'session_created',
+      sessionId: 'sess-1',
+      projectId: 'project-a',
+    })
   })
 })

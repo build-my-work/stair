@@ -163,15 +163,6 @@ export interface LabelsChangedEvent {
 }
 
 /**
- * Project id changed event (session bound/unbound to a workspace project)
- */
-export interface ProjectIdChangedEvent {
-  type: 'project_id_changed'
-  sessionId: string
-  projectId: string | null
-}
-
-/**
  * Todo state changed event (external metadata change or agent tool)
  */
 export interface SessionStatusChangedEvent {
@@ -556,7 +547,6 @@ export type AgentEvent =
   | SourcesChangedEvent
   | CodingModeChangedEvent
   | LabelsChangedEvent
-  | ProjectIdChangedEvent
   | SessionStatusChangedEvent
   | SessionMetadataChangedEvent
   | SessionFlaggedEvent

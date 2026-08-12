@@ -42,6 +42,7 @@ export function createMockSession(overrides: Partial<Session> = {}): Session {
     id: 'test-session-id',
     name: 'Test Session',
     workspaceRootPath: '/test/workspace',
+    projectId: 'test-project-id',
     createdAt: Date.now(),
     lastUsedAt: Date.now(),
     permissionMode: 'ask',

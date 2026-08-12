@@ -23,7 +23,8 @@ import {
   unlinkSync,
 } from 'fs';
 import { join, basename } from 'path';
-import { getWorkspaceSessionsPath } from '../workspaces/storage.ts';
+import { getWorkspaceSessionsPath, loadWorkspaceConfig } from '../workspaces/storage.ts';
+import { loadProjectById, withProjectMutationLock } from '../projects/storage.ts';
 import { generateUniqueSessionId } from './slug-generator.ts';
 import { toPortablePath, expandPath } from '../utils/paths.ts';
 import { sanitizeSessionId } from './validation.ts';
@@ -196,57 +197,60 @@ export async function createSession(
   }
 ): Promise<SessionConfig> {
   ensureSessionsDir(workspaceRootPath);
+  const workspace = loadWorkspaceConfig(workspaceRootPath);
+  if (!workspace) {
+    throw new Error(`Invalid workspace: ${workspaceRootPath}`);
+  }
+  const projectId = options?.projectId ?? workspace.defaultProjectId;
 
-  const now = Date.now();
-  const sessionId = generateSessionId(workspaceRootPath);
+  return withProjectMutationLock(workspaceRootPath, projectId, async () => {
+    if (!loadProjectById(workspaceRootPath, projectId)) {
+      throw new Error(`Project ${projectId} not found in workspace ${workspaceRootPath}`);
+    }
 
-  // Create session directory with all subdirectories (plans, attachments)
-  ensureSessionDir(workspaceRootPath, sessionId);
+    const now = Date.now();
+    const sessionId = generateSessionId(workspaceRootPath);
+    ensureSessionDir(workspaceRootPath, sessionId);
 
-  // Set sdkCwd to initial working directory or session path - this never changes
-  // The SDK stores session transcripts at ~/.claude/projects/{cwd-slugified}/
-  // If workingDirectory changes later, sdkCwd stays the same to preserve session resumption
-  const sdkCwd = options?.workingDirectory ?? getSessionPath(workspaceRootPath, sessionId);
-
-  const session: SessionConfig = {
-    id: sessionId,
-    workspaceRootPath,
-    name: options?.name,
-    createdAt: now,
-    lastUsedAt: now,
-    workingDirectory: options?.workingDirectory,
-    sdkCwd,
-    permissionMode: options?.permissionMode,
-    enabledSourceSlugs: options?.enabledSourceSlugs,
-    model: options?.model,
-    llmConnection: options?.llmConnection,
-    hidden: options?.hidden,
-    sessionStatus: options?.sessionStatus,
-    labels: options?.labels,
-    isFlagged: options?.isFlagged,
-    projectId: options?.projectId,
-    parentSessionId: options?.parentSessionId,
-    taskSlug: options?.taskSlug,
-    taskRunId: options?.taskRunId,
-    taskNodeId: options?.taskNodeId,
-    taskDraft: options?.taskDraft,
-  };
-
-  // Save empty session
-  const storedSession: StoredSession = {
-    ...session,
-    messages: [],
-    tokenUsage: {
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      contextTokens: 0,
-      costUsd: 0,
-    },
-  };
-  await saveSession(storedSession);
-
-  return session;
+    // The SDK stores transcripts by cwd, so this value never follows later cwd changes.
+    const sdkCwd = options?.workingDirectory ?? getSessionPath(workspaceRootPath, sessionId);
+    const session: SessionConfig = {
+      id: sessionId,
+      workspaceRootPath,
+      name: options?.name,
+      createdAt: now,
+      lastUsedAt: now,
+      workingDirectory: options?.workingDirectory,
+      sdkCwd,
+      permissionMode: options?.permissionMode,
+      enabledSourceSlugs: options?.enabledSourceSlugs,
+      model: options?.model,
+      llmConnection: options?.llmConnection,
+      hidden: options?.hidden,
+      sessionStatus: options?.sessionStatus,
+      labels: options?.labels,
+      isFlagged: options?.isFlagged,
+      projectId,
+      parentSessionId: options?.parentSessionId,
+      taskSlug: options?.taskSlug,
+      taskRunId: options?.taskRunId,
+      taskNodeId: options?.taskNodeId,
+      taskDraft: options?.taskDraft,
+    };
+    const storedSession: StoredSession = {
+      ...session,
+      messages: [],
+      tokenUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        contextTokens: 0,
+        costUsd: 0,
+      },
+    };
+    await saveSession(storedSession);
+    return session;
+  });
 }
 
 /**
@@ -259,6 +263,9 @@ export async function getOrCreateSessionById(
 ): Promise<SessionConfig> {
   const existing = loadSession(workspaceRootPath, sessionId);
   if (existing) {
+    if (!existing.projectId) {
+      throw new Error(`Session ${sessionId} is missing projectId`);
+    }
     return {
       id: existing.id,
       sdkSessionId: existing.sdkSessionId,
@@ -268,41 +275,46 @@ export async function getOrCreateSessionById(
       lastUsedAt: existing.lastUsedAt,
       sdkCwd: existing.sdkCwd,
       workingDirectory: existing.workingDirectory,
+      projectId: existing.projectId,
     };
   }
 
-  // Create new session with the specified ID
   ensureSessionsDir(workspaceRootPath);
+  const workspace = loadWorkspaceConfig(workspaceRootPath);
+  if (!workspace) {
+    throw new Error(`Invalid workspace: ${workspaceRootPath}`);
+  }
+  const projectId = workspace.defaultProjectId;
 
-  // Create session directory with all subdirectories (plans, attachments)
-  ensureSessionDir(workspaceRootPath, sessionId);
+  return withProjectMutationLock(workspaceRootPath, projectId, async () => {
+    if (!loadProjectById(workspaceRootPath, projectId)) {
+      throw new Error(`Project ${projectId} not found in workspace ${workspaceRootPath}`);
+    }
 
-  const now = Date.now();
-  // Set sdkCwd to session path - this never changes (ensures SDK can find session transcripts)
-  const sdkCwd = getSessionPath(workspaceRootPath, sessionId);
-
-  const session: SessionConfig = {
-    id: sessionId,
-    workspaceRootPath,
-    sdkCwd,
-    createdAt: now,
-    lastUsedAt: now,
-  };
-
-  const storedSession: StoredSession = {
-    ...session,
-    messages: [],
-    tokenUsage: {
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      contextTokens: 0,
-      costUsd: 0,
-    },
-  };
-  await saveSession(storedSession);
-
-  return session;
+    ensureSessionDir(workspaceRootPath, sessionId);
+    const now = Date.now();
+    const session: SessionConfig = {
+      id: sessionId,
+      workspaceRootPath,
+      sdkCwd: getSessionPath(workspaceRootPath, sessionId),
+      createdAt: now,
+      lastUsedAt: now,
+      projectId,
+    };
+    const storedSession: StoredSession = {
+      ...session,
+      messages: [],
+      tokenUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        contextTokens: 0,
+        costUsd: 0,
+      },
+    };
+    await saveSession(storedSession);
+    return session;
+  });
 }
 
 /**
@@ -401,6 +413,11 @@ export function listSessions(workspaceRootPath: string): SessionMetadata[] {
  */
 function headerToMetadata(header: SessionHeader, workspaceRootPath: string): SessionMetadata | null {
   try {
+    if (typeof header.projectId !== 'string' || !header.projectId.trim()) {
+      debug(`[sessions] Ignoring session "${header.id}" without Project ownership in ${workspaceRootPath}`);
+      return null;
+    }
+
     // Migration: accept old 'todoState' field from pre-rename session files
     const rawStatus = header.sessionStatus ?? (header as unknown as { todoState?: string }).todoState;
     // Validate sessionStatus against workspace status config
@@ -487,6 +504,7 @@ export async function getOrCreateLatestSession(workspaceRootPath: string): Promi
       id: latest.id,
       sdkSessionId: latest.sdkSessionId,
       workspaceRootPath: latest.workspaceRootPath,
+      projectId: latest.projectId,
       name: latest.name,
       createdAt: latest.createdAt,
       lastUsedAt: latest.lastUsedAt,
@@ -553,7 +571,6 @@ export async function updateSessionMetadata(
     | 'llmConnection'
     | 'isArchived'
     | 'archivedAt'
-    | 'projectId'
   >>
 ): Promise<void> {
   const session = loadSession(workspaceRootPath, sessionId);
@@ -575,7 +592,6 @@ export async function updateSessionMetadata(
   if (updates.llmConnection !== undefined) session.llmConnection = updates.llmConnection;
   if (updates.isArchived !== undefined) session.isArchived = updates.isArchived;
   if ('archivedAt' in updates) session.archivedAt = updates.archivedAt;
-  if ('projectId' in updates) session.projectId = updates.projectId;
 
   await saveSession(session);
 }
@@ -614,42 +630,6 @@ export async function setSessionLabels(
   labels: string[]
 ): Promise<void> {
   await updateSessionMetadata(workspaceRootPath, sessionId, { labels });
-}
-
-/**
- * Set or clear the project binding for a session.
- * Pass `null` to unbind.
- */
-export async function setSessionProjectId(
-  workspaceRootPath: string,
-  sessionId: string,
-  projectId: string | null
-): Promise<void> {
-  await updateSessionMetadata(workspaceRootPath, sessionId, {
-    projectId: projectId === null ? undefined : projectId,
-  });
-}
-
-/**
- * Unbind every session that referenced a given projectId.
- * Called when a project is deleted — sessions are preserved, just unlinked.
- * Returns the number of sessions touched.
- */
-export async function unbindProjectFromSessions(
-  workspaceRootPath: string,
-  projectId: string
-): Promise<number> {
-  const sessions = listSessions(workspaceRootPath);
-  let touched = 0;
-  for (const meta of sessions) {
-    const full = loadSession(workspaceRootPath, meta.id);
-    if (full?.projectId === projectId) {
-      full.projectId = undefined;
-      await saveSession(full);
-      touched++;
-    }
-  }
-  return touched;
 }
 
 /**

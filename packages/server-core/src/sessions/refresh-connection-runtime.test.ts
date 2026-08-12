@@ -59,7 +59,7 @@ function injectSession(
     createdAt: Date.now(),
   }
   const managed = createManagedSession(
-    { id, name: id, llmConnection },
+    { id, name: id, llmConnection, projectId: 'project-general' },
     workspace as never,
     { messagesLoaded: true },
   ) as unknown as { agent: AgentStub | null; backendRuntimeSignature?: string; backendRestartSignature?: string; isProcessing: boolean; llmConnection?: string }

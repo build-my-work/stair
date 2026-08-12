@@ -1,0 +1,45 @@
+extends: ./electron-builder.yml
+
+appId: io.github.build-my-work.stair
+productName: Stair
+copyright: Copyright © 2026 Stair contributors.
+afterPack: scripts/afterPack.stair.cjs
+
+extraMetadata:
+  main: stair-main.cjs
+  description: Stair desktop application
+  author: Stair contributors
+  homepage: https://github.com/build-my-work/stair
+
+files:
+  - stair-main.cjs
+
+protocols:
+  - name: Stair URL
+    schemes:
+      - stair
+
+# Stair does not consume Craft's release channel. Phase 9 can add an
+# independent provider after publishing infrastructure exists.
+publish: null
+
+mac:
+  icon: resources/stair/icon.icns
+  extendInfo:
+    NSLocalNetworkUsageDescription: "Stair uses your local network to reach LAN addresses and devices you ask an agent to access, such as local servers or APIs."
+  artifactName: "Stair-${arch}.${ext}"
+
+dmg:
+  artifactName: "Stair-${arch}.dmg"
+  background: resources/stair/dmg-background.tiff
+  icon: resources/stair/icon.icns
+  title: Stair
+
+win:
+  icon: resources/stair/icon.ico
+  artifactName: "Stair-${arch}.${ext}"
+
+linux:
+  icon: resources/stair/icon.png
+  maintainer: Stair contributors
+  artifactName: "Stair-${arch}.${ext}"

@@ -34,7 +34,11 @@ describe('background task completion surfacing (idle keep-alive)', () => {
 
   function buildSession(id: string, opts?: { keepAlive?: boolean; processing?: boolean }) {
     const workspace = { id: 'ws_test', name: 'Test Workspace', rootPath: tmpRoot, createdAt: Date.now() }
-    const managed = createManagedSession({ id, name: 'bg surface test' }, workspace as never, { messagesLoaded: true })
+    const managed = createManagedSession(
+      { id, name: 'bg surface test', projectId: 'project-general' },
+      workspace as never,
+      { messagesLoaded: true },
+    )
     managed.isProcessing = opts?.processing ?? false
     ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(id, managed)
     // keepBackgroundTasksAlive is a readonly field resolved from env at construction;

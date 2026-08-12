@@ -203,6 +203,7 @@ export const playgroundAllowListHandle: PlaygroundAllowListHandle = {
 
 export const mockElectronAPI = {
   isDebugMode: async () => true,
+  getConfigDir: async () => '/tmp/craft-agent-playground',
 
   // useInlineMention logs every keystroke through this
   debugLog: (..._args: unknown[]) => {},

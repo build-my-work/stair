@@ -79,6 +79,8 @@ function AppShellOverride({
 export interface PlaygroundSessionProvidersProps {
   workspaceId: string
   workspaceSlug: string
+  /** Project belonging to this demo workspace; otherwise inherit only from the same workspace. */
+  defaultProjectId?: string
   /** Sets `isCompactMode` on the AppShell context */
   compact: boolean
   /** Sessions to populate `sessionMetaMapAtom` with */
@@ -95,6 +97,7 @@ export interface PlaygroundSessionProvidersProps {
 export function PlaygroundSessionProviders({
   workspaceId,
   workspaceSlug,
+  defaultProjectId,
   compact,
   sessions,
   session,
@@ -102,6 +105,14 @@ export function PlaygroundSessionProviders({
   createStubSession,
   children,
 }: PlaygroundSessionProvidersProps) {
+  const parent = useOptionalAppShellContext()
+  const resolvedDefaultProjectId = defaultProjectId ?? appShell?.defaultProjectId
+    ?? (parent?.activeWorkspaceId === workspaceId ? parent.defaultProjectId : null)
+  const appShellOverrides = React.useMemo(
+    () => ({ ...appShell, defaultProjectId: resolvedDefaultProjectId }),
+    [appShell, resolvedDefaultProjectId],
+  )
+
   // Fresh store per mount: isolates demo state from the playground root.
   const store = React.useMemo(() => createStore(), [])
 
@@ -121,11 +132,12 @@ export function PlaygroundSessionProviders({
                   <NavigationProvider
                     workspaceId={workspaceId}
                     workspaceSlug={workspaceSlug}
+                    defaultProjectId={resolvedDefaultProjectId}
                     onCreateSession={onCreateSession}
                     isReady
                     isSessionsReady
                   >
-                    <AppShellOverride compact={compact} workspaceId={workspaceId} workspaceSlug={workspaceSlug} overrides={appShell}>
+                    <AppShellOverride compact={compact} workspaceId={workspaceId} workspaceSlug={workspaceSlug} overrides={appShellOverrides}>
                       {children}
                     </AppShellOverride>
                   </NavigationProvider>

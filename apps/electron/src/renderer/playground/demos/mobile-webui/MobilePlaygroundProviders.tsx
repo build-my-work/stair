@@ -3,7 +3,7 @@ import type { SessionMeta } from '@/atoms/sessions'
 import type { LlmConnectionWithStatus } from '@config/llm-connections'
 import type { Session } from '../../../../shared/types'
 import { PlaygroundSessionProviders } from '../../PlaygroundSessionProviders'
-import { MOBILE_WORKSPACE_ID, MOBILE_WORKSPACE_SLUG, buildMockSession } from './mock-mobile-data'
+import { MOBILE_PROJECT_ID, MOBILE_WORKSPACE_ID, MOBILE_WORKSPACE_SLUG, MOCK_WORKSPACE, buildMockSession } from './mock-mobile-data'
 
 export interface MobilePlaygroundProvidersProps {
   /** Sessions to populate `sessionMetaMapAtom` with. */
@@ -22,11 +22,16 @@ const createStubSession = (id: string) => buildMockSession(id, { messages: [] })
  * optionally, mock `llmConnections` for demos that exercise the model picker.
  */
 export function MobilePlaygroundProviders({ sessions, session, llmConnections, children }: MobilePlaygroundProvidersProps) {
-  const appShell = React.useMemo(() => (llmConnections ? { llmConnections } : undefined), [llmConnections])
+  const appShell = React.useMemo(() => ({
+    workspaces: [MOCK_WORKSPACE],
+    defaultProjectId: MOBILE_PROJECT_ID,
+    ...(llmConnections ? { llmConnections } : {}),
+  }), [llmConnections])
   return (
     <PlaygroundSessionProviders
       workspaceId={MOBILE_WORKSPACE_ID}
       workspaceSlug={MOBILE_WORKSPACE_SLUG}
+      defaultProjectId={MOBILE_PROJECT_ID}
       compact
       sessions={sessions}
       session={session}

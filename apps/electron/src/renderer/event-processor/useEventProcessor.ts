@@ -55,7 +55,8 @@ interface UseEventProcessorResult {
   processAgentEvent: (
     event: AgentEvent,
     currentSession: Session | null,
-    workspaceId: string
+    workspaceId: string,
+    projectId: string,
   ) => { session: Session; effects: Effect[] }
 
   /**
@@ -82,10 +83,11 @@ export function useEventProcessor(): UseEventProcessorResult {
   const processAgentEvent = useCallback((
     event: AgentEvent,
     currentSession: Session | null,
-    workspaceId: string
+    workspaceId: string,
+    projectId: string,
   ): { session: Session; effects: Effect[] } => {
     // Create empty session if needed
-    const session = currentSession ?? createEmptySession(event.sessionId, workspaceId)
+    const session = currentSession ?? createEmptySession(event.sessionId, workspaceId, projectId)
 
     // Build current state
     const currentState: SessionState = {

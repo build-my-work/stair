@@ -7,6 +7,7 @@ import { Spinner, LoadingIndicator, Markdown } from '@craft-agent/ui'
 import { ANTHROPIC_MODELS, DEFAULT_MODEL, getModelShortName } from '@config/models'
 import { useAtomValue, useStore } from 'jotai'
 import { useProjects } from '@/hooks/useProjects'
+import { useOptionalAppShellContext } from '@/context/AppShellContext'
 import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
@@ -529,6 +530,7 @@ export function TaskEditor({
   const groups = modelGroups.length > 0 ? modelGroups : FALLBACK_MODEL_GROUPS
   const fallbackModel = defaultModel || groups[0]?.models[0]?.id || DEFAULT_MODEL
   const { projects } = useProjects(workspaceId)
+  const defaultProjectId = useOptionalAppShellContext()?.defaultProjectId ?? null
   const [tab, setTab] = React.useState<Tab>('definition')
   const [mode, setMode] = React.useState<Mode>('manual')
   const [title, setTitle] = React.useState('')
@@ -536,9 +538,12 @@ export function TaskEditor({
   const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('')
   // Empty string = "use the runner default"; a number pins the spec's max_iterations.
   const [maxRepairs, setMaxRepairs] = React.useState('')
-  // Create mode seeds the project from the board's active filter (so a new card stays
-  // visible under that filter); edit mode starts empty and is prefilled from the spec below.
-  const [projectId, setProjectId] = React.useState(target.mode === 'create' ? (target.initialProjectId ?? '') : '')
+  // Create mode seeds from the board filter, then the Workspace's real default Project.
+  // Edit mode is prefilled from the existing Session and never offers reassignment.
+  const [projectId, setProjectId] = React.useState(() => {
+    if (target.mode === 'edit') return ''
+    return target.initialProjectId ?? defaultProjectId ?? ''
+  })
   const [orchModel, setOrchModel] = React.useState(fallbackModel)
   // Explicit connection serving the orch model; undefined lets buildSpec derive it from orchModel.
   // Preserved from the loaded spec so an authored connection isn't rewritten on save (round-trip).
@@ -547,8 +552,7 @@ export function TaskEditor({
   // behavior is unchanged; edit mode prefills from the spec. Persisted to defaults.permissionMode so
   // subtask autonomy is explicit + visible, never a hidden runner default.
   const [permissionMode, setPermissionMode] = React.useState<TaskPermissionMode>('allow-all')
-  // The task's project binding at load (edit mode). Floor for buildSpec so leaving the picker on
-  // "No Project" can't silently drop a binding, and the gate for whether "No Project" is offered.
+  // The task's immutable Project at load (edit mode), retained as the buildSpec floor.
   const [boundProjectId, setBoundProjectId] = React.useState('')
   const [subtasks, setSubtasks] = React.useState<EditorSubtask[]>([])
   const [cwd, setCwd] = React.useState('')
@@ -557,6 +561,12 @@ export function TaskEditor({
   const [sourceSlugs, setSourceSlugs] = React.useState<string[]>([])
   const [skillSlugs, setSkillSlugs] = React.useState<string[]>([])
   const [busy, setBusy] = React.useState(false)
+
+  React.useEffect(() => {
+    if (target.mode === 'create' && !projectId && defaultProjectId) {
+      setProjectId(defaultProjectId)
+    }
+  }, [target.mode, projectId, defaultProjectId])
 
   // Pickable catalogs from the active workspace (AppShell keeps these atoms populated).
   const workspaceSources = useAtomValue(sourcesAtom)
@@ -955,10 +965,10 @@ export function TaskEditor({
               <Btn variant="ghost" onClick={onClose} disabled={busy}>
                 {t('common.cancel')}
               </Btn>
-              <Btn variant="secondary" onClick={() => submit(false)} disabled={busy}>
+              <Btn variant="secondary" onClick={() => submit(false)} disabled={busy || !projectId}>
                 {isEdit ? t('common.save') : t('common.create')}
               </Btn>
-              <Btn variant="primary" onClick={() => submit(true)} disabled={busy}>
+              <Btn variant="primary" onClick={() => submit(true)} disabled={busy || !projectId}>
                 {busy ? <Spinner className="text-label" /> : <Sparkles strokeWidth={2} />}
                 {busy ? t('tasks.starting') : isEdit ? t('tasks.saveAndRun') : t('tasks.createAndRun')}
               </Btn>
@@ -1036,30 +1046,27 @@ export function TaskEditor({
 
           <div className="flex flex-col gap-2">
             <FieldRow label={t('tasks.project')}>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <SelectButton style={{ width: 168 }}>
-                    <span className="truncate">{project ? project.config.name : t('tasks.noProject')}</span>
-                  </SelectButton>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[160px]">
-                  {/* "No Project" clears the binding — only offered when NOT already bound. The backend
-                      never unbinds on save, and buildSpec floors a blank pick to the existing project,
-                      so showing it for a bound task would be a no-op that implies clearing works. */}
-                  {!boundProjectId && (
-                    <DropdownMenuItem onSelect={() => setProjectId('')}>
-                      {t('tasks.noProject')}
-                      {!projectId && <Check className="ml-auto" strokeWidth={2} />}
-                    </DropdownMenuItem>
-                  )}
-                  {projects.map((p) => (
-                    <DropdownMenuItem key={p.config.id} onSelect={() => setProjectId(p.config.id)}>
-                      <span className="truncate">{p.config.name}</span>
-                      {projectId === p.config.id && <Check className="ml-auto shrink-0" strokeWidth={2} />}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {isEdit ? (
+                <SelectButton style={{ width: 168 }} disabled>
+                  <span className="truncate">{(project?.config.name ?? projectId) || t('common.loading')}</span>
+                </SelectButton>
+              ) : (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <SelectButton style={{ width: 168 }}>
+                      <span className="truncate">{project?.config.name ?? t('common.loading')}</span>
+                    </SelectButton>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-[160px]">
+                    {projects.map((p) => (
+                      <DropdownMenuItem key={p.config.id} onSelect={() => setProjectId(p.config.id)}>
+                        <span className="truncate">{p.config.name}</span>
+                        {projectId === p.config.id && <Check className="ml-auto shrink-0" strokeWidth={2} />}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
             </FieldRow>
 
             <FieldRow label={t('tasks.orchestratorModel')}>
@@ -1207,7 +1214,7 @@ export function TaskEditor({
               </div>
               <div className="text-label-lg font-semibold">{t('tasks.generatePlan')}</div>
               <p className="max-w-[360px] text-label text-secondary">{t('tasks.generateBody')}</p>
-              <Btn variant="primary" size="lg" onClick={generatePlan} disabled={busy}>
+              <Btn variant="primary" size="lg" onClick={generatePlan} disabled={busy || !projectId}>
                 <Sparkles strokeWidth={2} /> {t('tasks.generatePlan')}
               </Btn>
               <span className="text-label-sm text-tertiary">{t('tasks.generateHint')}</span>

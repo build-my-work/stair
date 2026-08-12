@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { handleDeepLink } from '../deep-link'
+import { handleDeepLink, parseDeepLink } from '../deep-link'
 import { RPC_CHANNELS } from '../../shared/types'
 import type { EventSink } from '@craft-agent/server-core/transport'
 import type { WindowManager } from '../window-manager'
@@ -100,5 +100,17 @@ describe('handleDeepLink routing', () => {
 
     expect(sent.length).toBe(1)
     expect(sent[0]?.target).toEqual({ to: 'workspace', workspaceId: 'ws-target' })
+  })
+})
+
+describe('产品深链协议', () => {
+  it('默认入口只接受 craftagents scheme', () => {
+    expect(parseDeepLink('craftagents://allSessions')).not.toBeNull()
+    expect(parseDeepLink('stair://allSessions')).toBeNull()
+  })
+
+  it('Stair 入口接受独立 stair scheme', () => {
+    expect(parseDeepLink('stair://allSessions', 'stair')).not.toBeNull()
+    expect(parseDeepLink('craftagents://allSessions', 'stair')).toBeNull()
   })
 })

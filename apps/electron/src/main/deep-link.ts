@@ -92,11 +92,15 @@ function parseRightSidebar(parsed: URL): string | undefined {
 /**
  * Parse a deep link URL into structured target
  */
-export function parseDeepLink(url: string): DeepLinkTarget | null {
+export function parseDeepLink(
+  url: string,
+  scheme = process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents',
+): DeepLinkTarget | null {
   try {
     const parsed = new URL(url)
+    const expectedProtocol = `${scheme.replace(/:$/, '')}:`
 
-    if (parsed.protocol !== 'craftagents:') {
+    if (parsed.protocol !== expectedProtocol) {
       return null
     }
 

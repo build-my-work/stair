@@ -22,6 +22,7 @@ const ONE_DAY = 24 * ONE_HOUR
 
 export const MOBILE_WORKSPACE_ID = 'playground-mobile'
 export const MOBILE_WORKSPACE_SLUG = 'mobile'
+export const MOBILE_PROJECT_ID = 'playground-mobile-general'
 
 export const MOCK_WORKSPACE: Workspace = {
   id: MOBILE_WORKSPACE_ID,
@@ -84,6 +85,7 @@ export const MOCK_SESSIONS: SessionMeta[] = [
     id: 'mobile-s-1',
     name: 'Fix mobile nav crash on iOS Safari',
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     lastMessageAt: now() - 4 * ONE_MINUTE,
     sessionStatus: 'in-progress',
     isFlagged: true,
@@ -95,6 +97,7 @@ export const MOCK_SESSIONS: SessionMeta[] = [
     id: 'mobile-s-2',
     name: 'Compact toolbar variants for narrow panels',
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     lastMessageAt: now() - 35 * ONE_MINUTE,
     sessionStatus: 'todo',
     labels: ['feature', 'design'],
@@ -103,6 +106,7 @@ export const MOCK_SESSIONS: SessionMeta[] = [
     id: 'mobile-s-3',
     name: 'Why does the chat input lose focus after submit?',
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     lastMessageAt: now() - 2 * ONE_HOUR,
     sessionStatus: 'needs-review',
     hasUnread: true,
@@ -112,6 +116,7 @@ export const MOCK_SESSIONS: SessionMeta[] = [
     id: 'mobile-s-4',
     name: 'Migrate session list grouping to atom-based store',
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     lastMessageAt: now() - 5 * ONE_HOUR,
     sessionStatus: 'in-progress',
     labels: ['feature'],
@@ -120,6 +125,7 @@ export const MOCK_SESSIONS: SessionMeta[] = [
     id: 'mobile-s-5',
     name: 'Audit accessibility for the new app menu',
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     lastMessageAt: now() - ONE_DAY - 30 * ONE_MINUTE,
     sessionStatus: 'todo',
     labels: ['design'],
@@ -128,6 +134,7 @@ export const MOCK_SESSIONS: SessionMeta[] = [
     id: 'mobile-s-6',
     name: 'Fold "Help" submenu into root on compact mode',
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     lastMessageAt: now() - ONE_DAY - 3 * ONE_HOUR,
     sessionStatus: 'done',
     isFlagged: true,
@@ -136,6 +143,7 @@ export const MOCK_SESSIONS: SessionMeta[] = [
     id: 'mobile-s-7',
     name: 'Permission mode badge truncation on narrow widths',
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     lastMessageAt: now() - 2 * ONE_DAY,
     sessionStatus: 'needs-review',
     labels: ['bug'],
@@ -144,6 +152,7 @@ export const MOCK_SESSIONS: SessionMeta[] = [
     id: 'mobile-s-8',
     name: 'Spec the swipe-to-archive interaction',
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     lastMessageAt: now() - 3 * ONE_DAY,
     sessionStatus: 'todo',
     labels: ['design', 'feature'],
@@ -152,6 +161,7 @@ export const MOCK_SESSIONS: SessionMeta[] = [
     id: 'mobile-s-9',
     name: 'Old: investigate dropdown click-through on Android',
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     lastMessageAt: now() - 8 * ONE_DAY,
     sessionStatus: 'done',
     isArchived: true,
@@ -161,6 +171,7 @@ export const MOCK_SESSIONS: SessionMeta[] = [
     id: 'mobile-s-10',
     name: 'Profile session list scroll perf on iPhone SE',
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     lastMessageAt: now() - 14 * ONE_DAY,
     sessionStatus: 'done',
   },
@@ -333,6 +344,7 @@ export function buildMockSession(
   return {
     id: sessionId,
     workspaceId: MOBILE_WORKSPACE_ID,
+    projectId: MOBILE_PROJECT_ID,
     workspaceName: MOCK_WORKSPACE.name,
     name: options.name ?? 'Fix mobile nav crash on iOS Safari',
     messages: options.messages ?? MOCK_MESSAGES,

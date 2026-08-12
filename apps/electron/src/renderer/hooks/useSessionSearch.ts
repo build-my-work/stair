@@ -127,7 +127,7 @@ function groupSessionsByDate(sessions: SessionMeta[]): DateGroup[] {
 function getCollapseGroupKey(item: SessionMeta, groupingMode?: SessionGroupingMode): string {
   if (groupingMode === 'status') return `status-${getSessionStatus(item)}`
   if (groupingMode === 'unread') return item.hasUnread ? 'unread-yes' : 'unread-no'
-  if (groupingMode === 'project') return `project-${(item as { projectId?: string }).projectId ?? '__none__'}`
+  if (groupingMode === 'project') return `project-${item.projectId}`
   return startOfDay(new Date(item.lastMessageAt || 0)).toISOString()
 }
 
