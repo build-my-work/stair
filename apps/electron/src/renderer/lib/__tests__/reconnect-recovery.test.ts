@@ -6,6 +6,7 @@ function meta(overrides: Partial<SessionMeta> = {}): SessionMeta {
   return {
     id: overrides.id ?? 'session',
     workspaceId: overrides.workspaceId ?? 'workspace',
+    projectId: overrides.projectId ?? 'proj-default',
     isProcessing: overrides.isProcessing ?? false,
     ...overrides,
   }

@@ -23,6 +23,7 @@ import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import type { SettingsSubpage } from '../../../shared/types'
 import { SETTINGS_ITEMS } from '../../../shared/menu-schema'
 import { SETTINGS_ICONS } from '@/components/icons/SettingsIcons'
+import { buildProductDeepLink } from '@/lib/product-deep-link'
 
 export const meta: DetailsPageMeta = {
   navigator: 'settings',
@@ -65,7 +66,9 @@ function SettingsItemRow({ item, isSelected, isFirst, onSelect }: SettingsItemRo
 
   // Open settings page in a new window via deep link
   const handleOpenInNewWindow = () => {
-    window.electronAPI.openUrl(`craftagents://settings/${item.id}?window=focused`)
+    window.electronAPI.openUrl(
+      buildProductDeepLink(`settings/${item.id}?window=focused`),
+    )
   }
 
   return (

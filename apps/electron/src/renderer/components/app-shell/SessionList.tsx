@@ -75,10 +75,8 @@ interface SessionListProps {
   labels?: LabelConfig[]
   /** Callback when session labels are toggled (for labels submenu in SessionMenu) */
   onLabelsChange?: (sessionId: string, labels: string[]) => void
-  /** Workspace projects (for the Projects submenu in SessionMenu) */
+  /** Workspace Projects used for grouping and row color treatment. */
   projects?: Array<{ id: string; slug: string; name: string; color?: string }>
-  /** Callback to bind/unbind a session to a project (null = unbind) */
-  onSetProjectId?: (sessionId: string, projectId: string | null) => void
   /** How to group sessions: 'date' (default) or 'status' */
   groupingMode?: ChatGroupingMode
   /** Workspace ID for content search (optional - if not provided, content search is disabled) */
@@ -138,7 +136,6 @@ export function SessionList({
   labels = [],
   onLabelsChange,
   projects,
-  onSetProjectId,
   groupingMode = 'date',
   workspaceId,
   statusFilter,
@@ -389,28 +386,26 @@ export function SessionList({
     }
 
     if (groupingMode === 'project') {
-      // Build groups from visible items, bucketed by projectId.
-      // Sessions without a projectId (or with an unknown projectId) go to the
-      // "no-project" bucket so they're never silently dropped from the list.
+      // Build groups from visible items, bucketed by the Session's immutable projectId.
+      // The Project catalog can briefly lag the Session stream, so an unknown id keeps
+      // its own bucket and receives an explicit fallback label.
       const projectOrder = new Map<string, number>()
       ;(projects ?? []).forEach((p, index) => projectOrder.set(p.id, index))
       const projectNameById = new Map<string, string>()
       ;(projects ?? []).forEach(p => projectNameById.set(p.id, p.name))
 
-      const groupsByKey = new Map<string, { rows: SessionListRow[], projectId: string | null }>()
+      const groupsByKey = new Map<string, { rows: SessionListRow[], projectId: string }>()
       for (const row of rows) {
-        const rawProjectId = (row.item as { projectId?: string }).projectId
-        const resolvedProjectId = rawProjectId && projectNameById.has(rawProjectId) ? rawProjectId : null
-        const key = resolvedProjectId ? `project-${resolvedProjectId}` : 'project-__none__'
-        if (!groupsByKey.has(key)) groupsByKey.set(key, { rows: [], projectId: resolvedProjectId })
+        const projectId = row.item.projectId
+        const key = `project-${projectId}`
+        if (!groupsByKey.has(key)) groupsByKey.set(key, { rows: [], projectId })
         groupsByKey.get(key)!.rows.push(row)
       }
 
       // Insert collapsed placeholder groups (header-only, items: [])
       for (const meta of collapsedGroupsMeta) {
         if (!groupsByKey.has(meta.key)) {
-          const idPart = meta.key.replace('project-', '')
-          const projectId = idPart === '__none__' ? null : idPart
+          const projectId = meta.key.replace('project-', '')
           groupsByKey.set(meta.key, { rows: [], projectId })
         }
       }
@@ -419,9 +414,7 @@ export function SessionList({
       for (const [key, { rows: groupRows, projectId }] of groupsByKey) {
         groupRows.sort((a, b) => (b.item.lastMessageAt || 0) - (a.item.lastMessageAt || 0))
         const collapsedMeta = collapsedGroupsMeta.find(m => m.key === key)
-        const label = projectId
-          ? (projectNameById.get(projectId) ?? t('sidebar.unknownProject', { defaultValue: 'Unknown project' }))
-          : t('sidebar.noProject', { defaultValue: 'No project' })
+        const label = projectNameById.get(projectId) ?? t('sidebar.unknownProject', { defaultValue: 'Unknown project' })
         orderedGroups.push({
           key,
           label,
@@ -431,9 +424,6 @@ export function SessionList({
         })
       }
       orderedGroups.sort((a, b) => {
-        // No-project bucket sinks to the bottom, configured projects in registration order
-        if (a.key === 'project-__none__') return 1
-        if (b.key === 'project-__none__') return -1
         const aOrder = projectOrder.get(a.key.replace('project-', '')) ?? 999
         const bOrder = projectOrder.get(b.key.replace('project-', '')) ?? 999
         return aOrder - bOrder
@@ -512,11 +502,7 @@ export function SessionList({
       const allKeys = new Set(items.map(item => item.hasUnread ? 'unread-yes' : 'unread-no'))
       setCollapsedGroups(allKeys)
     } else if (groupingMode === 'project') {
-      const knownProjectIds = new Set((projects ?? []).map(p => p.id))
-      const allKeys = new Set(items.map(item => {
-        const pid = (item as { projectId?: string }).projectId
-        return pid && knownProjectIds.has(pid) ? `project-${pid}` : 'project-__none__'
-      }))
+      const allKeys = new Set(items.map(item => `project-${item.projectId}`))
       setCollapsedGroups(allKeys)
     } else {
       const allKeys = new Set(items.map(item =>
@@ -524,7 +510,7 @@ export function SessionList({
       ))
       setCollapsedGroups(allKeys)
     }
-  }, [items, groupingMode, projects])
+  }, [items, groupingMode])
   const expandAllGroups = useCallback(() => {
     setCollapsedGroups(new Set())
   }, [])
@@ -699,7 +685,6 @@ export function SessionList({
     onDelete: handleDeleteWithToast,
     onLabelsChange,
     projects,
-    onSetProjectId,
     onSelectSessionById: handleSelectSessionById,
     onOpenInNewWindow: handleOpenInNewWindow,
     onSendToWorkspace: (ids: string[]) => setSendToWorkspace(ids),
@@ -719,8 +704,7 @@ export function SessionList({
     handleRenameClick, onSessionStatusChange,
     onFlag, handleFlagWithToast, onUnflag, handleUnflagWithToast,
     onArchive, handleArchiveWithToast, onUnarchive, handleUnarchiveWithToast,
-    onMarkUnread, handleDeleteWithToast, onLabelsChange,
-    projects, onSetProjectId,
+    onMarkUnread, handleDeleteWithToast, onLabelsChange, projects,
     handleSelectSessionById, handleOpenInNewWindow, setSendToWorkspace, handleFocusZone, handleKeyDown,
     sessionStatuses, flatLabels, labels, resolvedSearchQuery,
     focusedSessionId, selectionStore.state.selected, isMultiSelectActive,

@@ -87,18 +87,17 @@ export interface ISessionManager {
     sessionId: string,
     opts?: { parentSessionId?: string },
   ): Promise<{ labelId: string } | undefined>
-  setSessionProjectId(sessionId: string, projectId: string | null): Promise<void>
   setKanbanColumn(sessionId: string, column: string | null): Promise<void>
   setTaskNodeCount(sessionId: string, count: number): Promise<void>
   adoptGeneratedTaskOrchestrator(
     sessionId: string,
     taskSlug: string,
-    reconcile?: { name?: string; projectId?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
+    reconcile?: { name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
   ): Promise<boolean>
   bindExistingSessionToTask(
     sessionId: string,
     taskSlug: string,
-    reconcile?: { name?: string; projectId?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
+    reconcile?: { name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
   ): Promise<boolean>
   setSessionConnection(sessionId: string, connectionSlug: string): Promise<void>
   updateSessionModel(sessionId: string, workspaceId: string, model: string | null, connection?: string): Promise<void>

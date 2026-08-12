@@ -34,6 +34,8 @@ export interface WorkspaceConfig {
   id: string;
   name: string;
   slug: string; // Folder name (URL-safe)
+  /** Immutable id of the real Project that owns ordinary new Sessions. */
+  defaultProjectId: string;
 
   /**
    * Default settings for new sessions in this workspace

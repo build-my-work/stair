@@ -1630,7 +1630,7 @@ export function FreeFormInput({
             `displayLabel`, and `displayLabelKey` reach the popover. The previous
             cherry-pick dropped `inlineExecution: true`, which made the popover
             fall back to the same-window deep-link path; that worked inside
-            Electron but launched the desktop app from the WebUI via `craftagents://`.
+            Electron but launched the desktop app from the WebUI via the product deep link.
             Match the AppShell pattern (which already uses spread). */}
         {addLabelEditConfig && (
           <EditPopover

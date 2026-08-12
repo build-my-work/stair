@@ -38,7 +38,7 @@ import { CheckCircle2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { NavigationContext } from '@/contexts/NavigationContext'
 import { navigate, routes } from '@/lib/navigate'
-import { focusedSessionIdAtom } from '@/atoms/panel-stack'
+import { focusedWorkbenchSessionIdAtom } from '@/workbench/workbench-state'
 import {
   backgroundFinishedAtom,
   dismissBackgroundFinishedAtom,
@@ -62,7 +62,7 @@ export function BackgroundFinishedChip({ sessionId }: BackgroundFinishedChipProp
   const nav = useContext(NavigationContext)
   const enabled = useAtomValue(showBackgroundFinishedChipAtom)
   const queue = useAtomValue(backgroundFinishedAtom)
-  const focusedSessionId = useAtomValue(focusedSessionIdAtom)
+  const focusedSessionId = useAtomValue(focusedWorkbenchSessionIdAtom)
   const dismiss = useSetAtom(dismissBackgroundFinishedAtom)
 
   // Opening a session acknowledges it: clear its queued entry whenever it's the

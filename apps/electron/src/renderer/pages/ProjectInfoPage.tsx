@@ -113,7 +113,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
     if (!project) return []
     const result: { id: string; name: string }[] = []
     for (const meta of sessionMetaMap.values()) {
-      if ((meta as { projectId?: string }).projectId === project.config.id) {
+      if (meta.projectId === project.config.id) {
         result.push({ id: meta.id, name: meta.name ?? meta.id })
       }
     }

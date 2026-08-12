@@ -12,6 +12,7 @@ import { formatBytes } from '../utils/binary-detection.ts';
 import { globSync } from 'glob';
 import os from 'os';
 import type { ProjectPromptContext } from '../projects/types.ts';
+import { applyProductBranding, CRAFT_PRODUCT_NAME } from '../stair-branding.ts';
 
 /** Maximum size of CLAUDE.md file to include (10KB) */
 const MAX_CONTEXT_FILE_SIZE = 10 * 1024;
@@ -313,7 +314,7 @@ export function getMiniAgentSystemPrompt(workspaceRootPath?: string): string {
     ? `\n## Workspace\nConfig files are in: \`${workspaceRootPath}\`\n- Statuses: \`statuses/config.json\`\n- Labels: \`labels/config.json\`\n- Permissions: \`permissions.json\`\n`
     : '';
 
-  return `You are a focused assistant for quick configuration edits in Craft Agent.
+  return applyProductBranding(`You are a focused assistant for quick configuration edits in Craft Agent.
 
 ## Your Role
 You help users make targeted changes to configuration files. Be concise and efficient.
@@ -329,7 +330,7 @@ ${workspaceContext}
 ## Available Tools
 Use Read, Edit, Write tools for file operations.
 Use config_validate to verify changes match the expected schema.
-`;
+`, process.env.CRAFT_APP_NAME || CRAFT_PRODUCT_NAME);
 }
 
 /**
@@ -383,7 +384,10 @@ export function getSystemPrompt(
 
   debug('[getSystemPrompt] full prompt length:', fullPrompt.length);
 
-  return fullPrompt;
+  return applyProductBranding(
+    fullPrompt,
+    process.env.CRAFT_APP_NAME || CRAFT_PRODUCT_NAME,
+  );
 }
 
 /**

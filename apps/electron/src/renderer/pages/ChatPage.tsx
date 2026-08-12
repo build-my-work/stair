@@ -23,6 +23,7 @@ import { useAppShellContext, usePendingPermission, usePendingCredential, useSess
 import { rendererPerf } from '@/lib/perf'
 import { isAbsolutePath } from '@/lib/drafts'
 import { navigate, routes } from '@/lib/navigate'
+import { buildProductDeepLink } from '@/lib/product-deep-link'
 import { coerceInputText } from '@/lib/input-text'
 import { deriveSessionMessagesLoadState, formatSessionLoadFailure } from '@/lib/session-load'
 import { ensureSessionMessagesLoadedAtom, forceSessionMessagesReloadAtom, loadedSessionsAtom, sessionMetaMapAtom } from '@/atoms/sessions'
@@ -494,7 +495,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   const handleOpenInNewWindow = React.useCallback(async () => {
     const route = routes.view.allSessions(sessionId)
     const separator = route.includes('?') ? '&' : '?'
-    const url = `craftagents://${route}${separator}window=focused`
+    const url = buildProductDeepLink(`${route}${separator}window=focused`)
     try {
       await window.electronAPI?.openUrl(url)
     } catch (error) {
@@ -727,6 +728,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       const skeletonSession = {
         id: sessionMeta.id,
         workspaceId: sessionMeta.workspaceId,
+        projectId: sessionMeta.projectId,
         workspaceName: '',
         name: sessionMeta.name,
         preview: sessionMeta.preview,

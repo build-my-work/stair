@@ -202,16 +202,19 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
     deps.platform.logger.info('[renderer]', ...args)
   })
 
-  // Shell operations - open URL in external browser (or handle craftagents:// internally)
+  // Shell operations - open URL in external browser (or handle product deep links internally)
   server.handle(RPC_CHANNELS.shell.OPEN_URL, async (ctx, url: string) => {
     deps.platform.logger.info('[OPEN_URL] Received request:', url)
     try {
-      const classification = classifyExternalUrl(url)
+      const classification = classifyExternalUrl(
+        url,
+        process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents',
+      )
       if (classification.kind === 'dangerous') {
         throw new Error(formatBlockedUrlError(classification))
       }
 
-      // Handle craftagents:// URLs internally via deep link handler (GUI only)
+      // Handle product deep links internally via deep link handler (GUI only)
       if (classification.kind === 'internal-deeplink') {
         if (!windowManager) return
         deps.platform.logger.info('[OPEN_URL] Handling as deep link')

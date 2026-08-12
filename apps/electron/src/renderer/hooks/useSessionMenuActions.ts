@@ -27,7 +27,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { navigate, routes } from '@/lib/navigate'
+import { useNavigation } from '@/contexts/NavigationContext'
 import { extractLabelId, toggleLabelInList } from '@craft-agent/shared/labels'
 import type { SessionMeta } from '@/atoms/sessions'
 
@@ -69,6 +69,7 @@ export function useSessionMenuActions({
   onLabelsChange,
 }: UseSessionMenuActionsOptions): SessionMenuActions {
   const { t } = useTranslation()
+  const { openSessionInNewPanel } = useNavigation()
   const sessionId = item.id
   const sharedUrl = item.sharedUrl
   const propLabels = item.labels
@@ -165,8 +166,8 @@ export function useSessionMenuActions({
   }, [sessionId, t])
 
   const openInNewPanel = React.useCallback(() => {
-    navigate(routes.view.allSessions(sessionId), { newPanel: true })
-  }, [sessionId])
+    openSessionInNewPanel(sessionId)
+  }, [openSessionInNewPanel, sessionId])
 
   const openSharedInBrowser = React.useCallback(() => {
     if (!sharedUrl) return

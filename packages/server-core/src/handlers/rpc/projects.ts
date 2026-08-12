@@ -75,7 +75,7 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     return updated
   })
 
-  // Delete a project; unbinds projectId from any sessions that referenced it.
+  // Delete an empty, non-default Project. Session ownership is immutable.
   server.handle(RPC_CHANNELS.projects.DELETE, async (_ctx, workspaceId: string, projectSlug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
@@ -87,11 +87,9 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
       return
     }
 
-    const { unbindProjectFromSessions } = await import('@craft-agent/shared/sessions')
-    const touched = await unbindProjectFromSessions(workspace.rootPath, project.config.id)
-    deleteProject(workspace.rootPath, projectSlug)
+    await deleteProject(workspace.rootPath, projectSlug)
     await broadcastChanged(workspaceId, workspace.rootPath)
-    log.info(`Deleted project ${projectSlug} (unbound ${touched} sessions)`)
+    log.info(`Deleted empty project ${projectSlug}`)
   })
 
   // List assets in a project

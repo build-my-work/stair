@@ -47,6 +47,11 @@ describe('classifyExternalUrl — internal deep links', () => {
   it('is case-insensitive for the scheme', () => {
     expect(classifyExternalUrl('CRAFTAGENTS://settings').kind).toBe('internal-deeplink')
   })
+
+  it('uses the configured product scheme without claiming another product scheme', () => {
+    expect(classifyExternalUrl('stair://settings', 'stair').kind).toBe('internal-deeplink')
+    expect(classifyExternalUrl('craftagents://settings', 'stair').kind).toBe('safe-external')
+  })
 })
 
 describe('classifyExternalUrl — dangerous schemes', () => {

@@ -30,9 +30,12 @@ const DANGEROUS_SCHEMES: ReadonlyMap<string, string> = new Map([
   ],
 ])
 
-const INTERNAL_DEEPLINK_SCHEME = 'craftagents:'
+const DEFAULT_INTERNAL_DEEPLINK_SCHEME = 'craftagents'
 
-export function classifyExternalUrl(rawUrl: string): UrlClassification {
+export function classifyExternalUrl(
+  rawUrl: string,
+  internalDeepLinkScheme = DEFAULT_INTERNAL_DEEPLINK_SCHEME,
+): UrlClassification {
   if (typeof rawUrl !== 'string' || rawUrl.trim() === '') {
     return { kind: 'dangerous', reason: 'URL is empty or whitespace-only.' }
   }
@@ -51,15 +54,19 @@ export function classifyExternalUrl(rawUrl: string): UrlClassification {
     return { kind: 'dangerous', scheme: protocol, reason: blockedReason }
   }
 
-  if (protocol === INTERNAL_DEEPLINK_SCHEME) {
+  const internalProtocol = `${internalDeepLinkScheme.replace(/:$/u, '').toLowerCase()}:`
+  if (protocol === internalProtocol) {
     return { kind: 'internal-deeplink' }
   }
 
   return { kind: 'safe-external' }
 }
 
-export function isSafeExternalUrl(rawUrl: string): boolean {
-  return classifyExternalUrl(rawUrl).kind === 'safe-external'
+export function isSafeExternalUrl(
+  rawUrl: string,
+  internalDeepLinkScheme = DEFAULT_INTERNAL_DEEPLINK_SCHEME,
+): boolean {
+  return classifyExternalUrl(rawUrl, internalDeepLinkScheme).kind === 'safe-external'
 }
 
 /**

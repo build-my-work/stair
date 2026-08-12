@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { shouldAllowToolInMode, extractBashWriteTarget } from '../../agent/mode-manager.ts';
+import { shouldAllowToolInMode, extractBashWriteTarget, getPathHint } from '../../agent/mode-manager.ts';
 
 describe('mode-manager path containment for plans/data exceptions', () => {
   let base: string;
@@ -117,5 +117,14 @@ describe('mode-manager path containment for plans/data exceptions', () => {
       expect(result.reason).toContain('read-only allowlist');
       expect(result.reason).not.toContain('Write blocked (Explore mode) - target not in allowed folders');
     }
+  });
+
+  it('recognizes the active product workspace root without relying on .craft-agent', () => {
+    const workspaceRoot = join(base, '.stair', 'workspaces', 'workspace-a');
+    const sessionPlans = join(workspaceRoot, 'sessions', 'session-a', 'plans');
+
+    expect(getPathHint(join(workspaceRoot, 'config.json'), sessionPlans)).toBe(
+      'Hint: Write to the session plans or data folder, not the workspace root.',
+    );
   });
 });

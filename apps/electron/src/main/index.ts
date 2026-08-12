@@ -7,6 +7,13 @@ import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, shell } 
 import { createHash, randomUUID } from 'crypto'
 import { hostname, homedir } from 'os'
 import * as Sentry from '@sentry/electron/main'
+import { resolveDesktopProductProfile } from './product-profile'
+
+const productProfile = resolveDesktopProductProfile(process.env)
+app.setName(productProfile.appName)
+if (productProfile.userDataDir) {
+  app.setPath('userData', productProfile.userDataDir)
+}
 
 // Initialize Sentry error tracking as early as possible after app import.
 // Only enabled in production (packaged) builds to avoid noise during development.
@@ -69,7 +76,7 @@ Sentry.init({
 // the system prompt's "Preferred language" line, and the native menu.
 import { setupI18n, i18n, SUPPORTED_LANGUAGE_CODES, type LanguageCode } from '@craft-agent/shared/i18n'
 import { getPersistedUiLanguage, setPersistedUiLanguage } from '@craft-agent/shared/config'
-setupI18n()
+setupI18n([], { productName: productProfile.appName })
 const persistedUiLanguage = getPersistedUiLanguage()
 if (persistedUiLanguage) {
   void i18n.changeLanguage(persistedUiLanguage)
@@ -205,7 +212,7 @@ registerPiModelResolver((piAuthProvider) =>
 
 // Custom URL scheme for deeplinks (e.g., craftagents://auth-complete)
 // Supports multi-instance dev: CRAFT_DEEPLINK_SCHEME env var (craftagents1, craftagents2, etc.)
-const DEEPLINK_SCHEME = process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'
+const DEEPLINK_SCHEME = productProfile.deepLinkScheme
 
 let windowManager: WindowManager | null = null
 let sessionManager: SessionManager | null = null
@@ -223,10 +230,6 @@ let messagingHandle: MessagingBootstrapHandle | null = null
 
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
-
-// Set app name early (before app.whenReady) to ensure correct macOS menu bar title
-// Supports multi-instance dev: CRAFT_APP_NAME env var (e.g., "Craft Agents [1]")
-app.setName(process.env.CRAFT_APP_NAME || 'Craft Agents')
 
 // Register as default protocol client for craftagents:// URLs
 // This must be done before app.whenReady() on some platforms
@@ -430,10 +433,12 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin' && app.dock) {
     // In packaged app, resources are at dist/resources/ (same level as __dirname)
     // In dev, resources are at ../resources/ (sibling of dist/)
-    const dockIconPath = [
-      join(__dirname, 'resources/icon.png'),
-      join(__dirname, '../resources/icon.png'),
-    ].find(p => existsSync(p))
+    const dockIconPath = productProfile.iconPath && existsSync(productProfile.iconPath)
+      ? productProfile.iconPath
+      : [
+          join(__dirname, 'resources/icon.png'),
+          join(__dirname, '../resources/icon.png'),
+        ].find(p => existsSync(p))
 
     if (dockIconPath) {
       app.dock.setIcon(dockIconPath)
@@ -666,13 +671,13 @@ app.whenReady().then(async () => {
             sessionManager: sm,
             credentialManager: getCredentialManager(),
             getMessagingDir: (wsId: string) =>
-              join(homedir(), '.craft-agent', 'workspaces', wsId, 'messaging'),
+              join(getDefaultWorkspacesDir(), wsId, 'messaging'),
             getLegacyMessagingDir: (wsId: string) => {
               const ws = getWorkspaces().find((w) => w.id === wsId)
               return ws ? join(ws.rootPath, 'messaging') : undefined
             },
             // Route messaging diagnostics through the dedicated messaging log
-            // at ~/.craft-agent/logs/messaging-gateway.log.
+            // in the active product configuration directory.
             logger: messagingGatewayLog,
             // WhatsApp worker runs under Electron's embedded Node via
             // ELECTRON_RUN_AS_NODE (WhatsAppAdapter defaults nodeBin to

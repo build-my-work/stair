@@ -3,13 +3,14 @@ import { useTranslation } from 'react-i18next'
 import { useTheme } from '@/hooks/useTheme'
 import type { ThemeOverrides } from '@config/theme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
-import type { Session, Workspace, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
+import type { Session, Workspace, WorkspaceSettings, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
 import type { SessionDraft, DraftAttachmentRef } from '@craft-agent/shared/config'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
 import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
 import { generateMessageId } from '../shared/types'
 import { useEventProcessor } from './event-processor'
 import type { AgentEvent, Effect } from './event-processor'
+import { createEmptySession } from './event-processor/helpers'
 import { AppShell } from '@/components/app-shell/AppShell'
 import type { AppShellContextType } from '@/context/AppShellContext'
 import { OnboardingWizard, ReauthScreen } from '@/components/onboarding'
@@ -23,9 +24,13 @@ import { DismissibleLayerProvider } from '@/context/DismissibleLayerContext'
 import { useWindowCloseHandler } from '@/hooks/useWindowCloseHandler'
 import { useOnboarding } from '@/hooks/useOnboarding'
 import { useNotifications } from '@/hooks/useNotifications'
-import { useSession } from '@/hooks/useSession'
+import { useIsMultiSelectActive, useSession } from '@/hooks/useSession'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
-import { NavigationProvider } from '@/contexts/NavigationContext'
+import {
+  isSessionsNavigation,
+  NavigationProvider,
+  useNavigationState,
+} from '@/contexts/NavigationContext'
 import { navigate, routes } from './lib/navigate'
 import { attachmentFromContentRef, toDraftRef } from './lib/drafts'
 import { stripMarkdown } from './utils/text'
@@ -59,7 +64,8 @@ import {
   showBackgroundFinishedChipAtom,
   pushBackgroundFinishedAtom,
 } from '@/atoms/background-finished'
-import { visibleSessionIdsAtom } from '@/atoms/panel-stack'
+import { visibleWorkbenchSessionIdsAtom } from '@/workbench/workbench-state'
+import { removeSessionFromWorkbenchAtom } from '@/workbench/workbench-commands'
 import { getSessionTitle } from '@/utils/session'
 import { extractBadges } from '@/lib/mentions'
 import { getDefaultStore } from 'jotai'
@@ -94,6 +100,11 @@ type SessionListRefreshOptions = {
   removeMissing?: boolean
   reason?: string
   selectedSessionId?: string | null
+}
+
+type LoadedWorkspaceSettings = {
+  workspaceId: string
+  settings: WorkspaceSettings | null
 }
 
 const SESSION_REFRESH_LOG_ID_LIMIT = 25
@@ -299,6 +310,7 @@ export default function App() {
   const initializeSessions = useSetAtom(initializeSessionsAtom)
   const addSession = useSetAtom(addSessionAtom)
   const removeSession = useSetAtom(removeSessionAtom)
+  const removeSessionFromWorkbench = useSetAtom(removeSessionFromWorkbenchAtom)
   const updateSessionDirect = useSetAtom(updateSessionAtom)
   const replaceLoadedSession = useSetAtom(replaceLoadedSessionAtom)
   const store = useStore()
@@ -345,8 +357,13 @@ export default function App() {
 
   // LLM connections with authentication status (for provider selection)
   const [llmConnections, setLlmConnections] = useState<LlmConnectionWithStatus[]>([])
-  // Workspace default LLM connection (for new sessions)
-  const [workspaceDefaultLlmConnection, setWorkspaceDefaultLlmConnection] = useState<string | undefined>()
+  // Keep async settings tied to their Workspace so a switch cannot expose stale defaults.
+  const [loadedWorkspaceSettings, setLoadedWorkspaceSettings] = useState<LoadedWorkspaceSettings | null>(null)
+  const activeWorkspaceSettings = loadedWorkspaceSettings?.workspaceId === windowWorkspaceId
+    ? loadedWorkspaceSettings.settings
+    : null
+  const workspaceDefaultLlmConnection = activeWorkspaceSettings?.defaultLlmConnection
+  const workspaceDefaultProjectId = activeWorkspaceSettings?.defaultProjectId ?? null
   // Global default LLM connection slug (from app config)
   const [defaultLlmConnectionSlug, setDefaultLlmConnectionSlug] = useState<string | undefined>()
 
@@ -365,6 +382,8 @@ export default function App() {
   // during typing; attachments are stored as lightweight refs (path + name) and
   // hydrated via readFileAttachment() on session switch.
   const sessionDraftsRef = useRef<Map<string, SessionDraft>>(new Map())
+  const hydratingCreatedSessionsRef = useRef<Set<string>>(new Set())
+  const createdSessionsWithEarlyEventsRef = useRef<Set<string>>(new Set())
   // Unified session options for all session-scoped settings
   const [sessionOptions, setSessionOptions] = useState<Map<string, SessionOptions>>(new Map())
 
@@ -651,15 +670,17 @@ export default function App() {
 
   // Refresh LLM connections from config (called on workspace change and after connection updates)
   const refreshLlmConnections = useCallback(async () => {
+    const requestedWorkspaceId = windowWorkspaceId
     const connections = await window.electronAPI.listLlmConnectionsWithStatus()
     setLlmConnections(connections)
     setDefaultLlmConnectionSlug(resolveDefaultConnectionSlug(connections))
     // Also refresh workspace default
-    if (windowWorkspaceId) {
-      const settings = await window.electronAPI.getWorkspaceSettings(windowWorkspaceId)
-      setWorkspaceDefaultLlmConnection(settings?.defaultLlmConnection)
+    if (requestedWorkspaceId) {
+      const settings = await window.electronAPI.getWorkspaceSettings(requestedWorkspaceId)
+      if (store.get(windowWorkspaceIdAtom) !== requestedWorkspaceId) return
+      setLoadedWorkspaceSettings({ workspaceId: requestedWorkspaceId, settings })
     }
-  }, [resolveDefaultConnectionSlug, windowWorkspaceId])
+  }, [resolveDefaultConnectionSlug, store, windowWorkspaceId])
 
   // Handle onboarding completion
   const handleOnboardingComplete = useCallback(async () => {
@@ -834,7 +855,7 @@ export default function App() {
     // Handoff events signal end of streaming - need to sync back to React state
     // Also includes todo_state_changed so status updates immediately reflect in sidebar
     // async_operation included so shimmer effect on session titles updates in real-time
-    const handoffEventTypes = new Set(['complete', 'error', 'interrupted', 'typed_error', 'session_status_changed', 'session_metadata_changed', 'session_flagged', 'session_unflagged', 'name_changed', 'labels_changed', 'project_id_changed', 'title_generated', 'async_operation'])
+    const handoffEventTypes = new Set(['complete', 'error', 'interrupted', 'typed_error', 'session_status_changed', 'session_metadata_changed', 'session_flagged', 'session_unflagged', 'name_changed', 'labels_changed', 'title_generated', 'async_operation'])
 
     // Helper to handle side effects (same logic for both paths)
     const handleEffects = (effects: Effect[], sessionId: string, eventType: string) => {
@@ -941,30 +962,62 @@ export default function App() {
 
       // Session lifecycle events are handled explicitly (not by the agent event processor).
       if (event.type === 'session_created') {
+        if (hydratingCreatedSessionsRef.current.has(sessionId)) return
+        hydratingCreatedSessionsRef.current.add(sessionId)
+
+        // Register Project ownership synchronously. Agent events can arrive while the
+        // authoritative Session payload is still being fetched; without this placeholder
+        // those events have no legal Project target and would be dropped.
+        if (!store.get(sessionMetaMapAtom).has(sessionId)) {
+          addSession({
+            ...createEmptySession(sessionId, workspaceId, event.projectId),
+            isProcessing: false,
+          })
+        }
+
         window.electronAPI.getSessionMessages(sessionId)
           .then((createdSession: Session | null) => {
-            if (createdSession) {
-              const existingMeta = store.get(sessionMetaMapAtom).has(sessionId)
-              if (existingMeta) {
-                replaceLoadedSession(createdSession)
-              } else {
-                addSession(createdSession)
-              }
-              syncSessionOptionsFromSession(createdSession)
-              return
+            if (!createdSession) {
+              return window.electronAPI.getSessions().then(initializeSessions)
             }
-            return window.electronAPI.getSessions().then(initializeSessions)
+
+            let hydratedSession = createdSession
+            const currentSession = store.get(sessionAtomFamily(sessionId))
+            if (createdSessionsWithEarlyEventsRef.current.has(sessionId) && currentSession) {
+              const persistedMessageIds = new Set(createdSession.messages.map(message => message.id))
+              hydratedSession = {
+                ...createdSession,
+                ...currentSession,
+                id: createdSession.id,
+                workspaceId: createdSession.workspaceId,
+                projectId: createdSession.projectId,
+                messages: [
+                  ...createdSession.messages,
+                  ...currentSession.messages.filter(message => !persistedMessageIds.has(message.id)),
+                ],
+              }
+            }
+            replaceLoadedSession(hydratedSession)
+            syncSessionOptionsFromSession(hydratedSession)
           })
           .catch((error: unknown) => console.error('Failed to handle session_created event:', error))
+          .finally(() => {
+            hydratingCreatedSessionsRef.current.delete(sessionId)
+            createdSessionsWithEarlyEventsRef.current.delete(sessionId)
+          })
         return
       }
 
       if (event.type === 'session_deleted') {
+        removeSessionFromWorkbench(sessionId)
         removeSession(sessionId)
         return
       }
 
       const agentEvent = event as unknown as AgentEvent
+      if (hydratingCreatedSessionsRef.current.has(sessionId)) {
+        createdSessionsWithEarlyEventsRef.current.add(sessionId)
+      }
 
       // Track activity for stale session watchdog
       trackSessionActivity(sessionId)
@@ -981,6 +1034,12 @@ export default function App() {
 
       // Check if session is currently streaming (atom is source of truth)
       const atomSession = store.get(sessionAtomFamily(sessionId))
+      const projectId = atomSession?.projectId
+        ?? store.get(sessionMetaMapAtom).get(sessionId)?.projectId
+      if (!projectId) {
+        console.error(`Ignoring event for Session ${sessionId} without Project ownership`)
+        return
+      }
       const isStreaming = atomSession?.isProcessing === true
       const isHandoff = handoffEventTypes.has(event.type)
 
@@ -993,7 +1052,8 @@ export default function App() {
         const { session: updatedSession, effects } = processAgentEvent(
           agentEvent,
           currentSession,
-          workspaceId
+          workspaceId,
+          projectId,
         )
 
         // Update atom directly (UI sees update immediately)
@@ -1032,7 +1092,7 @@ export default function App() {
             // window is focused, so the chip is the only completion signal then.
             if (
               store.get(showBackgroundFinishedChipAtom) &&
-              !store.get(visibleSessionIdsAtom).has(sessionId)
+              !store.get(visibleWorkbenchSessionIdsAtom).has(sessionId)
             ) {
               store.set(pushBackgroundFinishedAtom, {
                 sessionId,
@@ -1052,7 +1112,8 @@ export default function App() {
       const { session: updatedSession, effects } = processAgentEvent(
         agentEvent,
         currentSession,
-        workspaceId
+        workspaceId,
+        projectId,
       )
 
       // Handle side effects
@@ -1083,6 +1144,7 @@ export default function App() {
     initializeSessions,
     addSession,
     removeSession,
+    removeSessionFromWorkbench,
     syncSessionOptionsFromSession,
     applyPermissionModeState,
     reconcilePermissionModeState,
@@ -1191,15 +1253,10 @@ export default function App() {
 
     await window.electronAPI.deleteSession(sessionId)
     // Remove from per-session atom and metadata map (no sessionsAtom)
+    removeSessionFromWorkbench(sessionId)
     removeSession(sessionId)
     return true
-  }, [store, removeSession])
-
-  // Auto-delete handler for empty sessions (fire-and-forget, no confirmation)
-  const handleAutoDeleteEmptySession = useCallback((sessionId: string) => {
-    window.electronAPI.deleteSession(sessionId)
-    removeSession(sessionId)
-  }, [removeSession])
+  }, [store, removeSession, removeSessionFromWorkbench])
 
   const handleFlagSession = useCallback((sessionId: string) => {
     updateSessionById(sessionId, { isFlagged: true })
@@ -1783,6 +1840,7 @@ export default function App() {
       await window.electronAPI.switchWorkspace(workspaceId)
 
       // 2. Update React state to trigger re-renders
+      setLoadedWorkspaceSettings(null)
       setWindowWorkspaceId(workspaceId)
 
       // 3. Clear selected session - the old session belongs to the previous workspace
@@ -1848,6 +1906,7 @@ export default function App() {
     workspaces,
     activeWorkspaceId: windowWorkspaceId,
     activeWorkspaceSlug: windowWorkspaceSlug,
+    defaultProjectId: workspaceDefaultProjectId,
     llmConnections,
     workspaceDefaultLlmConnection,
     refreshLlmConnections,
@@ -1894,6 +1953,7 @@ export default function App() {
     workspaces,
     windowWorkspaceId,
     windowWorkspaceSlug,
+    workspaceDefaultProjectId,
     llmConnections,
     workspaceDefaultLlmConnection,
     refreshLlmConnections,
@@ -2050,17 +2110,16 @@ export default function App() {
         <NavigationProvider
           workspaceId={windowWorkspaceId}
           workspaceSlug={windowWorkspaceSlug}
+          defaultProjectId={workspaceDefaultProjectId}
           onSwitchWorkspaceBySlug={handleSwitchWorkspaceBySlug}
           onCreateSession={handleCreateSession}
           onInputChange={handleInputChange}
-          getDraft={getDraft}
-          onAutoDeleteEmptySession={handleAutoDeleteEmptySession}
           isReady={appState === 'ready'}
           isSessionsReady={sessionsLoaded}
           remoteWorkspaceId={windowRemoteWorkspaceId}
         >
           {/* Handle window close requests (X button, Cmd+W) - close modal first if open */}
-          <WindowCloseHandler />
+          <WorkbenchWindowCloseHandler />
 
           {/* Splash screen overlay - fades out when fully ready */}
           {showSplash && (
@@ -2130,6 +2189,18 @@ export default function App() {
  */
 function WindowCloseHandler() {
   useWindowCloseHandler()
+  return null
+}
+
+/** Ready-state close handling may close only a currently visible Session Panel. */
+function WorkbenchWindowCloseHandler() {
+  const navigationState = useNavigationState()
+  const isMultiSelectActive = useIsMultiSelectActive()
+  useWindowCloseHandler(
+    isSessionsNavigation(navigationState)
+      && navigationState.viewMode !== 'board'
+      && !isMultiSelectActive,
+  )
   return null
 }
 

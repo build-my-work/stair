@@ -1,14 +1,7 @@
 import i18n, { type i18n as I18nInstance, type InitOptions } from "i18next";
 import { LOCALE_REGISTRY } from "./registry";
 import { SUPPORTED_LANGUAGE_CODES } from "./languages";
-
-// Build i18next resources from the locale registry.
-const resources = Object.fromEntries(
-  Object.entries(LOCALE_REGISTRY).map(([code, entry]) => [
-    code,
-    { translation: entry.messages },
-  ]),
-);
+import { applyProductBrandingToMessages, CRAFT_PRODUCT_NAME } from "../stair-branding";
 
 // Safe as a boolean guard because init is synchronous (initImmediate: false).
 // If async init is ever needed, replace with a promise-based singleton.
@@ -22,8 +15,17 @@ let initialized = false;
 export function setupI18n(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   plugins: any[] = [],
+  options: { productName?: string } = {},
 ): I18nInstance {
   if (initialized) return i18n;
+
+  const productName = options.productName ?? CRAFT_PRODUCT_NAME;
+  const resources = Object.fromEntries(
+    Object.entries(LOCALE_REGISTRY).map(([code, entry]) => [
+      code,
+      { translation: applyProductBrandingToMessages(entry.messages, productName) },
+    ]),
+  );
 
   let instance = i18n;
   for (const plugin of plugins) {

@@ -2,10 +2,10 @@
  * PermissionsSettingsPage
  *
  * Displays permissions configuration for Explore mode.
- * Shows both default patterns (from ~/.craft-agent/permissions/default.json)
+ * Shows both app-level default patterns
  * and custom workspace additions (from workspace permissions.json).
  *
- * Default patterns can be edited by the user in ~/.craft-agent/permissions/default.json.
+ * Default patterns can be edited by the user in the active product configuration directory.
  * Custom patterns can be edited via workspace permissions.json file.
  */
 
@@ -37,7 +37,7 @@ export const meta: DetailsPageMeta = {
 }
 
 /**
- * Build default permissions data from ~/.craft-agent/permissions/default.json.
+ * Build app-level default permissions data.
  * These are the Explore mode patterns that can be customized by the user.
  * Patterns can include comments which are displayed in the table.
  *
@@ -141,7 +141,7 @@ export default function PermissionsSettingsPage() {
   const [defaultPermissionsPath, setDefaultPermissionsPath] = useState<string | null>(null)
   const [customConfig, setCustomConfig] = useState<PermissionsConfigFile | null>(null)
 
-  // Build default permissions data from ~/.craft-agent/permissions/default.json
+  // Build app-level default permissions data
   const defaultPermissionsData = useMemo(() => buildDefaultPermissionsData(defaultConfig), [defaultConfig])
 
   // Fallback labels for custom permissions (translated)
@@ -269,7 +269,7 @@ export default function PermissionsSettingsPage() {
                         <div className="p-8 text-center text-muted-foreground">
                           <p className="text-sm">{t("settings.permissions.noDefaultPermissions")}</p>
                           <p className="text-xs mt-1 text-foreground/40">
-                            {t("settings.permissions.noDefaultPermissionsDesc")}
+                            {t("settings.permissions.noDefaultPermissionsDesc", { path: defaultPermissionsPath ?? '' })}
                           </p>
                         </div>
                       )}

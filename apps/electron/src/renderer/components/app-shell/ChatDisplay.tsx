@@ -537,7 +537,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   const followUpOpenNonceRef = React.useRef(0)
 
   // Navigation for session branching
-  const { navigate } = useNavigation()
+  const { navigate, openSessionInNewPanel } = useNavigation()
 
   // Get isDark from useTheme hook for overlay theme
   // This accounts for scenic themes (like Haze) that force dark mode
@@ -1745,7 +1745,15 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                                 enabledSourceSlugs: session.enabledSourceSlugs,
                               }
                             )
-                            navigate(routes.view.allSessions(child.id), { newPanel: resolveBranchNewPanelOption(options) })
+                            if (resolveBranchNewPanelOption(options)) {
+                              const opened = openSessionInNewPanel(child.id, { afterSessionId: session.id })
+                              if (!opened) {
+                                await window.electronAPI.deleteSession(child.id)
+                                return
+                              }
+                            } else {
+                              navigate(routes.view.allSessions(child.id))
+                            }
                           } catch (error) {
                             const rawMessage = error instanceof Error ? error.message : 'Failed to create branch'
                             const message = rawMessage.includes('source and target providers must match')

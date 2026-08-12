@@ -755,7 +755,7 @@ export async function testBackendConnection(args: {
       context,
       coreConfig: {
         workspace: { id: '__test', name: 'Connection Test', slug: '__test', rootPath: cwd, createdAt: 0 },
-        session: { id: `test-${now}`, workspaceRootPath: cwd, createdAt: 0, lastUsedAt: 0 },
+        session: { id: `test-${now}`, workspaceRootPath: cwd, projectId: '__test-project', createdAt: 0, lastUsedAt: 0 },
         isHeadless: true,
         miniModel: testModel,
         envOverrides: args.provider === 'anthropic'

@@ -49,6 +49,7 @@ function createTestSession(): Session {
     id: 'test-session',
     name: 'Test Session',
     workspaceRootPath: '/test/workspace',
+    projectId: 'test-project',
     createdAt: Date.now(),
     lastUsedAt: Date.now(),
     permissionMode: 'ask',

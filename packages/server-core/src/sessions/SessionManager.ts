@@ -46,6 +46,7 @@ import {
   loadSession as loadStoredSession,
   saveSession as saveStoredSession,
   createSession as createStoredSession,
+  getOrCreateSessionById as getOrCreateStoredSessionById,
   deleteSession as deleteStoredSession,
   updateSessionMetadata,
   canUpdateSdkCwd,
@@ -75,7 +76,7 @@ import {
 } from '@craft-agent/shared/sessions'
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, hasRenewEndpoint, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter } from '@craft-agent/shared/sources'
 import { listTaskSlugs, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
-import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
+import { createTaskFromSpec } from '../tasks'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
 import { resolveAuthEnvVars } from '@craft-agent/shared/config'
@@ -857,8 +858,8 @@ interface ManagedSession {
   enabledSourceSlugs?: string[]
   // Labels applied to this session (additive tags, many-per-session)
   labels?: string[]
-  // Workspace-scoped project binding (undefined = unbound)
-  projectId?: string
+  // Immutable workspace-scoped Project ownership.
+  projectId: string
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
   // Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus
@@ -1014,6 +1015,23 @@ interface ManagedSession {
   }
 }
 
+export function getSessionInSameProject<
+  T extends { id: string; projectId: string; workspace: { id: string } },
+>(
+  sessions: ReadonlyMap<string, T>,
+  caller: T,
+  targetId: string,
+): T {
+  const target = sessions.get(targetId)
+  if (!target) {
+    throw new Error(`SESSION_NOT_FOUND: ${targetId}`)
+  }
+  if (target.workspace.id !== caller.workspace.id || target.projectId !== caller.projectId) {
+    throw new Error(`CROSS_PROJECT_SESSION: ${targetId} is outside Project ${caller.projectId}`)
+  }
+  return target
+}
+
 const PI_SDK_MESSAGE_ID_CACHE_LIMIT = 256
 
 export interface AutoRetryPendingHost {
@@ -1057,6 +1075,11 @@ export function createManagedSession(
   workspace: Workspace,
   overrides?: Partial<ManagedSession>,
 ): ManagedSession {
+  const projectId = overrides?.projectId ?? source.projectId
+  if (typeof projectId !== 'string' || !projectId.trim()) {
+    throw new Error(`Session ${source.id} is missing projectId`)
+  }
+
   const s = source as Record<string, unknown>
   const sourceFields = Object.fromEntries(
     Object.entries(s).filter(([, v]) => v !== undefined)
@@ -1096,6 +1119,7 @@ export function createManagedSession(
     }),
     // Caller overrides (permissionMode defaults, thinkingLevel, messagesLoaded, etc.)
     ...overrides,
+    projectId,
   } as ManagedSession
 
   if (managed.branchFromMessageId && !managed.branchContextStrategy) {
@@ -1529,9 +1553,13 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
-    // Project binding (no dedicated event today — handled via metaChanged broadcast)
+    // Project ownership is immutable. Restore the authoritative in-memory value if an
+    // external writer edits the header instead of adopting the invalid value.
     if (managed.projectId !== header.projectId) {
-      managed.projectId = header.projectId
+      sessionLog.error(`Rejected external projectId change for session ${sessionId}`, {
+        currentProjectId: managed.projectId,
+        attemptedProjectId: header.projectId,
+      })
       changed = true
     }
 
@@ -1972,50 +2000,54 @@ export class SessionManager implements ISessionManager {
         const wsDefaultWorkingDir = wsConfig?.defaults?.workingDirectory
 
         for (const meta of sessionMetadata) {
-          // Create managed session from metadata only (messages lazy-loaded on demand)
-          // This dramatically reduces memory usage at startup - messages are loaded
-          // when getSession() is called for a specific session
-          const managed = createManagedSession(meta, workspace, {
-            // The header carries the session's explicit source selection (persisted at
-            // creation / by setSessionSources). Seed it now so the renderer's very first
-            // session list shows the right chips — sessions without one hydrate any legacy
-            // body value on message load (see hydrateMessagesForColdPersist).
-            enabledSourceSlugs: meta.enabledSourceSlugs,
-            workingDirectory: meta.workingDirectory ?? wsDefaultWorkingDir,
-          })
-
-          // Migration: clear orphaned llmConnection references (e.g., after connection was deleted)
-          if (managed.llmConnection) {
-            const conn = resolveSessionConnection(managed.llmConnection, undefined)
-            if (!conn) {
-              sessionLog.warn(`Session ${meta.id} has orphaned llmConnection "${managed.llmConnection}", clearing`)
-              managed.llmConnection = undefined
-              managed.connectionLocked = false
-            }
-          }
-
-          // Initialize mode-manager state for restored sessions even before agent creation.
-          // This keeps diagnostics/effective mode aligned with persisted session metadata.
-          setPermissionMode(meta.id, managed.permissionMode ?? 'ask', { changedBy: 'restore' })
-          if (managed.previousPermissionMode) {
-            hydratePreviousPermissionMode(meta.id, managed.previousPermissionMode)
-          }
-
-          this.sessions.set(meta.id, managed)
-
-          // Initialize session metadata in AutomationSystem for diffing
-          const automationSystem = this.automationSystems.get(workspaceRootPath)
-          if (automationSystem) {
-            automationSystem.setInitialSessionMetadata(meta.id, {
-              permissionMode: meta.permissionMode,
-              labels: meta.labels,
-              isFlagged: meta.isFlagged,
-              sessionStatus: meta.sessionStatus,
-              sessionName: managed.name,
+          try {
+            // Create managed session from metadata only (messages lazy-loaded on demand)
+            // This dramatically reduces memory usage at startup - messages are loaded
+            // when getSession() is called for a specific session
+            const managed = createManagedSession(meta, workspace, {
+              // The header carries the session's explicit source selection (persisted at
+              // creation / by setSessionSources). Seed it now so the renderer's very first
+              // session list shows the right chips — sessions without one hydrate any legacy
+              // body value on message load (see hydrateMessagesForColdPersist).
+              enabledSourceSlugs: meta.enabledSourceSlugs,
+              workingDirectory: meta.workingDirectory ?? wsDefaultWorkingDir,
             })
-          }
 
-          totalSessions++
+            // Migration: clear orphaned llmConnection references (e.g., after connection was deleted)
+            if (managed.llmConnection) {
+              const conn = resolveSessionConnection(managed.llmConnection, undefined)
+              if (!conn) {
+                sessionLog.warn(`Session ${meta.id} has orphaned llmConnection "${managed.llmConnection}", clearing`)
+                managed.llmConnection = undefined
+                managed.connectionLocked = false
+              }
+            }
+
+            // Initialize mode-manager state for restored sessions even before agent creation.
+            // This keeps diagnostics/effective mode aligned with persisted session metadata.
+            setPermissionMode(meta.id, managed.permissionMode ?? 'ask', { changedBy: 'restore' })
+            if (managed.previousPermissionMode) {
+              hydratePreviousPermissionMode(meta.id, managed.previousPermissionMode)
+            }
+
+            this.sessions.set(meta.id, managed)
+
+            // Initialize session metadata in AutomationSystem for diffing
+            const automationSystem = this.automationSystems.get(workspaceRootPath)
+            if (automationSystem) {
+              automationSystem.setInitialSessionMetadata(meta.id, {
+                permissionMode: meta.permissionMode,
+                labels: meta.labels,
+                isFlagged: meta.isFlagged,
+                sessionStatus: meta.sessionStatus,
+                sessionName: managed.name,
+              })
+            }
+
+            totalSessions++
+          } catch (error) {
+            sessionLog.error(`Failed to load Session ${meta.id}; continuing with remaining Sessions:`, error)
+          }
         }
       }
 
@@ -2606,6 +2638,9 @@ export class SessionManager implements ISessionManager {
     // Options.permissionMode overrides the workspace default (used by EditPopover for auto-execute)
     const workspaceRootPath = workspace.rootPath
     const wsConfig = loadWorkspaceConfig(workspaceRootPath)
+    if (!wsConfig) {
+      throw new Error(`Invalid workspace: ${workspaceId}`)
+    }
     const globalDefaults = loadConfigDefaults()
 
     // Read permission mode from workspace config, fallback to global defaults
@@ -2665,38 +2700,6 @@ export class SessionManager implements ISessionManager {
       resolvedWorkingDir = userDefaultWorkingDir
     } else {
       resolvedWorkingDir = options.workingDirectory
-    }
-
-    // Resolve project binding. When a projectId is provided and the project has a
-    // workingDirectory configured, inherit it (only when the caller didn't pass an
-    // explicit override). This lets "+ New session in {project}" reuse the project's
-    // bound directory without duplicating logic on the renderer side.
-    // Subtasks inherit the parent's project when the caller didn't bind one explicitly —
-    // a child of a project-bound task belongs to that project (board quick-add passes none),
-    // so project-scoped filtering sees the whole task family.
-    const inheritedProjectId = options?.parentSessionId
-      ? this.sessions.get(options.parentSessionId)?.projectId
-      : undefined
-    const requestedProjectId = options?.projectId ?? inheritedProjectId
-    let resolvedProjectId: string | undefined
-    if (requestedProjectId) {
-      const { loadProjectById } = await import('@craft-agent/shared/projects')
-      const project = loadProjectById(workspaceRootPath, requestedProjectId)
-      if (!project) {
-        // An EXPLICIT binding to a missing project is a caller bug; an inherited one
-        // (parent's project deleted since) just no-ops rather than failing the child.
-        if (options?.projectId) {
-          throw new Error(`Project ${options.projectId} not found in workspace ${workspaceId}`)
-        }
-      } else {
-        resolvedProjectId = project.config.id
-        if (
-          (options?.workingDirectory === undefined || options?.workingDirectory === 'user_default') &&
-          project.config.workingDirectory
-        ) {
-          resolvedWorkingDir = project.config.workingDirectory
-        }
-      }
     }
 
     // Validate branch request up-front so branch metadata is only set for valid branches.
@@ -2886,6 +2889,41 @@ export class SessionManager implements ISessionManager {
         branchFromSdkSessionId: !!validatedBranch.branchFromSdkSessionId,
         copiedMessageCount: validatedBranch.branchIdx + 1,
       })
+    }
+
+    let parentProjectId: string | undefined
+    if (options?.parentSessionId) {
+      const parentManaged = this.sessions.get(options.parentSessionId)
+      if (parentManaged && parentManaged.workspace.rootPath !== workspaceRootPath) {
+        throw new Error('Invalid parent session: parent belongs to a different workspace')
+      }
+      const parent = parentManaged ?? loadStoredSession(workspaceRootPath, options.parentSessionId)
+      if (!parent?.projectId) {
+        throw new Error(`Invalid parent session: ${options.parentSessionId} not found`)
+      }
+      parentProjectId = parent.projectId
+    }
+
+    const branchProjectId = validatedBranch?.sourceSession.projectId
+    if (parentProjectId && branchProjectId && parentProjectId !== branchProjectId) {
+      throw new Error('CROSS_PROJECT_SESSION: branch source and parent belong to different Projects')
+    }
+    const inheritedProjectId = branchProjectId ?? parentProjectId
+    if (options?.projectId && inheritedProjectId && options.projectId !== inheritedProjectId) {
+      throw new Error('CROSS_PROJECT_SESSION: child Session must inherit its source Project')
+    }
+
+    const resolvedProjectId = options?.projectId ?? inheritedProjectId ?? wsConfig.defaultProjectId
+    const { loadProjectById } = await import('@craft-agent/shared/projects')
+    const project = loadProjectById(workspaceRootPath, resolvedProjectId)
+    if (!project) {
+      throw new Error(`Project ${resolvedProjectId} not found in workspace ${workspaceId}`)
+    }
+    if (
+      (options?.workingDirectory === undefined || options?.workingDirectory === 'user_default') &&
+      project.config.workingDirectory
+    ) {
+      resolvedWorkingDir = project.config.workingDirectory
     }
 
     // Use storage layer to create and persist the session
@@ -3088,7 +3126,7 @@ export class SessionManager implements ISessionManager {
     // instead of fabricating a titleless "New Chat" from the first streamed event. Emitted at
     // the very end so a thrown branch-preflight failure above never announces an orphan.
     if (internal?.emitCreatedEvent !== false) {
-      this.notifySessionCreated(workspaceId, storedSession.id)
+      this.notifySessionCreated(workspaceId, storedSession.id, storedSession.projectId)
     }
 
     return managedToSession(managed, isBranch ? { messages: managed.messages } : undefined)
@@ -3102,8 +3140,8 @@ export class SessionManager implements ISessionManager {
    * directly only for sessions built outside `createSession` (e.g. the SessionBundle import
    * path, which assembles a ManagedSession by hand). The renderer handler is idempotent.
    */
-  notifySessionCreated(workspaceId: string, sessionId: string): void {
-    this.sendEvent({ type: 'session_created', sessionId }, workspaceId)
+  notifySessionCreated(workspaceId: string, sessionId: string, projectId: string): void {
+    this.sendEvent({ type: 'session_created', sessionId, projectId }, workspaceId)
   }
 
   /** Resolved working directory of a live session (used by the Tasks Conductor so child
@@ -4224,6 +4262,10 @@ export class SessionManager implements ISessionManager {
       managed.agent.onSpawnSession = async (request) => {
         sessionLog.info(`Spawn session request from session ${managed.id}:`, request.name || '(unnamed)')
 
+        if (request.projectId && request.projectId !== managed.projectId) {
+          throw new Error('CROSS_PROJECT_SESSION: spawned Sessions must stay in the caller Project')
+        }
+
         const session = await this.createSession(managed.workspace.id, {
           name: request.name,
           llmConnection: request.llmConnection ?? managed.llmConnection,
@@ -4233,7 +4275,7 @@ export class SessionManager implements ISessionManager {
           thinkingLevel: request.thinkingLevel ?? managed.thinkingLevel,
           labels: request.labels ?? managed.labels,
           workingDirectory: request.workingDirectory,
-          projectId: request.projectId ?? managed.projectId,
+          projectId: managed.projectId,
           // Spawned sessions become subtasks of the spawning session.
           parentSessionId: managed.id,
         })
@@ -4281,19 +4323,25 @@ export class SessionManager implements ISessionManager {
       // Wire up session self-management tools (set_session_labels, set_session_status, etc.)
       mergeSessionScopedToolCallbacks(managed.id, {
         setSessionLabelsFn: async (sessionId: string | undefined, labels: string[]) => {
-          await this.setSessionLabels(sessionId ?? managed.id, labels)
+          const target = sessionId
+            ? getSessionInSameProject(this.sessions, managed, sessionId)
+            : managed
+          await this.setSessionLabels(target.id, labels)
         },
         setSessionStatusFn: async (sessionId: string | undefined, status: string) => {
-          await this.setSessionStatus(sessionId ?? managed.id, status as SessionStatus)
+          const target = sessionId
+            ? getSessionInSameProject(this.sessions, managed, sessionId)
+            : managed
+          await this.setSessionStatus(target.id, status as SessionStatus)
         },
         // archive_session — archive/unarchive ANOTHER session by ID. Scoped to the
         // invoking session's workspace and blocked mid-turn (guard logic lives in
         // archive-guards.ts so it is unit-testable); delegates to the existing
         // archive/unarchive methods (which persist + emit events).
         archiveSessionFn: async (sessionId: string, archived: boolean) => {
-          const target = this.sessions.get(sessionId)
+          const target = getSessionInSameProject(this.sessions, managed, sessionId)
           const guardError = validateArchiveTarget(
-            target ? { workspaceId: target.workspace.id, isProcessing: target.isProcessing } : undefined,
+            { workspaceId: target.workspace.id, isProcessing: target.isProcessing },
             managed.workspace.id,
             sessionId,
             archived
@@ -4311,9 +4359,9 @@ export class SessionManager implements ISessionManager {
         // itself is createTaskFromSpec, shared verbatim with the tasks:create RPC.
         createTaskFn: async (input) => {
           const ws = managed.workspace
-          // Match spawn_session: an explicit project wins, otherwise keep newly
-          // captured work in the project that owns the invoking session.
-          const projectId = resolveCreateTaskProjectId(input.projectId, managed.projectId)
+          if (input.projectId && input.projectId !== managed.projectId) {
+            throw new Error('CROSS_PROJECT_SESSION: created Tasks must stay in the caller Project')
+          }
           // Slug is derived from the title and must never overwrite an existing task
           // (unlike the TaskEditor, where re-saving the same slug is the edit flow).
           const slug = uniqueTaskSlug(input.title, new Set(listTaskSlugs(ws.rootPath)))
@@ -4340,7 +4388,7 @@ export class SessionManager implements ISessionManager {
             title: input.title,
             goal: input.description,
             ...(input.acceptanceCriteria ? { acceptance_criteria: input.acceptanceCriteria } : {}),
-            ...(projectId ? { project: projectId } : {}),
+            project: managed.projectId,
             ...(input.workingDirectory ? { cwd: input.workingDirectory } : {}),
             ...(input.sources?.length ? { sources: input.sources } : {}),
             ...(input.skills?.length ? { skills: input.skills } : {}),
@@ -4358,8 +4406,7 @@ export class SessionManager implements ISessionManager {
         },
         getSessionInfoFn: (sessionId?: string) => {
           const targetId = sessionId ?? managed.id
-          const session = this.sessions.get(targetId)
-          if (!session) return null
+          const session = getSessionInSameProject(this.sessions, managed, targetId)
           return {
             id: session.id,
             name: session.name ?? session.id,
@@ -4381,6 +4428,7 @@ export class SessionManager implements ISessionManager {
           const offset = options?.offset ?? 0
 
           let sessions = this.getSessions(managed.workspace.id)
+            .filter(session => session.projectId === managed.projectId)
 
           // Filter
           if (options?.status) {
@@ -4423,9 +4471,9 @@ export class SessionManager implements ISessionManager {
           }
         },
         listBackgroundTasksFn: (sessionId?: string) => {
-          const targetId = sessionId ?? managed.id
+          const target = getSessionInSameProject(this.sessions, managed, sessionId ?? managed.id)
           const now = Date.now()
-          return this.listBackgroundTasks(targetId).map((t) => {
+          return this.listBackgroundTasks(target.id).map((t) => {
             // Prefer wall-clock elapsed; running tasks tick off startTime, terminal
             // tasks freeze at completion. Fall back to the last progress value.
             const anchorEnd = t.status === 'running' ? now : (t.completedAt ?? now)
@@ -4459,6 +4507,7 @@ export class SessionManager implements ISessionManager {
           return { resolved: null, available }
         },
         sendAgentMessageFn: async (sessionId: string, message: string, attachments?: Array<{ path: string; name?: string }>) => {
+          const target = getSessionInSameProject(this.sessions, managed, sessionId)
           // Build FileAttachment[] from paths (same pattern as spawn_session)
           let fileAttachments: FileAttachment[] | undefined
           if (attachments?.length) {
@@ -4485,7 +4534,7 @@ export class SessionManager implements ISessionManager {
           // it after the current turn (anthropic defaults to 'queue'); an idle
           // target starts processing immediately. sendMessage throws for an
           // unknown session — that rejection propagates to the handler's catch.
-          const targetBusy = this.sessions.get(sessionId)?.isProcessing === true
+          const targetBusy = target.isProcessing === true
           await this.sendMessage(sessionId, message, fileAttachments)
           return {
             delivery: targetBusy ? ('queued' as const) : ('delivered' as const),
@@ -5326,6 +5375,7 @@ export class SessionManager implements ISessionManager {
           session: {
             id: `title-${managed.id}`,
             workspaceRootPath: managed.workspace.rootPath,
+            projectId: managed.projectId,
             llmConnection: managed.llmConnection,
             createdAt: Date.now(),
             lastUsedAt: Date.now(),
@@ -7240,30 +7290,6 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Bind or unbind a session to/from a workspace project.
-   * Pass `null` to unbind. The session's working directory is NOT changed retroactively —
-   * the project binding is only used as a default for newly created sessions.
-   */
-  async setSessionProjectId(sessionId: string, projectId: string | null): Promise<void> {
-    const managed = this.sessions.get(sessionId)
-    if (managed) {
-      managed.projectId = projectId ?? undefined
-      this.setMetadataWriteGuard(managed)
-
-      this.sendEvent({
-        type: 'project_id_changed',
-        sessionId: managed.id,
-        projectId: managed.projectId ?? null,
-      }, managed.workspace.id)
-
-      this.persistSession(managed)
-      await this.flushSession(managed.id)
-      const watcher = this.configWatchers.get(managed.workspace.rootPath)
-      watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
-    }
-  }
-
-  /**
    * Set the kanban board column for a session ('todo' | 'in-progress' | 'done').
    * Pass `null` to clear (board falls back to the default column). Independent of sessionStatus.
    */
@@ -7318,7 +7344,7 @@ export class SessionManager implements ISessionManager {
   async adoptGeneratedTaskOrchestrator(
     sessionId: string,
     taskSlug: string,
-    reconcile?: { name?: string; projectId?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
+    reconcile?: { name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
   ): Promise<boolean> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
@@ -7355,7 +7381,6 @@ export class SessionManager implements ISessionManager {
     // the connection_changed event below keeps the renderer in sync.
     managed.taskSlug = taskSlug
     managed.taskDraft = false
-    if (reconcile?.projectId !== undefined) managed.projectId = reconcile.projectId
     if (connectionChanged) managed.llmConnection = reconcile!.llmConnection
     const renamed = Boolean(reconcile?.name && reconcile.name !== managed.name)
     if (renamed) managed.name = reconcile!.name!
@@ -7372,10 +7397,9 @@ export class SessionManager implements ISessionManager {
     await this.flushSession(managed.id)
 
     // One-shot board promotion: clearing taskDraft (sent as `false`, never `undefined` — undefined
-    // is dropped over the JSON wire) reveals the already-announced tile; taskSlug/projectId
-    // reconcile its metadata. `false` is falsy for the board's `if (meta.taskDraft)` skip.
-    const changes: { taskDraft: boolean; taskSlug: string; projectId?: string } = { taskDraft: false, taskSlug }
-    if (reconcile?.projectId !== undefined) changes.projectId = reconcile.projectId
+    // is dropped over the JSON wire) reveals the already-announced tile. `false` is falsy
+    // for the board's `if (meta.taskDraft)` skip.
+    const changes = { taskDraft: false, taskSlug }
     this.sendEvent({ type: 'session_metadata_changed', sessionId, changes }, managed.workspace.id)
     if (renamed) {
       this.sendEvent({ type: 'name_changed', sessionId, name: managed.name }, managed.workspace.id)
@@ -7413,7 +7437,7 @@ export class SessionManager implements ISessionManager {
   async bindExistingSessionToTask(
     sessionId: string,
     taskSlug: string,
-    reconcile?: { name?: string; projectId?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
+    reconcile?: { name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
   ): Promise<boolean> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
@@ -7442,7 +7466,6 @@ export class SessionManager implements ISessionManager {
     // the connection_changed event below keeps the renderer in sync.
     managed.taskSlug = taskSlug
     managed.taskDraft = false
-    if (reconcile?.projectId !== undefined) managed.projectId = reconcile.projectId
     if (connectionChanged) managed.llmConnection = reconcile!.llmConnection
     const renamed = Boolean(reconcile?.name && reconcile.name !== managed.name)
     if (renamed) managed.name = reconcile!.name!
@@ -7458,8 +7481,7 @@ export class SessionManager implements ISessionManager {
     this.persistSession(managed)
     await this.flushSession(managed.id)
 
-    const changes: { taskDraft: boolean; taskSlug: string; projectId?: string } = { taskDraft: false, taskSlug }
-    if (reconcile?.projectId !== undefined) changes.projectId = reconcile.projectId
+    const changes = { taskDraft: false, taskSlug }
     this.sendEvent({ type: 'session_metadata_changed', sessionId, changes }, managed.workspace.id)
     if (renamed) {
       this.sendEvent({ type: 'name_changed', sessionId, name: managed.name }, managed.workspace.id)
@@ -7532,6 +7554,7 @@ export class SessionManager implements ISessionManager {
           session: {
             id: `title-${managed.id}`,
             workspaceRootPath: managed.workspace.rootPath,
+            projectId: managed.projectId,
             llmConnection: managed.llmConnection,
             createdAt: Date.now(),
             lastUsedAt: Date.now(),
@@ -8649,6 +8672,7 @@ export class SessionManager implements ISessionManager {
         session: {
           id: `${managed.id}-remote-transfer-summary`,
           workspaceRootPath,
+          projectId: managed.projectId,
           createdAt: Date.now(),
           lastUsedAt: Date.now(),
           workingDirectory: managed.workingDirectory,
@@ -8817,14 +8841,21 @@ export class SessionManager implements ISessionManager {
       throw new Error(`Session ${sessionId} already exists in target workspace`)
     }
 
-    // Create session directory with all subdirectories
-    const sessionDir = ensureSessionDir(workspaceRootPath, sessionId)
+    if (loadStoredSession(workspaceRootPath, sessionId)) {
+      throw new Error(`Session ${sessionId} already exists in target workspace`)
+    }
+
+    // Reserve the target id through the normal storage constructor. This assigns the
+    // target Workspace's default Project and serializes against Project deletion.
+    const reserved = await getOrCreateStoredSessionById(workspaceRootPath, sessionId)
+    const sessionDir = getSessionStoragePath(workspaceRootPath, sessionId)
 
     // Build the stored session from bundle data
     const header = bundle.session.header
     const storedSession: StoredSession = {
       id: sessionId,
       workspaceRootPath,
+      projectId: reserved.projectId,
       sdkSessionId: header.sdkSessionId, // Preserved initially; fork logic below may clear it
       // Always regenerate sdkCwd for the target workspace.
       // The source sdkCwd points to a path on the originating server
@@ -8960,7 +8991,7 @@ export class SessionManager implements ISessionManager {
     }
 
     // Built by hand (not via createSession), so announce it explicitly.
-    this.notifySessionCreated(workspaceId, sessionId)
+    this.notifySessionCreated(workspaceId, sessionId, storedSession.projectId)
 
     sessionLog.info(`[import] Complete: sessionId=${sessionId}, transferredSummary=${managed.transferredSessionSummary ? `${managed.transferredSessionSummary.length} chars` : 'none'}, applied=${managed.transferredSessionSummaryApplied}, warnings=${warnings.length > 0 ? warnings.join('; ') : 'none'}`)
     return { sessionId, warnings: warnings.length > 0 ? warnings : undefined }

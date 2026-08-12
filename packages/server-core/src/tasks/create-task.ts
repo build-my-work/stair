@@ -23,18 +23,6 @@ export interface CreateTaskFromSpecResult {
 }
 
 /**
- * Agent-created Tasks follow the same project inheritance rule as spawned
- * sessions: an explicit project wins; otherwise keep work in the invoking
- * session's project. An unbound invoking session leaves the Task unbound.
- */
-export function resolveCreateTaskProjectId(
-  requestedProjectId: string | undefined,
-  currentProjectId: string | undefined,
-): string | undefined {
-  return requestedProjectId ?? currentProjectId
-}
-
-/**
  * Post-create setup shared by ALL orchestrator paths (attach / adopt / fresh):
  * apply the reserved "Task" label and enable the spec's sources on the
  * orchestrator session. Fail-soft — neither a label nor a sources problem may

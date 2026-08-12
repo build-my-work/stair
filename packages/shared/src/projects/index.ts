@@ -34,13 +34,15 @@ export {
   generateProjectSlug,
   createProject,
   updateProject,
-  deleteProject,
   projectExists,
+  withProjectMutationLock,
   // Asset operations
   listProjectAssets,
   uploadProjectAsset,
   deleteProjectAsset,
   sanitizeAssetFilename,
 } from './storage.ts';
+
+export { deleteProject } from './lifecycle.ts';
 
 export type { UploadProjectAssetInput } from './storage.ts';

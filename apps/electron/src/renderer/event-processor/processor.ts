@@ -21,7 +21,6 @@ import {
   handleTypedError,
   handleSourcesChanged,
   handleLabelsChanged,
-  handleProjectIdChanged,
   handleSessionStatusChanged,
   handleSessionMetadataChanged,
   handleSessionFlagged,
@@ -162,9 +161,6 @@ export function processEvent(
 
     case 'labels_changed':
       return handleLabelsChanged(state, event)
-
-    case 'project_id_changed':
-      return handleProjectIdChanged(state, event)
 
     case 'session_status_changed':
       return handleSessionStatusChanged(state, event)

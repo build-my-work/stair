@@ -15,6 +15,7 @@ import { toast } from 'sonner'
 import { SkillMenu } from '@/components/app-shell/SkillMenu'
 import { SkillAvatar } from '@/components/ui/skill-avatar'
 import { routes, navigate } from '@/lib/navigate'
+import { buildProductDeepLink } from '@/lib/product-deep-link'
 import { useActiveWorkspace } from '@/context/AppShellContext'
 import { getFileManagerName } from '@/lib/platform'
 import {
@@ -114,7 +115,9 @@ export default function SkillInfoPage({ skillSlug, workspaceId, workingDirectory
 
   // Handle opening in new window
   const handleOpenInNewWindow = useCallback(() => {
-    window.electronAPI.openUrl(`craftagents://skills/skill/${skillSlug}?window=focused`)
+    window.electronAPI.openUrl(
+      buildProductDeepLink(`skills/skill/${skillSlug}?window=focused`),
+    )
   }, [skillSlug])
 
   // Get skill name for header

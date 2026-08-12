@@ -78,6 +78,30 @@ describe('registerSystemCoreHandlers OPEN_URL', () => {
     })
   })
 
+  it('routes Stair action links internally when Stair is the active product', async () => {
+    const previousScheme = process.env.CRAFT_DEEPLINK_SCHEME
+    process.env.CRAFT_DEEPLINK_SCHEME = 'stair'
+
+    try {
+      const { openUrl, ctx, invokeClientCalls, pushCalls } = createTestHarness()
+
+      await openUrl(ctx, 'stair://action/new-session?input=sg&send=true')
+
+      expect(invokeClientCalls).toHaveLength(0)
+      expect(pushCalls).toEqual([{
+        channel: RPC_CHANNELS.deeplink.NAVIGATE,
+        target: { to: 'client', clientId: 'client-1' },
+        args: [{ action: 'new-session', actionParams: { input: 'sg', send: 'true' } }],
+      }])
+    } finally {
+      if (previousScheme === undefined) {
+        delete process.env.CRAFT_DEEPLINK_SCHEME
+      } else {
+        process.env.CRAFT_DEEPLINK_SCHEME = previousScheme
+      }
+    }
+  })
+
   it('routes workspace deep links to workspace target when URL workspace differs', async () => {
     const { openUrl, ctx, invokeClientCalls, pushCalls } = createTestHarness({ workspaceId: 'ws-1' })
 

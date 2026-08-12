@@ -93,7 +93,7 @@ function affordanceFor(action: MobileMenuRow['action']): MobileMenuItemAffordanc
  * Mounted only when `AppShellContext.isCompactMode === true` via the `AppMenu` router.
  *
  * Sheet rendering is portalled into the closest element marked with
- * `data-mobile-menu-root` (PanelStackContainer in production, MobileWebUIFrame
+ * `data-mobile-menu-root` (WorkbenchContainer in production, MobileWebUIFrame
  * in the playground). Falls back to `document.body` if no marker is found.
  */
 export function MobileAppMenu(props: AppMenuProps) {

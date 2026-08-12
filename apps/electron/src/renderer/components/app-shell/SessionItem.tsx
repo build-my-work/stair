@@ -18,7 +18,7 @@ import { useProjectColorTreatment } from "@/hooks/useProjectColorTreatment"
 import { getSessionTitle, getSessionPreviewText, highlightMatch, hasUnreadMeta, shortTimeLocale } from "@/utils/session"
 import { useSessionListContext } from "@/context/SessionListContext"
 import { useAppShellContext } from "@/context/AppShellContext"
-import { navigate, routes } from "@/lib/navigate"
+import { useNavigation } from '@/contexts/NavigationContext'
 import type { SessionMeta } from "@/atoms/sessions"
 import { messagingBindingsBySessionAtom } from "@/atoms/messaging"
 import { useAtomValue } from "jotai"
@@ -58,6 +58,7 @@ export function SessionItem({
   onRangeSelect,
 }: SessionItemProps) {
   const ctx = useSessionListContext()
+  const { openSessionInNewPanel } = useNavigation()
   const { workspaces, isCompactMode } = useAppShellContext()
   const canSendToWorkspace = hasTransferTargets(workspaces)
   const { hotkey: nextHotkey } = useActionLabel('chat.nextSearchMatch')
@@ -98,7 +99,7 @@ export function SessionItem({
     if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
       // Cmd+Shift+Click: open session in a new panel
       e.preventDefault()
-      navigate(routes.view.allSessions(item.id), { newPanel: true })
+      openSessionInNewPanel(item.id)
       return
     }
     if ((e.metaKey || e.ctrlKey) && onToggleSelect) {
@@ -154,8 +155,6 @@ export function SessionItem({
           onSendToWorkspace={ctx.onSendToWorkspace ? () => ctx.onSendToWorkspace!([item.id]) : undefined}
           hasTransferTargets={canSendToWorkspace}
           onDelete={() => ctx.onDelete(item.id)}
-          projects={ctx.projects}
-          onSetProjectId={ctx.onSetProjectId ? (pid) => ctx.onSetProjectId!(item.id, pid) : undefined}
         />
       }
       contextMenuContent={ctx.isMultiSelectActive && isInMultiSelect ? <BatchSessionMenu /> : undefined}

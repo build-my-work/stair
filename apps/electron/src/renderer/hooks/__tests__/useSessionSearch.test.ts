@@ -6,6 +6,7 @@ function makeSession(id: string, opts: Partial<SessionMeta> = {}): SessionMeta {
   return {
     id,
     workspaceId: 'ws-1',
+    projectId: 'proj-default',
     sessionStatus: 'in-progress',
     lastMessageAt: Date.parse('2026-03-05T10:00:00.000Z'),
     ...opts,

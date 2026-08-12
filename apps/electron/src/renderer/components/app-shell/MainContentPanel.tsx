@@ -55,15 +55,18 @@ export interface MainContentPanelProps {
   /**
    * Override the navigation state for this panel.
    * When provided, this panel renders based on the override instead of the global NavigationState.
-   * Used by PanelSlot to render panels in the panel stack.
+   * Used by SessionPanelSlot to render a Session-owned physical Panel.
    */
   navStateOverride?: import('../../../shared/types').NavigationState | null
+  /** Session Panel content ignores global multi-select surfaces. */
+  isPhysicalSessionPanel?: boolean
 }
 
 export function MainContentPanel({
   isSidebarAndNavigatorHidden = false,
   className,
   navStateOverride,
+  isPhysicalSessionPanel = false,
 }: MainContentPanelProps) {
   const { t } = useTranslation()
   const globalNavState = useNavigationState()
@@ -235,7 +238,7 @@ export function MainContentPanel({
 
   // Settings navigator - uses component map from settings-pages.ts.
   // Bare `settings` route (subpage === null) means navigator-only view in compact mode;
-  // PanelStackContainer hides the content panel entirely. On desktop the panel still
+  // WorkbenchContainer hides the content panel entirely. On desktop the panel still
   // mounts, so fall back to the App page so it isn't empty.
   if (isSettingsNavigation(navState)) {
     const subpage = navState.subpage ?? 'app'
@@ -389,7 +392,7 @@ export function MainContentPanel({
     }
 
     // Multi-select mode: show batch actions panel
-    if (isMultiSelectActive) {
+    if (isMultiSelectActive && !isPhysicalSessionPanel) {
       return wrapWithStoplight(
         <Panel variant="grow" className={className}>
           <MultiSelectPanel

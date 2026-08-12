@@ -7,7 +7,7 @@
  *
  * Coverage exercised here: project-colored tiles, a `needs-review` tile parked
  * in the In Progress column (status independent from column), expanded vs
- * collapsed subtasks, auto-routed Haiku/Sonnet sub-models, a no-project tile,
+ * collapsed subtasks and auto-routed Haiku/Sonnet sub-models,
  * and a `cancelled` tile in Done.
  */
 
@@ -59,7 +59,7 @@ export const mockTasks: KanbanTask[] = [
   // ToDo
   { id: 't1', title: 'Redesign onboarding flow', column: 'todo', statusId: 'todo', model: OPUS, projectId: 'p-eng', subtasks: [], isFlagged: true, lastMessageAt: NOW - 1440 * MIN, messageCount: 3 },
   { id: 't2', title: 'Draft Q3 launch announcement', column: 'todo', statusId: 'todo', model: SONNET, projectId: 'p-growth', subtasks: [] },
-  { id: 't3', title: 'Investigate flaky CI on Windows runners', column: 'todo', statusId: 'todo', model: OPUS, subtasks: [] },
+  { id: 't3', title: 'Investigate flaky CI on Windows runners', column: 'todo', statusId: 'todo', model: OPUS, projectId: 'p-eng', subtasks: [] },
 
   // In Progress
   // Live: an in-flight turn in the active column drives the pulse + card glow.
@@ -98,8 +98,8 @@ export const mockTasks: KanbanTask[] = [
       { id: 't6-2', title: 'Generate A/B variants', runState: 'done', model: SONNET },
     ],
   },
-  // cancelled badge in Done, no project
-  { id: 't7', title: 'Legacy CSV export tool', column: 'done', statusId: 'cancelled', model: HAIKU, subtasks: [] },
+  // cancelled badge in Done
+  { id: 't7', title: 'Legacy CSV export tool', column: 'done', statusId: 'cancelled', model: HAIKU, projectId: 'p-eng', subtasks: [] },
 ]
 
 /** Tiles expanded by default in the board preview. */

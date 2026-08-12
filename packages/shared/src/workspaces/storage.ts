@@ -16,7 +16,6 @@ import {
   statSync,
 } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { expandPath, toPortablePath } from '../utils/paths.ts';
 import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
@@ -25,6 +24,8 @@ import { getDefaultLabelConfig, saveLabelConfig } from '../labels/storage.ts';
 import { loadConfigDefaults } from '../config/storage.ts';
 import { parsePermissionMode, PERMISSION_MODE_ORDER } from '../agent/mode-types.ts';
 import { normalizeThinkingLevel } from '../agent/thinking-levels.ts';
+import { createProject } from '../projects/storage.ts';
+import { CONFIG_DIR } from '../config/paths.ts';
 import type {
   WorkspaceConfig,
   CreateWorkspaceInput,
@@ -32,7 +33,6 @@ import type {
   WorkspaceSummary,
 } from './types.ts';
 
-const CONFIG_DIR = join(homedir(), '.craft-agent');
 const DEFAULT_WORKSPACES_DIR = join(CONFIG_DIR, 'workspaces');
 
 // ============================================================
@@ -102,6 +102,10 @@ export function loadWorkspaceConfig(rootPath: string): WorkspaceConfig | null {
 
   try {
     const config = readJsonFileSync<WorkspaceConfig>(configPath);
+
+    if (typeof config.defaultProjectId !== 'string' || !config.defaultProjectId.trim()) {
+      return null;
+    }
 
     // Expand path variables in defaults for portability
     if (config.defaults?.workingDirectory) {
@@ -314,21 +318,24 @@ export function createWorkspaceAtPath(
     ...defaults, // User-provided defaults override global defaults
   };
 
-  const config: WorkspaceConfig = {
-    id: `ws_${randomUUID().slice(0, 8)}`,
-    name,
-    slug,
-    defaults: workspaceDefaults,
-    localMcpServers: globalDefaults.workspaceDefaults.localMcpServers,
-    createdAt: now,
-    updatedAt: now,
-  };
-
   // Create workspace directory structure
   mkdirSync(rootPath, { recursive: true });
   mkdirSync(getWorkspaceSourcesPath(rootPath), { recursive: true });
   mkdirSync(getWorkspaceSessionsPath(rootPath), { recursive: true });
   mkdirSync(getWorkspaceSkillsPath(rootPath), { recursive: true });
+
+  const defaultProject = createProject(rootPath, { name: 'General' });
+
+  const config: WorkspaceConfig = {
+    id: `ws_${randomUUID().slice(0, 8)}`,
+    name,
+    slug,
+    defaultProjectId: defaultProject.id,
+    defaults: workspaceDefaults,
+    localMcpServers: globalDefaults.workspaceDefaults.localMcpServers,
+    createdAt: now,
+    updatedAt: now,
+  };
 
   // Save config
   saveWorkspaceConfig(rootPath, config);
@@ -366,7 +373,7 @@ export function deleteWorkspaceFolder(rootPath: string): boolean {
  * @param rootPath - Absolute path to check
  */
 export function isValidWorkspace(rootPath: string): boolean {
-  return existsSync(join(rootPath, 'config.json'));
+  return loadWorkspaceConfig(rootPath) !== null;
 }
 
 /**

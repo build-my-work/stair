@@ -29,7 +29,7 @@ describe('mid-stream queue runtime invariants', () => {
       createdAt: Date.now(),
     }
     const managed = createManagedSession(
-      { id, name: 'mid-stream test' },
+      { id, name: 'mid-stream test', projectId: 'project-general' },
       workspace as never,
       { messagesLoaded: true },
     )

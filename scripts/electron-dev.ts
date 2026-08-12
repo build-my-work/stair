@@ -111,7 +111,11 @@ function loadEnvFile(): void {
               (value.startsWith("'") && value.endsWith("'"))) {
             value = value.slice(1, -1);
           }
-          process.env[key] = value;
+          // Explicit caller environment selects the product profile and must
+          // take precedence over repository-local defaults from .env.
+          if (process.env[key] === undefined) {
+            process.env[key] = value;
+          }
         }
       }
     }

@@ -155,6 +155,7 @@ export function validateBundle(bundle: unknown): bundle is SessionBundle {
   const header = session.header as Record<string, unknown>
   if (typeof header.id !== 'string') return false
   if (typeof header.createdAt !== 'number') return false
+  if (typeof header.projectId !== 'string' || !header.projectId) return false
 
   if (!Array.isArray(b.files)) return false
 

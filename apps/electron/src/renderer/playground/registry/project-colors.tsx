@@ -80,12 +80,13 @@ type ProjectMock = { id: string; name: string; color: string }
 type ColorVariant = 'stripe' | 'tint' | 'both' | 'none'
 
 const INITIAL_PROJECTS: ProjectMock[] = [
+  { id: 'p-general', name: 'General', color: '#64748b' },
   { id: 'p-marketing', name: 'Marketing', color: '#ec4899' },
   { id: 'p-engineering', name: 'Engineering', color: '#6366f1' },
   { id: 'p-research', name: 'Research', color: '#10b981' },
 ]
 
-const sampleSessions: Array<SessionMeta & { projectId?: string }> = [
+const sampleSessions: SessionMeta[] = [
   {
     id: 's1',
     name: 'Q3 Campaign Plan',
@@ -135,13 +136,15 @@ const sampleSessions: Array<SessionMeta & { projectId?: string }> = [
     workspaceId: 'ws',
     lastMessageAt: Date.now() - 1000 * 60 * 60 * 4,
     sessionStatus: 'todo',
+    projectId: 'p-general',
   },
   {
     id: 's7',
-    name: 'Untagged scratchpad',
+    name: 'General scratchpad',
     workspaceId: 'ws',
     lastMessageAt: Date.now() - 1000 * 60 * 60 * 22,
     sessionStatus: 'todo',
+    projectId: 'p-general',
   },
 ]
 
@@ -298,7 +301,7 @@ function ProjectColorsPreview({ variant = 'stripe' }: ProjectColorsPreviewProps)
   const groups = React.useMemo(() => {
     const buckets = new Map<string, typeof sampleSessions>()
     for (const session of sampleSessions) {
-      const key = session.projectId ?? '__none__'
+      const key = session.projectId
       if (!buckets.has(key)) buckets.set(key, [])
       buckets.get(key)!.push(session)
     }
@@ -308,10 +311,6 @@ function ProjectColorsPreview({ variant = 'stripe' }: ProjectColorsPreviewProps)
       if (rows && rows.length > 0) {
         ordered.push({ key: project.id, label: project.name, sessions: rows, project })
       }
-    }
-    const noProject = buckets.get('__none__')
-    if (noProject && noProject.length > 0) {
-      ordered.push({ key: '__none__', label: 'No project', sessions: noProject, project: null })
     }
     return ordered
   }, [projects])
@@ -352,9 +351,7 @@ function ProjectColorsPreview({ variant = 'stripe' }: ProjectColorsPreviewProps)
                     />
                     {!isCollapsed &&
                       group.sessions.map((session, index) => {
-                        const color = session.projectId
-                          ? projectById.get(session.projectId)?.color ?? null
-                          : null
+                        const color = projectById.get(session.projectId)?.color ?? null
                         const isSelected = session.id === selectedSessionId
                         return (
                           <ColoredRowWrapper key={session.id} color={color} variant={variant}>

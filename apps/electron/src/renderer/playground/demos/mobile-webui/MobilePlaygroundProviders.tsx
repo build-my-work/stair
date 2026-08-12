@@ -10,7 +10,7 @@ import { NavigationProvider } from '@/contexts/NavigationContext'
 import { sessionMetaMapAtom, sessionAtomFamily, type SessionMeta } from '@/atoms/sessions'
 import type { LlmConnectionWithStatus } from '@config/llm-connections'
 import type { Session } from '../../../../shared/types'
-import { MOBILE_WORKSPACE_ID, MOBILE_WORKSPACE_SLUG, buildMockSession } from './mock-mobile-data'
+import { MOBILE_PROJECT_ID, MOBILE_WORKSPACE_ID, MOBILE_WORKSPACE_SLUG, buildMockSession } from './mock-mobile-data'
 
 interface HydrateProps {
   sessions?: SessionMeta[]
@@ -112,6 +112,7 @@ export function MobilePlaygroundProviders({
                   <NavigationProvider
                     workspaceId={MOBILE_WORKSPACE_ID}
                     workspaceSlug={MOBILE_WORKSPACE_SLUG}
+                    defaultProjectId={MOBILE_PROJECT_ID}
                     onCreateSession={onCreateSession}
                     isReady
                     isSessionsReady

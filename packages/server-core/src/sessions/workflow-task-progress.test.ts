@@ -24,7 +24,11 @@ describe('workflow background-task progress', () => {
 
   function buildSession(id: string) {
     const workspace = { id: 'ws_test', name: 'Test Workspace', rootPath: tmpRoot, createdAt: Date.now() }
-    const managed = createManagedSession({ id, name: 'wf test' }, workspace as never, { messagesLoaded: true })
+    const managed = createManagedSession(
+      { id, name: 'wf test', projectId: 'project-general' },
+      workspace as never,
+      { messagesLoaded: true },
+    )
     ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(id, managed)
     // Stub sendMessage so the idle completion auto-surface doesn't run the full turn path.
     ;(sm as unknown as { sendMessage: (...a: unknown[]) => Promise<void> }).sendMessage = async () => {}

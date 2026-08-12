@@ -6,6 +6,7 @@ function makeHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
   return {
     id: 's1',
     workspaceRootPath: '~/.craft-agent/workspaces/ws',
+    projectId: 'proj_default',
     createdAt: 1,
     lastUsedAt: 2,
     messageCount: 0,

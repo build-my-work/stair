@@ -37,7 +37,7 @@ describe('sendMessage durability', () => {
       createdAt: Date.now(),
     }
     const managed = createManagedSession(
-      { id, name: 'durability test' },
+      { id, name: 'durability test', projectId: 'project-general' },
       workspace as never,
       { messagesLoaded: true },
     )

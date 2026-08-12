@@ -124,7 +124,10 @@ export class WindowManager {
   }
 
   private openExternalFromRenderer(url: string, context: string, sourceWindow?: BrowserWindow): void {
-    const classification = classifyExternalUrl(url)
+    const classification = classifyExternalUrl(
+      url,
+      process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents',
+    )
 
     if (classification.kind === 'dangerous') {
       windowLog.warn(`[url-safety] Blocked ${context}: ${formatBlockedUrlError(classification)} url=${url}`)
@@ -199,6 +202,9 @@ export class WindowManager {
     // In packaged app, resources are at dist/resources/ (same level as __dirname)
     // In dev, resources are at ../resources/ (sibling of dist/)
     const getIconPath = () => {
+      const iconOverride = process.env.CRAFT_APP_ICON
+      if (iconOverride && existsSync(iconOverride)) return iconOverride
+
       const iconName = process.platform === 'darwin' ? 'icon.icns'
         : process.platform === 'win32' ? 'icon.ico'
         : 'icon.png'

@@ -14,6 +14,7 @@ import { SourceAvatar } from '@/components/ui/source-avatar'
 import { SourceMenu } from '@/components/app-shell/SourceMenu'
 import { cn } from '@/lib/utils'
 import { routes, navigate } from '@/lib/navigate'
+import { buildProductDeepLink } from '@/lib/product-deep-link'
 import { useNavigation } from '@/contexts/NavigationContext'
 import { toast } from 'sonner'
 import {
@@ -351,7 +352,9 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
 
   // Handle opening in new window
   const handleOpenInNewWindow = useCallback(() => {
-    window.electronAPI.openUrl(`craftagents://sources/source/${sourceSlug}?window=focused`)
+    window.electronAPI.openUrl(
+      buildProductDeepLink(`sources/source/${sourceSlug}?window=focused`),
+    )
   }, [sourceSlug])
 
   // Get source name for header

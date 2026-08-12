@@ -149,4 +149,56 @@ describe('adopt/bind route changed fields through canonical live-update mutators
     expect(calls.cwd).toEqual([])
     expect(calls.mode).toEqual([])
   })
+
+  it('never changes Project ownership through adopt or bind overrides', async () => {
+    const { sm } = harness({ projectId: 'project-a' })
+    // Probe an out-of-contract field to lock the runtime boundary as well as the TypeScript one.
+    const projectOverride = {
+      ...CHANGED,
+      projectId: 'project-b',
+    }
+    await sm.adoptGeneratedTaskOrchestrator('s', 'slug', projectOverride)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((sm as any).sessions.get('s').projectId).toBe('project-a')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(sm as any).sessions.get('s').taskDraft = false
+    await sm.bindExistingSessionToTask('s', 'slug', projectOverride)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((sm as any).sessions.get('s').projectId).toBe('project-a')
+  })
+})
+
+describe('external Session metadata ownership', () => {
+  it('restores the authoritative Project instead of adopting an edited header', () => {
+    const sm = new SessionManager()
+    let persisted = false
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const manager = sm as any
+    manager.persistSession = () => { persisted = true }
+    manager.sendEvent = () => {}
+    const managed = {
+      id: 's',
+      workspace: { id: 'ws' },
+      projectId: 'project-a',
+      labels: [],
+      isFlagged: false,
+      sessionStatus: undefined,
+      name: 'Session',
+      kanbanColumn: undefined,
+    }
+
+    const changed = manager.applyExternalSessionMetadata(managed, {
+      id: 's',
+      createdAt: 1,
+      projectId: 'project-b',
+      labels: [],
+      isFlagged: false,
+      name: 'Session',
+    })
+
+    expect(changed).toBe(true)
+    expect(managed.projectId).toBe('project-a')
+    expect(persisted).toBe(true)
+  })
 })

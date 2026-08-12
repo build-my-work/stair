@@ -20,6 +20,7 @@ import {
   pathStartsWith,
   toPortablePath,
 } from '../../utils/paths.ts';
+import { CONFIG_DIR } from '../../config/paths.ts';
 import type { PathProcessorConfig } from './types.ts';
 
 // Re-export useful utilities from paths.ts
@@ -29,12 +30,15 @@ export { expandPath, normalizePath, pathStartsWith, toPortablePath };
  * Known configuration file patterns that may need validation before writing.
  * These files have specific formats (JSON, TOML, YAML) that can break apps if malformed.
  */
+const normalizedConfigDir = normalizePathForComparison(CONFIG_DIR).replace(/\/+$/u, '');
+const configDirPattern = normalizedConfigDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 const CONFIG_FILE_PATTERNS = [
-  // Craft Agent configs
-  /\.craft-agent\/.*\/(config|permissions|theme|guide|labels|statuses)\.json$/,
-  /\.craft-agent\/config\.json$/,
-  /\.craft-agent\/preferences\.json$/,
-  /\.craft-agent\/.*\/SKILL\.md$/,
+  // Product configuration files
+  new RegExp(`^${configDirPattern}/.+/(config|permissions|theme|guide|labels|statuses)\\.json$`, 'i'),
+  new RegExp(`^${configDirPattern}/config\\.json$`, 'i'),
+  new RegExp(`^${configDirPattern}/preferences\\.json$`, 'i'),
+  new RegExp(`^${configDirPattern}/.+/SKILL\\.md$`, 'i'),
   // Common config files
   /package\.json$/,
   /tsconfig\.json$/,

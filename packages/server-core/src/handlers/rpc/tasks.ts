@@ -140,9 +140,12 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
     // session). Bind that session to the slug. Unlike adoption this HARD-ERRORS on failure — it
     // must never fall through to createSession, which would leave a duplicate orchestrator tile.
     if (req.attachToExistingSession) {
+      const existing = await deps.sessionManager.getSession(req.attachToExistingSession)
+      if (existing && spec.project && existing.projectId !== spec.project) {
+        throw new Error('CROSS_PROJECT_SESSION: an existing Session cannot be rebound to another Project')
+      }
       const bound = await deps.sessionManager.bindExistingSessionToTask(req.attachToExistingSession, spec.id, {
         name: spec.title,
-        projectId: spec.project,
         ...(spec.cwd ? { workingDirectory: spec.cwd } : {}),
         ...(spec.defaults?.model ? { model: spec.defaults.model } : {}),
         ...(spec.defaults?.llmConnection ? { llmConnection: spec.defaults.llmConnection } : {}),
@@ -161,9 +164,12 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
     // draft in place instead of creating a second top-level session (#bug1). Falls back to a fresh
     // session if the draft is gone / already adopted / bound to another slug.
     if (req.orchestratorSessionId) {
+      const draft = await deps.sessionManager.getSession(req.orchestratorSessionId)
+      if (draft && spec.project && draft.projectId !== spec.project) {
+        throw new Error('CROSS_PROJECT_SESSION: a draft Session cannot be adopted into another Project')
+      }
       const adopted = await deps.sessionManager.adoptGeneratedTaskOrchestrator(req.orchestratorSessionId, spec.id, {
         name: spec.title,
-        projectId: spec.project,
         ...(spec.cwd ? { workingDirectory: spec.cwd } : {}),
         ...(spec.defaults?.model ? { model: spec.defaults.model } : {}),
         // Reconcile the connection + permission mode from the saved spec (bind already does this) so an

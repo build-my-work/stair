@@ -25,6 +25,7 @@ describe('workspace storage: config normalization', () => {
       id: 'ws_123',
       name: 'Test Workspace',
       slug: 'test-workspace',
+      defaultProjectId: 'project-general',
       defaults: {
         permissionMode: 'explore',
         cyclablePermissionModes: ['explore', 'ask', 'execute'],
@@ -49,6 +50,7 @@ describe('workspace storage: config normalization', () => {
       id: 'ws_456',
       name: 'Broken Modes',
       slug: 'broken-modes',
+      defaultProjectId: 'project-general',
       defaults: {
         permissionMode: 'execute',
         cyclablePermissionModes: ['unknown'],
@@ -73,6 +75,7 @@ describe('workspace storage: config normalization', () => {
       id: 'ws_789',
       name: 'Legacy Thinking',
       slug: 'legacy-thinking',
+      defaultProjectId: 'project-general',
       defaults: {
         thinkingLevel: 'think',
       },

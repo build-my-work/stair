@@ -101,8 +101,8 @@ export interface Session {
   isArchived?: boolean
   archivedAt?: number
   supportsBranching?: boolean
-  /** Workspace-scoped project id this session is bound to (undefined = unbound) */
-  projectId?: string
+  /** Immutable workspace-scoped Project id this Session belongs to. */
+  projectId: string
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */
@@ -392,7 +392,6 @@ export type SessionEvent =
   | { type: 'plan_submitted'; sessionId: string; message: Message }
   | { type: 'sources_changed'; sessionId: string; enabledSourceSlugs: string[] }
   | { type: 'labels_changed'; sessionId: string; labels: string[] }
-  | { type: 'project_id_changed'; sessionId: string; projectId: string | null }
   | { type: 'connection_changed'; sessionId: string; connectionSlug: string; supportsBranching?: boolean }
   | { type: 'task_backgrounded'; sessionId: string; toolUseId: string; taskId: string; intent?: string; turnId?: string; kind?: 'workflow'; workflowId?: string }
   | { type: 'shell_backgrounded'; sessionId: string; toolUseId: string; shellId: string; intent?: string; command?: string; turnId?: string }
@@ -408,9 +407,9 @@ export type SessionEvent =
   | { type: 'name_changed'; sessionId: string; name?: string }
   | { type: 'session_model_changed'; sessionId: string; model: string | null }
   | { type: 'session_status_changed'; sessionId: string; sessionStatus: SessionStatus }
-  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId'>> }
+  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug'>> }
   | { type: 'session_deleted'; sessionId: string }
-  | { type: 'session_created'; sessionId: string }
+  | { type: 'session_created'; sessionId: string; projectId: string }
   | { type: 'session_shared'; sessionId: string; sharedUrl: string }
   | { type: 'session_unshared'; sessionId: string }
   | { type: 'auth_request'; sessionId: string; message: Message; request: SharedAuthRequest }
@@ -452,7 +451,6 @@ export type SessionCommand =
   | { type: 'updateWorkingDirectory'; dir: string }
   | { type: 'setSources'; sourceSlugs: string[] }
   | { type: 'setLabels'; labels: string[] }
-  | { type: 'setProjectId'; projectId: string | null }
   | { type: 'setKanbanColumn'; column: string | null }
   | { type: 'showInFinder' }
   | { type: 'copyPath' }
@@ -734,6 +732,7 @@ export interface UpdateInfo {
 // ---------------------------------------------------------------------------
 
 export interface WorkspaceSettings {
+  readonly defaultProjectId: string
   name?: string
   model?: string
   permissionMode?: PermissionMode

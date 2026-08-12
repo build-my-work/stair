@@ -130,6 +130,7 @@ export const RPC_CHANNELS = {
   system: {
     VERSIONS: 'system:versions',
     HOME_DIR: 'system:homeDir',
+    CONFIG_DIR: 'system:configDir',
     IS_DEBUG_MODE: 'system:isDebugMode',
   },
   update: {

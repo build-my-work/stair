@@ -57,8 +57,8 @@ export interface KanbanTask {
   statusId: string
   /** Orchestrator model id for the parent task. */
   model: string
-  /** Optional project binding; colors the tile. */
-  projectId?: string
+  /** Immutable Project ownership inherited from the backing Session. */
+  projectId: string
   /**
    * Slug of the backing task.yaml when this tile is a spec-authored Conductor task. Absent for
    * plain quick-add tiles. Drives edit-mode prefill (spec → editor) vs. start-empty in TaskEditor.

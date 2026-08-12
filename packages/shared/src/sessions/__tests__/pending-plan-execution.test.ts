@@ -21,6 +21,7 @@ function makeStoredSession(workspaceRootPath: string): StoredSession {
   return {
     id: 'session-1',
     workspaceRootPath,
+    projectId: 'proj_default',
     createdAt: 1000,
     lastUsedAt: 1000,
     messages: [],

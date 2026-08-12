@@ -553,6 +553,7 @@
   "menu.settings": "設定...",
   "menu.toggleDevTools": "DevToolsを切り替え",
   "menu.toggleFocusMode": "フォーカスモードを切り替え",
+  "menu.toggleNavigator": "ナビゲーターを切り替え",
   "menu.toggleSidebar": "サイドバーを切り替え",
   "menu.undo": "元に戻す",
   "menu.view": "表示",
@@ -929,7 +930,7 @@
   "settings.appearance.title": "外観",
   "settings.appearance.toolHeader": "ツール",
   "settings.appearance.toolIcons": "ツールアイコン",
-  "settings.appearance.toolIconsDesc": "チャットアクティビティのCLIコマンドの横に表示されるアイコンです。~/.craft-agent/tool-icons/に保存されます。",
+  "settings.appearance.toolIconsDesc": "チャットアクティビティのCLIコマンドの横に表示されるアイコンです。{{path}}に保存されます。",
   "settings.appearance.useDefault": "デフォルトを使用",
   "settings.appearance.useDefaultWithTheme": "デフォルトを使用 ({{theme}})",
   "settings.appearance.usingBundledFallback": "バンドルされたフォールバックを使用中",
@@ -1108,7 +1109,7 @@
   "settings.permissions.noCustomPermissions": "カスタム権限が設定されていません。",
   "settings.permissions.noCustomPermissionsDesc": "カスタムルールを追加するには、Workspace内にpermissions.jsonファイルを作成してください。",
   "settings.permissions.noDefaultPermissions": "デフォルト権限が見つかりません。",
-  "settings.permissions.noDefaultPermissionsDesc": "デフォルト権限は~/.craft-agent/permissions/default.jsonに配置する必要があります",
+  "settings.permissions.noDefaultPermissionsDesc": "デフォルト権限は{{path}}に配置する必要があります",
   "settings.permissions.title": "権限",
   "settings.permissions.workspaceCustomizations": "Workspaceのカスタマイズ",
   "settings.permissions.workspaceCustomizationsDesc": "上記のアプリのデフォルトを拡張するWorkspaceレベルのパターンです。",
@@ -1638,5 +1639,5 @@
   "workspace.selectWorkspaceDesc": "このサーバー上のWorkspaceを選択するか、新規作成してください。",
   "workspace.selectWorkspacePlaceholder": "Workspaceを選択...",
   "workspace.serverAuthToken": "サーバー認証トークン",
-  "workspace.underDefaultFolder": ".craft-agentフォルダ内"
+  "workspace.underDefaultFolder": "{{path}}内"
 }

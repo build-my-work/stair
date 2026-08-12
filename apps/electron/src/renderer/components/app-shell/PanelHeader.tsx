@@ -116,7 +116,7 @@ export function PanelHeader({
   isRegeneratingTitle,
 }: PanelHeaderProps) {
   // Fall back to AppShellContext.leadingAction so per-panel back buttons (set by
-  // PanelSlot in compact mode) propagate to every page's PanelHeader without each
+  // SessionPanelSlot in compact mode) propagate to every page's PanelHeader without each
   // page having to forward the prop manually. ChatPage explicitly passes its own
   // value, which overrides the context.
   const { leadingAction: contextLeadingAction, isCompactMode } = useAppShellContext()

@@ -9,6 +9,10 @@ import { resolve } from 'path'
 // import { sentryVitePlugin } from '@sentry/vite-plugin'
 
 export default defineConfig({
+  define: {
+    __APP_PRODUCT_NAME__: JSON.stringify(process.env.VITE_APP_NAME || 'Craft Agents'),
+    __APP_DEEP_LINK_SCHEME__: JSON.stringify(process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'),
+  },
   plugins: [
     react({
       babel: {

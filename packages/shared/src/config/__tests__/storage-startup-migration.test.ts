@@ -25,6 +25,7 @@ function setupWorkspaceConfigDir() {
         id: 'ws-config-1',
         name: 'My Workspace',
         slug: 'my-workspace',
+        defaultProjectId: 'project-general',
         createdAt: Date.now(),
         updatedAt: Date.now(),
       },

@@ -10,6 +10,7 @@ import { sourceSelection } from '@/hooks/useEntitySelection'
 import { SourceMenu } from './SourceMenu'
 import { SendResourceToWorkspaceDialog } from './SendResourceToWorkspaceDialog'
 import { useAppShellContext } from '@/context/AppShellContext'
+import { buildProductDeepLink } from '@/lib/product-deep-link'
 import { EditPopover, getEditConfig, type EditContextKey } from '@/components/ui/EditPopover'
 import type { LoadedSource, SourceConnectionStatus, SourceFilter } from '../../../shared/types'
 
@@ -133,7 +134,9 @@ export function SourcesListPanel({
             <SourceMenu
               sourceSlug={source.config.slug}
               sourceName={source.config.name}
-              onOpenInNewWindow={() => window.electronAPI.openUrl(`craftagents://sources/source/${source.config.slug}?window=focused`)}
+              onOpenInNewWindow={() => window.electronAPI.openUrl(
+                buildProductDeepLink(`sources/source/${source.config.slug}?window=focused`),
+              )}
               onShowInFinder={() => window.electronAPI.showInFolder(source.folderPath)}
               onDelete={() => onDeleteSource(source.config.slug)}
               onSendToWorkspace={hasOtherWorkspaces ? () => {

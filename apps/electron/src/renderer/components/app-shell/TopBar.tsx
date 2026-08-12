@@ -54,6 +54,7 @@ interface TopBarProps {
   canGoBack: boolean
   canGoForward: boolean
   onToggleSidebar: () => void
+  onToggleNavigator: () => void
   onToggleFocusMode: () => void
   onAddSessionPanel: () => void
   onAddBrowserPanel: () => void
@@ -80,6 +81,7 @@ export function TopBar({
   canGoBack,
   canGoForward,
   onToggleSidebar,
+  onToggleNavigator,
   onToggleFocusMode,
   onAddSessionPanel,
   onAddBrowserPanel,
@@ -146,14 +148,24 @@ export function TopBar({
       >
         <div className="flex items-center gap-0.5">
         {!isCompact && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <TopBarButton onClick={onToggleSidebar} aria-label={t("menu.toggleSidebar")}>
-              <PanelLeftRounded className="h-[18px] w-[18px] text-foreground/70" />
-            </TopBarButton>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">{t("menu.toggleSidebar")}</TooltipContent>
-        </Tooltip>
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <TopBarButton onClick={onToggleSidebar} aria-label={t("menu.toggleSidebar")}>
+                  <PanelLeftRounded className="h-[18px] w-[18px] text-foreground/70" />
+                </TopBarButton>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{t("menu.toggleSidebar")}</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <TopBarButton onClick={onToggleNavigator} aria-label={t("menu.toggleNavigator")}>
+                  <Icons.PanelLeftDashed className="h-[18px] w-[18px] text-foreground/70" />
+                </TopBarButton>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{t("menu.toggleNavigator")}</TooltipContent>
+            </Tooltip>
+          </>
         )}
 
         <AppMenu

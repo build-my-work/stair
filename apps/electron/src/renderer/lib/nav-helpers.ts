@@ -2,7 +2,7 @@
  * Navigation helpers
  *
  * Small pure helpers over `NavigationState`. Keep these stateless and free of
- * React/Jotai imports — they're consumed both inside hooks (PanelStackContainer)
+ * React/Jotai imports — they're consumed both inside hooks (WorkbenchContainer)
  * and in synchronous callbacks (CompactBackButton).
  */
 

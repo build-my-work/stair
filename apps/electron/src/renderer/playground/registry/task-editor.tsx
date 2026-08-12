@@ -454,16 +454,10 @@ function TaskEditorPreview({ mode: initialMode = 'generate' }: { mode?: Mode }) 
                         <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: project.color }} />
                         <span className="truncate">{project.name}</span>
                       </>
-                    ) : (
-                      <span className="text-foreground/50">No project</span>
-                    )}
+                    ) : null}
                   </SelectButton>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-[160px]">
-                  <DropdownMenuItem className="text-xs" onSelect={() => setProjectId('')}>
-                    No project
-                    {!projectId && <Check className="ml-auto h-3.5 w-3.5" strokeWidth={2} />}
-                  </DropdownMenuItem>
                   {mockProjects.map(p => (
                     <DropdownMenuItem key={p.id} className="text-xs" onSelect={() => setProjectId(p.id)}>
                       <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: p.color }} />

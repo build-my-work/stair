@@ -31,6 +31,27 @@ import type {
   CreateProjectInput,
 } from './types.ts';
 
+const projectMutationLocks = new Map<string, Promise<void>>();
+
+/** Serialize Project existence checks with Session ownership writes in this process. */
+export function withProjectMutationLock<T>(
+  workspaceRootPath: string,
+  projectId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const key = `${workspaceRootPath}\0${projectId}`;
+  const previous = projectMutationLocks.get(key) ?? Promise.resolve();
+  const result = previous.then(operation);
+  const settled = result.then(() => {}, () => {});
+  projectMutationLocks.set(key, settled);
+  void settled.finally(() => {
+    if (projectMutationLocks.get(key) === settled) {
+      projectMutationLocks.delete(key);
+    }
+  });
+  return result;
+}
+
 // ============================================================
 // Directory Utilities
 // ============================================================
@@ -332,10 +353,9 @@ export function updateProject(
 }
 
 /**
- * Delete a project (removes folder and all assets).
- * Caller is responsible for unsetting `projectId` on sessions that referenced it.
+ * Low-level removal used only after Project lifecycle guards have passed.
  */
-export function deleteProject(workspaceRootPath: string, projectSlug: string): void {
+export function removeProjectDirectory(workspaceRootPath: string, projectSlug: string): void {
   const dir = getProjectPath(workspaceRootPath, projectSlug);
   if (existsSync(dir)) {
     rmSync(dir, { recursive: true });

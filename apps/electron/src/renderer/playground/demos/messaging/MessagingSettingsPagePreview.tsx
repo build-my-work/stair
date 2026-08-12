@@ -17,6 +17,7 @@ import { playgroundMessagingHandle } from '../../mock-utils'
 type BindingsPreset = 'none' | 'one' | 'many'
 
 const PLAYGROUND_WORKSPACE_ID = 'playground-workspace'
+const PLAYGROUND_PROJECT_ID = 'playground-general'
 
 function buildBindings(preset: BindingsPreset): MessagingBinding[] {
   const base = {
@@ -79,16 +80,19 @@ const MOCK_SESSION_META: Record<string, SessionMeta> = {
   'session-aaa': {
     id: 'session-aaa',
     workspaceId: PLAYGROUND_WORKSPACE_ID,
+    projectId: PLAYGROUND_PROJECT_ID,
     name: 'Gyula DM — Telegram chat',
   },
   'session-bbb': {
     id: 'session-bbb',
     workspaceId: PLAYGROUND_WORKSPACE_ID,
+    projectId: PLAYGROUND_PROJECT_ID,
     name: 'Standup Bot — WhatsApp workflow',
   },
   'session-ccc': {
     id: 'session-ccc',
     workspaceId: PLAYGROUND_WORKSPACE_ID,
+    projectId: PLAYGROUND_PROJECT_ID,
     name: 'Team Inbox — Telegram group',
   },
 }

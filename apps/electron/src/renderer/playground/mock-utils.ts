@@ -203,6 +203,7 @@ export const playgroundAllowListHandle: PlaygroundAllowListHandle = {
 
 export const mockElectronAPI = {
   isDebugMode: async () => true,
+  getConfigDir: async () => '/tmp/craft-agent-playground',
 
   // Called at module-load time by SessionFilesSection.tsx (and others) to
   // branch between Electron and web-UI rendering. Must be synchronous.

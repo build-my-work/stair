@@ -43,7 +43,7 @@ describe('sendMessage OAuth refresh ordering (#710)', () => {
       createdAt: Date.now(),
     }
     const managed = createManagedSession(
-      { id, name: 'oauth-refresh test' },
+      { id, name: 'oauth-refresh test', projectId: 'project-general' },
       workspace as never,
       { messagesLoaded: true },
     )

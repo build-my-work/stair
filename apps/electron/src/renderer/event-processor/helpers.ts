@@ -159,10 +159,16 @@ export function insertMessageAt(
 /**
  * Create an empty session for a given ID
  */
-export function createEmptySession(sessionId: string, workspaceId: string, workspaceName: string = ''): Session {
+export function createEmptySession(
+  sessionId: string,
+  workspaceId: string,
+  projectId: string,
+  workspaceName: string = '',
+): Session {
   return {
     id: sessionId,
     workspaceId,
+    projectId,
     workspaceName,
     lastMessageAt: Date.now(),
     messages: [],

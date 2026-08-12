@@ -7,6 +7,7 @@ import { useAppShellContext } from '@/context/AppShellContext'
 import { sessionMetaMapAtom, updateSessionMetaAtom, type SessionMeta } from '@/atoms/sessions'
 import { projectsAtom } from '@/atoms/projects'
 import { kanbanProjectFilterAtom, kanbanColumnStatusAtom, kanbanEditorTargetAtom } from '@/atoms/kanban'
+import { workbenchAtom } from '@/workbench/workbench-state'
 import { useNavigation } from '@/contexts/NavigationContext'
 import { useProjectColorTreatment } from '@/hooks/useProjectColorTreatment'
 import { useLabels } from '@/hooks/useLabels'
@@ -99,6 +100,7 @@ export function KanbanBoardContainer() {
   const { t } = useTranslation()
   const metaMap = useAtomValue(sessionMetaMapAtom)
   const projects = useAtomValue(projectsAtom)
+  const activeProjectId = useAtomValue(workbenchAtom).activeProjectId
   const [projectFilter, setProjectFilter] = useAtom(kanbanProjectFilterAtom)
   const [columnStatus, setColumnStatus] = useAtom(kanbanColumnStatusAtom)
   const treatment = useProjectColorTreatment()
@@ -288,12 +290,11 @@ export function KanbanBoardContainer() {
     return result
   }, [metaMap, statusesById, specNodesBySlug])
 
-  // Project filter: empty selection = show all. While a filter is active, tiles
-  // with no project are hidden (an explicit "No project" option is a later add).
+  // Project filter: empty selection = show all.
   const visibleTasks = React.useMemo(() => {
     if (projectFilter.length === 0) return tasks
     const allow = new Set(projectFilter)
-    return tasks.filter(task => task.projectId !== undefined && allow.has(task.projectId))
+    return tasks.filter(task => allow.has(task.projectId))
   }, [tasks, projectFilter])
 
   const defaultSubtaskModel = modelToConnection.has(DEFAULT_MODEL) ? DEFAULT_MODEL : undefined
@@ -362,13 +363,12 @@ export function KanbanBoardContainer() {
   )
 
   // Create a parent task tile in place — no navigation. It lands in ToDo (no
-  // kanbanColumn + todo status → todo column). While a project filter is active,
-  // bind the new task to the first selected project so it stays visible under the
-  // filter (an unbound task would be hidden the moment it's created).
+  // kanbanColumn + todo status → todo column) and belongs to the first filtered
+  // Project, falling back to the active Workbench Project.
   const handleCreateTask = React.useCallback(
     async (title: string) => {
       if (!activeWorkspaceId) return
-      const boundProjectId = projectFilter[0]
+      const boundProjectId = projectFilter[0] ?? activeProjectId
       await onCreateSession(activeWorkspaceId, {
         name: title,
         sessionStatus: 'todo',
@@ -376,7 +376,7 @@ export function KanbanBoardContainer() {
         applyTaskLabel: true,
       })
     },
-    [activeWorkspaceId, onCreateSession, projectFilter]
+    [activeProjectId, activeWorkspaceId, onCreateSession, projectFilter]
   )
 
   // Change a task's status badge directly (independent from its column). Mirrors
