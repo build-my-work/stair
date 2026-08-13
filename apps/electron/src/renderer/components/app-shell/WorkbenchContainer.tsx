@@ -14,6 +14,7 @@ import {
 import { useIsMultiSelectActive } from '@/hooks/useSession'
 import { isDetailNavState } from '@/lib/nav-helpers'
 import { SessionPanelSlot } from './SessionPanelSlot'
+import { ProjectFilePanelSlot } from './ProjectFilePanelSlot'
 import { MainContentPanel } from './MainContentPanel'
 import {
   PANEL_EDGE_INSET,
@@ -80,10 +81,11 @@ export function WorkbenchContainer({
   const navigationState = useNavigationState()
   const isMultiSelectActive = useIsMultiSelectActive()
   const scrollRef = useRef<HTMLDivElement>(null)
+  const focusedPanel = panels.find(panel => panel.id === focusedPanelId)
 
-  const isSessionWorkbench = isSessionsNavigation(navigationState)
+  const isWorkbenchVisible = isSessionsNavigation(navigationState)
     && navigationState.viewMode !== 'board'
-    && !isMultiSelectActive
+    && (!isMultiSelectActive || focusedPanel?.kind === 'project-file')
   const hasSidebar = sidebarWidth > 0
   const hasNavigator = navigatorWidth > 0
   const isAtLeftEdge = !hasSidebar && !hasNavigator
@@ -112,9 +114,8 @@ export function WorkbenchContainer({
   }, [focusedPanelId, isCompact, panelRevealRevision])
 
   if (isCompact) {
-    const focusedPanel = panels.find(panel => panel.id === focusedPanelId)
     const showNavigator = !isDetailNavState(navigationState)
-      || (isSessionWorkbench && !focusedPanel)
+      || (isWorkbenchVisible && !focusedPanel)
     return (
       <div
         ref={scrollRef}
@@ -135,16 +136,27 @@ export function WorkbenchContainer({
           >
             {navigatorSlot}
           </div>
-        ) : isSessionWorkbench && focusedPanel ? (
-          <SessionPanelSlot
-            panel={focusedPanel}
-            isOnly
-            isFocusedPanel
-            isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
-            isAtLeftEdge
-            isAtRightEdge={!isRightSidebarVisible}
-            isCompact
-          />
+        ) : isWorkbenchVisible && focusedPanel ? (
+          focusedPanel.kind === 'session' ? (
+            <SessionPanelSlot
+              panel={focusedPanel}
+              isOnly
+              isFocusedPanel
+              isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
+              isAtLeftEdge
+              isAtRightEdge={!isRightSidebarVisible}
+              isCompact
+            />
+          ) : (
+            <ProjectFilePanelSlot
+              panel={focusedPanel}
+              isOnly
+              isFocusedPanel
+              isAtLeftEdge
+              isAtRightEdge={!isRightSidebarVisible}
+              isCompact
+            />
+          )
         ) : (
           <ShellContentSlot
             isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
@@ -216,16 +228,25 @@ export function WorkbenchContainer({
           <div className="h-full" style={{ width: navigatorWidth }}>{navigatorSlot}</div>
         </motion.div>
 
-        {isSessionWorkbench ? (
+        {isWorkbenchVisible ? (
           panels.length === 0 ? (
             <div data-panel-role="empty-primary" className="flex-1" />
-          ) : panels.map((panel, index) => (
+          ) : panels.map((panel, index) => panel.kind === 'session' ? (
             <SessionPanelSlot
               key={panel.id}
               panel={panel}
               isOnly={panels.length === 1}
               isFocusedPanel={panels.length === 1 || panel.id === focusedPanelId}
               isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
+              isAtLeftEdge={index === 0 && isAtLeftEdge}
+              isAtRightEdge={index === panels.length - 1 && !isRightSidebarVisible}
+            />
+          ) : (
+            <ProjectFilePanelSlot
+              key={panel.id}
+              panel={panel}
+              isOnly={panels.length === 1}
+              isFocusedPanel={panels.length === 1 || panel.id === focusedPanelId}
               isAtLeftEdge={index === 0 && isAtLeftEdge}
               isAtRightEdge={index === panels.length - 1 && !isRightSidebarVisible}
             />

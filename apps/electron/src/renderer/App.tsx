@@ -1837,7 +1837,18 @@ export default function App() {
     } else {
       // Switch workspace in current window
       // 1. Update the main process's window-workspace mapping
-      await window.electronAPI.switchWorkspace(workspaceId)
+      try {
+        await window.electronAPI.switchWorkspace(workspaceId)
+      } catch (error) {
+        window.electronAPI.debugLog(
+          '[Project Files] Workspace switch vetoed because save failed:',
+          error instanceof Error ? error.message : String(error),
+        )
+        toast.error(t('projectFileEditor.saveFailed'), {
+          description: t('projectFileEditor.saveFailedTitle'),
+        })
+        return
+      }
 
       // 2. Update React state to trigger re-renders
       setLoadedWorkspaceSettings(null)
@@ -1876,7 +1887,7 @@ export default function App() {
       // Sessions and theme will reload automatically due to windowWorkspaceId dependency
       // in useEffect hooks.
     }
-  }, [windowWorkspaceId, setSession, store])
+  }, [windowWorkspaceId, setSession, store, t])
 
   // Handle workspace switch by slug (called by NavigationContext on popstate when ?ws= changes)
   const handleSwitchWorkspaceBySlug = useCallback((slug: string) => {

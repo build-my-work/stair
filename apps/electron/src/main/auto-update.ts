@@ -458,7 +458,15 @@ export async function installUpdate(): Promise<void> {
   try {
     await beforeUpdateInstallHook?.()
   } catch (err) {
-    autoUpdateLog.error('beforeUpdateInstall cleanup hook failed', err)
+    __isUpdating = false
+    updateInfo = {
+      ...updateInfo,
+      downloadState: 'ready',
+      error: err instanceof Error ? err.message : String(err),
+    }
+    broadcastUpdateInfo()
+    autoUpdateLog.error('beforeUpdateInstall cleanup hook failed; update install cancelled', err)
+    throw err
   }
 
   try {

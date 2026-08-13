@@ -671,6 +671,13 @@ export interface ElectronAPI {
   deleteProjectAsset(workspaceId: string, projectSlug: string, filename: string): Promise<void>
   onProjectsChanged(callback: (workspaceId: string, projects: unknown) => void): () => void
 
+  // Project Files (authorized by the window/client Workspace context)
+  listProjectDirectoryEntries(request: import('@craft-agent/shared/project-files').ProjectDirectoryEntriesRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntriesResult>
+  readProjectTextFile(request: import('@craft-agent/shared/project-files').ProjectFileRequest): Promise<import('@craft-agent/shared/project-files').ProjectFileTextResponse>
+  saveProjectTextFile(request: import('@craft-agent/shared/project-files').SaveProjectTextFileRequest): Promise<import('@craft-agent/shared/project-files').SaveProjectTextFileResponse>
+  onProjectFilesFlushRequested(callback: (requestId: string) => void): () => void
+  completeProjectFilesFlush(requestId: string, error?: string): Promise<void>
+
   // Automations
   getAutomations(workspaceId: string): Promise<unknown>
 

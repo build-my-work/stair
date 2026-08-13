@@ -395,6 +395,13 @@ export const CHANNEL_MAP = {
   deleteProjectAsset: invoke(RPC_CHANNELS.projects.DELETE_ASSET),
   onProjectsChanged: listener(RPC_CHANNELS.projects.CHANGED),
 
+  // Project Files
+  listProjectDirectoryEntries: invoke(RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES),
+  readProjectTextFile: invoke(RPC_CHANNELS.projectFiles.READ_TEXT),
+  saveProjectTextFile: invoke(RPC_CHANNELS.projectFiles.SAVE_TEXT_FILE),
+  onProjectFilesFlushRequested: listener(RPC_CHANNELS.projectFiles.FLUSH_REQUESTED),
+  completeProjectFilesFlush: invoke(RPC_CHANNELS.projectFiles.FLUSH_COMPLETED),
+
   // Automations
   getAutomations: invoke(RPC_CHANNELS.automations.GET),
   testAutomation: invoke(RPC_CHANNELS.automations.TEST),

@@ -26,6 +26,18 @@ import type {
 // Re-export generateMessageId for handler convenience
 export { generateMessageId } from '@craft-agent/core/types'
 
+export type {
+  ProjectDirectoryEntriesRequest,
+  ProjectDirectoryEntriesResult,
+  ProjectDirectoryEntry,
+  ProjectFileFingerprint,
+  ProjectFileMetadata,
+  ProjectFileRequest,
+  ProjectFileTextResponse,
+  SaveProjectTextFileRequest,
+  SaveProjectTextFileResponse,
+} from '../project-files'
+
 // ---------------------------------------------------------------------------
 // Session types
 // ---------------------------------------------------------------------------

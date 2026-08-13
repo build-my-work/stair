@@ -124,7 +124,8 @@ import { registerPiModelResolver } from '@craft-agent/shared/config'
 import { getPiModelsForAuthProvider, getAllPiModels } from '@craft-agent/shared/config'
 import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeCount } from './notifications'
 import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, setBeforeUpdateInstallHook, setInstallQuitFailedHook } from './auto-update'
-import type { EventSink } from '@craft-agent/server-core/transport'
+import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
+import { requestClientProjectFilesFlush } from '@craft-agent/server-core/handlers/rpc/project-files'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
 
 // Initialize electron-log for renderer process support
@@ -219,6 +220,7 @@ let sessionManager: SessionManager | null = null
 let browserPaneManager: BrowserPaneManager | null = null
 let oauthFlowStore: OAuthFlowStore | null = null
 let moduleSink: EventSink | null = null
+let moduleRpcServer: RpcServer | null = null
 let moduleClientResolver: ((webContentsId: number) => string | undefined) | null = null
 
 // Messaging gateway: the bootstrap handle is created once sessionManager is
@@ -736,6 +738,7 @@ app.whenReady().then(async () => {
       sessionManager = instance.sessionManager
       oauthFlowStore = instance.oauthFlowStore
       moduleSink = instance.wsServer.push.bind(instance.wsServer)
+      moduleRpcServer = instance.wsServer
       moduleClientResolver = resolveClientId
 
       // -----------------------------------------------------------------------
@@ -1118,9 +1121,16 @@ app.whenReady().then(async () => {
     // as quitting so before-quit's guard returns early instead of cancelling
     // Squirrel.Mac's quit with preventDefault (#891).
     setBeforeUpdateInstallHook(async () => {
+      await flushRendererProjectFilesBeforeQuit()
       isQuitting = true
       windowManager?.setAppQuitting(true)
-      await performQuitCleanup()
+      try {
+        await performQuitCleanup()
+      } catch (error) {
+        // Preserve the existing update handoff once teardown has begun. Only the
+        // Project File flush above may safely veto before resources are disposed.
+        mainLog.error('[auto-update] Quit cleanup failed after document flush:', error)
+      }
     })
     // If quitAndInstall throws after the cleanup above already ran, the process
     // is a zombie: sessions flushed but no watchers/messaging/lock, and isQuitting
@@ -1268,10 +1278,26 @@ async function performQuitCleanup(): Promise<void> {
   releaseServerLock()
 }
 
+async function flushRendererProjectFilesBeforeQuit(): Promise<void> {
+  const server = moduleRpcServer
+  const resolveClientId = moduleClientResolver
+  if (!server || !resolveClientId) return
+  const clientIds = new Set<string>()
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) continue
+    const clientId = resolveClientId(window.webContents.id)
+    if (clientId) clientIds.add(clientId)
+  }
+  await Promise.all(
+    [...clientIds].map(clientId => requestClientProjectFilesFlush(server, clientId)),
+  )
+}
+
 // Save window state and clean up resources before quitting
 app.on('before-quit', async (event) => {
   // Avoid re-entry when we call app.exit()
   if (isQuitting) return
+  if (sessionManager) event.preventDefault()
   isQuitting = true
 
   // Ensure Cmd+Q/app quit bypasses layered window close interception (Cmd+W behavior).
@@ -1310,7 +1336,20 @@ app.on('before-quit', async (event) => {
   // performQuitCleanup and set isQuitting, so the guard at the top returns early
   // and Squirrel.Mac's quit proceeds uninterrupted so the update installs (#891).
   if (sessionManager) {
-    event.preventDefault()
+    try {
+      await flushRendererProjectFilesBeforeQuit()
+    } catch (error) {
+      isQuitting = false
+      windowManager?.setAppQuitting(false)
+      mainLog.error('[Project Files] App quit cancelled because a document could not be saved:', error)
+      void dialog.showMessageBox({
+        type: 'error',
+        title: i18n.t('projectFileEditor.saveFailed'),
+        message: i18n.t('projectFileEditor.saveFailedTitle'),
+        detail: i18n.t('projectFileEditor.conflictTitle'),
+      })
+      return
+    }
     await performQuitCleanup()
     app.exit(0)
   }

@@ -1,44 +1,39 @@
 import { useCallback, useMemo } from 'react'
-import { useTranslation } from 'react-i18next'
 import { useSetAtom } from 'jotai'
+import { useTranslation } from 'react-i18next'
 import { ChevronLeft, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { routes } from '../../../shared/routes'
-import { parseRouteToNavigationState } from '../../../shared/route-parser'
+import { AppShellProvider, useAppShellContext } from '@/context/AppShellContext'
+import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
+import ProjectFilePage from '@/pages/ProjectFilePage'
 import {
   closeWorkbenchPanelAtom,
   focusWorkbenchPanelAtom,
 } from '@/workbench/workbench-commands'
-import type { SessionWorkbenchPanel } from '@/workbench/workbench-state'
-import { useAppShellContext, AppShellProvider } from '@/context/AppShellContext'
-import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
-import { MainContentPanel } from './MainContentPanel'
+import type { ProjectFileWorkbenchPanel } from '@/workbench/workbench-state'
 import { getPanelBottomRadius, PANEL_MIN_WIDTH, RADIUS_INNER } from './panel-constants'
 
-interface SessionPanelSlotProps {
-  panel: SessionWorkbenchPanel
+interface ProjectFilePanelSlotProps {
+  panel: ProjectFileWorkbenchPanel
   isOnly: boolean
   isFocusedPanel: boolean
-  isSidebarAndNavigatorHidden: boolean
   isAtLeftEdge: boolean
   isAtRightEdge: boolean
   isCompact?: boolean
 }
 
-export function SessionPanelSlot({
+export function ProjectFilePanelSlot({
   panel,
   isOnly,
   isFocusedPanel,
-  isSidebarAndNavigatorHidden,
   isAtLeftEdge,
   isAtRightEdge,
   isCompact = false,
-}: SessionPanelSlotProps) {
+}: ProjectFilePanelSlotProps) {
   const { t } = useTranslation()
   const closePanel = useSetAtom(closeWorkbenchPanelAtom)
   const focusPanel = useSetAtom(focusWorkbenchPanelAtom)
   const parentContext = useAppShellContext()
-  const navState = parseRouteToNavigationState(routes.view.allSessions(panel.sessionId))
 
   const handleClose = useCallback(() => {
     void closePanel({ projectId: panel.projectId, panelId: panel.id })
@@ -68,7 +63,7 @@ export function SessionPanelSlot({
     rightSidebarButton: closeButton,
     leadingAction: backButton,
     isFocusedPanel,
-  }), [parentContext, closeButton, backButton, isFocusedPanel])
+  }), [backButton, closeButton, isFocusedPanel, parentContext])
 
   const handlePointerDown = useCallback(() => {
     if (!isFocusedPanel) {
@@ -80,21 +75,16 @@ export function SessionPanelSlot({
     <div
       onPointerDown={handlePointerDown}
       data-panel-role="content"
-      data-session-id={panel.sessionId}
+      data-project-file={panel.relativePath}
       data-panel-id={panel.id}
       data-compact={isCompact || undefined}
       className={cn(
-        'h-full overflow-hidden relative @container/panel',
+        'h-full overflow-hidden relative @container/panel bg-foreground-2',
         !isOnly && isFocusedPanel ? 'shadow-panel-focused z-[1]' : 'shadow-middle z-0',
-        'bg-foreground-2',
       )}
       style={{
         ...(!isFocusedPanel && !isOnly
-          ? {
-              '--background': 'var(--background-elevated)',
-              '--shadow-minimal': 'var(--shadow-minimal-flat)',
-              '--user-message-bubble': 'var(--user-message-bubble-dimmed)',
-        } as React.CSSProperties
+          ? { '--background': 'var(--background-elevated)' } as React.CSSProperties
           : {}),
         borderTopLeftRadius: RADIUS_INNER,
         borderBottomLeftRadius: getPanelBottomRadius(isCompact, isAtLeftEdge),
@@ -106,15 +96,13 @@ export function SessionPanelSlot({
         minWidth: isOnly ? 0 : PANEL_MIN_WIDTH,
       }}
     >
-      <div className="h-full flex flex-col">
-        <AppShellProvider value={contextOverride}>
-          <MainContentPanel
-            navStateOverride={navState}
-            isPhysicalSessionPanel
-            isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
-          />
-        </AppShellProvider>
-      </div>
+      <AppShellProvider value={contextOverride}>
+        <ProjectFilePage
+          projectId={panel.projectId}
+          relativePath={panel.relativePath}
+          presentation={panel.presentation}
+        />
+      </AppShellProvider>
     </div>
   )
 }

@@ -278,3 +278,39 @@
 - 最终实现将 13 类主进程/服务端路径及 Renderer 可见配置路径统一接入既有 `CONFIG_DIR`，没有引入第二套配置框架，也没有改变 Project、Session 或 Workbench 规则。
 - Stair 单独运行前后，Craft 数据目录 289 个文件的汇总摘要完全一致；结合静态硬编码守卫和运行日志，可确认 Stair 自有状态落入 `~/.stair`，默认 Craft 路径保持不变。
 - 阶段 0 的本地成品使用 ad-hoc 签名且未公证；正式签名、公证、更新与发布仍属于阶段 9，不能因本次本地打包通过而提前标记完成。
+
+## 阶段 29：Project Files 与文本文档初始边界
+
+- 权威范围只到 Project 文件树、安全路径 API、一个复用 Preview、显式文件 Auxiliary，以及文本编辑生命周期；EPUB/PDF、引用、Add Note 与原生 Browser 分别属于后续阶段。
+- 普通文件选择只能替换文件 Preview 或聚焦已有文件 Panel，不能改写 Session Primary；只有显式“在新 Panel 打开”才能增加 Auxiliary。
+- 用户外部 Project 工作目录必须保留；所有路径由服务端按 Workspace 与 Project 授权，Renderer 不传入或持久化绝对路径作为资源身份。
+- dirty 文件在替换 Preview、关闭对应 Panel、切换 Project 和退出应用前必须先 flush；写入失败时必须 veto 当前破坏性动作并保留编辑状态。
+- 当前 `packages/server-core/src/handlers/rpc/files.ts` 是通用附件/文件能力，主要围绕调用方路径和附件转换，不具备 Project 相对身份与 Project 授权，不能直接充当阶段 3 API。
+- 旧 Stair 的 `bfef09e2` 首次实现一次跨越 126 个文件，同时包含 Project Files、EPUB、引用、旧 PanelStack 和导航重构；阶段 3 只复用其中的行为规格与安全测试思路，不整体 cherry-pick。
+- 旧分支可参考的收窄模块包括 `packages/core/src/types/project-file.ts`、`packages/server-core/src/handlers/rpc/project-files.ts`、`WorkspaceFilesSidebar.tsx`、`ProjectFilePage.tsx` 与文本保存/控制器测试；EPUB/PDF/Drawnix/引用模块全部排除。
+- 权威方案明确 Preview 是可复用 Auxiliary，并由 `ProjectWorkbench.previewPanelId` 标识；普通文件选择首次创建 Preview 时 `Aux Δ=+1`，之后替换为 `0`，永远不占 Primary。
+- 文件根目录只接受 Project 配置中显式绑定的 `workingDirectory`；不能回退到 Workspace 根、Session cwd、Project 元数据目录或 assets 目录，否则会暴露非项目材料并破坏稳定相对路径。
+- 已验证的文本编辑规格是 Markdown、TXT、JSON、常见代码与配置文件的源码编辑，限制 1 MiB；保存使用 SHA-256 `expectedFingerprint`、同文件写队列与原子替换，并保留 BOM、换行风格、末尾换行和权限。
+- 旧页面卸载时 fire-and-forget flush 不能满足当前方案的关闭 veto；阶段 3 必须让 Workbench 的 Preview 替换、Panel 关闭、Project 切换和窗口关闭在状态变更前等待 Document Controller，失败则保持原布局与草稿。
+
+## 阶段 29：实现结论
+
+- 阶段 3 不需要恢复旧 `PanelStack`、旧文件持久化格式或旧用户数据；在阶段 2 Workbench 联合类型中增加 `project-file` Panel 和 `previewPanelId` 已足够表达全部当前语义。
+- Project File 的稳定身份是 `(workspaceId, projectId, relativePath)`。Renderer 不接收绝对资源身份；服务端用当前 RPC Workspace、Project 配置和规范化相对路径重新求值最终磁盘路径。
+- 只检查字符串前缀不足以防越界。最终实现逐段 `lstat`、拒绝符号链接与特殊文件，并在读写前后核对真实根目录；目录读取限制为单层 500 项，文本读取限制为 8 MiB，可编辑内容限制为 1 MiB。
+- 比较保存必须把冲突判断和原子替换放在同文件串行队列内，否则两个同时保存仍可能都通过旧 fingerprint。当前实现以 SHA-256 为版本标识，临时文件 `fsync + rename` 后同步父目录，并保留 BOM、换行与权限。
+- dirty 生命周期不能只靠 React 页面卸载。Document Registry 是关闭语义的唯一等待边界，Workbench 的 Preview 替换、Panel 关闭和 Project 切换，以及主进程退出握手，都在改变布局或结束进程前等待它。
+- 双击文件会同时触发单击 Preview 和双击显式 Panel，导致一次动作新增两个 Auxiliary；最终只保留单击 Preview 与右键“Open in New Panel”，避免事件叠加。
+- 协议路由首次遗漏退出 flush 的 local-only 生命周期，完整路由测试成功暴露该问题；退出请求和完成通知现已显式列入本地事件边界，不会被错误转发到远端 RPC。
+- 真实 Electron 验收确认：`os` Project 文件树能刷新；第二次普通文件点击在原 Preview 内替换；右键显式 Panel 不带 Preview 标记；显式 Panel 与另一个 Preview 可并存；800 ms 自动保存和修改后立即关闭 Panel 都会将最终文本写盘。
+- `bun run stair:build` 能完成目录包构建与 ad-hoc 签名，但该 `Stair.app` 在当前机器上仍停在业务主进程日志加载前且没有窗口。这不是阶段 3 文件逻辑回归，继续作为阶段 9 的独立打包运行问题，不用兼容层污染当前文件实现。
+
+## 阶段 30：Project File 生命周期审查结论
+
+- “切换 Project 前 flush”不能只放在 Renderer 的 Workbench 命令中；Workspace RPC 会先改变 `webContentsId → workspaceId` 映射，必须在服务端提交映射之前等待原 Workspace 的 Renderer flush，才能让失败真正 veto 状态切换。
+- 主进程窗口关闭的超时兜底只适用于 Renderer 没有响应的场景。Renderer 已开始异步 flush 后应先取消兜底，否则慢磁盘或冲突处理可能被 3 秒强制退出截断。
+- 自动更新与普通退出共享同一数据安全前置条件，但 flush 必须发生在 teardown 之前；只有 Project File flush 可以安全 veto，后续清理失败记录日志即可，不能让应用进入已拆除一半却继续运行的状态。
+- 比较保存冲突不是普通重试错误。用户需要两条明确路径：保留草稿继续处理，或确认放弃草稿并从磁盘重新加载；显式 discard 同时负责清理错误、定时器和 dirty 状态。
+- “保留原文件末尾换行”不能解释为强制复用旧文件是否有末尾换行；编辑器提交的内容才是新事实。实现只保留 BOM 和换行风格，不改变请求内容中末尾换行的数量，因此也自然支持清空文件。
+- `.env`、`.gitignore` 等 dotfile 的扩展名起始位置是 0；分类条件必须接受该位置，否则已列入文本扩展集合的 dotfile 仍会被错误标为二进制。
+- Project File 错误需要跨 RPC 保持具体类型；只在服务端定义字符串而不加入共享 `ErrorCode` 白名单，会在传输层退化为通用内部错误，Renderer 无法区分冲突、非法文本和路径问题。

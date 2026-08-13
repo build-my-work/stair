@@ -7,9 +7,20 @@ export interface SessionWorkbenchPanel {
   projectId: string
 }
 
+export interface ProjectFileWorkbenchPanel {
+  id: string
+  kind: 'project-file'
+  projectId: string
+  relativePath: string
+  presentation: 'preview' | 'explicit'
+}
+
+export type WorkbenchPanel = SessionWorkbenchPanel | ProjectFileWorkbenchPanel
+
 export interface ProjectWorkbench {
   primary: SessionWorkbenchPanel | null
-  auxiliary: SessionWorkbenchPanel[]
+  auxiliary: WorkbenchPanel[]
+  previewPanelId: string | null
   focusedPanelId: string | null
 }
 
@@ -22,6 +33,7 @@ export interface WindowWorkbench {
 export const createEmptyProjectWorkbench = (): ProjectWorkbench => ({
   primary: null,
   auxiliary: [],
+  previewPanelId: null,
   focusedPanelId: null,
 })
 
@@ -33,7 +45,7 @@ export const workbenchAtom = atom<WindowWorkbench>({
 
 export const workbenchPanelRevealRevisionAtom = atom(0)
 
-export function getWorkbenchPanels(layout: ProjectWorkbench): SessionWorkbenchPanel[] {
+export function getWorkbenchPanels(layout: ProjectWorkbench): WorkbenchPanel[] {
   return layout.primary ? [layout.primary, ...layout.auxiliary] : layout.auxiliary
 }
 
@@ -54,11 +66,14 @@ export const focusedWorkbenchPanelIdAtom = atom((get) => (
 export const focusedWorkbenchSessionIdAtom = atom((get) => {
   const layout = get(activeProjectWorkbenchAtom)
   if (!layout?.focusedPanelId) return null
-  return getWorkbenchPanels(layout).find(panel => panel.id === layout.focusedPanelId)?.sessionId ?? null
+  const panel = getWorkbenchPanels(layout).find(candidate => candidate.id === layout.focusedPanelId)
+  return panel?.kind === 'session' ? panel.sessionId : null
 })
 
 export const visibleWorkbenchSessionIdsAtom = atom((get) => (
-  new Set(get(workbenchPanelsAtom).map(panel => panel.sessionId))
+  new Set(get(workbenchPanelsAtom).flatMap(panel => (
+    panel.kind === 'session' ? [panel.sessionId] : []
+  )))
 ))
 
 export const workbenchPanelCountAtom = atom((get) => get(workbenchPanelsAtom).length)

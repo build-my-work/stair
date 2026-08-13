@@ -197,6 +197,10 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   // debug — local debug logging
   RPC_CHANNELS.debug.LOG,
 
+  // projectFiles — renderer document lifecycle for the current local window
+  RPC_CHANNELS.projectFiles.FLUSH_REQUESTED,
+  RPC_CHANNELS.projectFiles.FLUSH_COMPLETED,
+
   // onboarding — local auth setup flow
   RPC_CHANNELS.onboarding.GET_AUTH_STATE,
   RPC_CHANNELS.onboarding.VALIDATE_MCP,
@@ -424,6 +428,11 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projects.UPLOAD_ASSET,
   RPC_CHANNELS.projects.DELETE_ASSET,
   RPC_CHANNELS.projects.CHANGED,
+
+  // projectFiles — Project-scoped working-directory access
+  RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
+  RPC_CHANNELS.projectFiles.READ_TEXT,
+  RPC_CHANNELS.projectFiles.SAVE_TEXT_FILE,
 
   // git — workspace filesystem
   RPC_CHANNELS.git.GET_BRANCH,
