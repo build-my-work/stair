@@ -41,16 +41,19 @@ export function SessionPanelSlot({
   const navState = parseRouteToNavigationState(routes.view.allSessions(panel.sessionId))
 
   const handleClose = useCallback(() => {
-    closePanel({ projectId: panel.projectId, panelId: panel.id })
+    void closePanel({ projectId: panel.projectId, panelId: panel.id })
   }, [closePanel, panel.id, panel.projectId])
 
   const closeButton = useMemo(() => (
-    <PanelHeaderCenterButton
-      icon={<X className="h-4 w-4" />}
-      onClick={handleClose}
-      tooltip={t('common.close')}
-    />
-  ), [handleClose, t])
+    <div className="flex items-center gap-1.5">
+      {parentContext.rightSidebarButton}
+      <PanelHeaderCenterButton
+        icon={<X className="h-4 w-4" />}
+        onClick={handleClose}
+        tooltip={t('common.close')}
+      />
+    </div>
+  ), [handleClose, parentContext.rightSidebarButton, t])
 
   const backButton = useMemo(() => isCompact ? (
     <PanelHeaderCenterButton

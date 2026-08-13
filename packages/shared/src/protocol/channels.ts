@@ -469,6 +469,13 @@ export const RPC_CHANNELS = {
     REGENERATE_THUMBNAIL: 'pages:regenerateThumbnail',
     CHANGED: 'pages:changed',
   },
+  projectFiles: {
+    LIST_DIRECTORY_ENTRIES: 'projectFiles:listDirectoryEntries',
+    READ_TEXT: 'projectFiles:readText',
+    SAVE_TEXT_FILE: 'projectFiles:saveTextFile',
+    FLUSH_REQUESTED: 'projectFiles:flushRequested',
+    FLUSH_COMPLETED: 'projectFiles:flushCompleted',
+  },
   messaging: {
     // WhatsApp subprocess → Gateway (subprocess invokes on server)
     WA_REGISTER: 'messaging:wa:register',

@@ -769,6 +769,12 @@ export interface ElectronAPI {
   /** Request a (re)capture of a page's poster (no-op on hosts without a capturer). */
   regeneratePageThumbnail(workspaceId: string, pageSlug: string): Promise<boolean>
   onPagesChanged(callback: (workspaceId: string, pages: import('@craft-agent/shared/pages/types').LoadedPage[]) => void): () => void
+  // Project Files (authorized by the window/client Workspace context)
+  listProjectDirectoryEntries(request: import('@craft-agent/shared/project-files').ProjectDirectoryEntriesRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntriesResult>
+  readProjectTextFile(request: import('@craft-agent/shared/project-files').ProjectFileRequest): Promise<import('@craft-agent/shared/project-files').ProjectFileTextResponse>
+  saveProjectTextFile(request: import('@craft-agent/shared/project-files').SaveProjectTextFileRequest): Promise<import('@craft-agent/shared/project-files').SaveProjectTextFileResponse>
+  onProjectFilesFlushRequested(callback: (requestId: string) => void): () => void
+  completeProjectFilesFlush(requestId: string, error?: string): Promise<void>
 
   // Automations
   getAutomations(workspaceId: string): Promise<unknown>

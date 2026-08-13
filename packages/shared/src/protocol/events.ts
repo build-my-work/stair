@@ -35,6 +35,7 @@ export interface BroadcastEventMap {
   [RPC_CHANNELS.pages.CHANGED]: [workspaceId: string, pages: LoadedPage[]]
   // PR watcher: to the subscribing client only
   [RPC_CHANNELS.prWatch.CHANGED]: [sessionId: string, state: PrWatchSessionState]
+  [RPC_CHANNELS.projectFiles.FLUSH_REQUESTED]: [requestId: string]
   [RPC_CHANNELS.tasks.GENERATED]: [workspaceId: string, result: TaskGenerateResult]
   [RPC_CHANNELS.llmConnections.CHANGED]: []
   [RPC_CHANNELS.permissions.DEFAULTS_CHANGED]: [value: null]

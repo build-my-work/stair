@@ -79,6 +79,22 @@ describe('Transport — error code preservation', () => {
     expect(caught instanceof CodedError).toBe(false)
   })
 
+  it('preserves Project File conflict codes over the wire', async () => {
+    const { server, client } = await startPair()
+    server.handle('project-file-conflict', async () => {
+      throw new CodedError('PROJECT_FILE_CHANGED', 'changed on disk')
+    })
+
+    let caught: unknown
+    try {
+      await client.invoke('project-file-conflict')
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as { code?: string }).code).toBe('PROJECT_FILE_CHANGED')
+  })
+
   it('preserves `err.code` from client handler → server invokeClient', async () => {
     const { server, client } = await startPair({ clientCapabilities: [CLIENT_BROWSER_INVOKE] })
 

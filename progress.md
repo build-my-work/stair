@@ -242,17 +242,18 @@
 
 1. 当前在哪里：`codex/stair-rebuild-v2`，基于 `upstream/main@50ffa143ab76`。
 2. 最终目标是什么：不保留旧数据，以最小边界重建 Stair 产品能力。
-3. 已完成什么：领域不变量、最小 Workbench、Session Panel 显露、Navigator 独立收起及配套验证。
-4. 还剩什么：阶段 19 的少量指针场景和阶段 20 的 Browser 滚动闪烁像素复验。
-5. 下一步如何验证：在前台真实 Stair 开发窗口中做手工复验，再决定是否正式关闭两个历史项。
+3. 已完成什么：重建方案阶段 0—3，包括领域不变量、最小 Workbench、Project Files、文本文档生命周期及配套验证。
+4. 还剩什么：重建方案阶段 4—9；旧分支阶段 19—20 只保留为历史问题记录。
+5. 下一步如何验证：等待用户确认后，从阶段 4 的 EPUB/PDF Fixture 和统一文档边界开始，不提前接入引用或 Browser。
 
 ## 当前快照
 
 - 普通导航默认不创建 Panel。
 - 点击已有非 Primary Session 会聚焦并自动滚入可视区域。
 - Navigator 可以独立收起和恢复，Workbench 布局保持不变。
-- 三份工作文档已完成中文重写，未触碰产品代码或 `promo/`。
-- 阶段 19—20 仍按真实状态保留为进行中，未虚假改成完成。
+- Project File 普通打开复用唯一 Preview，显式打开才新增持久 Auxiliary，Primary 不变。
+- 文本文档支持 dirty、自动保存、比较保存和关闭前 flush；阶段 3 已完成真实 Electron 验收。
+- 阶段 4—9 尚未开始；`promo/` 仍不在范围内。
 
 ## 2026-08-12：彻底完成阶段 0（完成）
 
@@ -310,3 +311,43 @@
 - Computer Use 分别确认 Craft Agents 与 Stair 窗口，并在 Stair Appearance 设置中看到 `~/.stair/tool-icons/tool-icons.json`。
 - 用户要求使用当前选中的 `os` Project 验收，因此没有清空、迁移或删除 `~/.stair`；该调整已写入权威方案。
 - 阶段 0—2 至此完成，阶段 3 未开始。
+
+## 2026-08-12：开始重建方案阶段 3
+
+- 将阶段 3 状态更新为进行中，范围限定为 Project Files 与文本文档。
+- 已先增加阶段 3 红测，覆盖规范化 Project 相对路径、符号链接隔离、Workspace/Project 授权、SHA-256 比较保存、唯一 Preview、显式 Auxiliary，以及 flush 失败时的布局 veto。
+- 红测按预期因 `project-files` 协议/服务、Document Registry 与 Workbench 文件命令尚不存在而失败；这是本阶段实现前的基线，不是既有回归。
+- 一次聚焦类型检查把 `--cwd` 放在 `bun run` 之后，仅输出 Bun 用法且未执行检查；已改用 `bun --cwd <dir> run typecheck`，不把该次结果计为通过。
+- 明确不提前实现 EPUB/PDF、引用、Add Note、原生 Browser 或旧数据迁移。
+- 下一步先盘点 Craft 当前文件 API、旧 Stair 行为规格与当前 Workbench 命令边界，再增加失败测试。
+
+## 2026-08-12：完成重建方案阶段 3
+
+- 完成共享 Project File 路径、分类、DTO、RPC channel、事件与路由协议；7 份 locale 已补齐并通过数量、parity 和排序检查。
+- 完成服务端 Project 授权与文件边界：只使用显式 `workingDirectory`，拒绝绝对路径、路径穿越、符号链接、特殊文件和跨 Workspace Project；目录按层懒加载并限制 500 项。
+- 完成稳定文本读取与比较保存：SHA-256 fingerprint、同文件串行队列、临时文件原子替换、父目录同步，并保留 BOM、CRLF/LF、末尾换行和原权限。
+- 完成 Workbench `project-file` Panel：唯一 Preview 是 Auxiliary，普通点击替换或聚焦 Preview；右键“Open in New Panel”创建显式持久 Auxiliary，Primary 始终不变。
+- 完成文档控制器与页面：Markdown/代码预览、源码编辑、dirty、800 ms 自动保存、保存合并、重试、冲突、Cmd-S 和 flush veto。
+- Preview 替换、Panel 关闭、Project 切换与应用退出都在状态变化前等待 Document Registry；失败会保留布局和草稿。
+- 聚焦回归 44/44 通过，共 486 个断言。
+- shared 源码全量 3012 项通过、12 项跳过、0 项失败，共 5830 个断言；server-core 234/234 通过，共 481 个断言；Renderer 506/506 通过，共 918 个断言。
+- shared、server-core、Electron 三层类型检查均通过；`git diff --check`、locale parity/排序与阶段 3 聚焦 lint 通过。
+- Electron main 源码套件 343 项通过、8 项失败；8 项均为未修改的既有 `BrowserPaneManager` 基线失败。根目录 `bun test` 还会发现 `release` 中的旧源码副本，并混入同一组既有 Browser/headless 失败，因此不计为阶段 3 回归。
+- `bun run electron:build` 与 `bun run stair:build` 均通过；构建仍报告上游 `session-tools-core` 缺失 `tsconfig.base.json` 的警告和既有大 chunk 警告。
+- Computer Use 在当前 `os` Project 完成真实验收：刷新文件树，普通文件 Preview 原位复用，右键显式 Panel 与 Preview 并存，文本自动保存成功，修改后立即关闭 Panel 仍先 flush 成功。
+- 验收只创建了 `stair-stage3-acceptance.md` 临时文件；最终内容写盘验证后，文件、Preview 和显式 Panel 均已清理，现有用户文件未修改。
+- 独立目录包 `Stair.app` 仍复现“进程存在但无窗口”，发生在业务主进程日志加载前；阶段 3 使用真实 `bun run stair:dev` Electron 窗口完成验收，该问题留到阶段 9。
+- Stair 5193 与 Craft 5173 开发进程均已恢复；Stair 保持在 `os` 的 Project Files 视图供继续手工测试。
+- 阶段 3 至此完成，等待用户确认后再进入阶段 4。
+
+## 2026-08-13：阶段 3 审查修复与交付收口
+
+- 独立审查确认原实现仍有三处生命周期缺口：Workspace 切换没有先 flush、窗口关闭的 3 秒兜底可能抢在保存完成前退出、自动更新安装没有等待 Project File flush。
+- Workspace 切换现在由服务端在改变窗口映射前请求当前 Renderer flush；失败会拒绝切换，Renderer 保留当前 Workspace、Workbench 和草稿。
+- 窗口关闭现在先取消主进程兜底计时器，再等待文档 flush；自动更新先 flush，失败时恢复 `ready` 状态并阻止 `quitAndInstall`，成功后才进入清理和安装。
+- 文档控制器补齐冲突恢复：内容回到已保存版本时清除错误状态；页面提供带确认的“重新加载”，显式放弃草稿后可继续编辑和自动保存。
+- 保存逻辑不再折叠末尾换行，允许空文件，只按原文件换行风格转换内容；含 NUL 的文本被拒绝，常见 dotfile 被识别为可编辑文本。
+- Project File 专用错误码已纳入共享协议白名单，并增加传输层保持错误类型的回归测试。
+- 审查后聚焦回归 52/52 通过，共 188 个断言、11 个文件；shared/server-core/Renderer 完整源码回归分别为 2211/239/508 项通过，均为 0 项失败。
+- shared、server-core、Electron 三层类型检查通过；7 份 locale 各 1661 个 key，parity 与排序检查通过；聚焦 lint 为 0 error。
+- 本轮新增测试先复现上述缺口，再以最小实现转绿；阶段 4 仍未开始，`promo/` 未触碰。

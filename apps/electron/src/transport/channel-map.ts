@@ -447,6 +447,12 @@ export const CHANNEL_MAP = {
   getPageThumbnail: invoke(RPC_CHANNELS.pages.GET_THUMBNAIL),
   regeneratePageThumbnail: invoke(RPC_CHANNELS.pages.REGENERATE_THUMBNAIL),
   onPagesChanged: listener(RPC_CHANNELS.pages.CHANGED),
+  // Project Files
+  listProjectDirectoryEntries: invoke(RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES),
+  readProjectTextFile: invoke(RPC_CHANNELS.projectFiles.READ_TEXT),
+  saveProjectTextFile: invoke(RPC_CHANNELS.projectFiles.SAVE_TEXT_FILE),
+  onProjectFilesFlushRequested: listener(RPC_CHANNELS.projectFiles.FLUSH_REQUESTED),
+  completeProjectFilesFlush: invoke(RPC_CHANNELS.projectFiles.FLUSH_COMPLETED),
 
   // Automations
   getAutomations: invoke(RPC_CHANNELS.automations.GET),

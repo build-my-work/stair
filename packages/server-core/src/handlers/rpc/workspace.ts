@@ -7,6 +7,7 @@ import { perf } from '@craft-agent/shared/utils'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import { isValidWorkspaceRootPath } from '../../utils/path-validation'
+import { requestClientProjectFilesFlush } from './project-files'
 
 export const CORE_HANDLED_CHANNELS = [
   RPC_CHANNELS.workspaces.GET,
@@ -94,6 +95,12 @@ export function registerWorkspaceCoreHandlers(server: RpcServer, deps: HandlerDe
   // Switch workspace in current window (in-window switching)
   server.handle(RPC_CHANNELS.window.SWITCH_WORKSPACE, async (ctx, workspaceId: string) => {
     const end = perf.start('ipc.switchWorkspace', { workspaceId })
+
+    // Keep the old Workspace authorization active until every open document has
+    // finished saving. A failed flush vetoes the whole switch transaction.
+    if (ctx.webContentsId != null) {
+      await requestClientProjectFilesFlush(server, ctx.clientId)
+    }
 
     // Keep WS push routing in sync (works for both GUI and headless)
     server.updateClientWorkspace?.(ctx.clientId, workspaceId)

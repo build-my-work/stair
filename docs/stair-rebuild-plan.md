@@ -2,12 +2,12 @@
 
 ## 文档状态
 
-- 状态：阶段 0—2 已实现并完成验证；阶段 3 尚未开始
+- 状态：阶段 0—3 已实现并完成验证；阶段 4 尚未开始
 - 基线：`upstream/main@50ffa143`（`v0.11.4`）
 - 分支：`codex/stair-rebuild-v2`
-- 更新日期：2026-08-12
+- 更新日期：2026-08-13
 - 范围：保留 Stair 产品能力，不迁移 Craft 或旧 Stair 用户数据
-- 代码状态：阶段 0—2 已形成可交付基线
+- 代码状态：阶段 0—3 已形成经审查修复的可交付基线
 
 ## 当前实施进度
 
@@ -16,7 +16,8 @@
 | 阶段 0：建立干净基线 | 完成 | Stair 已具备专属品牌、开发/构建入口、`~/.stair` 数据命名空间、5193 端口和 `stair://` 深链；默认 Craft 行为保持不变。 |
 | 阶段 1：Project 与 Session 不变量 | 完成 | 默认 Project、不可变 `Session.projectId`、Project 删除约束和同 Project 通信边界已经落地。 |
 | 阶段 2：仅包含 Session 的 Workbench | 完成 | 新 Workbench 状态与命令层已经接管 Session Primary/Auxiliary；普通导航不再隐式新增 Panel。 |
-| 阶段 3—9 | 未开始 | Project Files、阅读器、Add Note、原生 Browser 重建、Drawnix、布局持久化和正式发布打包均未进入实施；阶段 0 只做本地成品结构验收。 |
+| 阶段 3：Project Files 与文本文档 | 完成 | Project 文件树、安全路径 API、复用 Preview、显式 Auxiliary，以及文本编辑的 dirty、自动保存、冲突恢复、flush 和破坏性动作 veto 已落地并完成真实 Electron 验收与审查修复。 |
+| 阶段 4—9 | 未开始 | EPUB/PDF、Add Note、原生 Browser、Drawnix、布局持久化和正式发布打包尚未进入实施。 |
 
 ### 阶段 1 已完成内容
 
@@ -38,34 +39,51 @@
 - 点击已经存在但位于视口外的 Session Panel 时，由 `WorkbenchContainer` 自有横向滚动将其显露；不再使用会滚动页面根节点的 `scrollIntoView`。
 - Navigator 已增加独立收起能力，由 AppShell 持有 `navigatorVisible` 偏好；收起不会修改 Workbench、Project、Session、URL 或焦点模式偏好。
 
+### 阶段 3 已完成内容
+
+- 新增 Project 相对路径协议与独立 RPC，只接受当前 Workspace 中 Project 显式配置的 `workingDirectory`，不回退到 Workspace、Session 或应用数据目录。
+- 文件树按目录懒加载；服务端拒绝绝对路径、路径穿越、符号链接、特殊文件、越界路径和跨 Workspace Project 请求。
+- 普通文件点击只创建或替换唯一 Preview Auxiliary；显式“Open in New Panel”创建持久 Auxiliary，两者都不会占用或替换 Primary。
+- Markdown、文本、JSON、常见代码与配置文件支持预览和源码编辑；可编辑文件限制为 1 MiB，不支持的二进制类型只显示不可编辑状态。
+- 文档控制器统一管理 dirty、800 ms 自动保存、保存合并、重试、冲突和 flush；替换 Preview、关闭 Panel、切换 Project 与退出应用前都会等待 flush，失败则 veto 当前破坏性动作。
+- 保存使用 SHA-256 比较保存、同文件串行队列和临时文件原子替换，并保留 UTF-8 BOM、CRLF/LF、末尾换行和原文件权限。
+- Workspace 切换在服务端提交窗口映射前等待当前 Renderer flush；窗口关闭先取消主进程超时兜底再 flush；自动更新只在 flush 成功后进入退出清理和安装。
+- 冲突状态支持显式放弃本地草稿并重新加载；内容恢复到已保存版本后可继续编辑和自动保存，不会残留错误或定时器状态。
+- 文本保存允许空文件并精确保留请求内容的末尾换行数量，只按原文件风格转换 CRLF/LF；NUL 文本会被拒绝，常见 dotfile 可按文本类型编辑。
+- Project File 错误码已进入共享协议白名单，服务端错误经传输层后仍保留可判定的具体错误类型。
+
 ### 当前验证结果
 
 | 检查 | 结果 | 说明 |
 | --- | --- | --- |
 | 阶段 0 路径聚焦回归 | 通过 | 81/81 项通过，共 1423 个断言；覆盖集中配置目录、写盘位置和生产代码硬编码守卫。 |
 | 阶段 0 深链聚焦回归 | 通过 | 58/58 项通过，共 123 个断言；Craft 使用 `craftagents://`，Stair 使用 `stair://`。 |
-| shared 完整测试 | 通过 | 2207 项通过、1 项跳过，共 4830 个断言。 |
-| server-core 完整测试 | 既有基线失败 | 隔离配置下 228/229 项通过；唯一失败依赖默认配置中的全局 `slug-A` 连接，同一测试在默认配置下 8/8 通过。 |
-| Renderer 完整测试 | 通过 | 源码测试 497/497 项通过，共 886 个断言；新增产品深链测试另行聚焦通过。 |
+| 阶段 3 聚焦回归 | 通过 | 审查后 52/52 项通过，共 188 个断言、11 个文件；覆盖协议路由、注册、IPC、路径安全、比较保存、Workbench 文件命令、Workspace flush/veto、窗口关闭顺序、自动更新中止、冲突恢复、文本保真、dotfile 和错误码透传。 |
+| 阶段 3 审查后完整源码回归 | 通过 | shared 2211 项通过、1 项跳过；server-core 239 项通过；Renderer 508 项通过，均为 0 项失败。 |
+| shared 完整测试 | 通过 | 3012 项通过、12 项跳过、0 项失败，共 5830 个断言。 |
+| server-core 完整测试 | 通过 | 源码测试 234 项通过、0 项失败，共 481 个断言。 |
+| Renderer 完整测试 | 通过 | 源码测试 506 项通过、0 项失败，共 918 个断言。 |
 | Navigator 聚焦测试 | 通过 | 2/2 项通过，覆盖桌面入口和紧凑模式排除。 |
 | 三层类型检查 | 通过 | shared、server-core 和 Electron 分别通过。 |
-| locale JSON 与差异格式检查 | 通过 | 7 份 locale 可解析，`git diff --check` 通过。 |
-| 聚焦 lint | 通过 | shared 与 Electron 阶段 0 文件均为 0 个错误；宽文件中的警告来自既有代码。 |
+| locale JSON 与差异格式检查 | 通过 | 7 份 locale 可解析且 key 数量一致、排序检查通过，`git diff --check` 通过。 |
+| 聚焦 lint | 通过 | shared 与 Electron 阶段 3 变更文件均为 0 个错误；Electron 的 10 条警告位于 `AppShell.tsx` 既有代码。server-core 没有 ESLint 9 配置，以类型检查和源码测试作为该层检查。 |
 | 真实 Renderer 交互 | 通过 | Navigator 宽度 `300 → 0 → 300`，sash 数量 `2 → 1 → 2`，URL、选择和 Panels 不变。 |
 | Session Panel 显露 | 通过 | 点击非 Primary Session 后，目标 Panel 会在横向 Workbench 中进入可视区域。 |
 | Craft/Stair 运行态隔离 | 通过 | Craft 停止期间仅运行 Stair，`~/.craft-agent` 的 289 个文件前后摘要一致；双实例可同时监听 5173/5193。 |
 | Computer Use 桌面验收 | 通过 | 分别确认 Craft Agents 与 Stair 窗口；Stair 设置页显示 `~/.stair/tool-icons/tool-icons.json`。 |
+| 阶段 3 真实 Electron 验收 | 通过 | 在当前 `os` Project 中完成文件树刷新、Preview 原位复用、右键显式新 Panel、Preview 与显式 Panel 并存、文本自动保存，以及修改后立即关闭 Panel 的同步 flush；临时文件和 Panel 已清理。 |
 | 默认 Craft 与 Stair 构建 | 通过 | `bun run electron:build` 与 `bun run stair:build` 均成功。Stair 包名、bundle id、入口、图标和 `stair://` 注册符合配置；本地包为 ad-hoc 签名，未做公证。 |
-| Electron main 完整测试 | 基线失败 | 279 项通过，8 个既有 `BrowserPaneManager` 失败；对应实现未被阶段 0 修改，阶段 0 新增主进程行为由聚焦测试覆盖。 |
+| Electron main 完整测试 | 基线失败 | 343 项通过，8 个既有 `BrowserPaneManager` 失败；失败文件未被阶段 3 修改，新增主进程行为由聚焦测试覆盖。 |
 | `typecheck:all` | 基线阻断 | 上游 `session-tools-core` 缺少 `tsconfig.base.json`。 |
 | `build:validate` | 基线阻断 | 上游缺少 `apps/electron/scripts/validate-assets.ts`；其余 Electron 构建步骤已独立验证。 |
 
 ### 当前限制
 
-- 阶段 0—2 作为当前基线整体交付；阶段 3—9 尚未开始，不能把本次交付理解为全部产品能力已经完成。
+- 阶段 0—3 作为当前基线整体交付；阶段 4—9 尚未开始，不能把本次交付理解为全部产品能力已经完成。
 - 按用户最新要求，桌面验收使用当前已经选择的 `os` Project，不再以临时隔离 Workspace 作为阻塞条件；这不改变产品最终需要独立 Stair 数据命名空间的目标。
-- 阶段 3—9 的能力尚未重建；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
+- EPUB/PDF、引用与 Add Note、原生 Browser、Drawnix、布局持久化和正式发布仍属于阶段 4—9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
 - Computer Use 在应用处于后台时遇到 `document.visibilityState=hidden`，Navigator 几何通过同一真实 Renderer 的按钮事件与开发者工具核对；仍保留前台手工验收入口。
+- 本地 `Stair.app` 目录包在当前机器上仍会出现“进程已启动但没有窗口”，且停在业务主进程日志加载之前；阶段 3 已在 `bun run stair:dev` 的真实 Electron 窗口验收通过，该打包运行问题保留到阶段 9 单独处理。
 
 ### 阶段 0 实施记录
 
@@ -378,7 +396,7 @@ Project 前置条件：
 - 关闭 Primary/Auxiliary 时遵循命令表中的确定性 Focus fallback。
 - 除 Reducer 测试外，还必须有真实 Renderer 交互测试。
 
-### 阶段 3：Project Files 与文本文档（未开始）
+### 阶段 3：Project Files 与文本文档（完成）
 
 范围：
 
@@ -392,6 +410,7 @@ Project 前置条件：
 - 替换 Preview 不修改 Primary 或显式 Auxiliary。
 - 替换、关闭或退出应用前先 flush dirty 文件。
 - 拒绝无效路径和越出 Project 的路径。
+- 在真实 Electron 的当前 `os` Project 中验证懒加载文件树、Preview 复用、显式 Auxiliary、自动保存与关闭前 flush。
 
 ### 阶段 4：EPUB 与 PDF（未开始）
 
@@ -632,4 +651,4 @@ git diff --check
 
 ## 11. 立即下一步
 
-阶段 0—2 已完成并验证。当前停止产品能力扩展，不开始阶段 3；后续是否进入 Project Files 与文本文档由用户另行确认。
+阶段 0—3 已完成并验证。当前停止产品能力扩展，不开始阶段 4；后续是否进入 EPUB 与 PDF 由用户另行确认。

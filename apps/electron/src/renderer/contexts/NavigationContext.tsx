@@ -63,6 +63,7 @@ import {
   switchWorkbenchProjectAtom,
 } from '@/workbench/workbench-commands'
 import { workbenchAtom } from '@/workbench/workbench-state'
+import { flushOpenProjectFilesForProject } from '@/components/project-files/project-file-document-registry'
 
 export { routes }
 export type { Route }
@@ -273,19 +274,32 @@ export function NavigationProvider({
     return nextState
   }, [getFirstSessionId, getFirstSourceSlug, getLastSelectedSessionId, remoteWorkspaceId, skills, store, workspaceId])
 
-  const applyViewRoute = useCallback((
+  const applyViewRoute = useCallback(async (
     route: ViewRoute,
     options?: { skipAutoSelect?: boolean; pushHistory?: boolean },
-  ): boolean => {
+  ): Promise<boolean> => {
     const parsedState = parseRouteToNavigationState(route)
     if (!parsedState) return false
     if (workspaceId && defaultProjectId) {
       initializeWorkbench({ workspaceId, defaultProjectId })
     }
     const resolvedState = resolveAutoSelection(parsedState, options)
+    if (!isSessionsNavigation(resolvedState) || resolvedState.viewMode === 'board') {
+      const activeProjectId = store.get(workbenchAtom).activeProjectId
+      if (activeProjectId) {
+        try {
+          await flushOpenProjectFilesForProject(activeProjectId)
+        } catch {
+          return false
+        }
+      }
+    }
     if (isSessionsNavigation(resolvedState) && resolvedState.details) {
       const meta = store.get(sessionMetaMapAtom).get(resolvedState.details.sessionId)
-      if (!meta || !selectSessionFromNavigator({ sessionId: meta.id, projectId: meta.projectId })) {
+      if (!meta || !await selectSessionFromNavigator({
+        sessionId: meta.id,
+        projectId: meta.projectId,
+      })) {
         return false
       }
       if (workspaceId) {
@@ -325,7 +339,7 @@ export function NavigationProvider({
       case 'new-session': {
         const currentWorkbench = store.get(workbenchAtom)
         const projectId = parsed.params.project ?? currentWorkbench.activeProjectId
-        if (!projectId || !switchWorkbenchProject({ projectId })) {
+        if (!projectId || !await switchWorkbenchProject({ projectId })) {
           toast.error('Could not activate the target Project before creating a Session.')
           return
         }
@@ -462,7 +476,7 @@ export function NavigationProvider({
         return
       }
       if (options?.skipAutoSelect) suppressAutoSelectRef.current = true
-      applyViewRoute(route as ViewRoute, { ...options, pushHistory: true })
+      await applyViewRoute(route as ViewRoute, { ...options, pushHistory: true })
     } catch (error) {
       console.error('[Navigation] Failed:', error)
       toast.error('Navigation failed', {
@@ -486,7 +500,7 @@ export function NavigationProvider({
       toast.error('Switch to the Session’s Project before opening a new Panel.')
       return false
     }
-    applyViewRoute(routeForSession(sessionId), { pushHistory: true })
+    void applyViewRoute(routeForSession(sessionId), { pushHistory: true })
     return true
   }, [applyViewRoute, openSessionPanel, routeForSession, store])
 
@@ -572,16 +586,18 @@ export function NavigationProvider({
 
     const pushHistory = !firstRestore && !isPopstateSwitchRef.current
     isPopstateSwitchRef.current = false
-    if (!applyViewRoute(route, { pushHistory })) {
-      applyViewRoute(routes.view.allSessions(), { pushHistory })
-    }
-    if (firstRestore) {
-      history.replaceState({ seq: 0 }, '', window.location.href)
-      historySeqRef.current = 0
-      historyMaxSeqRef.current = 0
-      nextHistorySeqRef.current = 1
-      updateCanGoBackForward()
-    }
+    void (async () => {
+      if (!await applyViewRoute(route, { pushHistory })) {
+        await applyViewRoute(routes.view.allSessions(), { pushHistory })
+      }
+      if (firstRestore) {
+        history.replaceState({ seq: 0 }, '', window.location.href)
+        historySeqRef.current = 0
+        historyMaxSeqRef.current = 0
+        nextHistorySeqRef.current = 1
+        updateCanGoBackForward()
+      }
+    })()
   }, [
     applyViewRoute,
     defaultProjectId,
@@ -615,7 +631,7 @@ export function NavigationProvider({
         setRightSidebar(undefined)
       }
       const route = (params.get('route') || routes.view.allSessions()) as ViewRoute
-      applyViewRoute(route, { pushHistory: false })
+      void applyViewRoute(route, { pushHistory: false })
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
@@ -674,7 +690,7 @@ export function NavigationProvider({
     if (!isSessionsNavigation(liveState) || liveState.details) return
     const resolved = resolveAutoSelection(liveState)
     if (isSessionsNavigation(resolved) && resolved.details) {
-      applyViewRoute(buildRouteFromNavigationState(resolved) as ViewRoute, { pushHistory: false })
+      void applyViewRoute(buildRouteFromNavigationState(resolved) as ViewRoute, { pushHistory: false })
     }
   }, [applyViewRoute, baseNavigationState, isReady, resolveAutoSelection, workspaceId])
 

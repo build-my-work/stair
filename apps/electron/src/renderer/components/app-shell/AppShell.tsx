@@ -44,6 +44,7 @@ import { cn } from "@/lib/utils"
 import { isMac } from "@/lib/platform"
 import { Button } from "@/components/ui/button"
 import { HeaderIconButton } from "@/components/ui/HeaderIconButton"
+import { PanelHeaderCenterButton } from "@/components/ui/PanelHeaderCenterButton"
 import { resolveInheritedFilterParams, type FilterMode } from "./inherited-filter-params"
 import { Separator } from "@/components/ui/separator"
 import { Tooltip, TooltipTrigger, TooltipContent, DocumentFormattedMarkdownOverlay } from "@craft-agent/ui"
@@ -95,11 +96,15 @@ import { RtkUpdatePrompt } from "@/components/RtkUpdateDialog"
 import { skillsAtom } from "@/atoms/skills"
 import {
   focusedWorkbenchSessionIdAtom,
+  workbenchAtom,
   workbenchPanelCountAtom,
+  workbenchPanelsAtom,
 } from '@/workbench/workbench-state'
 import {
   focusNextWorkbenchPanelAtom,
   focusPreviousWorkbenchPanelAtom,
+  openProjectFileInPanelAtom,
+  openProjectFilePreviewAtom,
   switchWorkbenchProjectAtom,
 } from '@/workbench/workbench-commands'
 import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuses } from "@/config/session-status-config"
@@ -133,6 +138,7 @@ import { SourcesListPanel } from "./SourcesListPanel"
 import { SkillsListPanel } from "./SkillsListPanel"
 import { AutomationsListPanel } from "../automations/AutomationsListPanel"
 import { ProjectsListPanel } from "./ProjectsListPanel"
+import { WorkspaceFilesSidebar } from "@/components/right-sidebar/WorkspaceFilesSidebar"
 import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO_FILTER_KIND } from "../automations/types"
 import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
@@ -300,6 +306,7 @@ function AppShellContent({
     navigateToSource,
     navigateToSession,
     createSessionInNewPanel,
+    updateRightSidebar,
   } = useNavigation()
 
   // Double-Esc interrupt feature: first Esc shows warning, second Esc interrupts
@@ -311,9 +318,13 @@ function AppShellContent({
 
   const store = useStore()
   const panelCount = useAtomValue(workbenchPanelCountAtom)
+  const workbench = useAtomValue(workbenchAtom)
+  const workbenchPanels = useAtomValue(workbenchPanelsAtom)
   const focusedSessionId = useAtomValue(focusedWorkbenchSessionIdAtom)
   const isMultiSelectActive = useIsMultiSelectActive()
   const switchWorkbenchProject = useSetAtom(switchWorkbenchProjectAtom)
+  const openProjectFilePreview = useSetAtom(openProjectFilePreviewAtom)
+  const openProjectFileInPanel = useSetAtom(openProjectFileInPanelAtom)
 
   const sessionsContext = React.useMemo(() => {
     if (isSessionsNavigation(navState)) {
@@ -479,8 +490,8 @@ function AppShellContent({
   // Jump to All Sessions filtered by a single project. Used by the Projects list
   // context menu — sets the allSessions view's project filter (preserving its
   // other filters), then navigates.
-  const handleJumpToProjectSessions = useCallback((projectId: string) => {
-    if (!switchWorkbenchProject({ projectId })) {
+  const handleJumpToProjectSessions = useCallback(async (projectId: string) => {
+    if (!await switchWorkbenchProject({ projectId })) {
       toast.error('Could not activate the selected Project.')
       return
     }
@@ -643,6 +654,52 @@ function AppShellContent({
 
   const { projects } = useProjects(activeWorkspaceId)
   const { pages } = usePages(activeWorkspaceId)
+  const activeProject = useMemo(
+    () => projects.find(project => project.config.id === workbench.activeProjectId),
+    [projects, workbench.activeProjectId],
+  )
+  const isRightSidebarVisible = navState.rightSidebar?.type === 'files'
+  const openProjectFilePaths = useMemo(() => new Set(
+    workbenchPanels.flatMap(panel => panel.kind === 'project-file' ? [panel.relativePath] : []),
+  ), [workbenchPanels])
+  const handleCloseRightSidebar = useCallback(() => {
+    updateRightSidebar(undefined)
+  }, [updateRightSidebar])
+  const handleToggleRightSidebar = useCallback(() => {
+    updateRightSidebar(isRightSidebarVisible ? undefined : { type: 'files' })
+  }, [isRightSidebarVisible, updateRightSidebar])
+  const handleOpenProjectFile = useCallback(async (relativePath: string) => {
+    if (!activeProject?.config.workingDirectory) return
+    const opened = await openProjectFilePreview({
+      projectId: activeProject.config.id,
+      relativePath,
+    })
+    if (!opened) {
+      toast.error(t('filesSidebar.loadError'), {
+        description: t('projectFileEditor.saveFailedTitle'),
+      })
+      return
+    }
+    if (isAutoCompact) handleCloseRightSidebar()
+  }, [activeProject, handleCloseRightSidebar, isAutoCompact, openProjectFilePreview, t])
+  const handleOpenProjectFileInPanel = useCallback((relativePath: string) => {
+    if (!activeProject?.config.workingDirectory) return
+    const opened = openProjectFileInPanel({
+      projectId: activeProject.config.id,
+      relativePath,
+    })
+    if (!opened) toast.error(t('filesSidebar.loadError'))
+    else if (isAutoCompact) handleCloseRightSidebar()
+  }, [activeProject, handleCloseRightSidebar, isAutoCompact, openProjectFileInPanel, t])
+  const projectFilesButton = useMemo(() => (
+    <PanelHeaderCenterButton
+      icon={<FolderOpen className="h-4 w-4" />}
+      tooltip={t('filesSidebar.toggle')}
+      aria-pressed={isRightSidebarVisible}
+      disabled={!activeProject}
+      onClick={handleToggleRightSidebar}
+    />
+  ), [activeProject, handleToggleRightSidebar, isRightSidebarVisible, t])
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
     [projects],
@@ -1443,7 +1500,7 @@ function AppShellContent({
     sessionStatuses: effectiveSessionStatuses,
     onSessionSourcesChange: handleSessionSourcesChange,
     onJumpToTaskSessions: handleJumpToTaskSessions,
-    rightSidebarButton: null,
+    rightSidebarButton: projectFilesButton,
     isCompactMode: isAutoCompact,
     // Search state for ChatDisplay highlighting
     sessionListSearchQuery: searchActive ? searchQuery : undefined,
@@ -1457,7 +1514,7 @@ function AppShellContent({
     automationTestResults,
     getAutomationHistory,
     onReplayAutomation: handleReplayAutomation,
-  }), [contextValue, handleDeleteSession, sources, skills, chatStarters, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
+  }), [contextValue, handleDeleteSession, sources, skills, chatStarters, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, projectFilesButton, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {
@@ -2678,11 +2735,73 @@ function AppShellContent({
           }
           navigatorWidth={isAutoCompact ? sessionListWidth : (isDesktopNavigatorVisible ? sessionListWidth : 0)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
-          isRightSidebarVisible={false}
+          isRightSidebarVisible={!isAutoCompact && isRightSidebarVisible}
           isCompact={isAutoCompact}
           isResizing={!!isResizing}
           animateLayout={animateShellLayout}
         />
+
+        <AnimatePresence initial={false}>
+          {isRightSidebarVisible && !isAutoCompact && (
+            <motion.div
+              key="project-files-sidebar"
+              initial={{ width: 0, opacity: 0, x: 18 }}
+              animate={{ width: 300, opacity: 1, x: 0 }}
+              exit={{ width: 0, opacity: 0, x: 18 }}
+              transition={springTransition}
+              className="h-full shrink-0 overflow-hidden bg-foreground-2 shadow-middle"
+              style={{
+                borderTopLeftRadius: RADIUS_INNER,
+                borderBottomLeftRadius: RADIUS_INNER,
+                borderTopRightRadius: RADIUS_INNER,
+                borderBottomRightRadius: RADIUS_EDGE,
+              }}
+            >
+              <div className="h-full" style={{ width: 300 }}>
+                <WorkspaceFilesSidebar
+                  project={activeProject}
+                  openFilePaths={openProjectFilePaths}
+                  onClose={handleCloseRightSidebar}
+                  onOpenFile={(relativePath) => { void handleOpenProjectFile(relativePath) }}
+                  onOpenFileInPanel={handleOpenProjectFileInPanel}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isRightSidebarVisible && isAutoCompact && (
+            <>
+              <motion.button
+                key="project-files-backdrop"
+                type="button"
+                aria-label={t('common.close')}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={handleCloseRightSidebar}
+                className="absolute inset-0 z-overlay bg-black/20"
+              />
+              <motion.div
+                key="project-files-drawer"
+                initial={{ x: '100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '100%' }}
+                transition={springTransition}
+                className="absolute bottom-0 right-0 top-0 z-overlay w-[min(88vw,360px)] overflow-hidden bg-foreground-2 shadow-strong"
+              >
+                <WorkspaceFilesSidebar
+                  project={activeProject}
+                  openFilePaths={openProjectFilePaths}
+                  onClose={handleCloseRightSidebar}
+                  onOpenFile={(relativePath) => { void handleOpenProjectFile(relativePath) }}
+                  onOpenFileInPanel={handleOpenProjectFileInPanel}
+                />
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
 
         {/* Seam handles (absolute, hidden in focused mode) — instant, never animated */}
         {!effectiveSidebarAndNavigatorHidden && (

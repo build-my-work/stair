@@ -6,7 +6,7 @@
 
 ## 当前阶段
 
-阶段 26：工作文档全面中文化。
+阶段 30 已完成：阶段 3 的 Project File 生命周期审查修复与交付收口。阶段 4 尚未开始。
 
 ## 成功条件
 
@@ -232,6 +232,17 @@
 - [x] 更新权威中文进度文档，将阶段 0 标记为完成。
 - **状态：** 完成
 
+### 阶段 29：重建方案阶段 3——Project Files 与文本文档
+
+- [x] 盘点 Craft 当前文件能力、旧 Stair 规格与阶段 2 Workbench 接口。
+- [x] 先用失败测试冻结 Project 文件树、安全路径与 Project 授权边界。
+- [x] 实现一个可复用 Preview 和显式 Project File Auxiliary，保持 Primary 不变。
+- [x] 实现文本读取、编辑、dirty、自动保存、flush 与关闭 veto。
+- [x] 覆盖替换 Preview、关闭 Panel、切换 Project 和退出应用前的 flush。
+- [x] 运行包级测试、Renderer 测试、三层类型检查、构建和真实 Electron 验收。
+- [x] 更新中文权威方案、调研与进度记录。
+- **状态：** 完成
+
 ## 关键问题与结论
 
 | 问题 | 结论 |
@@ -323,6 +334,14 @@
 | 三个仓库 lint 入口引用不存在的 shell 脚本 | 阶段 28 静态检查 | `check-raw-sends.sh`、`check-task-tool-checks.sh`、`lint-i18n-strings.sh` 均在上游当前树缺失；聚焦 ESLint、类型检查、locale parity/sorted 和测试独立完成，不伪报这三项通过 |
 | 首次 package 级测试命令因递归清理临时目录被策略拒绝 | 阶段 28 扩大测试 | 命令在启动前被拒绝，没有测试或删除发生；改用 `/tmp` 临时配置目录并交由系统清理后重新运行 |
 | package 级测试首次运行的工作目录与启动夹具不完整 | 阶段 28 扩大测试 | server-core 的空配置缺少启动期 `config-defaults.json`；Renderer 从 app 目录又发现 `release/Stair.app` 副本；改为先调用 `ensureConfigDir()`，并直接在 `apps/electron/src/renderer` 运行源码测试 |
+
+### 阶段 30：Project File 生命周期审查修复
+
+- [x] 让 Workspace 切换、窗口关闭和自动更新安装都在破坏状态前等待文档 flush。
+- [x] 补齐冲突放弃/重载、恢复后继续自动保存，以及保存失败 veto 回归。
+- [x] 修正空文件、末尾换行、NUL 文本、dotfile 和 Project File 错误码边界。
+- [x] 运行相关包完整源码测试、三层类型检查、locale 与差异检查。
+- **状态：** 完成
 
 ## 执行约束
 
