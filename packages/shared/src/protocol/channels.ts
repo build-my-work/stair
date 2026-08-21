@@ -239,6 +239,7 @@ export const RPC_CHANNELS = {
   },
   dialog: {
     OPEN_FOLDER: 'dialog:openFolder',
+    SAVE_TEXT_FILE: 'dialog:saveTextFile',
   },
   preferences: {
     READ: 'preferences:read',
@@ -470,9 +471,17 @@ export const RPC_CHANNELS = {
     CHANGED: 'pages:changed',
   },
   projectFiles: {
+    SEARCH: 'projectFiles:search',
     LIST_DIRECTORY_ENTRIES: 'projectFiles:listDirectoryEntries',
+    CREATE_FILE: 'projectFiles:createFile',
+    CREATE_DIRECTORY: 'projectFiles:createDirectory',
     READ_TEXT: 'projectFiles:readText',
+    READ_BINARY: 'projectFiles:readBinary',
     SAVE_TEXT_FILE: 'projectFiles:saveTextFile',
+    GET_EPUB_STATE: 'projectFiles:getEpubState',
+    APPLY_EPUB_STATE_MUTATION: 'projectFiles:applyEpubStateMutation',
+    GET_PDF_STATE: 'projectFiles:getPdfState',
+    APPLY_PDF_STATE_MUTATION: 'projectFiles:applyPdfStateMutation',
     FLUSH_REQUESTED: 'projectFiles:flushRequested',
     FLUSH_COMPLETED: 'projectFiles:flushCompleted',
   },

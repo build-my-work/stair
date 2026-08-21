@@ -31,11 +31,13 @@
     "jose": "^6.0.0",
     "ws": "^8.19.0",
     "sharp": "0.34.5",
-    "@earendil-works/pi-ai": "1.1.0"
+    "@earendil-works/pi-ai": "1.1.0",
+    "yauzl": "2.10.0"
   },
   "devDependencies": {
     "typescript": "^5.8.2",
     "@types/heic-convert": "^2.1.1",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "@types/yauzl": "2.10.3"
   }
 }

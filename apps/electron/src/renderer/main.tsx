@@ -12,6 +12,7 @@ import { setupI18n, i18n } from '@craft-agent/shared/i18n'
 import { redactSensitiveHeadersInPlace, redactSensitiveKeysInPlace } from '@craft-agent/shared/utils/redaction'
 import { initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
+import { resolveRendererRoot, type RendererHotData } from './renderer-root'
 import './index.css'
 
 // Initialize i18n before any React rendering
@@ -90,7 +91,7 @@ sentryInit(
  * Minimal fallback UI shown when the entire React tree crashes.
  * Sentry.ErrorBoundary captures the error and sends it to Sentry automatically.
  */
-function CrashFallback() {
+export function CrashFallback() {
   return (
     <div className="flex flex-col items-center justify-center h-screen font-sans text-foreground/50 gap-3">
       <p className="text-base font-medium">{i18n.t('crash.somethingWentWrong')}</p>
@@ -109,7 +110,7 @@ function CrashFallback() {
  * Root component - loads workspace ID for theme context and renders App
  * App.tsx handles window mode detection internally (main vs tab-content)
  */
-function Root() {
+export function Root() {
   // Shared atom — written by App on init & workspace switch, read here for ThemeProvider
   const workspaceId = useAtomValue(windowWorkspaceIdAtom)
 
@@ -121,12 +122,21 @@ function Root() {
   )
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <Sentry.ErrorBoundary fallback={<CrashFallback />}>
-      <JotaiProvider>
-        <Root />
-      </JotaiProvider>
-    </Sentry.ErrorBoundary>
-  </React.StrictMode>
+const hotData = import.meta.hot?.data as RendererHotData | undefined
+const { reactRoot, shouldRender } = resolveRendererRoot(
+  document.getElementById('root')!,
+  hotData,
+  ReactDOM.createRoot,
 )
+
+if (shouldRender) {
+  reactRoot.render(
+    <React.StrictMode>
+      <Sentry.ErrorBoundary fallback={<CrashFallback />}>
+        <JotaiProvider>
+          <Root />
+        </JotaiProvider>
+      </Sentry.ErrorBoundary>
+    </React.StrictMode>,
+  )
+}

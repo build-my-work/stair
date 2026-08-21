@@ -18,10 +18,13 @@ import { createWorkspaceAtPath } from '@craft-agent/shared/workspaces'
 import type { HandlerFn, RpcServer } from '../../transport'
 import type { HandlerDeps } from '../handler-deps'
 import {
+  createProjectEntryWithinRoot,
   listProjectDirectoryEntriesWithinRoot,
+  readProjectFileBinaryWithinRoot,
   readProjectTextFileWithinRoot,
   registerProjectFileHandlers,
   requestClientProjectFilesFlush,
+  searchProjectFilesWithinRoot,
   saveProjectTextFileWithinRoot,
 } from './project-files'
 import { registerWorkspaceCoreHandlers } from './workspace'
@@ -55,6 +58,55 @@ describe('Project Files RPC', () => {
       expect.objectContaining({ name: 'docs', relativePath: 'docs', type: 'directory' }),
       expect.objectContaining({ name: 'README.md', relativePath: 'README.md', type: 'file' }),
     ])
+  })
+
+  it('搜索 Project 文件时跳过依赖目录和符号链接', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    mkdirSync(join(root, 'node_modules'), { recursive: true })
+    writeFileSync(join(root, 'docs', 'reader-guide.md'), 'guide')
+    writeFileSync(join(root, 'node_modules', 'reader-hidden.md'), 'hidden')
+    symlinkSync(join(root, 'docs'), join(root, 'linked-docs'))
+
+    expect(await searchProjectFilesWithinRoot(root, 'reader')).toEqual([{
+      name: 'reader-guide.md',
+      relativePath: 'docs/reader-guide.md',
+    }])
+  })
+
+  it('在 Project 根目录或普通子目录创建空文件和目录', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(join(root, 'docs'), { recursive: true })
+
+    expect(await createProjectEntryWithinRoot(root, {
+      projectId: 'project-a',
+      parentRelativePath: 'docs',
+      name: 'notes.md',
+    }, 'file')).toEqual({
+      name: 'notes.md',
+      relativePath: 'docs/notes.md',
+      type: 'file',
+    })
+    expect(readFileSync(join(root, 'docs', 'notes.md'), 'utf8')).toBe('')
+    expect(await createProjectEntryWithinRoot(root, {
+      projectId: 'project-a',
+      name: 'assets',
+    }, 'directory')).toEqual({
+      name: 'assets',
+      relativePath: 'assets',
+      type: 'directory',
+    })
+    expect(statSync(join(root, 'assets')).isDirectory()).toBe(true)
+
+    await expect(createProjectEntryWithinRoot(root, {
+      projectId: 'project-a',
+      name: '../outside.md',
+    }, 'file')).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
+    await expect(createProjectEntryWithinRoot(root, {
+      projectId: 'project-a',
+      parentRelativePath: 'docs',
+      name: 'notes.md',
+    }, 'file')).rejects.toThrow('PROJECT_FILE_ALREADY_EXISTS')
   })
 
   it('以 SHA-256 指纹比较并原子保存可编辑文本', async () => {
@@ -130,6 +182,34 @@ describe('Project Files RPC', () => {
       content: 'before\0after',
     })).rejects.toThrow('PROJECT_FILE_INVALID_TEXT')
     expect(readFileSync(join(root, 'notes.txt'), 'utf8')).toBe('original')
+  })
+
+  it('为 EPUB/PDF/图片 Reader 返回带稳定 fingerprint 的安全二进制', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+    const pdf = Buffer.from('%PDF-1.7\ntext-layer fixture\n')
+    writeFileSync(join(root, 'paper.pdf'), pdf)
+    const image = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+    writeFileSync(join(root, 'image.png'), image)
+    writeFileSync(join(root, 'cover.avif'), image)
+
+    const loaded = await readProjectFileBinaryWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'paper.pdf',
+    })
+    expect(Buffer.from(loaded.bytes)).toEqual(pdf)
+    expect(loaded.sourceFingerprint).toMatch(/^sha256:[a-f0-9]{64}$/)
+    const loadedImage = await readProjectFileBinaryWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'image.png',
+    })
+    expect(Buffer.from(loadedImage.bytes)).toEqual(image)
+    expect(loadedImage.metadata.mimeType).toBe('image/png')
+    const loadedAvif = await readProjectFileBinaryWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'cover.avif',
+    })
+    expect(loadedAvif.metadata.mimeType).toBe('image/avif')
   })
 
   it('只允许 RPC 上下文所属 Workspace 中的 Project', async () => {

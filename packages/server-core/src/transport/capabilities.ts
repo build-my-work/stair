@@ -6,6 +6,10 @@
 
 import type { BrowserCapabilityRequest } from './browser-capability'
 import type { RpcServer } from './types'
+import type {
+  SaveTextFileRequest,
+  SaveTextFileResponse,
+} from '@craft-agent/shared/protocol'
 
 /** Capability: open a URL in the client's default browser. */
 export const CLIENT_OPEN_EXTERNAL = 'client:openExternal'
@@ -22,6 +26,9 @@ export const CLIENT_CONFIRM_DIALOG = 'client:confirmDialog'
 /** Capability: show a native file/folder picker on the client. */
 export const CLIENT_OPEN_FILE_DIALOG = 'client:openFileDialog'
 
+/** Capability: show a native Save dialog and write UTF-8 text on the client. */
+export const CLIENT_SAVE_TEXT_FILE = 'client:saveTextFile'
+
 /** Capability: drive a local `BrowserPaneManager` instance for a remote agent. */
 export const CLIENT_BROWSER_INVOKE = 'client:browser:invoke'
 
@@ -32,6 +39,7 @@ export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
   CLIENT_SHOW_IN_FOLDER,
   CLIENT_CONFIRM_DIALOG,
   CLIENT_OPEN_FILE_DIALOG,
+  CLIENT_SAVE_TEXT_FILE,
   CLIENT_BROWSER_INVOKE,
 ]
 
@@ -132,6 +140,14 @@ export async function requestClientOpenFileDialog(
   spec: FileDialogSpec,
 ): Promise<{ canceled: boolean; filePaths: string[] }> {
   return await server.invokeClient(clientId, CLIENT_OPEN_FILE_DIALOG, spec)
+}
+
+export async function requestClientSaveTextFile(
+  server: RpcServer,
+  clientId: string,
+  request: SaveTextFileRequest,
+): Promise<SaveTextFileResponse> {
+  return server.invokeClient(clientId, CLIENT_SAVE_TEXT_FILE, request)
 }
 
 /**

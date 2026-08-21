@@ -22,6 +22,7 @@ import { registerSettingsHandlers } from './settings'
 import { registerProjectsHandlers } from './projects'
 import { registerPagesHandlers } from './pages'
 import { registerProjectFileHandlers } from './project-files'
+import { registerReaderStateHandlers } from './reader-state'
 import { registerSkillsHandlers } from './skills'
 import { registerSourcesHandlers } from './sources'
 import { registerStatusesHandlers } from './statuses'
@@ -30,6 +31,7 @@ import { registerTasksHandlers } from './tasks'
 import { registerTransferHandlers } from './transfer'
 import { registerWorkspaceCoreHandlers } from './workspace'
 import { registerMessagingHandlers } from './messaging'
+import { registerSaveTextFileHandlers } from './save-text-file'
 
 export function registerCoreRpcHandlers(
   server: RpcServer,
@@ -53,6 +55,7 @@ export function registerCoreRpcHandlers(
   registerPrWatchHandlers(server, deps)
   registerCodingReposHandlers(server, deps)
   registerProjectFileHandlers(server, deps)
+  registerReaderStateHandlers(server, deps)
   registerSkillsHandlers(server, deps)
   registerSourcesHandlers(server, deps)
   registerStatusesHandlers(server, deps)
@@ -61,6 +64,7 @@ export function registerCoreRpcHandlers(
   registerTransferHandlers(server)
   registerWorkspaceCoreHandlers(server, deps)
   registerMessagingHandlers(server, deps)
+  registerSaveTextFileHandlers(server)
 }
 
 /** Per-client server state to drop when a client disconnects (session file watches, PR watches). */

@@ -44,7 +44,6 @@ import { cn } from "@/lib/utils"
 import { isMac } from "@/lib/platform"
 import { Button } from "@/components/ui/button"
 import { HeaderIconButton } from "@/components/ui/HeaderIconButton"
-import { PanelHeaderCenterButton } from "@/components/ui/PanelHeaderCenterButton"
 import { resolveInheritedFilterParams, type FilterMode } from "./inherited-filter-params"
 import { Separator } from "@/components/ui/separator"
 import { Tooltip, TooltipTrigger, TooltipContent, DocumentFormattedMarkdownOverlay } from "@craft-agent/ui"
@@ -691,15 +690,6 @@ function AppShellContent({
     if (!opened) toast.error(t('filesSidebar.loadError'))
     else if (isAutoCompact) handleCloseRightSidebar()
   }, [activeProject, handleCloseRightSidebar, isAutoCompact, openProjectFileInPanel, t])
-  const projectFilesButton = useMemo(() => (
-    <PanelHeaderCenterButton
-      icon={<FolderOpen className="h-4 w-4" />}
-      tooltip={t('filesSidebar.toggle')}
-      aria-pressed={isRightSidebarVisible}
-      disabled={!activeProject}
-      onClick={handleToggleRightSidebar}
-    />
-  ), [activeProject, handleToggleRightSidebar, isRightSidebarVisible, t])
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
     [projects],
@@ -1500,7 +1490,7 @@ function AppShellContent({
     sessionStatuses: effectiveSessionStatuses,
     onSessionSourcesChange: handleSessionSourcesChange,
     onJumpToTaskSessions: handleJumpToTaskSessions,
-    rightSidebarButton: projectFilesButton,
+    rightSidebarButton: null,
     isCompactMode: isAutoCompact,
     // Search state for ChatDisplay highlighting
     sessionListSearchQuery: searchActive ? searchQuery : undefined,
@@ -1514,7 +1504,7 @@ function AppShellContent({
     automationTestResults,
     getAutomationHistory,
     onReplayAutomation: handleReplayAutomation,
-  }), [contextValue, handleDeleteSession, sources, skills, chatStarters, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, projectFilesButton, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
+  }), [contextValue, handleDeleteSession, sources, skills, chatStarters, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {
@@ -2453,6 +2443,9 @@ function AppShellContent({
           canGoForward={canGoForward}
           onToggleSidebar={handleToggleSidebarFromPointer}
           onToggleNavigator={handleToggleNavigatorFromPointer}
+          onToggleRightSidebar={handleToggleRightSidebar}
+          isRightSidebarVisible={isRightSidebarVisible}
+          isProjectFilesAvailable={Boolean(activeProject)}
           onToggleFocusMode={handleToggleFocusModeFromPointer}
           onAddSessionPanel={() => handleNewChat(true)}
           onAddBrowserPanel={() => { void handleNewBrowserWindow() }}

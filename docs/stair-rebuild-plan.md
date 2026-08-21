@@ -2,12 +2,12 @@
 
 ## 文档状态
 
-- 状态：阶段 0—3 已实现并完成验证；阶段 4 尚未开始
+- 状态：阶段 0—4 功能等价收口完成；停止在阶段 4，不进入阶段 5
 - 基线：`upstream/main@50ffa143`（`v0.11.4`）
 - 分支：`codex/stair-rebuild-v2`
-- 更新日期：2026-08-13
+- 更新日期：2026-08-21
 - 范围：保留 Stair 产品能力，不迁移 Craft 或旧 Stair 用户数据
-- 代码状态：阶段 0—3 已形成经审查修复的可交付基线
+- 代码状态：新架构主链与本轮确认的旧 Stair 产品能力已经收口；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
 
 ## 当前实施进度
 
@@ -16,8 +16,28 @@
 | 阶段 0：建立干净基线 | 完成 | Stair 已具备专属品牌、开发/构建入口、`~/.stair` 数据命名空间、5193 端口和 `stair://` 深链；默认 Craft 行为保持不变。 |
 | 阶段 1：Project 与 Session 不变量 | 完成 | 默认 Project、不可变 `Session.projectId`、Project 删除约束和同 Project 通信边界已经落地。 |
 | 阶段 2：仅包含 Session 的 Workbench | 完成 | 新 Workbench 状态与命令层已经接管 Session Primary/Auxiliary；普通导航不再隐式新增 Panel。 |
-| 阶段 3：Project Files 与文本文档 | 完成 | Project 文件树、安全路径 API、复用 Preview、显式 Auxiliary，以及文本编辑的 dirty、自动保存、冲突恢复、flush 和破坏性动作 veto 已落地并完成真实 Electron 验收与审查修复。 |
-| 阶段 4—9 | 未开始 | EPUB/PDF、Add Note、原生 Browser、Drawnix、布局持久化和正式发布打包尚未进入实施。 |
+| 阶段 3：Project Files 与文本文档 | 功能等价完成 | 搜索、普通文件/目录创建、图片预览、旧文本/代码扩展名、Markdown 链接和 Save Draft As 均已恢复。 |
+| 阶段 4：EPUB 与 PDF | 功能等价完成 | EPUB/PDF 窄栏 overlay、选区生命周期、印刷页码、导出/分组以及作者/相对路径信息均已恢复。 |
+| 阶段 5—9 | 未开始 | Add Note、原生 Browser、Drawnix、布局持久化和正式发布打包尚未进入实施。 |
+
+### 2026-08-21 功能等价审计与收口
+
+此前阶段验收主要证明了新架构、安全边界与 Reader 主链能够运行，没有建立完整的旧产品行为对照表，因此“阶段 0—4 已完成验证”被写得过满。本轮以旧产品 `6dc6c9fb`、旧 Workbench `6be3dd4b` 和当前工作树逐项对照后，确认：
+
+- 已最小修复 EPUB 小于 840 px 时目录挤压正文的问题；修复仅位于 Reader 内部，没有调整 Workbench 或 Craft 原有架构。
+- 真实 Electron 已在当前 `os` Project 的实际 EPUB 中确认窄 Auxiliary 使用覆盖式目录，右侧 Project Files 与 Panel 宽度保持不变；测试后恢复目录关闭状态。
+- Renderer 入口现在复用同一个 React Root，并且只在首次执行时挂载 Jotai Provider/Workbench；真实 HMR 不再清空 Panels、焦点、草稿或 Project Files 筛选。
+- WindowManager 只恢复真实主框架加载失败，忽略 EPUB iframe 等子框架和 `ERR_ABORTED`；完整 URL 最多重试 5 次，开发模式耗尽后不再错误加载生产 Renderer。
+- Draft Workspace 授权、空 Session 自动清理、PDF 窄栏、Markdown 链接、Save Draft As 以及 Project Files 搜索/创建/图片等阶段 0—4 回归均已按旧产品行为恢复。
+- EPUB/PDF 的 pageLabels、选区失效清理、高亮 Markdown 导出、EPUB 目录分组以及作者/相对路径辅助信息已经补齐。
+- 阶段 5—9 的明确延期继续保持，不以延期解释上述意外回归。
+
+完整证据与修复顺序见：
+
+- `docs/code-research/stair-stage-0-4-feature-parity/01_evolution_and_parity.md`
+- `docs/code-research/stair-stage-0-4-feature-parity/02_implementation_map.md`
+- `docs/code-research/stair-stage-0-4-feature-parity/03_quality_map.md`
+- `docs/code-review/2026-08-21_13-52-33/review.md`
 
 ### 阶段 1 已完成内容
 
@@ -51,22 +71,51 @@
 - 冲突状态支持显式放弃本地草稿并重新加载；内容恢复到已保存版本后可继续编辑和自动保存，不会残留错误或定时器状态。
 - 文本保存允许空文件并精确保留请求内容的末尾换行数量，只按原文件风格转换 CRLF/LF；NUL 文本会被拒绝，常见 dotfile 可按文本类型编辑。
 - Project File 错误码已进入共享协议白名单，服务端错误经传输层后仍保留可判定的具体错误类型。
+- Project Files 支持递归搜索，以及在当前 Project 内创建普通文件和目录；图片预览和旧 Stair 已支持的文本、代码、配置扩展名已经恢复。
+- Markdown 相对文件链接通过当前 Project File 命令打开，网页链接沿用现有外链策略，危险或越界 URL 继续阻止。
+- 文本保存失败或冲突后可以把当前内存文本原样另存，不要求先 Reload，也不会以磁盘旧内容覆盖未保存草稿。
+
+### 阶段 4 已完成内容
+
+- EPUB 与 PDF 通过现有 Project File 二进制读取 RPC 接入同一个 Preview/显式 Auxiliary 生命周期；没有新增 Panel 所有者，也没有改变 Session、Workbench、Workspace 或 Project 边界。
+- EPUB 支持目录、连续阅读、样式与图片、内部链接、进度恢复、选区、红色波浪划线、划线列表与 reveal；来源使用 SHA-256 fingerprint，定位使用 EPUB CFI。
+- PDF 支持目录、连续滚动、text layer 选区、红色波浪划线、划线列表、页内 reveal 与进度恢复；240 页文档使用稳定占位布局，并且只渲染目标附近 5 页。
+- 阅读状态使用 Project 自有 `reader-state/v1` 目录、原子写入、同文档串行 mutation 和 1 秒进度去抖；状态按 Project、相对路径与 fingerprint 隔离，不写入用户工作目录。
+- EPUB ZIP 在服务端验证首条 `mimetype`、container、路径、加密、ZIP64、条目数、压缩/解压字节和膨胀比；PDF/EPUB 二进制上限为 32 MiB。
+- 状态 Schema 对 locator、引文、上下文、目录标签、矩形、划线数和 4 MiB 状态文件设界；损坏或超限状态会被隔离后重新开始，不阻塞阅读器。
+- PDF 小于 760 px 时目录使用遮罩式 overlay，进入窄模式会收起已有目录；页头、目录和高亮列表统一使用 `getPageLabels()` 返回的印刷页码，没有自定义标签时回退到物理页码。
+- EPUB 选区工具条会在 pointerdown、折叠选区、Escape、iframe/挂载容器滚动、view unload 和 resize 后立即关闭，并完整移除监听器；按住鼠标拖选期间会忽略浏览器瞬时产生的折叠选区，避免打断拖选锚点。
+- EPUB/PDF 高亮支持导出 Markdown；EPUB 高亮按最深匹配目录分组，并展示作者和 Project 文件相对路径。
+- 阶段 4 只定义可供下一阶段消费的稳定引用结构；把引用写入草稿、消息或 Add Note，以及 Reference Preview 消费仍属于阶段 5。
 
 ### 当前验证结果
 
 | 检查 | 结果 | 说明 |
 | --- | --- | --- |
+| 本轮阶段 0—4 等价收口相关回归 | 通过 | 28 个相关测试文件共 180/180 项通过、458 个断言；覆盖 HMR、Draft 授权、空 Session、Project Files、Save Draft As、Markdown 链接及 EPUB/PDF 回归。 |
+| WindowManager 隔离生命周期回归 | 通过 | 3/3 项通过；覆盖子框架与 `ERR_ABORTED` 忽略、完整 URL、5 次上限、成功后计数重置和开发模式无生产 fallback。 |
+| 既有 Project 文档回归 | 通过 | 文档控制器与注册表 6/6 项通过、19 个断言，确认本轮恢复没有破坏 autosave、冲突、flush 和 veto。 |
+| 本轮三方审查与简化 | 通过 | 对全部未提交改动执行 Code Simplifier，并由 Claude、Kimi、Pi 审查；7 类有效问题均补测试并修复，真实 HMR 复验发现的入口重复 render 也已补充收口。 |
+| 本轮真实 Electron 验收 | 通过 | 使用 `bun run stair:dev` 和当前 `os` Project：HMR 后两个 Panels、焦点、内存草稿和文件筛选不变；打开/关闭 EPUB/PDF 不触发窗口重载；约 375 px PDF Auxiliary 的目录为遮罩式 overlay；Markdown 相对链接、空 Session 删除均通过。临时文件和测试 Session 已清理。 |
+| 本轮完整仓库测试 | 基线失败 | `bun run test` 得到 5949 项通过、12 项跳过、33 项失败、4 个错误；失败来自被扫描的旧 `release/mac-arm64/Stair.app` 源码、未修改的 `BrowserPaneManager` 8 项及 server smoke 3 项。相关源码回归均独立通过。 |
 | 阶段 0 路径聚焦回归 | 通过 | 81/81 项通过，共 1423 个断言；覆盖集中配置目录、写盘位置和生产代码硬编码守卫。 |
 | 阶段 0 深链聚焦回归 | 通过 | 58/58 项通过，共 123 个断言；Craft 使用 `craftagents://`，Stair 使用 `stair://`。 |
 | 阶段 3 聚焦回归 | 通过 | 审查后 52/52 项通过，共 188 个断言、11 个文件；覆盖协议路由、注册、IPC、路径安全、比较保存、Workbench 文件命令、Workspace flush/veto、窗口关闭顺序、自动更新中止、冲突恢复、文本保真、dotfile 和错误码透传。 |
 | 阶段 3 审查后完整源码回归 | 通过 | shared 2211 项通过、1 项跳过；server-core 239 项通过；Renderer 508 项通过，均为 0 项失败。 |
-| shared 完整测试 | 通过 | 3012 项通过、12 项跳过、0 项失败，共 5830 个断言。 |
-| server-core 完整测试 | 通过 | 源码测试 234 项通过、0 项失败，共 481 个断言。 |
-| Renderer 完整测试 | 通过 | 源码测试 506 项通过、0 项失败，共 918 个断言。 |
+| 阶段 4 Reader/RPC 聚焦回归 | 通过 | 52/52 项通过，共 162 个断言；覆盖二进制读取、EPUB ZIP 防护、状态隔离/原子写入/预算、协议注册与 IPC。 |
+| 阶段 4 Renderer 完整回归 | 通过 | 最新 Renderer 源码测试 583/583 项通过，共 1130 个断言；包含 PDF 虚拟布局和“非空布局就绪后才恢复进度”回归。 |
+| 阶段 4 三方审查 | 通过 | 依次执行 Code Simplifier，并由 Claude、Kimi、Pi 审查；已修复大 PDF 全页挂载、状态预算/损坏恢复、字段边界、EPUB 资源缓存与上下文放大、卸载 flush 等有效问题。 |
+| 阶段 4 生产构建 | 通过 | Electron main、preload、toolbar preload、interceptor 与 Renderer 均构建成功；只保留既有大 chunk 和缺失 `tsconfig.base.json` 警告。 |
+| 阶段 4 聚焦 lint | 通过 | Electron 与 shared 的全部阶段 4 变更文件均为 0 个错误、0 个警告；server-core 继续以类型检查和源码测试验证。 |
+| 阶段 4 真实 EPUB 验收 | 通过 | 在当前 `os` Project 打开 4.1 MiB、697 条目、195 张图片的真实 EPUB，验证目录、样式/图片、内部跳转、连续阅读、选区/划线、删除与重启后恢复到“2.1 虚拟化 CPU”。 |
+| 阶段 4 真实 PDF 验收 | 通过 | 验证 1 页 text-layer PDF 的选区/划线/删除，以及 11 MiB、240 页 PDF 从第 1 页直达第 98 页、目标附近 5 页渲染、目录同步和关闭重开后恢复到 98/240。 |
+| shared 完整测试 | 通过 | 3023 项通过、12 项跳过、0 项失败，共 5906 个断言。 |
+| server-core 完整测试 | 通过 | 源码测试 279 项通过、0 项失败，共 632 个断言。 |
+| Renderer 完整测试 | 通过 | 源码测试 583 项通过、0 项失败，共 1130 个断言。 |
 | Navigator 聚焦测试 | 通过 | 2/2 项通过，覆盖桌面入口和紧凑模式排除。 |
 | 三层类型检查 | 通过 | shared、server-core 和 Electron 分别通过。 |
 | locale JSON 与差异格式检查 | 通过 | 7 份 locale 可解析且 key 数量一致、排序检查通过，`git diff --check` 通过。 |
-| 聚焦 lint | 通过 | shared 与 Electron 阶段 3 变更文件均为 0 个错误；Electron 的 10 条警告位于 `AppShell.tsx` 既有代码。server-core 没有 ESLint 9 配置，以类型检查和源码测试作为该层检查。 |
+| 聚焦 lint | 通过 | Shared 与 Electron 本轮变更文件均为 0 个错误；Electron 有 23 条非阻断 warning，分布在 `App.tsx`、`AppShell.tsx` 和 `main.tsx`。server-core 没有 ESLint 9 配置，以类型检查和源码测试作为该层检查。 |
 | 真实 Renderer 交互 | 通过 | Navigator 宽度 `300 → 0 → 300`，sash 数量 `2 → 1 → 2`，URL、选择和 Panels 不变。 |
 | Session Panel 显露 | 通过 | 点击非 Primary Session 后，目标 Panel 会在横向 Workbench 中进入可视区域。 |
 | Craft/Stair 运行态隔离 | 通过 | Craft 停止期间仅运行 Stair，`~/.craft-agent` 的 289 个文件前后摘要一致；双实例可同时监听 5173/5193。 |
@@ -76,12 +125,14 @@
 | Electron main 完整测试 | 基线失败 | 343 项通过，8 个既有 `BrowserPaneManager` 失败；失败文件未被阶段 3 修改，新增主进程行为由聚焦测试覆盖。 |
 | `typecheck:all` | 基线阻断 | 上游 `session-tools-core` 缺少 `tsconfig.base.json`。 |
 | `build:validate` | 基线阻断 | 上游缺少 `apps/electron/scripts/validate-assets.ts`；其余 Electron 构建步骤已独立验证。 |
+| 两项 i18n 工具检查 | 基线阻断 | parity 与排序检查通过；`lint:i18n:coverage` 缺少 `scripts/check-i18n-coverage.ts`，`lint:i18n:strings` 缺少 `scripts/lint-i18n-strings.sh`。 |
 
 ### 当前限制
 
-- 阶段 0—3 作为当前基线整体交付；阶段 4—9 尚未开始，不能把本次交付理解为全部产品能力已经完成。
+- 阶段 0—4 作为当前功能等价基线整体交付；阶段 5—9 尚未开始，不能把本次交付理解为全部产品能力已经完成。
+- Panel 数量策略已确认与 Craft 保持一致：当前不设置“最多 8 个 Panel”的额外限制，本轮无需修改业务代码。
 - 按用户最新要求，桌面验收使用当前已经选择的 `os` Project，不再以临时隔离 Workspace 作为阻塞条件；这不改变产品最终需要独立 Stair 数据命名空间的目标。
-- EPUB/PDF、引用与 Add Note、原生 Browser、Drawnix、布局持久化和正式发布仍属于阶段 4—9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
+- 把稳定引用接入草稿/消息与 Add Note、原生 Browser、Drawnix、布局持久化和正式发布仍属于阶段 5—9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
 - Computer Use 在应用处于后台时遇到 `document.visibilityState=hidden`，Navigator 几何通过同一真实 Renderer 的按钮事件与开发者工具核对；仍保留前台手工验收入口。
 - 本地 `Stair.app` 目录包在当前机器上仍会出现“进程已启动但没有窗口”，且停在业务主进程日志加载之前；阶段 3 已在 `bun run stair:dev` 的真实 Electron 窗口验收通过，该打包运行问题保留到阶段 9 单独处理。
 
@@ -412,21 +463,38 @@ Project 前置条件：
 - 拒绝无效路径和越出 Project 的路径。
 - 在真实 Electron 的当前 `os` Project 中验证懒加载文件树、Preview 复用、显式 Auxiliary、自动保存与关闭前 flush。
 
-### 阶段 4：EPUB 与 PDF（未开始）
+### 阶段 4：EPUB 与 PDF（完成）
 
 范围：
 
 - 基于统一文档/引用边界构建 EPUB 和 PDF 阅读器。
-- 增加进度、划线、选区、引用预览和 reveal。
+- 增加进度、划线、选区、稳定 locator 和 Reader 内 reveal；引用消费与 Reference Preview 保留到阶段 5。
 - 覆盖真实 EPUB 校验场景，包括压缩的 `mimetype` 条目。
 
 验证：
 
-- 阅读器状态使用新 Schema，并在 Stair 重启后恢复。
-- 引用预览和 reveal 使用稳定来源身份。
+- 阅读器状态使用新 Schema，并在 Reader 重建和 Electron 开发进程重启后恢复。
+- 稳定引用结构与 Reader 内 reveal 使用精确来源 fingerprint；引用预览消费保留到阶段 5。
 - 替换 Preview 时先 flush 状态，且不增加 Panel 数量。
 - EPUB 连续阅读、目录、进度、划线、选区和 reveal 分别具有基于 Fixture 的验收用例。
 - PDF 连续阅读、进度、划线、选区和 reveal 分别具有基于 Fixture 的验收用例。
+
+阶段 4 实际验收路径：
+
+- 自动化测试路径：
+  - `packages/shared/src/project-files/__tests__/reader-types.test.ts`
+  - `packages/server-core/src/project-files/epub-archive-validator.test.ts`
+  - `packages/server-core/src/project-files/epub-state.test.ts`
+  - `packages/server-core/src/project-files/pdf-state.test.ts`
+  - `packages/server-core/src/handlers/rpc/project-files.test.ts`
+  - `apps/electron/src/renderer/components/project-files/__tests__/project-file-epub-state.test.ts`
+  - `apps/electron/src/renderer/components/project-files/__tests__/project-file-epub.test.ts`
+  - `apps/electron/src/renderer/components/project-files/__tests__/project-file-pdf-state.test.ts`
+  - `apps/electron/src/renderer/components/project-files/__tests__/project-file-pdf-layout.test.ts`
+  - `apps/electron/src/renderer/workbench/__tests__/workbench-commands.test.ts`
+- 固定自动化夹具：压缩 `mimetype` 的最小 EPUB、带目录和文本的 EPUB、text-layer PDF 几何，以及两个不同 fingerprint 的同路径状态。
+- 真实 Electron 步骤：使用当前 `os` Project 的真实 EPUB、1 页 text-layer PDF 和 240 页 PDF，验证连续滚动、目录、选区、红色划线、进度恢复、划线 reveal、Preview 原位替换和关闭前 flush。
+- 架构停机线：若实现需要让 Reader 自行选择 Session、修改 Craft 通用文件 API 的所有权，或把 Reader 状态写进用户工作目录，则停止并向用户确认；当前方案未触发。
 
 ### 阶段 5：引用与 Add Note（未开始）
 
@@ -615,7 +683,7 @@ git diff --check
 | 1 | 两个 Project，每个 Project 两个 Session，同时包含默认与非默认 Project | 归属不可变；重启后仍拒绝无效跨 Project 通信和删除。 |
 | 2 | 一个 Primary Session 和两个显式 Auxiliary Session | 每条命令符合状态转换表，包括可见/不可见选择、Branch 位置、Close fallback 和 Project Switch。 |
 | 3 | 可编辑 Markdown、只读文件、非法路径和强制保存失败 | Preview 复用稳定；Autosave/Flush 正确；保存失败 veto 替换/关闭；路径无法逃逸 Project。 |
-| 4 | 压缩 `mimetype` EPUB、包含划线/目录的 EPUB、Text-layer PDF | 重启后连续阅读、进度、划线、选区、Reference Preview 和 Reveal 正常。 |
+| 4 | 压缩 `mimetype` EPUB、包含划线/目录的 EPUB、Text-layer PDF | 重启后连续阅读、进度、划线、选区、稳定 locator 和 Reader 内 Reveal 正常；Reference Preview 消费由阶段 5 验收。 |
 | 5 | 来自文本、EPUB、PDF、聊天的引用，以及已有/新建 Note Target | 使用同一协议和 Picker；目标创建没有 Hydration Race；拒绝非法 Project/Path。 |
 | 6 | 确定性的本地 HTML 选区页、Scroll 页、Occlusion Dialog、两个 Project 的 Browser Panel | 原生 Surface Bounds 与 Pointer Input 正确；Close 销毁；Project Switch park/restore；Bookmark 与 Link Preference 持久化。 |
 | 7 | Drawnix Board，以及允许和越出 Project 的 Agent Tool 请求 | Edit/Autosave/Flush 正确；Agent Tool 遵守 Project Scope 且不依赖 Renderer。 |
@@ -651,4 +719,4 @@ git diff --check
 
 ## 11. 立即下一步
 
-阶段 0—3 已完成并验证。当前停止产品能力扩展，不开始阶段 4；后续是否进入 EPUB 与 PDF 由用户另行确认。
+阶段 0—4 功能等价收口已经完成，停止在阶段 4，不开始阶段 5。Panel 数量策略沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制；后续工作等待用户确认后再开始。
