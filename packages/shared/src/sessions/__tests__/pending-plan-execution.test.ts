@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import type { Reference } from '@craft-agent/core/types'
 import type { StoredSession } from '../types.ts'
 import {
   clearPendingPlanExecution,
@@ -52,11 +53,33 @@ describe('pending plan execution persistence', () => {
   })
 
   it('defaults executionDispatched to false and persists transitions', async () => {
-    await setPendingPlanExecution(workspaceRoot, 'session-1', '/tmp/plan.md', 'draft snapshot')
+    const reference: Reference = {
+      version: 1,
+      kind: 'chat-message',
+      projectId: 'proj_default',
+      sessionId: 'source-session',
+      messageId: 'source-message',
+      role: 'assistant',
+      quote: 'selected text',
+      locator: {
+        type: 'text-quote',
+        exact: 'selected text',
+        start: 0,
+        end: 13,
+      },
+    }
+    await setPendingPlanExecution(
+      workspaceRoot,
+      'session-1',
+      '/tmp/plan.md',
+      'draft snapshot',
+      [reference],
+    )
 
     expect(getPendingPlanExecution(workspaceRoot, 'session-1')).toEqual({
       planPath: '/tmp/plan.md',
       draftInputSnapshot: 'draft snapshot',
+      draftReferencesSnapshot: [reference],
       awaitingCompaction: true,
       executionDispatched: false,
     })
@@ -69,6 +92,7 @@ describe('pending plan execution persistence', () => {
     expect(getPendingPlanExecution(workspaceRoot, 'session-1')).toEqual({
       planPath: '/tmp/plan.md',
       draftInputSnapshot: 'draft snapshot',
+      draftReferencesSnapshot: [reference],
       awaitingCompaction: false,
       executionDispatched: true,
     })

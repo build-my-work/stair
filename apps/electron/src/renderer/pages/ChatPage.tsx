@@ -23,6 +23,7 @@ import { getSessionTitle } from '@/utils/session'
 import { usePrWatch } from '@/hooks/usePrWatch'
 // Model resolution: connection.defaultModel (no hardcoded defaults)
 import { resolveEffectiveConnectionSlug, isSessionConnectionUnavailable } from '@config/llm-connections'
+import type { Reference } from '@craft-agent/core'
 
 export interface ChatPageProps {
   sessionId: string
@@ -47,9 +48,11 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     onRespondToCredential,
     onSetActiveViewingSession,
     getDraft,
+    getDraftReferences,
     hydrateDraftAttachments,
     onInputChange,
     onAttachmentsChange,
+    onReferencesChange,
     enabledSources,
     skills,
     chatStarters,
@@ -266,6 +269,34 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     onAttachmentsChange(sessionId, attachments)
   }, [sessionId, onAttachmentsChange])
 
+  const [referencesValue, setReferencesValue] = React.useState<Reference[]>(
+    () => getDraftReferences(sessionId),
+  )
+
+  React.useEffect(() => {
+    setReferencesValue(getDraftReferences(sessionId))
+  }, [getDraftReferences, sessionId])
+
+  React.useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        sessionId?: string
+        references?: Reference[]
+      }>).detail
+      if (detail?.sessionId === sessionId && Array.isArray(detail.references)) {
+        setReferencesValue(detail.references)
+      }
+    }
+    window.addEventListener('stair:draft-references-changed', handler)
+    return () => window.removeEventListener('stair:draft-references-changed', handler)
+  }, [sessionId])
+
+  const handleReferencesChange = React.useCallback((references: Reference[]) => {
+    if (onReferencesChange(sessionId, references)) {
+      setReferencesValue(references)
+    }
+  }, [onReferencesChange, sessionId])
+
   // Session model change handler - persists per-session model and connection
   const handleModelChange = React.useCallback((model: string, connection?: string) => {
     if (activeWorkspaceId) {
@@ -459,6 +490,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
               onInputChange={handleInputChange}
               attachmentsValue={attachmentsValue}
               onAttachmentsChange={handleAttachmentsChange}
+              referencesValue={referencesValue}
+              onReferencesChange={handleReferencesChange}
               sources={enabledSources}
               skills={skills}
               chatStarters={chatStarters}
@@ -518,9 +551,9 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
         <ChatDisplay
           ref={chatDisplayRef}
           session={session}
-          onSendMessage={(message, attachments, skillSlugs) => {
+          onSendMessage={(message, attachments, skillSlugs, references) => {
             if (session) {
-              onSendMessage(session.id, message, attachments, skillSlugs)
+              onSendMessage(session.id, message, attachments, skillSlugs, undefined, references)
             }
           }}
           onOpenFile={handleOpenFile}
@@ -544,6 +577,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
           onInputChange={handleInputChange}
           attachmentsValue={attachmentsValue}
           onAttachmentsChange={handleAttachmentsChange}
+          referencesValue={referencesValue}
+          onReferencesChange={handleReferencesChange}
           sources={enabledSources}
           skills={skills}
           chatStarters={chatStarters}

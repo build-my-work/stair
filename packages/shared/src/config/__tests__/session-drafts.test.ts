@@ -67,6 +67,66 @@ describe('session draft storage', () => {
     })
   })
 
+  it('round-trips a references-only draft', () => {
+    const configDir = makeConfigDir()
+    const reference = {
+      version: 1,
+      kind: 'chat-message',
+      projectId: 'project-a',
+      sessionId: 'source-session',
+      messageId: 'source-message',
+      role: 'assistant',
+      quote: 'selected',
+      locator: {
+        type: 'text-quote',
+        exact: 'selected',
+        start: 0,
+        end: 8,
+      },
+    }
+    runEval(configDir, `setSessionDraft('s1', ${JSON.stringify({ text: '', references: [reference] })})`)
+    const output = runEval(configDir, "console.log(JSON.stringify(getSessionDraft('s1')))" )
+    expect(JSON.parse(output)).toEqual({ text: '', references: [reference] })
+  })
+
+  it('drops a draft containing an invalid structured reference', () => {
+    const configDir = makeConfigDir()
+    const draftsPath = join(configDir, 'drafts.json')
+    writeFileSync(draftsPath, JSON.stringify({
+      drafts: {
+        s1: {
+          text: 'unsafe',
+          references: [{
+            version: 1,
+            kind: 'project-file',
+            projectId: 'project-a',
+            relativePath: '../outside.md',
+          }],
+        },
+      },
+      updatedAt: 0,
+    }), 'utf-8')
+    const output = runEval(configDir, "console.log(JSON.stringify(getAllSessionDrafts()))")
+    expect(JSON.parse(output)).toEqual({})
+  })
+
+  it('拒绝把非法引用写入磁盘，避免下次启动连正文一起静默丢失', () => {
+    const configDir = makeConfigDir()
+    const output = runEval(configDir, `
+      try {
+        setSessionDraft('s1', {
+          text: 'keep this text',
+          references: [{ version: 1, kind: 'project-file', projectId: 'project-a', relativePath: '../outside.md' }],
+        });
+      } catch (error) {
+        console.log(error instanceof Error ? error.message : String(error));
+      }
+    `)
+    expect(output).toBe('Invalid session draft')
+    expect(runEval(configDir, "console.log(JSON.stringify(getSessionDraft('s1')))"))
+      .toBe('null')
+  })
+
   it('removes the entry when draft is fully empty', () => {
     const configDir = makeConfigDir()
     runEval(configDir, "setSessionDraft('s1', { text: 'typed' })")

@@ -16,7 +16,14 @@ import { expandPath, toPortablePath, getBundledAssetsDir } from '../utils/paths.
 import { debug } from '../utils/debug.ts';
 import { readJsonFileSync } from '../utils/files.ts';
 import { CONFIG_DIR } from './paths.ts';
-import type { StoredAttachment, StoredMessage } from '@craft-agent/core/types';
+import {
+  isReference,
+  MAX_REFERENCES_PER_MESSAGE,
+  referencesFitSerializedLimits,
+  type Reference,
+  type StoredAttachment,
+  type StoredMessage,
+} from '@craft-agent/core/types';
 import type { Plan } from '../agent/plan-types.ts';
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
@@ -1191,6 +1198,7 @@ export interface DraftAttachmentRef {
 export interface SessionDraft {
   text: string;
   attachments?: DraftAttachmentRef[];
+  references?: Reference[];
 }
 
 interface DraftsData {
@@ -1239,11 +1247,22 @@ function isSessionDraft(value: unknown): value is SessionDraft {
     if (!Array.isArray(candidate.attachments)) return false;
     if (!candidate.attachments.every(isDraftAttachmentRef)) return false;
   }
+  if (
+    candidate.references !== undefined
+    && (
+      !Array.isArray(candidate.references)
+      || candidate.references.length > MAX_REFERENCES_PER_MESSAGE
+      || !candidate.references.every(isReference)
+      || !referencesFitSerializedLimits(candidate.references)
+    )
+  ) return false;
   return true;
 }
 
 function isEmptyDraft(draft: SessionDraft): boolean {
-  return !draft.text && (!draft.attachments || draft.attachments.length === 0);
+  return !draft.text
+    && (!draft.attachments || draft.attachments.length === 0)
+    && (!draft.references || draft.references.length === 0);
 }
 
 /**
@@ -1287,6 +1306,7 @@ export function getSessionDraft(sessionId: string): SessionDraft | null {
  * are removed from disk.
  */
 export function setSessionDraft(sessionId: string, draft: SessionDraft): void {
+  if (!isSessionDraft(draft)) throw new Error('Invalid session draft');
   const data = loadDraftsData();
   if (isEmptyDraft(draft)) {
     delete data.drafts[sessionId];
@@ -1295,6 +1315,9 @@ export function setSessionDraft(sessionId: string, draft: SessionDraft): void {
       text: draft.text,
       ...(draft.attachments && draft.attachments.length > 0
         ? { attachments: draft.attachments.map(normalizeDraftAttachment) }
+        : {}),
+      ...(draft.references && draft.references.length > 0
+        ? { references: draft.references }
         : {}),
     };
   }

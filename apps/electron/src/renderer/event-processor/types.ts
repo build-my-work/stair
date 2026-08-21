@@ -6,6 +6,7 @@
  */
 
 import type { Session, SessionEvent, Message, PermissionRequest, CredentialRequest, TypedError, PermissionMode, SessionStatus, AuthRequest, ToolDisplayMeta } from '../../shared/types'
+import type { Reference } from '@craft-agent/core'
 
 /** Explicit SDK retry boundaries; keep their transport shape authoritative. */
 export type TextDiscardEvent = Extract<SessionEvent, { type: 'text_discard' }>
@@ -173,12 +174,23 @@ export interface SessionStatusChangedEvent {
 
 /**
  * Session metadata changed event — generic live push for programmatic metadata writes
- * (taskNodeCount, kanbanColumn) that don't ride the header-signature file-watch path.
+ * (task fields and Project Note target metadata) that don't ride the
+ * header-signature file-watch path.
  */
 export interface SessionMetadataChangedEvent {
   type: 'session_metadata_changed'
   sessionId: string
-  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId'>>
+  changes: Partial<Pick<Session,
+    | 'taskNodeCount'
+    | 'kanbanColumn'
+    | 'taskDraft'
+    | 'taskSlug'
+    | 'projectId'
+    | 'projectNoteRecentTargetPaths'
+  >> & {
+    projectNoteTargetPath?: string | null
+    projectNoteTargetRootFingerprint?: string | null
+  }
 }
 
 /**
@@ -270,6 +282,19 @@ export interface InterruptedEvent {
   message?: Message
   /** Messages that were queued but not processed — should be restored to input field */
   queuedMessages?: string[]
+  /** Structured references attached to those queued messages. */
+  queuedReferences?: Reference[]
+  /** Correlates the persisted queued bubbles with the renderer draft acknowledgement. */
+  queuedRestoreId?: string
+  /** Exact queued bubbles retained by the server until acknowledgement. */
+  queuedMessageIds?: string[]
+}
+
+export interface QueuedInputRestoredEvent {
+  type: 'queued_input_restored'
+  sessionId: string
+  queuedRestoreId: string
+  messageIds: string[]
 }
 
 /**
@@ -558,6 +583,7 @@ export type AgentEvent =
   | StatusEvent
   | InfoEvent
   | InterruptedEvent
+  | QueuedInputRestoredEvent
   | TitleGeneratedEvent
   | TitleRegeneratingEvent
   | AsyncOperationEvent
@@ -590,7 +616,7 @@ export type Effect =
   | { type: 'generate_title'; sessionId: string; userMessage: string }
   | { type: 'permission_mode_changed'; sessionId: string; permissionMode: PermissionMode; previousPermissionMode?: PermissionMode; transitionDisplay?: string; modeVersion?: number; changedAt?: string; changedBy?: 'user' | 'system' | 'restore' | 'automation' | 'unknown' }
   | { type: 'coding_mode_changed'; sessionId: string; codingMode: boolean }
-  | { type: 'restore_input'; text: string }
+  | { type: 'restore_input'; text: string; references?: Reference[]; queuedRestoreId?: string; messageIds?: string[] }
   | { type: 'toast_error'; message: string }
 
 /**

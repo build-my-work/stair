@@ -12,7 +12,7 @@
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
 import type { BoundPr, PrMonitorState } from '../protocol/pr-watch.ts';
-import type { StoredAttachment, MessageRole, ToolStatus, AuthRequestType, AuthStatus, CredentialInputMode, StoredMessage, ContextUsageSnapshot } from '@craft-agent/core/types';
+import type { StoredAttachment, MessageRole, ToolStatus, AuthRequestType, AuthStatus, CredentialInputMode, StoredMessage, ContextUsageSnapshot, Reference } from '@craft-agent/core/types';
 
 /**
  * Session fields that persist to disk.
@@ -62,6 +62,10 @@ export const SESSION_PERSISTENT_FIELDS = [
   'triggeredBy',
   // Project binding (workspace-scoped grouping)
   'projectId',
+  // Session-scoped Add Note target
+  'projectNoteTargetPath',
+  'projectNoteTargetRootFingerprint',
+  'projectNoteRecentTargetPaths',
   // Kanban: task/subtask hierarchy + board column
   'parentSessionId',
   'kanbanColumn',
@@ -183,6 +187,8 @@ export interface SessionConfig {
     planPath: string;
     /** Optional snapshot of draft input captured at accept time */
     draftInputSnapshot?: string;
+    /** Structured draft references captured with the input snapshot. */
+    draftReferencesSnapshot?: Reference[];
     /** Whether we're still waiting for compaction to complete */
     awaitingCompaction: boolean;
     /** Whether execution has already been dispatched from the UI. */
@@ -235,6 +241,12 @@ export interface SessionConfig {
   };
   /** Immutable workspace-scoped Project id this Session belongs to. */
   projectId: string;
+  /** Current Project-relative Add Note destination. */
+  projectNoteTargetPath?: string;
+  /** Fingerprint of the Project root used when the destination was selected. */
+  projectNoteTargetRootFingerprint?: string;
+  /** Most recently selected Add Note destinations, newest first. */
+  projectNoteRecentTargetPaths?: string[];
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -329,6 +341,8 @@ export interface SessionHeader {
     planPath: string;
     /** Optional snapshot of draft input captured at accept time */
     draftInputSnapshot?: string;
+    /** Structured draft references captured with the input snapshot. */
+    draftReferencesSnapshot?: Reference[];
     /** Whether we're still waiting for compaction to complete */
     awaitingCompaction: boolean;
     /** Whether execution has already been dispatched from the UI. */
@@ -356,6 +370,9 @@ export interface SessionHeader {
   };
   /** Immutable workspace-scoped Project id this Session belongs to. */
   projectId: string;
+  projectNoteTargetPath?: string;
+  projectNoteTargetRootFingerprint?: string;
+  projectNoteRecentTargetPaths?: string[];
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -458,6 +475,9 @@ export interface SessionMetadata {
   branchFromMessageId?: string;
   /** Immutable workspace-scoped Project id this Session belongs to. */
   projectId: string;
+  projectNoteTargetPath?: string;
+  projectNoteTargetRootFingerprint?: string;
+  projectNoteRecentTargetPaths?: string[];
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */

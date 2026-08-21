@@ -111,6 +111,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.sessions.GET_MESSAGES,
   RPC_CHANNELS.sessions.SEND_MESSAGE,
   RPC_CHANNELS.sessions.CANCEL,
+  RPC_CHANNELS.sessions.ACK_QUEUED_INPUT_RESTORE,
   RPC_CHANNELS.sessions.KILL_SHELL,
   RPC_CHANNELS.sessions.GET_BACKGROUND_TASK_OUTPUT,
   RPC_CHANNELS.sessions.STOP_BACKGROUND_TASK,
@@ -265,6 +266,15 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
     return sessionManager.cancelProcessing(sessionId, silent)
   })
 
+  server.handle(RPC_CHANNELS.sessions.ACK_QUEUED_INPUT_RESTORE, async (
+    _ctx,
+    sessionId: string,
+    restoreId: string,
+    messageIds: string[],
+  ) => {
+    return sessionManager.acknowledgeQueuedInputRestore(sessionId, restoreId, messageIds)
+  })
+
   // Background tasks: what one has written so far (the task chip's card), and stopping one.
   // `sessions:killShell` is the older name of the stop channel (shells only).
   server.handle(RPC_CHANNELS.sessions.GET_BACKGROUND_TASK_OUTPUT, async (_ctx, sessionId: string, taskId: string, kind?: 'agent' | 'shell' | 'workflow') => {
@@ -373,7 +383,12 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
         return sessionManager.setSessionConnection(sessionId, command.connectionSlug)
       // Pending plan execution (Accept & Compact flow)
       case 'setPendingPlanExecution':
-        return sessionManager.setPendingPlanExecution(sessionId, command.planPath, command.draftInputSnapshot)
+        return sessionManager.setPendingPlanExecution(
+          sessionId,
+          command.planPath,
+          command.draftInputSnapshot,
+          command.draftReferencesSnapshot,
+        )
       case 'markCompactionComplete':
         return sessionManager.markCompactionComplete(sessionId)
       case 'markPendingPlanExecutionDispatched':

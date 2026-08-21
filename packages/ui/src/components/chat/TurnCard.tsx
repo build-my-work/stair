@@ -150,6 +150,20 @@ export type OpenAnnotationRequest = {
   nonce: number
 }
 
+export interface ChatTextSelection {
+  messageId: string
+  role: 'user' | 'assistant' | 'plan'
+  selectedText: string
+  start: number
+  end: number
+  prefix: string
+  suffix: string
+}
+
+export type ChatTextSelectionAction = (
+  selection: ChatTextSelection,
+) => boolean | void | Promise<boolean | void>
+
 export interface TurnCardProps {
   /** Session ID for state persistence (optional in shared context) */
   sessionId?: string
@@ -217,6 +231,11 @@ export interface TurnCardProps {
   onRemoveAnnotation?: (messageId: string, annotationId: string) => void
   /** Callback to update a persisted annotation */
   onUpdateAnnotation?: (messageId: string, annotationId: string, patch: Partial<AnnotationV1>) => void
+  /** Structured-reference actions for a selected response range. */
+  onAddSelectionToChat?: ChatTextSelectionAction
+  onAddSelectionToNewChat?: ChatTextSelectionAction
+  onAddSelectionToNote?: ChatTextSelectionAction
+  onAddSelectionToNoteTarget?: ChatTextSelectionAction
   /** Input send key behavior used by follow-up editor */
   sendMessageKey?: 'enter' | 'cmd-enter'
   /** Callback when follow-up is saved via "Save & Send" action */
@@ -423,6 +442,11 @@ export interface ResponseCardProps {
   onRemoveAnnotation?: (messageId: string, annotationId: string) => void
   /** Callback to update persisted annotation */
   onUpdateAnnotation?: (messageId: string, annotationId: string, patch: Partial<AnnotationV1>) => void
+  /** Structured-reference actions for a selected response range. */
+  onAddSelectionToChat?: ChatTextSelectionAction
+  onAddSelectionToNewChat?: ChatTextSelectionAction
+  onAddSelectionToNote?: ChatTextSelectionAction
+  onAddSelectionToNoteTarget?: ChatTextSelectionAction
   /** Input send key behavior used by follow-up editor */
   sendMessageKey?: 'enter' | 'cmd-enter'
   /** Callback when follow-up is saved via "Save & Send" action */
@@ -628,6 +652,10 @@ export function ResponseCard({
   onAddAnnotation,
   onRemoveAnnotation,
   onUpdateAnnotation,
+  onAddSelectionToChat,
+  onAddSelectionToNewChat,
+  onAddSelectionToNote,
+  onAddSelectionToNoteTarget,
   sendMessageKey = 'enter',
   onSaveAndSendFollowUp,
   hasActiveFollowUpAnnotations = false,
@@ -677,9 +705,16 @@ export function ResponseCard({
   const lastPointerRef = useRef<PointerSnapshot | null>(null)
   const dragStartPointerRef = useRef<PointerSnapshot | null>(null)
   const selectionStartedInContentRef = useRef(false)
+  const selectionReferenceActionBusyRef = useRef(false)
 
   const canAnnotate = canAnnotateMessage({
-    hasAddAnnotationHandler: !!onAddAnnotation,
+    hasAddAnnotationHandler: !!(
+      onAddAnnotation
+      || onAddSelectionToChat
+      || onAddSelectionToNewChat
+      || onAddSelectionToNote
+      || onAddSelectionToNoteTarget
+    ),
     hasMessageId: !!messageId,
     isStreaming,
   })
@@ -1186,7 +1221,7 @@ export function ResponseCard({
   }, [annotations, closeSelectionMenu, triggerSelectionMenuEntryReplay, openFromSelection])
 
   const handleTextSelection = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (!canAnnotate || !onAddAnnotation || !messageId) return
+    if (!canAnnotate || !messageId) return
     const root = contentLayerRef.current
     if (!root) return
 
@@ -1203,7 +1238,7 @@ export function ResponseCard({
     }
 
     // Block annotation gesture: Shift+click on a block wrapper
-    if (event.shiftKey) {
+    if (event.shiftKey && onAddAnnotation) {
       const targetElement = event.target instanceof Element ? event.target : null
       const blockElement = targetElement?.closest<HTMLElement>('[data-ca-block-path]')
       if (blockElement) {
@@ -1259,7 +1294,7 @@ export function ResponseCard({
   }, [canAnnotate, onAddAnnotation, messageId, annotations, showSelectionMenuFromCurrentSelection, closeSelectionMenu])
 
   useEffect(() => {
-    if (!canAnnotate || !onAddAnnotation || !messageId) return
+    if (!canAnnotate || !messageId) return
 
     const handleDocumentMouseUp = (event: MouseEvent) => {
       if (!selectionStartedInContentRef.current) return
@@ -1308,6 +1343,32 @@ export function ResponseCard({
     onClose: closeSelectionMenu,
   })
 
+  const runSelectionReferenceAction = useCallback(async (
+    action: ChatTextSelectionAction | undefined,
+  ) => {
+    if (!action || !pendingSelection || !messageId || selectionReferenceActionBusyRef.current) return
+
+    selectionReferenceActionBusyRef.current = true
+    try {
+      const result = await action({
+        messageId,
+        role: variant === 'plan' ? 'plan' : 'assistant',
+        selectedText: pendingSelection.selectedText,
+        start: pendingSelection.start,
+        end: pendingSelection.end,
+        prefix: pendingSelection.prefix,
+        suffix: pendingSelection.suffix,
+      })
+      if (result === false) return
+      clearDomSelection()
+      closeSelectionMenu()
+    } catch (error) {
+      console.error('[TurnCard] Selection action failed:', error)
+    } finally {
+      selectionReferenceActionBusyRef.current = false
+    }
+  }, [closeSelectionMenu, messageId, pendingSelection, variant])
+
   const selectionMenu = allowAnnotationIsland ? (
     <AnnotationIslandMenu
       anchor={selectionMenuRenderAnchor}
@@ -1319,6 +1380,18 @@ export function ResponseCard({
       draft={followUpDraft}
       onDraftChange={setFollowUpDraft}
       onOpenFollowUp={handleOpenFollowUpView}
+      onAddChat={onAddSelectionToChat
+        ? () => { void runSelectionReferenceAction(onAddSelectionToChat) }
+        : undefined}
+      onAddNewChat={onAddSelectionToNewChat
+        ? () => { void runSelectionReferenceAction(onAddSelectionToNewChat) }
+        : undefined}
+      onAddNote={onAddSelectionToNote
+        ? () => { void runSelectionReferenceAction(onAddSelectionToNote) }
+        : undefined}
+      onAddNoteTo={onAddSelectionToNoteTarget
+        ? () => { void runSelectionReferenceAction(onAddSelectionToNoteTarget) }
+        : undefined}
       onCancel={handleCancelFollowUp}
       onRequestBack={handleSelectionMenuRequestBack}
       onRequestEdit={handleRequestFollowUpEdit}
@@ -1552,6 +1625,10 @@ export const TurnCard = React.memo(function TurnCard({
   onAddAnnotation,
   onRemoveAnnotation,
   onUpdateAnnotation,
+  onAddSelectionToChat,
+  onAddSelectionToNewChat,
+  onAddSelectionToNote,
+  onAddSelectionToNoteTarget,
   sendMessageKey = 'enter',
   onSaveAndSendFollowUp,
   hasActiveFollowUpAnnotations = false,
@@ -1734,6 +1811,10 @@ export const TurnCard = React.memo(function TurnCard({
       onAddAnnotation={onAddAnnotation}
       onRemoveAnnotation={onRemoveAnnotation}
       onUpdateAnnotation={onUpdateAnnotation}
+      onAddSelectionToChat={onAddSelectionToChat}
+      onAddSelectionToNewChat={onAddSelectionToNewChat}
+      onAddSelectionToNote={onAddSelectionToNote}
+      onAddSelectionToNoteTarget={onAddSelectionToNoteTarget}
       onSaveAndSendFollowUp={onSaveAndSendFollowUp}
       onAccept={onAcceptPlan}
       onAcceptWithCompact={onAcceptPlanWithCompact}
@@ -1799,6 +1880,10 @@ export const TurnCard = React.memo(function TurnCard({
             onAddAnnotation={onAddAnnotation}
             onRemoveAnnotation={onRemoveAnnotation}
             onUpdateAnnotation={onUpdateAnnotation}
+            onAddSelectionToChat={onAddSelectionToChat}
+            onAddSelectionToNewChat={onAddSelectionToNewChat}
+            onAddSelectionToNote={onAddSelectionToNote}
+            onAddSelectionToNoteTarget={onAddSelectionToNoteTarget}
             onSaveAndSendFollowUp={onSaveAndSendFollowUp}
             onAccept={onAcceptPlan}
             onAcceptWithCompact={onAcceptPlanWithCompact}

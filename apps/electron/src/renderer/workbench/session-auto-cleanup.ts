@@ -4,7 +4,11 @@ import type { SessionDraft } from '@craft-agent/shared/config'
 export function sessionDraftHasContent(
   draft: SessionDraft | null | undefined,
 ): boolean {
-  return !!draft && (draft.text.length > 0 || (draft.attachments?.length ?? 0) > 0)
+  return !!draft && (
+    draft.text.length > 0
+    || (draft.attachments?.length ?? 0) > 0
+    || (draft.references?.length ?? 0) > 0
+  )
 }
 
 export function findEmptySessionsLeavingWorkbench(

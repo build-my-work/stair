@@ -79,6 +79,9 @@ export interface SessionMeta {
   archivedAt?: number
   /** Immutable workspace-scoped Project id this Session belongs to. */
   projectId: string
+  projectNoteTargetPath?: string
+  projectNoteTargetRootFingerprint?: string
+  projectNoteRecentTargetPaths?: string[]
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */

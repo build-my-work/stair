@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { handleInterrupted } from '../session'
+import { handleComplete, handleInterrupted, handleQueuedInputRestored, handleUserMessage } from '../session'
 import type { SessionState, InterruptedEvent } from '../../types'
 
 function makeState(messages: any[]): SessionState {
@@ -16,7 +16,7 @@ function makeState(messages: any[]): SessionState {
 
 describe('handleInterrupted (#616)', () => {
   describe('user-initiated stop (event.message present)', () => {
-    it('removes queued bubbles AND emits restore_input', () => {
+    it('keeps queued bubbles until draft persistence is acknowledged', () => {
       const state = makeState([
         { id: 'msg-1', role: 'user', content: 'first' },
         { id: 'msg-2', role: 'user', content: 'queued one', isQueued: true },
@@ -28,22 +28,128 @@ describe('handleInterrupted (#616)', () => {
         sessionId: 'session-1',
         message: { id: 'info-1', role: 'info', content: 'Response interrupted', timestamp: 0 } as any,
         queuedMessages: ['queued one', 'queued two'],
+        queuedRestoreId: 'restore-1',
+        queuedMessageIds: ['msg-2', 'msg-3'],
       }
 
       const next = handleInterrupted(state, event)
 
-      // queued bubbles dropped
+      // queued bubbles remain until the draft write and server ack succeed
       const ids = next.state.session.messages.map(m => m.id)
-      expect(ids).not.toContain('msg-2')
-      expect(ids).not.toContain('msg-3')
+      expect(ids).toContain('msg-2')
+      expect(ids).toContain('msg-3')
+      expect(next.state.session.messages.find(message => message.id === 'msg-2'))
+        .toEqual(expect.objectContaining({
+          isQueued: true,
+          queuedRestoreId: 'restore-1',
+        }))
       // info message appended
       expect(ids).toContain('info-1')
       // restore_input effect emitted with combined text
       expect(next.effects).toEqual([
-        { type: 'restore_input', text: 'queued one\n\nqueued two' },
+        {
+          type: 'restore_input',
+          text: 'queued one\n\nqueued two',
+          queuedRestoreId: 'restore-1',
+          messageIds: ['msg-2', 'msg-3'],
+        },
       ])
       // isProcessing cleared
       expect(next.state.session.isProcessing).toBe(false)
+
+      const completed = handleComplete(next.state, {
+        type: 'complete',
+        sessionId: 'session-1',
+      })
+      expect(completed.state.session.messages.find(message => message.id === 'msg-2')?.isQueued)
+        .toBe(true)
+    })
+
+    it('removes an optimistic bubble when restore events use its server id', () => {
+      const optimisticState = makeState([
+        {
+          id: 'optimistic-queued',
+          role: 'user',
+          content: 'queued one',
+          timestamp: 100,
+          isPending: true,
+          isQueued: true,
+        },
+      ])
+      const queued = handleUserMessage(optimisticState, {
+        type: 'user_message',
+        sessionId: 'session-1',
+        message: {
+          id: 'server-queued',
+          role: 'user',
+          content: 'queued one',
+          timestamp: 101,
+        },
+        status: 'queued',
+        optimisticMessageId: 'optimistic-queued',
+      })
+      const interrupted = handleInterrupted(queued.state, {
+        type: 'interrupted',
+        sessionId: 'session-1',
+        message: { id: 'info-1', role: 'info', content: 'Response interrupted', timestamp: 102 },
+        queuedMessages: ['queued one'],
+        queuedRestoreId: 'restore-1',
+        queuedMessageIds: ['server-queued'],
+      })
+
+      expect(interrupted.state.session.messages.find(message => message.id === 'optimistic-queued'))
+        .toEqual(expect.objectContaining({ queuedRestoreId: 'restore-1' }))
+
+      const restored = handleQueuedInputRestored(interrupted.state, {
+        type: 'queued_input_restored',
+        sessionId: 'session-1',
+        queuedRestoreId: 'restore-1',
+        messageIds: ['server-queued'],
+      })
+      expect(restored.state.session.messages.map(message => message.id))
+        .not.toContain('optimistic-queued')
+    })
+
+    it('restores structured references from queued messages with the input text', () => {
+      const reference = {
+        version: 1,
+        kind: 'chat-message',
+        projectId: 'project-1',
+        sessionId: 'source-session',
+        messageId: 'source-message',
+        role: 'assistant',
+        quote: 'quoted text',
+        locator: {
+          type: 'text-quote',
+          exact: 'quoted text',
+          start: 0,
+          end: 11,
+        },
+      } as const
+      const state = makeState([
+        { id: 'msg-1', role: 'user', content: 'first' },
+        { id: 'msg-2', role: 'user', content: 'queued with reference', isQueued: true, references: [reference] },
+      ])
+
+      const event: InterruptedEvent = {
+        type: 'interrupted',
+        sessionId: 'session-1',
+        message: { id: 'info-1', role: 'info', content: 'Response interrupted', timestamp: 0 } as any,
+        queuedMessages: ['queued with reference'],
+        queuedReferences: [reference],
+        queuedRestoreId: 'restore-with-reference',
+        queuedMessageIds: ['msg-2'],
+      }
+
+      const next = handleInterrupted(state, event)
+
+      expect(next.effects).toEqual([{
+        type: 'restore_input',
+        text: 'queued with reference',
+        references: [reference],
+        queuedRestoreId: 'restore-with-reference',
+        messageIds: ['msg-2'],
+      }])
     })
 
     it('still works when no queued bubbles exist', () => {
@@ -120,5 +226,23 @@ describe('handleInterrupted (#616)', () => {
     const ids = next.state.session.messages.map(m => m.id)
     expect(ids).not.toContain('status-1')
     expect(ids).toContain('msg-1')
+  })
+
+  it('removes only the queued bubbles confirmed by the server acknowledgement', () => {
+    const state = makeState([
+      { id: 'msg-1', role: 'user', content: 'first' },
+      { id: 'msg-2', role: 'user', content: 'queued one', isQueued: true },
+      { id: 'msg-3', role: 'user', content: 'queued two', isQueued: true },
+    ])
+
+    const next = handleQueuedInputRestored(state, {
+      type: 'queued_input_restored',
+      sessionId: 'session-1',
+      queuedRestoreId: 'restore-1',
+      messageIds: ['msg-2', 'unknown-message'],
+    })
+
+    expect(next.state.session.messages.map(message => message.id)).toEqual(['msg-1', 'msg-3'])
+    expect(next.effects).toEqual([])
   })
 })

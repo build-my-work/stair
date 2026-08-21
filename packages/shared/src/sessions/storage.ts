@@ -23,6 +23,7 @@ import {
   unlinkSync,
 } from 'fs';
 import { join, basename } from 'path';
+import type { Reference } from '@craft-agent/core/types';
 import { getWorkspaceSessionsPath, loadWorkspaceConfig } from '../workspaces/storage.ts';
 import { loadProjectById, withProjectMutationLock } from '../projects/storage.ts';
 import { generateUniqueSessionId } from './slug-generator.ts';
@@ -666,6 +667,7 @@ export async function setPendingPlanExecution(
   sessionId: string,
   planPath: string,
   draftInputSnapshot?: string,
+  draftReferencesSnapshot?: Reference[],
 ): Promise<void> {
   const session = loadSession(workspaceRootPath, sessionId);
   if (!session) return;
@@ -673,6 +675,7 @@ export async function setPendingPlanExecution(
   session.pendingPlanExecution = {
     planPath,
     draftInputSnapshot,
+    ...(draftReferencesSnapshot?.length ? { draftReferencesSnapshot } : {}),
     awaitingCompaction: true,
     executionDispatched: false,
   };
@@ -740,7 +743,13 @@ export async function clearPendingPlanExecution(
 export function getPendingPlanExecution(
   workspaceRootPath: string,
   sessionId: string
-): { planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean; executionDispatched: boolean } | null {
+): {
+  planPath: string;
+  draftInputSnapshot?: string;
+  draftReferencesSnapshot?: Reference[];
+  awaitingCompaction: boolean;
+  executionDispatched: boolean;
+} | null {
   const session = loadSession(workspaceRootPath, sessionId);
   if (!session?.pendingPlanExecution) return null;
   return {

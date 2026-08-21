@@ -176,7 +176,28 @@ function validateSearchRequest(value: unknown): ProjectFileSearchRequest {
   ) {
     throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Invalid Project File search query')
   }
-  return { projectId: validateProjectId(request.projectId), query: request.query }
+  if (
+    request.extensions !== undefined
+    && (
+      !Array.isArray(request.extensions)
+      || request.extensions.length === 0
+      || request.extensions.length > 16
+      || !request.extensions.every(extension => (
+        typeof extension === 'string'
+        && /^[a-z0-9][a-z0-9+-]{0,31}$/i.test(extension)
+      ))
+    )
+  ) {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Invalid Project File search extensions')
+  }
+  const extensions = request.extensions
+    ? [...new Set(request.extensions.map(extension => extension.toLowerCase()))]
+    : undefined
+  return {
+    projectId: validateProjectId(request.projectId),
+    query: request.query,
+    ...(extensions ? { extensions } : {}),
+  }
 }
 
 function validateCreateRequest(value: unknown): CreateProjectEntryRequest {
@@ -345,10 +366,14 @@ export async function listProjectDirectoryEntriesWithinRoot(
 export async function searchProjectFilesWithinRoot(
   rootPath: string,
   query: string,
+  extensions?: readonly string[],
 ): Promise<ProjectFileSearchResult[]> {
   const root = await canonicalRoot(rootPath)
   const normalizedQuery = query.trim().toLowerCase()
   if (!normalizedQuery) return []
+  const allowedExtensions = extensions
+    ? new Set(extensions.map(extension => extension.toLowerCase()))
+    : null
   const results: ProjectFileSearchResult[] = []
   let queue = ['']
 
@@ -375,6 +400,10 @@ export async function searchProjectFilesWithinRoot(
         } else if (
           entry.isFile()
           && relativePath.toLowerCase().includes(normalizedQuery)
+          && (
+            !allowedExtensions
+            || allowedExtensions.has(extname(entry.name).slice(1).toLowerCase())
+          )
         ) {
           results.push({ name: entry.name, relativePath })
         }
@@ -762,7 +791,7 @@ export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps
     async (context, rawRequest: unknown) => {
       const request = validateSearchRequest(rawRequest)
       const rootPath = await resolveAuthorizedProjectRoot(context, deps, request.projectId)
-      return searchProjectFilesWithinRoot(rootPath, request.query)
+      return searchProjectFilesWithinRoot(rootPath, request.query, request.extensions)
     },
   )
   server.handle(

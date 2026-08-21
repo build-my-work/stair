@@ -11,18 +11,30 @@
  * - Copy button left of the bubble, revealed on hover/focus like the answer footer (not in compact mode)
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Check, Clock, Copy } from 'lucide-react'
-import type { StoredAttachment, ContentBadge } from '@craft-agent/core'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react'
+import * as ReactDOM from 'react-dom'
+import { Check, ChevronRight, Clock, Copy, MessageSquarePlus, MessageSquareQuote, NotebookPen } from 'lucide-react'
+import { referenceKey, type StoredAttachment, type ContentBadge, type Reference } from '@craft-agent/core'
 import { normalizePath } from '@craft-agent/core/utils'
 import { cn } from '../../lib/utils'
 import { useCopyToClipboard } from '../../lib/use-copy-to-clipboard'
+import { clamp, getCanonicalText, resolveNodeOffset } from '../annotations/annotation-core'
 import { Markdown } from '../markdown'
 import { FileTypeIcon, getFileTypeLabel } from './attachment-helpers'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '../tooltip'
 import { TurnIconButton } from './turn/TurnIconButton'
 import { HOVER_REVEAL } from './turn/turn-classes'
 import { useTranslation } from 'react-i18next'
+import { MessageReferencePreview } from './MessageReferencePreview'
+import type { ChatTextSelection, ChatTextSelectionAction } from './TurnCard'
+import { buildUserChatTextSelection } from './user-message-selection'
 
 // Fallback text icons for badges without iconDataUrl
 // Using simple characters since SVG rendering may not work in all contexts
@@ -309,6 +321,8 @@ function renderContentWithBadges(
 }
 
 export interface UserMessageBubbleProps {
+  /** Persisted message identity used by structured selections. */
+  messageId?: string
   /** Message content (markdown supported) */
   content: string
   /** Additional className for the outer container */
@@ -321,6 +335,15 @@ export interface UserMessageBubbleProps {
   attachments?: StoredAttachment[]
   /** Content badges for inline display (sources, skills) */
   badges?: ContentBadge[]
+  /** Structured source references carried by this message. */
+  references?: Reference[]
+  /** Reveal the referenced source. */
+  onReferenceActivate?: (reference: Reference) => void
+  /** Structured-reference actions for a selected user-message range. */
+  onAddSelectionToChat?: ChatTextSelectionAction
+  onAddSelectionToNewChat?: ChatTextSelectionAction
+  onAddSelectionToNote?: ChatTextSelectionAction
+  onAddSelectionToNoteTarget?: ChatTextSelectionAction
   /** Whether the message is awaiting backend confirmation. User bubbles stay visually stable. */
   isPending?: boolean
   /** Whether the message is queued (badge shown) */
@@ -335,19 +358,62 @@ export interface UserMessageBubbleProps {
  * actually read it. */
 const QUEUED_MIN_VISIBLE_MS = 2500
 
+interface UserMessageSelection {
+  anchorX: number
+  anchorY: number
+  selection: ChatTextSelection
+}
+
+function captureUserMessageSelection(
+  root: HTMLElement,
+  messageId: string,
+  pointerX: number,
+): UserMessageSelection | null {
+  const domSelection = window.getSelection()
+  if (!domSelection || domSelection.rangeCount === 0 || domSelection.isCollapsed) return null
+
+  const range = domSelection.getRangeAt(0)
+  if (!root.contains(range.commonAncestorContainer)) return null
+  const rawStart = resolveNodeOffset(root, range.startContainer, range.startOffset)
+  if (rawStart === null) return null
+  const selection = buildUserChatTextSelection(
+    messageId,
+    getCanonicalText(root),
+    range.toString(),
+    rawStart,
+  )
+  if (!selection) return null
+
+  const rect = range.getBoundingClientRect()
+  return {
+    anchorX: clamp(pointerX, rect.left, Math.max(rect.left, rect.right)),
+    anchorY: rect.top - 8,
+    selection,
+  }
+}
+
 export function UserMessageBubble({
+  messageId,
   content,
   className,
   onUrlClick,
   onFileClick,
   attachments,
   badges,
+  references,
+  onReferenceActivate,
+  onAddSelectionToChat,
+  onAddSelectionToNewChat,
+  onAddSelectionToNote,
+  onAddSelectionToNoteTarget,
+  isPending,
   isQueued,
   compactMode,
 }: UserMessageBubbleProps) {
   const { t } = useTranslation()
   const { copied, copy } = useCopyToClipboard()
   const hasAttachments = attachments && attachments.length > 0
+  const hasReferences = references && references.length > 0
 
   // Show the queued chip while `isQueued` is true AND for at least
   // QUEUED_MIN_VISIBLE_MS after it first became true — even if the backend
@@ -356,6 +422,9 @@ export function UserMessageBubble({
   const [showQueued, setShowQueued] = useState(isQueued ?? false)
   const queuedShownAtRef = useRef<number | null>(isQueued ? Date.now() : null)
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const contentBubbleRef = useRef<HTMLDivElement>(null)
+  const [messageSelection, setMessageSelection] = useState<UserMessageSelection | null>(null)
+  const [selectionActionBusy, setSelectionActionBusy] = useState(false)
 
   useEffect(() => {
     return () => {
@@ -400,6 +469,65 @@ export function UserMessageBubble({
   // 82% of the column, 90% in compact layouts (popover, compact shell)
   const maxWidth = compactMode ? 'max-w-[90%]' : 'max-w-[82%]'
 
+  const hasSelectionAction = Boolean(
+    onAddSelectionToChat
+      || onAddSelectionToNewChat
+      || onAddSelectionToNote
+      || onAddSelectionToNoteTarget,
+  )
+
+  useEffect(() => {
+    if (isPending || showQueued || !messageId || !hasSelectionAction) {
+      setMessageSelection(null)
+    }
+  }, [hasSelectionAction, isPending, messageId, showQueued])
+
+  useEffect(() => {
+    if (!messageSelection) return
+    const closeOnPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null
+      if (!target?.closest('[data-ca-user-reference-menu]')) setMessageSelection(null)
+    }
+    const closeOnKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMessageSelection(null)
+    }
+    const closeOnScroll = () => setMessageSelection(null)
+    document.addEventListener('pointerdown', closeOnPointerDown, true)
+    document.addEventListener('keydown', closeOnKeyDown)
+    document.addEventListener('scroll', closeOnScroll, true)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnPointerDown, true)
+      document.removeEventListener('keydown', closeOnKeyDown)
+      document.removeEventListener('scroll', closeOnScroll, true)
+    }
+  }, [messageSelection])
+
+  const handleTextSelection = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const root = contentBubbleRef.current
+    if (event.button !== 0 || !root || !messageId || !hasSelectionAction || isPending || showQueued) return
+    const pointerX = event.clientX
+    requestAnimationFrame(() => {
+      setMessageSelection(captureUserMessageSelection(root, messageId, pointerX))
+    })
+  }, [hasSelectionAction, isPending, messageId, showQueued])
+
+  const runSelectionAction = useCallback(async (
+    action: ChatTextSelectionAction | undefined,
+  ) => {
+    if (!action || !messageSelection || selectionActionBusy) return
+    setSelectionActionBusy(true)
+    try {
+      const result = await action(messageSelection.selection)
+      if (result === false) return
+      window.getSelection()?.removeAllRanges()
+      setMessageSelection(null)
+    } catch (error) {
+      console.error('[UserMessageBubble] Selection action failed:', error)
+    } finally {
+      setSelectionActionBusy(false)
+    }
+  }, [messageSelection, selectionActionBusy])
+
   // Separate edit_request badges (rendered above bubble) from other badges (rendered inline)
   const editRequestBadges = badges?.filter(isEditRequestBadge) ?? []
   const inlineBadges = badges?.filter(b => !isEditRequestBadge(b)) ?? []
@@ -421,6 +549,18 @@ export function UserMessageBubble({
 
   return (
     <div className={cn("flex w-full flex-col items-end gap-2", className)}>
+      {hasReferences && (
+        <div className={cn("flex flex-wrap justify-end gap-2", maxWidth)}>
+          {references.map(reference => (
+            <MessageReferencePreview
+              key={referenceKey(reference)}
+              reference={reference}
+              onActivate={onReferenceActivate}
+            />
+          ))}
+        </div>
+      )}
+
       {/* Attachment preview row - stored attachments with thumbnails */}
       {hasAttachments && (
         <div className={cn("flex flex-wrap justify-end gap-2", maxWidth)}>
@@ -495,7 +635,7 @@ export function UserMessageBubble({
           while the chip and pulsing icon make the waiting state obvious
           (#616 follow-up). The copy button sits left of the bubble, out of the
           layout, so a hidden button never moves the transcript. */}
-      <div className={cn("group/user-message relative min-w-0", maxWidth)}>
+      {(displayContent || showQueued) && <div className={cn("group/user-message relative min-w-0", maxWidth)}>
         {!compactMode && (
           <div
             data-touch-reveal="true"
@@ -513,7 +653,12 @@ export function UserMessageBubble({
             />
           </div>
         )}
-        <div className="min-w-0 select-text break-words rounded-xl bg-user-message-bubble px-3.5 py-2.25 text-copy text-foreground [&_p]:m-0">
+        <div
+          ref={contentBubbleRef}
+          data-search-root="user-message"
+          onMouseUp={handleTextSelection}
+          className="min-w-0 select-text break-words rounded-xl bg-user-message-bubble px-3.5 py-2.25 text-copy text-foreground [&_p]:m-0"
+        >
           {showQueued && (
             <div
               className="mb-1 flex items-center gap-1.5 text-tertiary"
@@ -538,7 +683,74 @@ export function UserMessageBubble({
             )
           }
         </div>
-      </div>
+      </div>}
+      {messageSelection && typeof document !== 'undefined' && ReactDOM.createPortal(
+        <div
+          data-ca-user-reference-menu
+          className="fixed -translate-x-1/2 -translate-y-full rounded-[10px] border border-border/40 bg-background/80 p-1 shadow-strong backdrop-blur-xl"
+          style={{
+            zIndex: 'var(--z-island, 400)',
+            left: clamp(messageSelection.anchorX, 100, Math.max(100, window.innerWidth - 100)),
+            top: Math.max(40, messageSelection.anchorY),
+          }}
+          onMouseDown={event => event.preventDefault()}
+        >
+          <div className="flex items-center gap-0.5">
+            {onAddSelectionToNote && (
+              <div className="flex items-center">
+                <button
+                  type="button"
+                  disabled={selectionActionBusy}
+                  onClick={() => void runSelectionAction(onAddSelectionToNote)}
+                  className={cn(
+                    'inline-flex h-[30px] items-center gap-1.5 rounded-l-[8px] px-2.5 text-[13px] font-medium text-foreground/85',
+                    'hover:bg-foreground/5 disabled:pointer-events-none disabled:opacity-50',
+                    !onAddSelectionToNoteTarget && 'rounded-r-[8px]',
+                  )}
+                >
+                  <NotebookPen className="h-3.5 w-3.5" />
+                  {t('reference.addNote')}
+                </button>
+                {onAddSelectionToNoteTarget && (
+                  <button
+                    type="button"
+                    disabled={selectionActionBusy}
+                    title={t('projectNoteTarget.chooseFile')}
+                    aria-label={t('projectNoteTarget.chooseFile')}
+                    onClick={() => void runSelectionAction(onAddSelectionToNoteTarget)}
+                    className="inline-flex h-[30px] items-center rounded-r-[8px] border-l border-border/45 px-1.5 text-foreground/70 hover:bg-foreground/5 disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+            {onAddSelectionToChat && (
+              <button
+                type="button"
+                disabled={selectionActionBusy}
+                onClick={() => void runSelectionAction(onAddSelectionToChat)}
+                className="inline-flex h-[30px] items-center gap-1.5 rounded-[8px] px-2.5 text-[13px] font-medium text-foreground/85 hover:bg-foreground/5 disabled:pointer-events-none disabled:opacity-50"
+              >
+                <MessageSquareQuote className="h-3.5 w-3.5" />
+                {t('reference.addChat')}
+              </button>
+            )}
+            {onAddSelectionToNewChat && (
+              <button
+                type="button"
+                disabled={selectionActionBusy}
+                onClick={() => void runSelectionAction(onAddSelectionToNewChat)}
+                className="inline-flex h-[30px] items-center gap-1.5 rounded-[8px] px-2.5 text-[13px] font-medium text-foreground/85 hover:bg-foreground/5 disabled:pointer-events-none disabled:opacity-50"
+              >
+                <MessageSquarePlus className="h-3.5 w-3.5" />
+                {t('reference.newChat')}
+              </button>
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   )
 }

@@ -6,8 +6,9 @@ import { toast } from "sonner"
 
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
-import { coerceInputText, appendRestoredInput } from "@/lib/input-text"
+import { coerceInputText } from "@/lib/input-text"
 import { useDelayedLoading } from "@/hooks/useDelayedLoading"
+import { restoreSessionDraftContent } from '@/lib/reference-draft'
 import {
   parseReadResult,
   parseBashResult,
@@ -49,6 +50,7 @@ import {
   type UserTurn,
   type SystemTurn,
   type AuthRequestTurn,
+  type ChatTextSelection,
 } from "@craft-agent/ui"
 import { MemoizedAuthRequestCard } from "@/components/chat/AuthRequestCard"
 import { ChatInputZone, type StructuredInputState, type StructuredResponse, type PermissionResponse, type AdminApprovalResponse } from "./input"
@@ -79,6 +81,13 @@ import {
   TranscriptLoadError,
   TranscriptSkeleton,
 } from "./chat-display/TranscriptStates"
+import {
+  consumeChatReferenceReveal,
+  resolveChatReferenceTextRange,
+  type ChatReferenceRevealIntent,
+} from './chat-reference-reveal'
+import type { Reference } from '@craft-agent/core'
+import { buildChatSelectionReference } from '@/lib/selection-reference'
 
 // ============================================================================
 // CSS Custom Highlight API helper
@@ -90,6 +99,49 @@ function getCSSHighlights(): Map<string, Highlight> | undefined {
     return (CSS as any).highlights as Map<string, Highlight> | undefined
   } catch {
     return undefined
+  }
+}
+
+function createChatReferenceRange(
+  root: HTMLElement,
+  intent: ChatReferenceRevealIntent,
+): Range | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: node => {
+      const parent = node.parentElement
+      return parent?.closest('[data-ca-annotation-overlay], [data-ca-annotation-index]')
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT
+    },
+  })
+  const segments: Array<{ node: Text; start: number; end: number }> = []
+  let cursor = 0
+  let current = walker.nextNode()
+  while (current) {
+    const node = current as Text
+    const length = node.nodeValue?.length ?? 0
+    segments.push({ node, start: cursor, end: cursor + length })
+    cursor += length
+    current = walker.nextNode()
+  }
+  const text = segments.map(segment => segment.node.nodeValue ?? '').join('')
+  const resolved = resolveChatReferenceTextRange(text, intent.locator)
+  if (!resolved) return null
+
+  const start = segments.find(segment => (
+    segment.start <= resolved.start && resolved.start < segment.end
+  ))
+  const end = segments.find(segment => (
+    segment.start < resolved.end && resolved.end <= segment.end
+  ))
+  if (!start || !end) return null
+  try {
+    const range = new Range()
+    range.setStart(start.node, resolved.start - start.start)
+    range.setEnd(end.node, resolved.end - end.start)
+    return range
+  } catch {
+    return null
   }
 }
 
@@ -143,7 +195,7 @@ function getTurnKey(turn: Turn): string {
 
 interface ChatDisplayProps {
   session: Session | null
-  onSendMessage: (message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => void
+  onSendMessage: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[]) => void
   onOpenFile: (path: string) => void
   onOpenUrl: (url: string) => void
   // Model selection
@@ -197,6 +249,10 @@ interface ChatDisplayProps {
   attachmentsValue?: FileAttachment[]
   /** Callback when attachment draft changes (add, remove, clear on send) */
   onAttachmentsChange?: (attachments: FileAttachment[]) => void
+  /** Structured references attached to the current Session draft. */
+  referencesValue?: Reference[]
+  /** Callback when structured draft references are removed or cleared. */
+  onReferencesChange?: (references: Reference[]) => void
   // Source selection
   /** Available sources (enabled only) */
   sources?: LoadedSource[]
@@ -314,6 +370,8 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   onInputChange,
   attachmentsValue,
   onAttachmentsChange,
+  referencesValue,
+  onReferencesChange,
   // Sources
   sources,
   chatStarters,
@@ -386,6 +444,9 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     nonce: number
   } | null>(null)
   const followUpOpenNonceRef = React.useRef(0)
+  const pendingReferenceRevealRef = React.useRef<ChatReferenceRevealIntent | null>(null)
+  const [referenceRevealNonce, setReferenceRevealNonce] = React.useState(0)
+  const [revealedTurnKey, setRevealedTurnKey] = React.useState<string | null>(null)
 
   // Navigation for session branching
   const { navigate, openSessionInNewPanel } = useNavigation()
@@ -440,6 +501,16 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     style.textContent = `
       ::highlight(search-passive) { background-color: rgb(253 224 71 / 0.3); color: inherit; }
       ::highlight(search-active) { background-color: rgb(253 224 71); color: rgb(0 0 0 / 0.9); }
+    `
+    document.head.appendChild(style)
+  }, [])
+  React.useEffect(() => {
+    const id = 'reference-reveal-highlight-styles'
+    if (document.getElementById(id)) return
+    const style = document.createElement('style')
+    style.id = id
+    style.textContent = `
+      ::highlight(reference-reveal) { background-color: rgb(253 224 71 / 0.65); color: inherit; }
     `
     document.head.appendChild(style)
   }, [])
@@ -1113,7 +1184,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
   // Handle message submission from InputContainer
   // Backend handles interruption and queueing if currently processing
-  const handleSubmit = (message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => {
+  const handleSubmit = (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[]) => {
     const hasBaseMessage = message.trim().length > 0
     const followUpSection = formatFollowUpSection(pendingFollowUpAnnotations, {
       includeTopSeparator: hasBaseMessage,
@@ -1125,7 +1196,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
     // Force stick-to-bottom when user sends a message
     isStickToBottomRef.current = true
-    onSendMessage(normalizedMessage, attachments, skillSlugs)
+    onSendMessage(normalizedMessage, attachments, skillSlugs, references)
 
     // Persist sent marker on follow-up annotations so TurnCard can distinguish
     // sent vs pending follow-ups. If user edits a follow-up later, TurnCard
@@ -1207,6 +1278,73 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     )
   }
 
+  const buildSelectedChatReference = useCallback((selection: ChatTextSelection) => {
+    if (!session) return null
+    const reference = buildChatSelectionReference(session.projectId, session.id, selection)
+    if (!reference) toast.error(t('reference.couldNotAdd'))
+    return reference
+  }, [session, t])
+
+  const handleAddSelectionToChat = useCallback((selection: ChatTextSelection) => {
+    if (!session) return false
+    const reference = buildSelectedChatReference(selection)
+    if (!reference) return false
+    if (!appShellContext.onAddDraftReference(session.id, reference)) {
+      toast.error(t('reference.couldNotAdd'))
+      return false
+    }
+    toast.success(t('reference.addedToChat'))
+    return true
+  }, [appShellContext, buildSelectedChatReference, session, t])
+
+  const handleAddSelectionToNewChat = useCallback(async (selection: ChatTextSelection) => {
+    if (!session) return false
+    const reference = buildSelectedChatReference(selection)
+    if (!reference) return false
+
+    let child: Session | null = null
+    try {
+      child = await appShellContext.onCreateSession(session.workspaceId, {
+        projectId: session.projectId,
+      })
+      if (!appShellContext.onAddDraftReference(child.id, reference)) {
+        throw new Error(t('reference.couldNotAdd'))
+      }
+      if (!openSessionInNewPanel(child.id, { afterSessionId: session.id })) {
+        throw new Error(t('reference.couldNotOpenNewChat'))
+      }
+      toast.success(t('reference.addedToNewChat'))
+      return true
+    } catch (error) {
+      if (child) {
+        appShellContext.onReferencesChange(child.id, [])
+        await appShellContext.onDeleteSession(child.id, true).catch(() => false)
+      }
+      toast.error(t('reference.couldNotOpenNewChat'), {
+        description: error instanceof Error ? error.message : String(error),
+      })
+      return false
+    }
+  }, [appShellContext, buildSelectedChatReference, openSessionInNewPanel, session, t])
+
+  const handleAddSelectionToNote = useCallback(async (selection: ChatTextSelection) => {
+    if (!session || !appShellContext.onAddSelectionNote) return false
+    const reference = buildSelectedChatReference(selection)
+    if (!reference) return false
+    return appShellContext.onAddSelectionNote(session.id, reference)
+  }, [appShellContext, buildSelectedChatReference, session])
+
+  const handleAddSelectionToNoteTarget = useCallback(async (selection: ChatTextSelection) => {
+    if (!session || !appShellContext.onAddSelectionNote) return false
+    const reference = buildSelectedChatReference(selection)
+    if (!reference) return false
+    return appShellContext.onAddSelectionNote(
+      session.id,
+      reference,
+      'choose-target',
+    )
+  }, [appShellContext, buildSelectedChatReference, session])
+
   // Handle stop request from InputContainer
   // silent=true when redirecting (sending new message), silent=false when user clicks Stop button
   const handleStop = (silent = false) => {
@@ -1219,8 +1357,22 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     if (!silent) {
       const lastUserMsg = [...session.messages].reverse().find(m => m.role === 'user' && !m.isQueued)
       const restoredText = coerceInputText(lastUserMsg?.content)
-      if (restoredText) {
-        onInputChange?.(appendRestoredInput(inputValue, restoredText))
+      if (lastUserMsg && (restoredText || (lastUserMsg.references?.length ?? 0) > 0)) {
+        const restoreResult = restoreSessionDraftContent(
+          {
+            text: coerceInputText(inputValue),
+            ...(referencesValue?.length ? { references: referencesValue } : {}),
+          },
+          session.projectId,
+          restoredText,
+          lastUserMsg.references ?? [],
+        )
+        if (restoreResult.ok) {
+          onInputChange?.(restoreResult.draft?.text ?? '')
+          onReferencesChange?.(restoreResult.draft?.references ?? [])
+        } else {
+          toast.error(t('reference.couldNotAdd'))
+        }
       }
     }
 
@@ -1301,6 +1453,38 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     return groupMessagesByTurn(session.messages, { isSessionProcessing: session.isProcessing })
   }, [session?.messages, session?.isProcessing])
 
+  useEffect(() => {
+    const currentSessionId = session?.id
+    pendingReferenceRevealRef.current = null
+    const reveal = (intent: ChatReferenceRevealIntent) => {
+      pendingReferenceRevealRef.current = intent
+      setReferenceRevealNonce(value => value + 1)
+    }
+    if (currentSessionId) {
+      const pending = consumeChatReferenceReveal(currentSessionId)
+      if (pending) reveal(pending)
+    }
+    const handleReveal = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        sessionId?: string
+        messageId?: string
+        locator?: ChatReferenceRevealIntent['locator']
+      }>).detail
+      if (
+        !currentSessionId
+        || detail?.sessionId !== currentSessionId
+        || !detail.messageId
+        || !detail.locator
+      ) return
+      reveal(consumeChatReferenceReveal(currentSessionId) ?? {
+        messageId: detail.messageId,
+        locator: detail.locator,
+      })
+    }
+    window.addEventListener('stair:reveal-chat-reference', handleReveal)
+    return () => window.removeEventListener('stair:reveal-chat-reference', handleReveal)
+  }, [session?.id])
+
   // Keep ref in sync for scroll handler
   totalTurnCountRef.current = allTurns.length
 
@@ -1308,6 +1492,63 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   const startIndex = Math.max(0, allTurns.length - visibleTurnCount)
   const turns = allTurns.slice(startIndex)
   const hasMoreAbove = startIndex > 0
+
+  useEffect(() => {
+    const intent = pendingReferenceRevealRef.current
+    if (!intent) return
+    const targetIndex = allTurns.findIndex(turn => {
+      if (turn.type === 'user') return turn.message.id === intent.messageId
+      if (turn.type !== 'assistant') return false
+      return turn.response?.messageId === intent.messageId
+        || turn.activities.some(activity => activity.messageId === intent.messageId)
+    })
+    if (targetIndex < 0) {
+      if (!messagesLoading) pendingReferenceRevealRef.current = null
+      return
+    }
+
+    const targetTurn = allTurns[targetIndex]
+    const turnKey = getTurnKey(targetTurn)
+    const requiredVisibleCount = allTurns.length - targetIndex
+    if (requiredVisibleCount > visibleTurnCount) setVisibleTurnCount(requiredVisibleCount)
+
+    let secondFrame = 0
+    let highlightTimer = 0
+    const cssHighlights = getCSSHighlights()
+    try {
+      cssHighlights?.delete('reference-reveal')
+    } catch { /* API unavailable — keep the turn ring fallback */ }
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        const element = turnRefs.current.get(turnKey)
+        if (!element) return
+        pendingReferenceRevealRef.current = null
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        setRevealedTurnKey(turnKey)
+        const contentRoot = element.querySelector<HTMLElement>('[data-search-root]')
+        const range = contentRoot ? createChatReferenceRange(contentRoot, intent) : null
+        if (range) {
+          try {
+            cssHighlights?.set('reference-reveal', new Highlight(range))
+          } catch { /* API unavailable — keep the turn ring fallback */ }
+        }
+        highlightTimer = window.setTimeout(() => {
+          setRevealedTurnKey(current => current === turnKey ? null : current)
+          try {
+            cssHighlights?.delete('reference-reveal')
+          } catch { /* no-op */ }
+        }, 1_600)
+      })
+    })
+    return () => {
+      cancelAnimationFrame(firstFrame)
+      cancelAnimationFrame(secondFrame)
+      clearTimeout(highlightTimer)
+      try {
+        cssHighlights?.delete('reference-reveal')
+      } catch { /* no-op */ }
+    }
+  }, [allTurns, messagesLoading, referenceRevealNonce, visibleTurnCount])
 
   const assistantTurnIndexByMessageId = useMemo(() => {
     const map = new Map<string, number>()
@@ -1480,7 +1721,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                           key={turnKey}
                           turnKey={turnKey}
                           registerRef={registerTurnRef}
-                          isCurrentMatch={isCurrentMatch}
+                          isCurrentMatch={isCurrentMatch || revealedTurnKey === turnKey}
                           isAnyMatch={isAnyMatch}
                           className={CHAT_LAYOUT.userMessagePadding}
                         >
@@ -1489,6 +1730,11 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             onOpenFile={onOpenFile}
                             onOpenUrl={onOpenUrl}
                             sessionId={session?.id}
+                            onRevealReference={appShellContext.onRevealReference}
+                            onAddSelectionToChat={handleAddSelectionToChat}
+                            onAddSelectionToNewChat={handleAddSelectionToNewChat}
+                            onAddSelectionToNote={handleAddSelectionToNote}
+                            onAddSelectionToNoteTarget={handleAddSelectionToNoteTarget}
                             compactMode={compactMode}
                           />
                         </TurnFrame>
@@ -1516,7 +1762,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                               const errorIdx = msgs.findIndex(m => m.id === turn.message.id)
                               const lastUserMsg = msgs.slice(0, errorIdx).findLast(m => m.role === 'user')
                               if (lastUserMsg) {
-                                onSendMessage(lastUserMsg.content)
+                                onSendMessage(lastUserMsg.content, undefined, undefined, lastUserMsg.references)
                               }
                             } : undefined}
                           />
@@ -1556,7 +1802,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                         key={turnKey}
                         turnKey={turnKey}
                         registerRef={registerTurnRef}
-                        isCurrentMatch={isCurrentMatch}
+                        isCurrentMatch={isCurrentMatch || revealedTurnKey === turnKey}
                         isAnyMatch={isAnyMatch}
                       >
                       <TurnCard
@@ -1630,6 +1876,14 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             throw error
                           }
                         }}
+                        onAddSelectionToChat={handleAddSelectionToChat}
+                        onAddSelectionToNewChat={handleAddSelectionToNewChat}
+                        onAddSelectionToNote={appShellContext.onAddSelectionNote
+                          ? handleAddSelectionToNote
+                          : undefined}
+                        onAddSelectionToNoteTarget={appShellContext.onAddSelectionNote
+                          ? handleAddSelectionToNoteTarget
+                          : undefined}
                         onRemoveAnnotation={async (messageId, annotationId) => {
                           if (!session) return
                           try {
@@ -1810,6 +2064,9 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               onInputChange,
               attachmentsValue,
               onAttachmentsChange,
+              referencesValue,
+              onReferencesChange,
+              onReferenceActivate: appShellContext.onRevealReference,
               sources,
               enabledSourceSlugs: session.enabledSourceSlugs,
               onSourcesChange,

@@ -29,6 +29,7 @@ import type { SessionStatus as SessionStatusConfig } from '@/config/session-stat
 import type { SessionOptions, SessionOptionUpdates } from '../hooks/useSessionOptions'
 import { defaultSessionOptions } from '../hooks/useSessionOptions'
 import { sessionAtomFamily } from '../atoms/sessions'
+import type { Reference } from '@craft-agent/core'
 
 export interface AppShellContextType {
   // Data
@@ -53,6 +54,8 @@ export interface AppShellContextType {
   getDraft: (sessionId: string) => string
   /** Get persisted attachment refs (path + name) for a session's draft - no file IO */
   getDraftAttachmentRefs: (sessionId: string) => import('@craft-agent/shared/config').DraftAttachmentRef[]
+  /** Get structured references already attached to a Session draft. */
+  getDraftReferences: (sessionId: string) => Reference[]
   /** Hydrate persisted attachment refs into full FileAttachment objects (async, reads files) */
   hydrateDraftAttachments: (sessionId: string) => Promise<FileAttachment[]>
   /** All enabled sources for this workspace - provided by AppShell component */
@@ -84,7 +87,7 @@ export interface AppShellContextType {
 
   // Session callbacks
   onCreateSession: (workspaceId: string, options?: import('../../shared/types').CreateSessionOptions) => Promise<Session>
-  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], badges?: import('@craft-agent/core').ContentBadge[]) => void
+  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], badges?: import('@craft-agent/core').ContentBadge[], references?: Reference[]) => void
   onRenameSession: (sessionId: string, name: string) => void
   onFlagSession: (sessionId: string) => void
   onUnflagSession: (sessionId: string) => void
@@ -135,6 +138,16 @@ export interface AppShellContextType {
 
   // Attachment draft callback — persists attachment refs per session
   onAttachmentsChange: (sessionId: string, attachments: FileAttachment[]) => void
+
+  // Structured reference draft callbacks
+  onReferencesChange: (sessionId: string, references: Reference[]) => boolean
+  onAddDraftReference: (sessionId: string, reference: Reference) => boolean
+  onAddSelectionNote?: (
+    sessionId: string,
+    reference: Reference,
+    mode?: 'current' | 'choose-target',
+  ) => Promise<boolean>
+  onRevealReference?: (reference: Reference) => Promise<boolean>
 
   // Source selection callback (per-session) - provided by AppShell component
   onSessionSourcesChange?: (sessionId: string, sourceSlugs: string[]) => void

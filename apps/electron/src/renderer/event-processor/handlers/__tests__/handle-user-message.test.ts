@@ -31,6 +31,28 @@ function processingEvent(timestamp: number): UserMessageEvent {
 }
 
 describe('handleUserMessage queued replay', () => {
+  it('keeps the current response stoppable when a follow-up is queued', () => {
+    const state = makeState([
+      {
+        id: 'optimistic-follow-up',
+        role: 'user',
+        content: 'follow up',
+        timestamp: 200,
+        isPending: true,
+        isQueued: true,
+      },
+    ])
+    const queuedEvent: UserMessageEvent = {
+      ...processingEvent(200),
+      status: 'queued',
+    }
+
+    const next = handleUserMessage(state, queuedEvent)
+
+    expect(next.state.session.isProcessing).toBe(true)
+    expect(next.state.session.messages[0]?.isQueued).toBe(true)
+  })
+
   it('applies the canonical replay timestamp without replacing the optimistic id', () => {
     const state = makeState([
       {

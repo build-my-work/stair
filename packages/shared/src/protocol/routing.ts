@@ -240,6 +240,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.sessions.GET_MESSAGES,
   RPC_CHANNELS.sessions.SEND_MESSAGE,
   RPC_CHANNELS.sessions.CANCEL,
+  RPC_CHANNELS.sessions.ACK_QUEUED_INPUT_RESTORE,
   RPC_CHANNELS.sessions.KILL_SHELL,
   RPC_CHANNELS.sessions.GET_BACKGROUND_TASK_OUTPUT,
   RPC_CHANNELS.sessions.STOP_BACKGROUND_TASK,
@@ -492,6 +493,10 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projectFiles.APPLY_EPUB_STATE_MUTATION,
   RPC_CHANNELS.projectFiles.GET_PDF_STATE,
   RPC_CHANNELS.projectFiles.APPLY_PDF_STATE_MUTATION,
+
+  // projectNotes — Session metadata and Project-scoped note writes
+  RPC_CHANNELS.projectNotes.CONFIGURE_TARGET,
+  RPC_CHANNELS.projectNotes.APPEND,
 
   // git — workspace filesystem
   RPC_CHANNELS.git.GET_BRANCH,

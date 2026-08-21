@@ -164,7 +164,7 @@ export function ShikiCodeViewer({
         </div>
 
         {/* Code content */}
-        <div className="flex-1 min-w-0 p-4 overflow-x-auto">
+        <div data-shiki-code-content className="flex-1 min-w-0 p-4 overflow-x-auto">
           {isLoading || !highlighted ? (
             <pre className="font-mono text-[13px] leading-[1.6] whitespace-pre">
               <code>{code}</code>

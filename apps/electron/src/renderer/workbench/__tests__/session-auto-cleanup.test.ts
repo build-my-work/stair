@@ -17,13 +17,31 @@ function meta(id: string, overrides: Partial<SessionMeta> = {}): SessionMeta {
 }
 
 describe('Workbench 空 Session 自动清理', () => {
-  it('同时识别文本草稿和附件草稿', () => {
+  it('同时识别文本、附件和引用草稿', () => {
     expect(sessionDraftHasContent(null)).toBe(false)
     expect(sessionDraftHasContent({ text: '' })).toBe(false)
     expect(sessionDraftHasContent({ text: '未保存内容' })).toBe(true)
     expect(sessionDraftHasContent({
       text: '',
       attachments: [{ path: '/tmp/image.png', name: 'image.png' }],
+    })).toBe(true)
+    expect(sessionDraftHasContent({
+      text: '',
+      references: [{
+        version: 1,
+        kind: 'chat-message',
+        projectId: 'project-a',
+        sessionId: 'session-a',
+        messageId: 'message-a',
+        role: 'assistant',
+        quote: '引用',
+        locator: {
+          type: 'text-quote',
+          exact: '引用',
+          start: 0,
+          end: 2,
+        },
+      }],
     })).toBe(true)
   })
 

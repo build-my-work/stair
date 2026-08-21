@@ -22,6 +22,7 @@ import { expandPath } from '../utils/paths.ts';
 import { buildTransferredSessionContext } from './conversation-summary.ts';
 import { createdPrUrl } from '../pr-watch/rules.ts';
 import { getSessionScopedToolCallbacks } from './session-scoped-tool-callback-registry.ts';
+import { formatRecoveryMessageContent } from './recovery-message.ts';
 import type { ThinkingLevel } from './thinking-levels.ts';
 import type { AgentProfile } from '@craft-agent/session-tools-core';
 import { DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from './thinking-levels.ts';
@@ -762,11 +763,7 @@ export abstract class BaseAgent implements AgentBackend {
     const formattedMessages = messages
       .map((m) => {
         const role = m.type === 'user' ? 'User' : 'Assistant';
-        // Truncate very long messages to avoid bloating context (max ~1000 chars each)
-        const content =
-          m.content.length > 1000
-            ? m.content.slice(0, 1000) + '...[truncated]'
-            : m.content;
+        const content = formatRecoveryMessageContent(m, 1000);
         return `[${role}]: ${content}`;
       })
       .join('\n\n');
@@ -795,10 +792,7 @@ Please continue the conversation naturally from where we left off.
     const formattedMessages = bounded
       .map((m) => {
         const role = m.type === 'user' ? 'User' : 'Assistant';
-        const content =
-          m.content.length > 1200
-            ? m.content.slice(0, 1200) + '...[truncated]'
-            : m.content;
+        const content = formatRecoveryMessageContent(m, 1200);
         return `[${role}]: ${content}`;
       })
       .join('\n\n');

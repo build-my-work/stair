@@ -57,6 +57,37 @@ export type {
 } from './message.ts';
 export { generateMessageId } from './message.ts';
 
+export type {
+  SourceFingerprint,
+  ProjectFileIdentity,
+  EpubTocPathEntryV1,
+  EpubCfiLocatorV1,
+  TextQuoteLocatorV1,
+  PdfPageRectV1,
+  PdfTextQuoteLocatorV1,
+  ProjectFileSelectionLocatorV1,
+  ProjectFileReferenceV1,
+  ChatMessageReferenceV1,
+  Reference,
+} from './reference.ts';
+export {
+  MAX_REFERENCES_PER_MESSAGE,
+  MAX_REFERENCE_QUOTE_CHARS,
+  MAX_REFERENCE_CONTEXT_CHARS,
+  MAX_REFERENCE_CFI_CHARS,
+  MAX_REFERENCE_TOC_DEPTH,
+  MAX_REFERENCE_TOC_ORDER_DEPTH,
+  MAX_REFERENCE_PATH_BYTES,
+  MAX_REFERENCE_SERIALIZED_BYTES,
+  MAX_REFERENCES_SERIALIZED_BYTES,
+  isProjectFileReference,
+  isChatMessageReference,
+  isReference,
+  referenceSerializedByteLength,
+  referencesFitSerializedLimits,
+  referenceKey,
+} from './reference.ts';
+
 // Message persistence mappers
 export { messageToStored, storedToMessage } from './message-mapper.ts';
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { useSetAtom } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { AlertTriangle, Check, Eye, FileQuestion, Loader2, Pencil, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -14,7 +14,10 @@ import {
   isEditableProjectTextFile,
   MAX_EDITABLE_PROJECT_FILE_BYTES,
   type ProjectFileBinaryResponse,
+  type ProjectFileOpenIntent,
+  type ProjectFileReferenceV1,
   type ProjectFileTextResponse,
+  type TextQuoteLocatorV1,
 } from '@craft-agent/shared/project-files'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { useTheme } from '@/context/ThemeContext'
@@ -30,15 +33,26 @@ import {
 } from '@/components/project-files/project-text-document-controller'
 import { ProjectFileEpubReader } from '@/components/project-files/ProjectFileEpubReader'
 import { ProjectFilePdfReader } from '@/components/project-files/ProjectFilePdfReader'
-import { openProjectFilePreviewAtom } from '@/workbench/workbench-commands'
+import { ProjectFileTextSelection } from '@/components/project-files/ProjectFileTextSelection'
+import type { ProjectFileReferenceAction } from '@/components/project-files/ProjectFileReaderSelectionToolbar'
+import {
+  openProjectFilePreviewAtom,
+  setProjectFileChatTargetAtom,
+} from '@/workbench/workbench-commands'
 import { resolveProjectFileMarkdownTarget } from './project-file-markdown-links'
 import { createProjectFileImageDataUrl } from './project-file-image'
 import { saveTextFile } from '@/lib/save-text-file'
+import { sessionMetaMapAtom } from '@/atoms/sessions'
+import { useNavigation } from '@/contexts/NavigationContext'
 
 interface ProjectFilePageProps {
   projectId: string
   relativePath: string
   presentation: 'preview' | 'explicit'
+  panelId: string
+  chatTargetSessionId: string | null
+  openIntent?: ProjectFileOpenIntent
+  openIntentRevision: number
 }
 
 const CLEAN_STATE: ProjectTextDocumentState = { status: 'clean', error: null }
@@ -57,11 +71,28 @@ function saveStatusKey(state: ProjectTextDocumentState): string | null {
 export default function ProjectFilePage({
   projectId,
   relativePath,
+  panelId,
+  chatTargetSessionId,
+  openIntent,
+  openIntentRevision,
 }: ProjectFilePageProps) {
   const { t } = useTranslation()
   const { resolvedMode, shikiTheme } = useTheme()
-  const { onOpenFile, onOpenUrl, rightSidebarButton } = useAppShellContext()
+  const {
+    activeWorkspaceId,
+    onAddDraftReference,
+    onAddSelectionNote,
+    onCreateSession,
+    onDeleteSession,
+    onOpenFile,
+    onOpenUrl,
+    onReferencesChange,
+    rightSidebarButton,
+  } = useAppShellContext()
+  const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
+  const { openSessionInNewPanel } = useNavigation()
   const openProjectFilePreview = useSetAtom(openProjectFilePreviewAtom)
+  const setProjectFileChatTarget = useSetAtom(setProjectFileChatTargetAtom)
   const [response, setResponse] = useState<ProjectFileTextResponse | null>(null)
   const [binaryResponse, setBinaryResponse] = useState<ProjectFileBinaryResponse | null>(null)
   const [editorContent, setEditorContent] = useState('')
@@ -70,6 +101,7 @@ export default function ProjectFilePage({
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reloadRevision, setReloadRevision] = useState(0)
+  const [textContentRevision, setTextContentRevision] = useState(0)
   const controllerRef = useRef<ProjectTextDocumentController | null>(null)
   const fileName = relativePath.split('/').at(-1) ?? relativePath
   const kind = classifyProjectFile(relativePath)
@@ -87,6 +119,25 @@ export default function ProjectFilePage({
         )
       : null
   ), [binaryResponse, kind])
+  const projectSessions = useMemo(() => (
+    [...sessionMetaMap.values()]
+      .filter(session => (
+        session.workspaceId === activeWorkspaceId
+        && session.projectId === projectId
+        && !session.hidden
+        && !session.isArchived
+      ))
+      .sort((left, right) => (right.lastMessageAt ?? right.createdAt ?? 0) - (left.lastMessageAt ?? left.createdAt ?? 0))
+  ), [activeWorkspaceId, projectId, sessionMetaMap])
+  const targetSession = chatTargetSessionId
+    ? sessionMetaMap.get(chatTargetSessionId)
+    : undefined
+  const validTargetSessionId = targetSession?.workspaceId === activeWorkspaceId
+    && targetSession.projectId === projectId
+    && !targetSession.hidden
+    && !targetSession.isArchived
+    ? targetSession.id
+    : null
 
   useEffect(() => {
     let cancelled = false
@@ -153,6 +204,18 @@ export default function ProjectFilePage({
     }
   }, [canEdit, projectId, relativePath, response])
 
+  const loadedSourceFingerprint = response?.sourceFingerprint
+    ?? binaryResponse?.sourceFingerprint
+  useEffect(() => {
+    if (
+      openIntent
+      && loadedSourceFingerprint
+      && openIntent.expectedFingerprint !== loadedSourceFingerprint
+    ) {
+      toast.error(t('reference.couldNotOpenSelection'))
+    }
+  }, [loadedSourceFingerprint, openIntent, openIntentRevision, t])
+
   const handleEdit = useCallback(() => {
     if (!response || !canEdit) return
     setEditorContent(response.text)
@@ -216,6 +279,67 @@ export default function ProjectFilePage({
     }
   }, [onOpenFile, onOpenUrl, openProjectFilePreview, projectId, relativePath])
 
+  const handleTextContentReady = useCallback(() => {
+    setTextContentRevision(revision => revision + 1)
+  }, [])
+
+  const handleReferenceAction = useCallback(async (
+    action: ProjectFileReferenceAction,
+    reference: ProjectFileReferenceV1,
+  ) => {
+    if (action === 'new-chat') {
+      if (!activeWorkspaceId) throw new Error(t('reference.noWorkspace'))
+      const source = { panelId, projectId, relativePath }
+      let child: Awaited<ReturnType<typeof onCreateSession>> | null = null
+      try {
+        child = await onCreateSession(activeWorkspaceId, { projectId })
+        if (!onAddDraftReference(child.id, reference)) {
+          throw new Error(t('reference.couldNotAdd'))
+        }
+        if (!openSessionInNewPanel(child.id, { afterProjectFile: source })) {
+          throw new Error(t('reference.couldNotOpenNewChat'))
+        }
+        toast.success(t('reference.addedToNewChat'))
+        return
+      } catch (actionError) {
+        if (child) {
+          onReferencesChange(child.id, [])
+          await onDeleteSession(child.id, true).catch(() => false)
+        }
+        throw actionError
+      }
+    }
+
+    if (!validTargetSessionId) throw new Error(t('reference.chooseChatTarget'))
+    if (action === 'add-chat') {
+      if (!onAddDraftReference(validTargetSessionId, reference)) {
+        throw new Error(t('reference.couldNotAdd'))
+      }
+      toast.success(t('reference.addedToChat'))
+      return
+    }
+
+    if (!onAddSelectionNote) throw new Error(t('reference.addNoteUnavailable'))
+    return onAddSelectionNote(
+      validTargetSessionId,
+      reference,
+      action === 'choose-note-target' ? 'choose-target' : 'current',
+    )
+  }, [
+    activeWorkspaceId,
+    onAddDraftReference,
+    onAddSelectionNote,
+    onCreateSession,
+    onDeleteSession,
+    onReferencesChange,
+    openSessionInNewPanel,
+    panelId,
+    projectId,
+    relativePath,
+    t,
+    validTargetSessionId,
+  ])
+
   const editButton = canEdit ? (
     <PanelHeaderCenterButton
       icon={isEditing ? <Eye className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
@@ -223,9 +347,55 @@ export default function ProjectFilePage({
       onClick={isEditing ? () => { void handlePreview() } : handleEdit}
     />
   ) : null
+  const headerActions = (
+    <div className="flex items-center gap-1.5">
+      <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        <span className="hidden @xl/panel:inline">{t('reference.chatTarget')}</span>
+        <select
+          value={validTargetSessionId ?? ''}
+          aria-label={t('reference.chatTarget')}
+          className="h-7 max-w-40 rounded border border-border/55 bg-background px-2 text-xs text-foreground outline-none"
+          onChange={event => {
+            const sessionId = event.target.value || null
+            const session = sessionId ? sessionMetaMap.get(sessionId) : undefined
+            setProjectFileChatTarget({
+              panelId,
+              projectId,
+              sessionId,
+              sessionProjectId: session?.projectId ?? projectId,
+            })
+          }}
+        >
+          <option value="">{t('reference.chooseChat')}</option>
+          {projectSessions.map(session => (
+            <option key={session.id} value={session.id}>
+              {session.name || session.preview || t('chat.titlePlaceholder')}
+            </option>
+          ))}
+        </select>
+      </label>
+      {editButton}
+    </div>
+  )
 
   const statusKey = saveStatusKey(documentState)
   const statusLabel = statusKey ? t(statusKey) : null
+  const epubInitialCfi = binaryResponse
+    && openIntent?.expectedFingerprint === binaryResponse.sourceFingerprint
+    && openIntent.locator.type === 'epub-cfi'
+    ? openIntent.locator.cfiRange
+    : undefined
+  const pdfInitialLocator = binaryResponse
+    && openIntent?.expectedFingerprint === binaryResponse.sourceFingerprint
+    && openIntent.locator.type === 'pdf-text-quote'
+    && openIntent.locator.anchor
+    ? { ...openIntent.locator, anchor: openIntent.locator.anchor }
+    : undefined
+  const textInitialLocator: TextQuoteLocatorV1 | undefined = response
+    && openIntent?.expectedFingerprint === response.sourceFingerprint
+    && openIntent.locator.type === 'text-quote'
+    ? openIntent.locator
+    : undefined
   const statusTone = documentState.status === 'conflict' || documentState.status === 'error'
     ? 'text-destructive'
     : 'text-muted-foreground'
@@ -242,7 +412,7 @@ export default function ProjectFilePage({
             {relativePath}
           </span>
         )}
-        actions={editButton}
+        actions={headerActions}
         rightSidebarButton={rightSidebarButton}
       />
 
@@ -324,6 +494,9 @@ export default function ProjectFilePage({
             metadata={binaryResponse.metadata}
             bytes={binaryResponse.bytes}
             sourceFingerprint={binaryResponse.sourceFingerprint}
+            initialCfi={epubInitialCfi}
+            revealRevision={openIntentRevision}
+            onReferenceAction={handleReferenceAction}
           />
         ) : kind === 'pdf' && binaryResponse ? (
           <ProjectFilePdfReader
@@ -333,6 +506,9 @@ export default function ProjectFilePage({
             metadata={binaryResponse.metadata}
             bytes={binaryResponse.bytes}
             sourceFingerprint={binaryResponse.sourceFingerprint}
+            initialLocator={pdfInitialLocator}
+            revealRevision={openIntentRevision}
+            onReferenceAction={handleReferenceAction}
           />
         ) : kind === 'image' && imageUrl ? (
           <div className="flex h-full items-center justify-center overflow-auto p-6">
@@ -352,23 +528,49 @@ export default function ProjectFilePage({
             />
           </div>
         ) : response && kind === 'markdown' ? (
-          <div className="h-full overflow-auto px-8 py-6">
-            <Markdown
-              mode="full"
-              onFileClick={handleMarkdownLink}
-              onUrlClick={handleMarkdownLink}
-            >
-              {response.text}
-            </Markdown>
-          </div>
+          <ProjectFileTextSelection
+            key={`${projectId}\0${relativePath}\0${response.sourceFingerprint}`}
+            projectId={projectId}
+            relativePath={relativePath}
+            sourceFingerprint={response.sourceFingerprint}
+            fileName={response.metadata.name}
+            initialLocator={textInitialLocator}
+            revealRevision={openIntentRevision}
+            contentSelector="[data-project-file-text-content]"
+            onReferenceAction={handleReferenceAction}
+          >
+            <div data-project-file-text-content className="h-full overflow-auto px-8 py-6">
+              <Markdown
+                mode="full"
+                onFileClick={handleMarkdownLink}
+                onUrlClick={handleMarkdownLink}
+              >
+                {response.text}
+              </Markdown>
+            </div>
+          </ProjectFileTextSelection>
         ) : response ? (
-          <ShikiCodeViewer
-            code={response.text}
-            filePath={relativePath}
-            theme={resolvedMode}
-            shikiTheme={shikiTheme}
-            className="h-full"
-          />
+          <ProjectFileTextSelection
+            key={`${projectId}\0${relativePath}\0${response.sourceFingerprint}`}
+            projectId={projectId}
+            relativePath={relativePath}
+            sourceFingerprint={response.sourceFingerprint}
+            fileName={response.metadata.name}
+            initialLocator={textInitialLocator}
+            revealRevision={openIntentRevision}
+            contentSelector="[data-shiki-code-content]"
+            contentRevision={textContentRevision}
+            onReferenceAction={handleReferenceAction}
+          >
+            <ShikiCodeViewer
+              code={response.text}
+              filePath={relativePath}
+              theme={resolvedMode}
+              shikiTheme={shikiTheme}
+              className="h-full"
+              onReady={handleTextContentReady}
+            />
+          </ProjectFileTextSelection>
         ) : null}
       </div>
     </div>

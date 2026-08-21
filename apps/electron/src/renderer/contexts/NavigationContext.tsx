@@ -57,6 +57,7 @@ import { skillsAtom } from '@/atoms/skills'
 import { guardedModeAvailableAtom } from '@/atoms/permission-modes'
 import {
   initializeWorkbenchAtom,
+  openSessionFromProjectFileAtom,
   openSessionInNewPanelAtom,
   selectSessionFromNavigatorAtom,
   showSessionInPrimaryAtom,
@@ -79,10 +80,24 @@ export {
   isPagesNavigation,
 }
 
+type OpenSessionInNewPanelOptions =
+  | {
+      afterSessionId?: string
+      afterProjectFile?: never
+    }
+  | {
+      afterSessionId?: never
+      afterProjectFile: {
+        panelId: string
+        projectId: string
+        relativePath: string
+      }
+    }
+
 interface NavigationContextValue {
   navigate: (route: Route, options?: NavigateOptions) => void | Promise<void>
   /** Explicit Session presentation path; generic navigate() never creates a Panel. */
-  openSessionInNewPanel: (sessionId: string, options?: { afterSessionId?: string }) => boolean
+  openSessionInNewPanel: (sessionId: string, options?: OpenSessionInNewPanelOptions) => boolean
   /** Explicit new-Session Auxiliary path for the New Chat in Panel action. */
   createSessionInNewPanel: (route: Route) => Promise<void>
   isReady: boolean
@@ -134,6 +149,7 @@ export function NavigationProvider({
   const initializeWorkbench = useSetAtom(initializeWorkbenchAtom)
   const selectSessionFromNavigator = useSetAtom(selectSessionFromNavigatorAtom)
   const showSessionInPrimary = useSetAtom(showSessionInPrimaryAtom)
+  const openSessionFromProjectFile = useSetAtom(openSessionFromProjectFileAtom)
   const openSessionPanel = useSetAtom(openSessionInNewPanelAtom)
   const switchWorkbenchProject = useSetAtom(switchWorkbenchProjectAtom)
   const guardedModeAvailable = useAtomValue(guardedModeAvailableAtom)
@@ -494,22 +510,30 @@ export function NavigationProvider({
 
   const openSessionInNewPanel = useCallback((
     sessionId: string,
-    options?: { afterSessionId?: string },
+    options?: OpenSessionInNewPanelOptions,
   ): boolean => {
     const meta = store.get(sessionMetaMapAtom).get(sessionId)
     if (!meta) return false
-    const opened = openSessionPanel({
-      sessionId,
-      projectId: meta.projectId,
-      afterSessionId: options?.afterSessionId,
-    })
+    const opened = options?.afterProjectFile
+      ? openSessionFromProjectFile({
+          sessionId,
+          sessionProjectId: meta.projectId,
+          source: options.afterProjectFile,
+        })
+      : openSessionPanel({
+          sessionId,
+          projectId: meta.projectId,
+          afterSessionId: options?.afterSessionId,
+        })
     if (!opened) {
-      toast.error('Switch to the Session’s Project before opening a new Panel.')
+      if (!options?.afterProjectFile) {
+        toast.error('Switch to the Session’s Project before opening a new Panel.')
+      }
       return false
     }
     void applyViewRoute(routeForSession(sessionId), { pushHistory: true })
     return true
-  }, [applyViewRoute, openSessionPanel, routeForSession, store])
+  }, [applyViewRoute, openSessionFromProjectFile, openSessionPanel, routeForSession, store])
 
   const createSessionInNewPanel = useCallback(async (route: Route) => {
     const parsed = parseRoute(route)

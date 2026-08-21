@@ -126,6 +126,7 @@ function buildMainProcess(config: BuildConfig): void {
     '--format=cjs',
     '--outfile=apps/electron/dist/main.cjs',
     '--external:electron',
+    '--external:koffi',
     // SDK 0.3.x is pure ESM and calls createRequire(import.meta.url) at module init.
     // esbuild's CJS bundling leaves import.meta.url undefined for inlined ESM, crashing
     // the packaged app on load (ERR_INVALID_ARG_VALUE at sdk.mjs). Externalize so Node

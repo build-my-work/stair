@@ -1,6 +1,12 @@
 import * as React from 'react'
 import * as ReactDOM from 'react-dom'
-import { CornerDownRight } from 'lucide-react'
+import {
+  ChevronRight,
+  CornerDownRight,
+  MessageSquarePlus,
+  MessageSquareQuote,
+  NotebookPen,
+} from 'lucide-react'
 import {
   Island,
   IslandContentView,
@@ -26,6 +32,10 @@ export interface AnnotationIslandMenuProps {
   draft: string
   onDraftChange: (next: string) => void
   onOpenFollowUp: () => void
+  onAddChat?: () => void
+  onAddNewChat?: () => void
+  onAddNote?: () => void
+  onAddNoteTo?: () => void
   onCancel: () => void
   onRequestBack?: () => boolean
   onRequestEdit: () => void
@@ -49,6 +59,10 @@ export function AnnotationIslandMenu({
   draft,
   onDraftChange,
   onOpenFollowUp,
+  onAddChat,
+  onAddNewChat,
+  onAddNote,
+  onAddNoteTo,
   onCancel,
   onRequestBack,
   onRequestEdit,
@@ -126,6 +140,53 @@ export function AnnotationIslandMenu({
               <CornerDownRight className="h-3.5 w-3.5" />
               <span>{t('chat.followUp')}</span>
             </button>
+            {onAddNote && (
+              <div className="flex items-center">
+                <button
+                  type="button"
+                  onClick={onAddNote}
+                  className={cn(
+                    'inline-flex h-[30px] items-center gap-1.5 rounded-l-[8px] px-2.5 text-[13px] font-medium',
+                    'text-foreground/85 hover:bg-foreground/5 hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                    !onAddNoteTo && 'rounded-r-[8px]',
+                  )}
+                >
+                  <NotebookPen className="h-3.5 w-3.5" />
+                  <span>{t('reference.addNote')}</span>
+                </button>
+                {onAddNoteTo && (
+                  <button
+                    type="button"
+                    title={t('projectNoteTarget.chooseFile')}
+                    aria-label={t('projectNoteTarget.chooseFile')}
+                    onClick={onAddNoteTo}
+                    className="inline-flex h-[30px] items-center rounded-r-[8px] border-l border-border/45 px-1.5 text-foreground/70 hover:bg-foreground/5 hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+            {onAddChat && (
+              <button
+                type="button"
+                onClick={onAddChat}
+                className="inline-flex h-[30px] items-center gap-1.5 rounded-[8px] px-2.5 text-[13px] font-medium text-foreground/85 hover:bg-foreground/5 hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <MessageSquareQuote className="h-3.5 w-3.5" />
+                <span>{t('reference.addChat')}</span>
+              </button>
+            )}
+            {onAddNewChat && (
+              <button
+                type="button"
+                onClick={onAddNewChat}
+                className="inline-flex h-[30px] items-center gap-1.5 rounded-[8px] px-2.5 text-[13px] font-medium text-foreground/85 hover:bg-foreground/5 hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <MessageSquarePlus className="h-3.5 w-3.5" />
+                <span>{t('reference.newChat')}</span>
+              </button>
+            )}
           </div>
         </IslandContentView>
 

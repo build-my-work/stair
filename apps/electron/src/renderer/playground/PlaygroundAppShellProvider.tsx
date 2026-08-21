@@ -41,6 +41,7 @@ export const playgroundAppShellValue: AppShellContextType = {
   pendingCredentials: new Map(),
   getDraft: () => '',
   getDraftAttachmentRefs: () => [],
+  getDraftReferences: () => [],
   hydrateDraftAttachments: async () => [],
   sessionOptions: new Map(),
   onCreateSession: (async () => {
@@ -70,6 +71,8 @@ export const playgroundAppShellValue: AppShellContextType = {
   onSessionOptionsChange: logCall('onSessionOptionsChange'),
   onInputChange: logCall('onInputChange'),
   onAttachmentsChange: logCall('onAttachmentsChange'),
+  onReferencesChange: () => true,
+  onAddDraftReference: () => true,
   // The mobile-webui demos rely on this signal to flip `AppMenu` into its
   // compact layout; harmless for other demos that don't read it.
   isCompactMode: true,

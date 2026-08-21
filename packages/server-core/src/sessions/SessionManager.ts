@@ -96,7 +96,16 @@ import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, type BackgroundTaskOutput, type StopBackgroundTaskResult, type BoundPr, type PrMonitorState, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
 import { launchOutputFile, readBackgroundTaskOutput } from './background-task-output'
-import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
+import {
+  isChatMessageReference,
+  messageToStored,
+  storedToMessage,
+  type Message,
+  type Reference,
+  type StoredAttachment,
+  type ToolDisplayMeta,
+  type TokenUsage,
+} from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
@@ -126,6 +135,14 @@ import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntr
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
 import { validateArchiveTarget } from './archive-guards'
 import { addTurnUsage, branchStartTotals, type BranchParent } from './turn-usage'
+import {
+  formatReferencesForModel,
+  normalizeReferencesForSession,
+  stripReferencesFromModelInput,
+  validateProjectFileReferencesForSend,
+  validateReferencesForSession,
+} from './message-references'
+import { buildRecoveryMessages } from './recovery-messages'
 
 // Import from server-core domain utilities
 import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
@@ -793,6 +810,10 @@ interface ManagedSession {
   labels?: string[]
   // Immutable workspace-scoped Project ownership.
   projectId: string
+  // Session-scoped Add Note target metadata.
+  projectNoteTargetPath?: string
+  projectNoteTargetRootFingerprint?: string
+  projectNoteRecentTargetPaths?: string[]
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
   // Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus
@@ -970,6 +991,8 @@ interface ManagedSession {
   autoRetryPending?: {
     content: string
     deadlineMs: number
+    /** Persisted references from the interrupted user turn. */
+    references?: Reference[]
     /** True after the first matching sendMessage consumes the slot; later matches drop. */
     committed: boolean
   }
@@ -1019,6 +1042,7 @@ export interface AutoRetryPendingHost {
   autoRetryPending?: {
     content: string
     deadlineMs: number
+    references?: Reference[]
     committed: boolean
   }
 }
@@ -2137,6 +2161,32 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
+    const oldProjectNoteTarget = JSON.stringify([
+      managed.projectNoteTargetPath,
+      managed.projectNoteTargetRootFingerprint,
+      managed.projectNoteRecentTargetPaths ?? [],
+    ])
+    const newProjectNoteTarget = JSON.stringify([
+      header.projectNoteTargetPath,
+      header.projectNoteTargetRootFingerprint,
+      header.projectNoteRecentTargetPaths ?? [],
+    ])
+    if (oldProjectNoteTarget !== newProjectNoteTarget) {
+      managed.projectNoteTargetPath = header.projectNoteTargetPath
+      managed.projectNoteTargetRootFingerprint = header.projectNoteTargetRootFingerprint
+      managed.projectNoteRecentTargetPaths = header.projectNoteRecentTargetPaths
+      this.sendEvent({
+        type: 'session_metadata_changed',
+        sessionId,
+        changes: {
+          projectNoteTargetPath: header.projectNoteTargetPath ?? null,
+          projectNoteTargetRootFingerprint: header.projectNoteTargetRootFingerprint ?? null,
+          projectNoteRecentTargetPaths: header.projectNoteRecentTargetPaths ?? [],
+        },
+      }, managed.workspace.id)
+      changed = true
+    }
+
     // Kanban column (mutable via drag; reconcile external/multi-window changes)
     if (managed.kanbanColumn !== header.kanbanColumn) {
       managed.kanbanColumn = header.kanbanColumn
@@ -2687,7 +2737,7 @@ export class SessionManager implements ISessionManager {
 
       // Queue recovery: find orphaned queued messages from crash/restart and re-queue them.
       const orphanedQueued = managed.messages.filter(m =>
-        m.role === 'user' && m.isQueued === true
+        m.role === 'user' && m.isQueued === true && !m.queuedRestoreId
       )
       if (orphanedQueued.length > 0) {
         sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
@@ -2697,7 +2747,7 @@ export class SessionManager implements ISessionManager {
             messageId: msg.id,
             attachments: undefined,
             storedAttachments: msg.attachments,
-            options: undefined,
+            options: msg.references?.length ? { references: msg.references } : undefined,
           })
         }
         if (!managed.isProcessing && managed.messageQueue.length > 0) {
@@ -3196,7 +3246,7 @@ export class SessionManager implements ISessionManager {
 
       // Queue recovery: find orphaned queued messages from crash/restart and re-queue them
       const orphanedQueued = managed.messages.filter(m =>
-        m.role === 'user' && m.isQueued === true
+        m.role === 'user' && m.isQueued === true && !m.queuedRestoreId
       )
       if (orphanedQueued.length > 0) {
         sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
@@ -3206,7 +3256,7 @@ export class SessionManager implements ISessionManager {
             messageId: msg.id,
             attachments: undefined,  // Attachments already stored on disk
             storedAttachments: msg.attachments,
-            options: undefined,
+            options: msg.references?.length ? { references: msg.references } : undefined,
           })
         }
         // Process queue when session becomes active (will be triggered by first message or interaction)
@@ -4143,39 +4193,19 @@ export class SessionManager implements ISessionManager {
       }
 
       const getRecoveryMessages = () => {
-        const relevantMessages = managed.messages
-          .filter(m => m.role === 'user' || m.role === 'assistant')
-          .filter(m => !m.isIntermediate)
-          .slice(-6)
-        return relevantMessages.map(m => ({
-          type: m.role as 'user' | 'assistant',
-          content: m.content,
-        }))
+        return buildRecoveryMessages(managed.messages, 6)
       }
 
       const getBranchFallbackMessages = () => {
         if (!managed.branchFromMessageId) return []
-        return managed.messages
-          .filter(m => m.role === 'user' || m.role === 'assistant')
-          .filter(m => !m.isIntermediate)
-          .map(m => ({
-            type: m.role as 'user' | 'assistant',
-            content: m.content,
-          }))
+        return buildRecoveryMessages(managed.messages)
       }
 
       const getBranchSeedMessages = () => {
         if (managed.branchContextStrategy !== 'seeded-fresh-session') return []
         if (managed.branchSeedApplied) return []
 
-        const seedMessages = managed.messages
-          .filter(m => m.role === 'user' || m.role === 'assistant')
-          .filter(m => !m.isIntermediate)
-
-        return seedMessages.map(m => ({
-          type: m.role as 'user' | 'assistant',
-          content: m.content,
-        }))
+        return buildRecoveryMessages(managed.messages)
       }
 
       const markBranchSeedApplied = () => {
@@ -5584,16 +5614,35 @@ export class SessionManager implements ISessionManager {
    * Called when user clicks "Accept & Compact" to persist the plan path
    * so execution can resume after compaction (even if page reloads).
    */
-  async setPendingPlanExecution(sessionId: string, planPath: string, draftInputSnapshot?: string): Promise<void> {
+  async setPendingPlanExecution(
+    sessionId: string,
+    planPath: string,
+    draftInputSnapshot?: string,
+    draftReferencesSnapshot?: Reference[],
+  ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      const references = draftReferencesSnapshot?.length
+        ? normalizeReferencesForSession(draftReferencesSnapshot, {
+            id: managed.id,
+            workspaceId: managed.workspace.id,
+            projectId: managed.projectId,
+          })
+        : undefined
       managed.pendingPlanExecution = {
         planPath,
         draftInputSnapshot,
+        ...(references?.length ? { draftReferencesSnapshot: references } : {}),
         awaitingCompaction: true,
         executionDispatched: false,
       }
-      await setStoredPendingPlanExecution(managed.workspace.rootPath, sessionId, planPath, draftInputSnapshot)
+      await setStoredPendingPlanExecution(
+        managed.workspace.rootPath,
+        sessionId,
+        planPath,
+        draftInputSnapshot,
+        references,
+      )
       sessionLog.info(`Session ${sessionId}: set pending plan execution for ${planPath}`)
     }
   }
@@ -5647,7 +5696,13 @@ export class SessionManager implements ISessionManager {
    * Get pending plan execution state for a session.
    * Used on reload/init to check if we need to resume plan execution.
    */
-  getPendingPlanExecution(sessionId: string): { planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean; executionDispatched: boolean } | null {
+  getPendingPlanExecution(sessionId: string): {
+    planPath: string
+    draftInputSnapshot?: string
+    draftReferencesSnapshot?: Reference[]
+    awaitingCompaction: boolean
+    executionDispatched: boolean
+  } | null {
     const managed = this.sessions.get(sessionId)
     if (!managed) return null
     if (managed.pendingPlanExecution) {
@@ -6629,11 +6684,24 @@ export class SessionManager implements ISessionManager {
       managed.pendingActivationResend = undefined
       if (managed.autoRetryPending) managed.autoRetryPending.committed = true
     }
-    if (!activationResend && claimAutoRetryPending(managed, message) === 'drop') {
+    const autoRetryClaimedAt = Date.now()
+    const pendingAutoRetry = managed.autoRetryPending
+    const pendingAutoRetryReferences = pendingAutoRetry
+      && pendingAutoRetry.content === message
+      && autoRetryClaimedAt < pendingAutoRetry.deadlineMs
+      ? pendingAutoRetry.references
+      : undefined
+    if (!activationResend && claimAutoRetryPending(managed, message, autoRetryClaimedAt) === 'drop') {
       sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
       return
     }
     if (!activationResend && !_isAuthRetry) managed.turnFromUser = !options?.hidden
+    if (pendingAutoRetryReferences) {
+      options = {
+        ...options,
+        references: pendingAutoRetryReferences,
+      }
+    }
 
     // Clear any pending plan execution state when a new user message is sent.
     // The explicit /compact turn immediately after "Accept & Compact" is the
@@ -6647,6 +6715,54 @@ export class SessionManager implements ISessionManager {
 
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
+
+    const existingUserMessage = existingMessageId
+      ? managed.messages.find(candidate => (
+          candidate.id === existingMessageId && candidate.role === 'user'
+        ))
+      : undefined
+    if (existingMessageId && !existingUserMessage) {
+      throw new Error(`Existing message ${existingMessageId} not found`)
+    }
+    const referenceValues = existingUserMessage?.references ?? options?.references
+    const shouldReusePersistedReferences = Boolean(
+      existingUserMessage || _isAuthRetry || pendingAutoRetryReferences,
+    )
+
+    if (referenceValues && !shouldReusePersistedReferences) {
+      for (const reference of referenceValues) {
+        if (!isChatMessageReference(reference)) continue
+        const source = this.sessions.get(reference.sessionId)
+        if (source) await this.ensureMessagesLoaded(source)
+      }
+    }
+    const referenceTarget = {
+      id: managed.id,
+      workspaceId: managed.workspace.id,
+      projectId: managed.projectId,
+    }
+    let references: Reference[] = []
+    if (referenceValues) {
+      references = shouldReusePersistedReferences
+        ? normalizeReferencesForSession(referenceValues, referenceTarget)
+        : validateReferencesForSession(
+          referenceValues,
+          referenceTarget,
+          sourceId => {
+            const source = this.sessions.get(sourceId)
+            return source ? {
+              id: source.id,
+              workspaceId: source.workspace.id,
+              projectId: source.projectId,
+              messages: source.messages,
+            } : null
+          },
+        )
+    }
+    if (!shouldReusePersistedReferences) {
+      await validateProjectFileReferencesForSend(references, managed.workspace.rootPath)
+    }
+    const messageForModel = formatReferencesForModel(message, references)
 
     // If currently processing, behavior depends on the connection's
     // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
@@ -6671,7 +6787,8 @@ export class SessionManager implements ISessionManager {
       const decideDelivery = canSteerTextPayload(attachments, storedAttachments, options) && this.decisionFeatureActive('midTurnMessages')
       const behavior = decideDelivery ? 'queue' : configured
 
-      // Create user message for UI
+      // Create user message for UI and persist queued delivery state so a
+      // restart can recover messages that have not reached the model yet.
       const userMessage: Message = {
         id: generateMessageId(),
         role: 'user',
@@ -6679,6 +6796,8 @@ export class SessionManager implements ISessionManager {
         timestamp: this.monotonic(),
         attachments: storedAttachments,
         badges: options?.badges,
+        ...(references.length > 0 ? { references } : {}),
+        ...(delivery.shouldQueue ? { isQueued: true } : {}),
         // Hidden system-generated messages reach the model but never render as a
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
@@ -6693,8 +6812,9 @@ export class SessionManager implements ISessionManager {
       // replay after `complete` instead of steering (OSS #1058). Not an interruption.
       const compactionInFlight = agent?.isCompactionInFlight?.() === true
       const attemptedSteer = shouldAttemptMidStreamSteer(behavior, textOnly, agent)
+      // Steer the reference-formatted payload so cited context reaches the model.
       const steered = attemptedSteer && agent
-        ? agent.redirect(message, { messageId: userMessage.id })
+        ? agent.redirect(messageForModel, { messageId: userMessage.id })
         : false
       const payload: ManagedSession['messageQueue'][number] = { message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId }
       if (steered && agent?.takePendingSteers) {
@@ -6746,10 +6866,7 @@ export class SessionManager implements ISessionManager {
     let userMessage: Message
     if (existingMessageId) {
       // Find existing message (already added when queued)
-      userMessage = managed.messages.find(m => m.id === existingMessageId)!
-      if (!userMessage) {
-        throw new Error(`Existing message ${existingMessageId} not found`)
-      }
+      userMessage = existingUserMessage!
     } else {
       // Create new message
       userMessage = {
@@ -6759,6 +6876,7 @@ export class SessionManager implements ISessionManager {
         timestamp: this.monotonic(),
         attachments: storedAttachments, // Include for persistence (has thumbnailBase64)
         badges: options?.badges,  // Include content badges (sources, skills with embedded icons)
+        ...(references.length > 0 ? { references } : {}),
         // Hidden system-generated messages reach the model but never render as a
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
@@ -7070,7 +7188,7 @@ export class SessionManager implements ISessionManager {
       }
 
       sendSpan.mark('chat.starting')
-      const chatIterator = agent.chat(message, modelInputAttachments.attachments, Object.keys(chatOptions).length > 0 ? chatOptions : undefined)
+      const chatIterator = agent.chat(messageForModel, modelInputAttachments.attachments, Object.keys(chatOptions).length > 0 ? chatOptions : undefined)
       sessionLog.info('Got chat iterator, starting iteration...')
 
       for await (const event of chatIterator) {
@@ -7293,19 +7411,33 @@ export class SessionManager implements ISessionManager {
 
     // Collect queued message text for input restoration before clearing
     const queuedTexts = managed.messageQueue.map(q => q.message)
+    const queuedReferences = managed.messageQueue.flatMap(q => q.options?.references ?? [])
 
-    // Collect queued message IDs so we can remove them from the messages array
-    // (they were added when sendMessage was called during processing)
-    const queuedMessageIds = new Set(
+    const queuedMessageIds = Array.from(new Set(
       managed.messageQueue.map(q => q.messageId).filter((id): id is string => !!id)
-    )
+    ))
+    const queuedMessageIdSet = new Set(queuedMessageIds)
 
     // Clear queue - user explicitly stopped, don't process queued messages
     managed.messageQueue = []
 
-    // Remove queued user messages from the persisted messages array
-    if (queuedMessageIds.size > 0) {
-      managed.messages = managed.messages.filter(m => !queuedMessageIds.has(m.id))
+    // Explicit Stop restores queued input into the draft. Keep the persisted
+    // bubbles until the renderer confirms that draft persistence succeeded.
+    // Silent redirects have no restore/ack handshake and retain their existing
+    // queue cleanup behavior.
+    const queuedRestoreId = !silent && queuedMessageIds.length > 0
+      ? randomUUID()
+      : undefined
+    const pendingRestoreMessageIds: string[] = []
+    if (queuedRestoreId) {
+      for (const message of managed.messages) {
+        if (message.role === 'user' && message.isQueued && queuedMessageIdSet.has(message.id)) {
+          message.queuedRestoreId = queuedRestoreId
+          pendingRestoreMessageIds.push(message.id)
+        }
+      }
+    } else if (queuedMessageIds.length > 0) {
+      managed.messages = managed.messages.filter(m => !queuedMessageIdSet.has(m.id))
     }
 
     // Signal intent to stop - let the event loop drain remaining events before clearing isProcessing
@@ -7327,30 +7459,33 @@ export class SessionManager implements ISessionManager {
 
     // Only show "Response interrupted" message when user explicitly clicked Stop
     // Silent mode is used when redirecting (sending new message while processing)
+    let interruptedMessage: Message | undefined
     if (!silent) {
-      const interruptedMessage: Message = {
+      interruptedMessage = {
         id: generateMessageId(),
         role: 'info',
         content: 'Response interrupted',
         timestamp: this.monotonic(),
       }
       managed.messages.push(interruptedMessage)
-      this.sendEvent({
-        type: 'interrupted',
-        sessionId,
-        message: interruptedMessage,
-        // Include queued texts so the UI can restore them to the input field
-        ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
-      }, managed.workspace.id)
-    } else {
-      // Still send interrupted event but without the message (for UI state update)
-      this.sendEvent({
-        type: 'interrupted',
-        sessionId,
-        // Include queued texts so the UI can restore them to the input field
-        ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
-      }, managed.workspace.id)
     }
+
+    if (pendingRestoreMessageIds.length > 0) {
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
+    }
+
+    this.sendEvent({
+      type: 'interrupted',
+      sessionId,
+      ...(interruptedMessage ? { message: interruptedMessage } : {}),
+      // Include queued input so the renderer can restore it before acknowledging.
+      ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
+      ...(queuedReferences.length > 0 ? { queuedReferences } : {}),
+      ...(queuedRestoreId && pendingRestoreMessageIds.length > 0
+        ? { queuedRestoreId, queuedMessageIds: pendingRestoreMessageIds }
+        : {}),
+    }, managed.workspace.id)
 
     // Safety timeout: if event loop doesn't complete within 5 seconds, force cleanup
     // This handles cases where the generator gets stuck
@@ -7363,6 +7498,39 @@ export class SessionManager implements ISessionManager {
 
     // NOTE: We don't clear isProcessing or send complete event here anymore.
     // The event loop will drain remaining events and call onProcessingStopped when done.
+  }
+
+  async acknowledgeQueuedInputRestore(
+    sessionId: string,
+    restoreId: string,
+    messageIds: string[],
+  ): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed || !restoreId || !Array.isArray(messageIds) || messageIds.length === 0) return
+
+    await this.ensureMessagesLoaded(managed)
+    const requestedMessageIds = new Set(messageIds)
+    const removedMessageIds: string[] = []
+    managed.messages = managed.messages.filter(message => {
+      const matches = message.role === 'user'
+        && message.queuedRestoreId === restoreId
+        && requestedMessageIds.has(message.id)
+      if (matches) removedMessageIds.push(message.id)
+      return !matches
+    })
+
+    // A repeated or stale acknowledgement is a safe no-op. In particular, it
+    // must never remove messages belonging to a newer restore operation.
+    if (removedMessageIds.length === 0) return
+
+    this.persistSession(managed)
+    await this.flushSession(managed.id)
+    this.sendEvent({
+      type: 'queued_input_restored',
+      sessionId,
+      queuedRestoreId: restoreId,
+      messageIds: removedMessageIds,
+    }, managed.workspace.id)
   }
 
   /**
@@ -8168,6 +8336,69 @@ export class SessionManager implements ISessionManager {
       const watcher = this.configWatchers.get(managed.workspace.rootPath)
       watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
     }
+  }
+
+  async setSessionProjectNoteTarget(
+    sessionId: string,
+    projectId: string,
+    relativePath: string | null,
+    rootFingerprint: string | null,
+  ): Promise<{ relativePath: string | null; recentPaths: string[] } | null> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed || managed.projectId !== projectId) return null
+
+    const recentPaths = relativePath
+      ? [
+          relativePath,
+          ...(managed.projectNoteRecentTargetPaths ?? [])
+            .filter(path => path !== relativePath),
+        ].slice(0, 5)
+      : [...(managed.projectNoteRecentTargetPaths ?? [])]
+    managed.projectNoteTargetPath = relativePath ?? undefined
+    managed.projectNoteTargetRootFingerprint = relativePath
+      ? rootFingerprint ?? undefined
+      : undefined
+    managed.projectNoteRecentTargetPaths = recentPaths
+    this.setMetadataWriteGuard(managed)
+    this.persistSession(managed)
+    await this.flushSession(sessionId)
+
+    const current = this.sessions.get(sessionId)
+    if (
+      current !== managed
+      || current.projectId !== projectId
+      || current.projectNoteTargetPath !== (relativePath ?? undefined)
+      || current.projectNoteTargetRootFingerprint !== (relativePath
+        ? rootFingerprint ?? undefined
+        : undefined)
+    ) return null
+
+    this.sendEvent({
+      type: 'session_metadata_changed',
+      sessionId,
+      changes: {
+        projectNoteTargetPath: managed.projectNoteTargetPath ?? null,
+        projectNoteTargetRootFingerprint: managed.projectNoteTargetRootFingerprint ?? null,
+        projectNoteRecentTargetPaths: recentPaths,
+      },
+    }, managed.workspace.id)
+    return { relativePath, recentPaths }
+  }
+
+  async clearSessionProjectNoteTargetIfMatches(
+    sessionId: string,
+    projectId: string,
+    relativePath: string,
+    rootFingerprint: string,
+  ): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (
+      !managed
+      || managed.projectId !== projectId
+      || managed.projectNoteTargetPath !== relativePath
+      || managed.projectNoteTargetRootFingerprint !== rootFingerprint
+    ) return
+    await this.setSessionProjectNoteTarget(sessionId, projectId, null, null)
   }
 
   /**
@@ -9504,11 +9735,33 @@ export class SessionManager implements ISessionManager {
         // longer fires its own auto_retry (see processor.ts).
         sessionLog.info(`Source "${event.sourceSlug}" activated for session ${sessionId}, scheduling auto-retry`)
 
+        const modelOriginalMessage = event.originalMessage ?? ''
+        const persistedOriginal = managed
+          ? managed.messages.findLast(message => (
+              message.role === 'user'
+              && formatReferencesForModel(message.content, message.references ?? []) === modelOriginalMessage
+            )) ?? (managed.lastSentMessage !== undefined
+              ? managed.messages.findLast(message => (
+                  message.role === 'user' && message.content === managed.lastSentMessage
+                ))
+              : undefined)
+          : undefined
+        const references = persistedOriginal?.references
+        const strippedOriginalMessage = stripReferencesFromModelInput(modelOriginalMessage)
+        // References are normally the final model-input block. If another internal
+        // suffix (for example the interruption reminder) follows it, the strict
+        // stripper intentionally refuses to guess; fall back to the persisted raw
+        // user text so neither internal block can become a visible retry message.
+        const originalMessage = references?.length
+          && strippedOriginalMessage === modelOriginalMessage
+          ? persistedOriginal?.content ?? strippedOriginalMessage
+          : strippedOriginalMessage
+
         this.sendEvent({
           type: 'source_activated',
           sessionId,
           sourceSlug: event.sourceSlug,
-          originalMessage: event.originalMessage,
+          originalMessage,
         }, workspaceId)
 
         if (!managed) break
@@ -9519,11 +9772,13 @@ export class SessionManager implements ISessionManager {
         // persisted user message so an activation that force-aborted the turn still
         // continues; skip only when there is genuinely nothing to resend (preserves
         // the "no bogus empty resend" intent). See bugfix/session-continuation.
-        const capturedMessage = event.originalMessage ?? ''
-        const resendMessage = capturedMessage.trim()
-          ? capturedMessage
+        // The retry always uses the cleaned original: never the model-formatted
+        // text with its internal reference block or retry guidance.
+        // A references-only turn (empty text, live citations) still retries.
+        const resendMessage = originalMessage.trim()
+          ? originalMessage
           : lastUserMessageContent(managed.messages)
-        if (!resendMessage.trim()) {
+        if (!resendMessage.trim() && !references?.length) {
           sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but no message to resend (empty capture, no prior user message); skipping auto-retry`)
           break
         }
@@ -9537,6 +9792,7 @@ export class SessionManager implements ISessionManager {
         managed.autoRetryPending = {
           content: messageWithSuffix,
           deadlineMs: Date.now() + 2000,
+          ...(references?.length ? { references: [...references] } : {}),
           committed: false,
         }
 
@@ -9560,7 +9816,7 @@ export class SessionManager implements ISessionManager {
           // Hidden: the user already sees their message and the activation; the retry only
           // restarts the turn with the new tools (and runs no per-message decision points).
           current.pendingActivationResend = retryMessage
-          this.sendMessage(sessionId, retryMessage, undefined, undefined, { hidden: true }).catch(err => {
+          this.sendMessage(sessionId, retryMessage, undefined, undefined, references?.length ? { hidden: true, references } : { hidden: true }).catch(err => {
             if (current.pendingActivationResend === retryMessage) current.pendingActivationResend = undefined
             sessionLog.error(`Auto-retry sendMessage failed for ${sessionId}:`, err)
           })

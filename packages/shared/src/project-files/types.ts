@@ -1,21 +1,44 @@
-export const MAX_PROJECT_FILE_PATH_BYTES = 2_048
+import {
+  MAX_REFERENCE_CFI_CHARS,
+  MAX_REFERENCE_CONTEXT_CHARS,
+  MAX_REFERENCE_QUOTE_CHARS,
+  MAX_REFERENCE_TOC_DEPTH,
+  MAX_REFERENCE_PATH_BYTES,
+  type EpubCfiLocatorV1,
+  type EpubTocPathEntryV1,
+  type PdfPageRectV1,
+  type PdfTextQuoteLocatorV1,
+  type ProjectFileIdentity,
+  type ProjectFileReferenceV1,
+  type ProjectFileSelectionLocatorV1,
+  type SourceFingerprint,
+  type TextQuoteLocatorV1,
+} from '@craft-agent/core'
+
+export type {
+  EpubCfiLocatorV1,
+  EpubTocPathEntryV1,
+  PdfPageRectV1,
+  PdfTextQuoteLocatorV1,
+  ProjectFileIdentity,
+  ProjectFileReferenceV1,
+  ProjectFileSelectionLocatorV1,
+  SourceFingerprint,
+  TextQuoteLocatorV1,
+} from '@craft-agent/core'
+
+export const MAX_PROJECT_FILE_PATH_BYTES = MAX_REFERENCE_PATH_BYTES
 export const MAX_PROJECT_FILE_TEXT_BYTES = 8 * 1024 * 1024
 export const MAX_EDITABLE_PROJECT_FILE_BYTES = 1024 * 1024
 export const MAX_PROJECT_FILE_BINARY_BYTES = 32 * 1024 * 1024
-export const MAX_PROJECT_FILE_REFERENCE_CFI_CHARS = 4_096
-export const MAX_PROJECT_FILE_REFERENCE_QUOTE_CHARS = 4_000
-export const MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS = 1_000
-export const MAX_PROJECT_FILE_REFERENCE_TOC_DEPTH = 32
+export const MAX_PROJECT_FILE_REFERENCE_CFI_CHARS = MAX_REFERENCE_CFI_CHARS
+export const MAX_PROJECT_FILE_REFERENCE_QUOTE_CHARS = MAX_REFERENCE_QUOTE_CHARS
+export const MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS = MAX_REFERENCE_CONTEXT_CHARS
+export const MAX_PROJECT_FILE_REFERENCE_TOC_DEPTH = MAX_REFERENCE_TOC_DEPTH
 export const MAX_PROJECT_FILE_REFERENCE_LABEL_CHARS = 1_024
 export const MAX_PDF_RECTS_PER_HIGHLIGHT = 512
 
 export type ProjectFileFingerprint = `sha256:${string}`
-export type SourceFingerprint = ProjectFileFingerprint
-
-export interface ProjectFileIdentity {
-  projectId: string
-  relativePath: string
-}
 
 export interface ProjectFileRequest {
   projectId: string
@@ -43,6 +66,7 @@ export interface ProjectDirectoryEntriesResult {
 export interface ProjectFileSearchRequest {
   projectId: string
   query: string
+  extensions?: string[]
 }
 
 export interface ProjectFileSearchResult {
@@ -77,55 +101,16 @@ export interface ProjectFileBinaryResponse {
   sourceFingerprint: SourceFingerprint
 }
 
-export interface EpubCfiLocatorV1 {
-  type: 'epub-cfi'
-  cfiRange: string
-}
-
-export interface PdfPageRectV1 {
-  pageNumber: number
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-export interface PdfTextQuoteLocatorV1 {
-  type: 'pdf-text-quote'
-  exact: string
-  prefix?: string
-  suffix?: string
-  startPage: number
-  endPage: number
-  anchor?: PdfPageRectV1
-}
-
 export interface ProjectFileOpenIntent {
   expectedFingerprint: SourceFingerprint
-  locator: EpubCfiLocatorV1 | (PdfTextQuoteLocatorV1 & { anchor: PdfPageRectV1 })
-}
-
-export type ProjectFileSelectionLocatorV1 =
-  | EpubCfiLocatorV1
-  | PdfTextQuoteLocatorV1
-
-/**
- * 阶段 4 的稳定阅读定位结构。它只描述来源和选区，不承担聊天草稿或
- * Add Note 的传递职责；后两者在阶段 5 通过统一引用协议接入。
- */
-export interface ProjectFileSelectionReferenceV1 extends ProjectFileIdentity {
-  version: 1
-  kind: 'project-file'
-  sourceFingerprint: SourceFingerprint
-  fileName: string
-  quote: string
-  contextBefore?: string
-  contextAfter?: string
-  chapterKey?: string
-  chapterTitle?: string
-  tocPath?: EpubTocPathEntryV1[]
   locator: ProjectFileSelectionLocatorV1
 }
+
+/**
+ * Project File 选区直接复用 Core 的统一 Reference 协议，Reader、草稿、
+ * 消息、Add Note 与 reveal 不再各自维护一套结构。
+ */
+export type ProjectFileSelectionReferenceV1 = ProjectFileReferenceV1
 
 export interface EpubProjectFileReferenceV1 extends ProjectFileSelectionReferenceV1 {
   tocPath: EpubTocPathEntryV1[]
@@ -137,13 +122,6 @@ export type PdfProjectFileReferenceV1 = Omit<
   'chapterKey' | 'chapterTitle' | 'tocPath' | 'locator'
 > & {
   locator: PdfTextQuoteLocatorV1 & { anchor: PdfPageRectV1 }
-}
-
-export interface EpubTocPathEntryV1 {
-  key: string
-  title: string
-  orderPath: number[]
-  href?: string
 }
 
 export interface EpubTocNode extends EpubTocPathEntryV1 {

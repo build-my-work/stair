@@ -27,6 +27,7 @@ export const RPC_CHANNELS = {
     GET_MESSAGES: 'sessions:getMessages',
     SEND_MESSAGE: 'sessions:sendMessage',
     CANCEL: 'sessions:cancel',
+    ACK_QUEUED_INPUT_RESTORE: 'sessions:ackQueuedInputRestore',
     // Legacy name of STOP_BACKGROUND_TASK for shells (older clients); same handler.
     KILL_SHELL: 'sessions:killShell',
     GET_BACKGROUND_TASK_OUTPUT: 'sessions:getBackgroundTaskOutput',
@@ -484,6 +485,10 @@ export const RPC_CHANNELS = {
     APPLY_PDF_STATE_MUTATION: 'projectFiles:applyPdfStateMutation',
     FLUSH_REQUESTED: 'projectFiles:flushRequested',
     FLUSH_COMPLETED: 'projectFiles:flushCompleted',
+  },
+  projectNotes: {
+    CONFIGURE_TARGET: 'projectNotes:configureTarget',
+    APPEND: 'projectNotes:append',
   },
   messaging: {
     // WhatsApp subprocess → Gateway (subprocess invokes on server)

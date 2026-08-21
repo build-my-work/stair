@@ -43,6 +43,7 @@ const EMPTY_RECALL_STATE: RecallPromptArrowUpState = {
   isProcessing: true,
   input: '',
   attachmentCount: 0,
+  referenceCount: 0,
   loadingAttachmentCount: 0,
   followUpItemCount: 0,
   inlineMenuOpen: false,
@@ -69,6 +70,7 @@ describe('shouldRecallPromptOnArrowUp', () => {
 
   it('preserves non-text draft content and loading attachments', () => {
     expect(canRecall({ attachmentCount: 1 })).toBe(false)
+    expect(canRecall({ referenceCount: 1 })).toBe(false)
     expect(canRecall({ loadingAttachmentCount: 1 })).toBe(false)
     expect(canRecall({ followUpItemCount: 1 })).toBe(false)
   })

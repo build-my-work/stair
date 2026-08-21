@@ -28,6 +28,7 @@ export const CHANNEL_MAP = {
   cancelProcessing: invoke(RPC_CHANNELS.sessions.CANCEL),
   getBackgroundTaskOutput: invoke(RPC_CHANNELS.sessions.GET_BACKGROUND_TASK_OUTPUT),
   stopBackgroundTask: invoke(RPC_CHANNELS.sessions.STOP_BACKGROUND_TASK),
+  acknowledgeQueuedInputRestore: invoke(RPC_CHANNELS.sessions.ACK_QUEUED_INPUT_RESTORE),
 
   // Tasks (Conductor)
   validateTask: invoke(RPC_CHANNELS.tasks.VALIDATE),
@@ -462,6 +463,10 @@ export const CHANNEL_MAP = {
   applyPdfStateMutation: invoke(RPC_CHANNELS.projectFiles.APPLY_PDF_STATE_MUTATION),
   onProjectFilesFlushRequested: listener(RPC_CHANNELS.projectFiles.FLUSH_REQUESTED),
   completeProjectFilesFlush: invoke(RPC_CHANNELS.projectFiles.FLUSH_COMPLETED),
+
+  // Project Notes
+  configureProjectNoteTarget: invoke(RPC_CHANNELS.projectNotes.CONFIGURE_TARGET),
+  appendProjectNote: invoke(RPC_CHANNELS.projectNotes.APPEND),
 
   // Automations
   getAutomations: invoke(RPC_CHANNELS.automations.GET),

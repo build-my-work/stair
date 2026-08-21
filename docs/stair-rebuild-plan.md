@@ -2,12 +2,12 @@
 
 ## 文档状态
 
-- 状态：阶段 0—4 功能等价收口完成；停止在阶段 4，不进入阶段 5
+- 状态：阶段 5 实现、自动化验证、三方审查与真实 Electron 验收均已收口；不进入阶段 6
 - 基线：`upstream/main@50ffa143`（`v0.11.4`）
 - 分支：`codex/stair-rebuild-v2`
-- 更新日期：2026-08-21
+- 更新日期：2026-08-22
 - 范围：保留 Stair 产品能力，不迁移 Craft 或旧 Stair 用户数据
-- 代码状态：新架构主链与本轮确认的旧 Stair 产品能力已经收口；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
+- 代码状态：阶段 5 的统一引用、同 Project Add Chat/New Chat 与 Add Note 已接入现有边界；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
 
 ## 当前实施进度
 
@@ -18,7 +18,8 @@
 | 阶段 2：仅包含 Session 的 Workbench | 完成 | 新 Workbench 状态与命令层已经接管 Session Primary/Auxiliary；普通导航不再隐式新增 Panel。 |
 | 阶段 3：Project Files 与文本文档 | 功能等价完成 | 搜索、普通文件/目录创建、图片预览、旧文本/代码扩展名、Markdown 链接和 Save Draft As 均已恢复。 |
 | 阶段 4：EPUB 与 PDF | 功能等价完成 | EPUB/PDF 窄栏 overlay、选区生命周期、印刷页码、导出/分组以及作者/相对路径信息均已恢复。 |
-| 阶段 5—9 | 未开始 | Add Note、原生 Browser、Drawnix、布局持久化和正式发布打包尚未进入实施。 |
+| 阶段 5：引用与 Add Note | 完成 | 统一引用、Add Chat/New Chat、Add Note、审查修复、真实 Pointer/Reader/Chat 验收与 queue/ack 恢复链均已完成。 |
+| 阶段 6—9 | 未开始 | 原生 Browser、Drawnix、布局持久化和正式发布打包尚未进入实施。 |
 
 ### 2026-08-21 功能等价审计与收口
 
@@ -30,7 +31,7 @@
 - WindowManager 只恢复真实主框架加载失败，忽略 EPUB iframe 等子框架和 `ERR_ABORTED`；完整 URL 最多重试 5 次，开发模式耗尽后不再错误加载生产 Renderer。
 - Draft Workspace 授权、空 Session 自动清理、PDF 窄栏、Markdown 链接、Save Draft As 以及 Project Files 搜索/创建/图片等阶段 0—4 回归均已按旧产品行为恢复。
 - EPUB/PDF 的 pageLabels、选区失效清理、高亮 Markdown 导出、EPUB 目录分组以及作者/相对路径辅助信息已经补齐。
-- 阶段 5—9 的明确延期继续保持，不以延期解释上述意外回归。
+- 阶段 6—9 的明确延期继续保持，不以延期解释上述意外回归。
 
 完整证据与修复顺序见：
 
@@ -88,16 +89,40 @@
 - EPUB/PDF 高亮支持导出 Markdown；EPUB 高亮按最深匹配目录分组，并展示作者和 Project 文件相对路径。
 - 阶段 4 只定义可供下一阶段消费的稳定引用结构；把引用写入草稿、消息或 Add Note，以及 Reference Preview 消费仍属于阶段 5。
 
+### 阶段 5 已完成实现
+
+- 文本、EPUB、PDF 与聊天选区统一生成 Project-scoped 引用；引用进入草稿、持久消息和模型输入，并在用户消息与输入区显示预览。
+- 服务端对 Workspace、Project、Session、文件 fingerprint、引用数量和序列化字节数执行最终校验；模型只接收转义后的不可信引用数据，不把内部协议泄漏回用户草稿。
+- Project File 的 Add Chat 只选择同 Project 的已有 Session，不修改 Workbench 焦点或 Panel；New Chat 创建同 Project Session，并在当前文件 Panel 后显式新增 Auxiliary。
+- Project File 的 New Chat 在点击时捕获来源 Panel/Project/relativePath；异步创建完成后由单一 Workbench 命令重新校验来源，并原子更新文件 Chat target 与相邻 Session Auxiliary。来源被替换、关闭或 Project 已切换时拒绝布局写入并清理新建空 Session/引用，不退化到当前焦点。
+- 引用预览支持重复点击定位；同一个 locator 再次打开时仍会触发 reveal，不依赖文件重新挂载。
+- Add Note 使用 Project Files 目标选择器，支持最近目标、搜索、创建普通 Markdown 文件和并发安全追加；服务端重新校验 Project、路径与文件来源。
+- Add Note 的服务端文件访问固定在已打开的父目录句柄：POSIX 使用 `openat` 与 `O_NOFOLLOW`，Windows 使用相对根句柄的 `NtCreateFile` 并拒绝 reparse point；读取、追加和同步都在同一已验证句柄上完成。
+- Add Note 取消会保留当前选区；失效或被阻止的引用不会静默清空输入，发送校验失败时会把精确的内存文本与引用恢复到草稿。
+- Chat 选区支持 Add Chat、New Chat 与 Add Note；右键用户消息不会误弹出选区动作菜单，归档或隐藏 Session 不能成为引用目标。
+- 恢复、分支种子、PromptBuilder 与会话摘要把可见文本和引用上下文分开预算，引用标记与 JSON 不会再被字符截断切开。
+- queued 输入在 Stop 时先写入持久草稿，再以 restore ID 和 canonical message ID 确认删除服务端与 Renderer bubble；失败或陈旧确认均为保守 no-op。真实验收另补齐了 queued 事件保持当前运行态，以及 optimistic UI ID 到 server ID 的瞬时映射。
+- 本阶段沿用现有 Workbench、Session、Project File 与服务端状态边界，没有修改 Craft 默认导航语义，也没有增加 Panel 数量限制。
+
 ### 当前验证结果
 
 | 检查 | 结果 | 说明 |
 | --- | --- | --- |
+| 阶段 5 审查后聚焦回归 | 通过 | 36 个相关测试文件共 180/180 项通过、519 个断言；覆盖引用协议、草稿恢复、消息持久化、模型输入、重复 reveal、Add Chat/New Chat、Add Note 授权与写入。 |
+| 阶段 5 类型检查 | 通过 | core、shared、server-core、ui 与 Electron 五层类型检查均通过。 |
+| 阶段 5 三方审查 | 通过 | Claude 的完整引用恢复、Kimi 的 queued 草稿确认协议、Pi 的 Project Note 固定目录句柄均已按现有边界补失败测试并修复；真实验收追加发现的 Stop 运行态与 optimistic/server ID 映射问题也已闭环。 |
+| 阶段 5 生产构建 | 通过 | `bun run stair:build` 退出码为 0；Electron main、preload、Renderer、资源复制和 Stair.app 打包均完成。Koffi 保持 external，并已从打包产物实际加载后调用 libc。 |
+| Project File → New Chat 确定性回归 | 通过 | 33/33 项通过、148 个断言；其中覆盖创建等待期间切换焦点、替换 Preview、关闭来源 Panel、切换 Project，以及聊天选区原有 `afterSessionId` 行为和失败回滚接线。 |
+| 阶段 5 最终收口回归 | 通过 | 非重叠源码测试累计 287/287 项通过；core、shared、server-core、ui 与 Electron 五层类型检查通过，Electron main 构建、Stair 目录包构建与 `git diff --check` 通过。 |
+| 阶段 5 真实 Electron 验收 | 通过 | ScreenCaptureKit 恢复后，Computer Use 在当前 `os` Project 对 Markdown、聊天、真实 EPUB 与 text-layer PDF 完成原生拖选，并验证 Add Chat、New Chat、Add Note、重复 reveal、真实消息发送与 Stop。queue 模式下确认 Stop 始终可用，草稿落盘后 queued bubble 从实时 UI 与 session.jsonl 删除；测试 Session、Note、PDF 夹具和现场按授权保留。 |
+| 当前源码包测试 | Electron 存在基线失败 | core 4/4、shared 3029 通过/12 跳过、server-core 303/303、ui 299/299；Electron 1013 项通过、8 项失败，失败均来自未修改的 `BrowserPaneManager`。 |
+| 当前完整 Electron lint | 基线失败 | 9 个 error、119 个 warning；9 个 error 全部位于本轮未修改文件，来自既有 shadow utility 与直接 `openFile` 规则。本轮不扩散修复范围。 |
 | 本轮阶段 0—4 等价收口相关回归 | 通过 | 28 个相关测试文件共 180/180 项通过、458 个断言；覆盖 HMR、Draft 授权、空 Session、Project Files、Save Draft As、Markdown 链接及 EPUB/PDF 回归。 |
 | WindowManager 隔离生命周期回归 | 通过 | 3/3 项通过；覆盖子框架与 `ERR_ABORTED` 忽略、完整 URL、5 次上限、成功后计数重置和开发模式无生产 fallback。 |
 | 既有 Project 文档回归 | 通过 | 文档控制器与注册表 6/6 项通过、19 个断言，确认本轮恢复没有破坏 autosave、冲突、flush 和 veto。 |
-| 本轮三方审查与简化 | 通过 | 对全部未提交改动执行 Code Simplifier，并由 Claude、Kimi、Pi 审查；7 类有效问题均补测试并修复，真实 HMR 复验发现的入口重复 render 也已补充收口。 |
-| 本轮真实 Electron 验收 | 通过 | 使用 `bun run stair:dev` 和当前 `os` Project：HMR 后两个 Panels、焦点、内存草稿和文件筛选不变；打开/关闭 EPUB/PDF 不触发窗口重载；约 375 px PDF Auxiliary 的目录为遮罩式 overlay；Markdown 相对链接、空 Session 删除均通过。临时文件和测试 Session 已清理。 |
-| 本轮完整仓库测试 | 基线失败 | `bun run test` 得到 5949 项通过、12 项跳过、33 项失败、4 个错误；失败来自被扫描的旧 `release/mac-arm64/Stair.app` 源码、未修改的 `BrowserPaneManager` 8 项及 server smoke 3 项。相关源码回归均独立通过。 |
+| 阶段 0—4 等价收口审查 | 通过 | 对当时全部未提交改动执行 Code Simplifier，并由 Claude、Kimi、Pi 审查；7 类有效问题均补测试并修复，真实 HMR 复验发现的入口重复 render 也已补充收口。 |
+| 阶段 0—4 等价收口 Electron 验收 | 通过 | 使用 `bun run stair:dev` 和当前 `os` Project：HMR 后两个 Panels、焦点、内存草稿和文件筛选不变；打开/关闭 EPUB/PDF 不触发窗口重载；约 375 px PDF Auxiliary 的目录为遮罩式 overlay；Markdown 相对链接、空 Session 删除均通过。临时文件和测试 Session 已清理。 |
+| 阶段 0—4 记录的完整仓库测试 | 基线失败 | `bun run test` 得到 5949 项通过、12 项跳过、33 项失败、4 个错误；失败来自被扫描的旧 `release/mac-arm64/Stair.app` 源码、未修改的 `BrowserPaneManager` 8 项及 server smoke 3 项。相关源码回归均独立通过。 |
 | 阶段 0 路径聚焦回归 | 通过 | 81/81 项通过，共 1423 个断言；覆盖集中配置目录、写盘位置和生产代码硬编码守卫。 |
 | 阶段 0 深链聚焦回归 | 通过 | 58/58 项通过，共 123 个断言；Craft 使用 `craftagents://`，Stair 使用 `stair://`。 |
 | 阶段 3 聚焦回归 | 通过 | 审查后 52/52 项通过，共 188 个断言、11 个文件；覆盖协议路由、注册、IPC、路径安全、比较保存、Workbench 文件命令、Workspace flush/veto、窗口关闭顺序、自动更新中止、冲突恢复、文本保真、dotfile 和错误码透传。 |
@@ -129,11 +154,14 @@
 
 ### 当前限制
 
-- 阶段 0—4 作为当前功能等价基线整体交付；阶段 5—9 尚未开始，不能把本次交付理解为全部产品能力已经完成。
+- 阶段 0—5 已交付；阶段 6—9 未开始，不能把本次交付理解为全部产品能力已经完成。
 - Panel 数量策略已确认与 Craft 保持一致：当前不设置“最多 8 个 Panel”的额外限制，本轮无需修改业务代码。
 - 按用户最新要求，桌面验收使用当前已经选择的 `os` Project，不再以临时隔离 Workspace 作为阻塞条件；这不改变产品最终需要独立 Stair 数据命名空间的目标。
-- 把稳定引用接入草稿/消息与 Add Note、原生 Browser、Drawnix、布局持久化和正式发布仍属于阶段 5—9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
-- Computer Use 在应用处于后台时遇到 `document.visibilityState=hidden`，Navigator 几何通过同一真实 Renderer 的按钮事件与开发者工具核对；仍保留前台手工验收入口。
+- 原生 Browser、Drawnix、布局持久化和正式发布仍属于阶段 6—9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
+- Windows Project Note 路径已按 ABI 与结构布局实现并完成类型/构建验证，但本轮运行环境为 macOS，尚未执行真实 Windows 原生运行时 smoke。
+- queued 恢复若在 Renderer 收到 restore 事件后、持久草稿与 ack 完成前崩溃，会保留服务端 queued bubble 且不自动重试写入草稿；该保守状态不会丢数据，但需用户重新触发恢复。
+- 为保证引用标记与 JSON 完整，恢复/摘要字符上限允许被一个完整引用块软超出；不会再产生半个引用协议，但极大引用可能比旧硬上限多一个块。
+- `bun install --frozen-lockfile` 与独立 server build smoke 仍可能被当前环境访问 GitHub 归档时的 TLS `UNKNOWN_CERTIFICATE_VERIFICATION_ERROR` 阻断；源码测试、类型检查、Electron/Stair 构建与打包 Koffi smoke 不受影响。
 - 本地 `Stair.app` 目录包在当前机器上仍会出现“进程已启动但没有窗口”，且停在业务主进程日志加载之前；阶段 3 已在 `bun run stair:dev` 的真实 Electron 窗口验收通过，该打包运行问题保留到阶段 9 单独处理。
 
 ### 阶段 0 实施记录
@@ -496,7 +524,7 @@ Project 前置条件：
 - 真实 Electron 步骤：使用当前 `os` Project 的真实 EPUB、1 页 text-layer PDF 和 240 页 PDF，验证连续滚动、目录、选区、红色划线、进度恢复、划线 reveal、Preview 原位替换和关闭前 flush。
 - 架构停机线：若实现需要让 Reader 自行选择 Session、修改 Craft 通用文件 API 的所有权，或把 Reader 状态写进用户工作目录，则停止并向用户确认；当前方案未触发。
 
-### 阶段 5：引用与 Add Note（未开始）
+### 阶段 5：引用与 Add Note（完成）
 
 范围：
 
@@ -719,4 +747,4 @@ git diff --check
 
 ## 11. 立即下一步
 
-阶段 0—4 功能等价收口已经完成，停止在阶段 4，不开始阶段 5。Panel 数量策略沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制；后续工作等待用户确认后再开始。
+阶段 5 已完成。保持当前分支和测试现场，不进入阶段 6；等待用户明确授权后再开始原生 Browser。Panel 数量策略继续沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制。

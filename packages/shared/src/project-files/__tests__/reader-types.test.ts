@@ -4,9 +4,32 @@ import {
   classifyProjectFile,
   isSourceFingerprint,
   type ProjectFileOpenIntent,
+  type ProjectFileSelectionReferenceV1,
 } from '..'
+import type { ProjectFileReferenceV1 } from '@craft-agent/core'
 
 describe('Project File Reader 类型边界', () => {
+  it('阶段 4 Reader 引用直接复用统一 Reference 协议', () => {
+    const reference: ProjectFileSelectionReferenceV1 = {
+      version: 1,
+      kind: 'project-file',
+      projectId: 'project-a',
+      relativePath: 'notes/readme.md',
+      sourceFingerprint: `sha256:${'a'.repeat(64)}`,
+      fileName: 'readme.md',
+      quote: '引用',
+      locator: {
+        type: 'text-quote',
+        exact: '引用',
+        start: 0,
+        end: 2,
+      },
+    }
+    const unified: ProjectFileReferenceV1 = reference
+
+    expect(unified).toBe(reference)
+  })
+
   it('把 EPUB、PDF 和旧版图片格式分流到二进制 Reader', () => {
     expect(classifyProjectFile('books/guide.epub')).toBe('epub')
     expect(classifyProjectFile('papers/report.PDF')).toBe('pdf')
@@ -44,5 +67,16 @@ describe('Project File Reader 类型边界', () => {
     }
     expect(isSourceFingerprint(intent.expectedFingerprint)).toBe(true)
     expect(intent.locator.type).toBe('epub-cfi')
+
+    const textIntent: ProjectFileOpenIntent = {
+      expectedFingerprint,
+      locator: {
+        type: 'text-quote',
+        exact: '引用',
+        start: 0,
+        end: 2,
+      },
+    }
+    expect(textIntent.locator.type).toBe('text-quote')
   })
 })

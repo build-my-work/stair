@@ -23,6 +23,7 @@ import type {
   EpubHighlightV1,
   EpubTocNode,
   ProjectFileMetadata,
+  ProjectFileReferenceV1,
   SourceFingerprint,
 } from '@craft-agent/shared/project-files'
 import { MAX_PROJECT_FILE_REFERENCE_CONTEXT_CHARS } from '@craft-agent/shared/project-files'
@@ -38,7 +39,14 @@ import {
 import { saveTextFile } from '@/lib/save-text-file'
 import { cn } from '@/lib/utils'
 import { registerOpenProjectFileDocument } from './project-file-document-registry'
-import { ProjectFileReaderSelectionToolbar } from './ProjectFileReaderSelectionToolbar'
+import {
+  ProjectFileReaderSelectionToolbar,
+  type ProjectFileReferenceAction,
+} from './ProjectFileReaderSelectionToolbar'
+import {
+  shouldDismissReaderSelection,
+  type ReaderSelectionActionResult,
+} from './selection-action-result'
 import {
   attachEpubContentsSelectionLifecycle,
   createEpubSerializeHook,
@@ -60,6 +68,7 @@ import {
   createEpubSelectionSnapshot,
   createEpubStateMutationCoordinator,
   createOptimisticEpubHighlight,
+  buildProjectFileReferenceFromSelection,
   deleteEpubHighlightOptimistically,
   displayEpubHighlightLocation,
   findEpubTocPath,
@@ -225,6 +234,8 @@ export function ProjectFileEpubReader({
   bytes,
   sourceFingerprint,
   initialCfi,
+  revealRevision = 0,
+  onReferenceAction,
 }: {
   projectId: string
   relativePath: string
@@ -232,6 +243,11 @@ export function ProjectFileEpubReader({
   bytes: Uint8Array
   sourceFingerprint: SourceFingerprint
   initialCfi?: string
+  revealRevision?: number
+  onReferenceAction?: (
+    action: ProjectFileReferenceAction,
+    reference: ProjectFileReferenceV1,
+  ) => ReaderSelectionActionResult | Promise<ReaderSelectionActionResult>
 }) {
   const { isDark } = useTheme()
   const { t } = useTranslation()
@@ -239,6 +255,11 @@ export function ProjectFileEpubReader({
   const mountRef = React.useRef<HTMLDivElement>(null)
   const viewportRef = React.useRef<HTMLElement>(null)
   const renditionRef = React.useRef<Rendition | null>(null)
+  const initialCfiRef = React.useRef(initialCfi)
+  const revealRevisionRef = React.useRef(revealRevision)
+  const lastRevealRevisionRef = React.useRef(0)
+  initialCfiRef.current = initialCfi
+  revealRevisionRef.current = revealRevision
   const isDarkRef = React.useRef(isDark)
   const reflowableRef = React.useRef(false)
   const coordinatorRef = React.useRef<ReturnType<
@@ -262,6 +283,7 @@ export function ProjectFileEpubReader({
   const [notice, setNotice] = React.useState('')
   const [moving, setMoving] = React.useState(false)
   const [savingHighlight, setSavingHighlight] = React.useState(false)
+  const [handlingReference, setHandlingReference] = React.useState(false)
   const [exporting, setExporting] = React.useState(false)
 
   const wavyHighlights = React.useMemo(
@@ -527,7 +549,7 @@ export function ProjectFileEpubReader({
           rendition.themes.register(DARK_THEME_NAME, getEpubReaderTheme('dark'))
           rendition.themes.select(isDarkRef.current ? DARK_THEME_NAME : LIGHT_THEME_NAME)
         }
-        const targetCfi = initialCfi ?? matchingState?.progress?.cfi
+        const targetCfi = initialCfiRef.current ?? matchingState?.progress?.cfi
         if (targetCfi) {
           try {
             await displayEpubHighlightLocation(rendition, targetCfi)
@@ -537,6 +559,9 @@ export function ProjectFileEpubReader({
         } else {
           await rendition.display(0)
         }
+        lastRevealRevisionRef.current = initialCfiRef.current
+          ? revealRevisionRef.current
+          : 0
         if (disposed) return
 
         if (typeof ResizeObserver !== 'undefined') {
@@ -565,7 +590,23 @@ export function ProjectFileEpubReader({
     mount?.addEventListener('scroll', dismissSelection, true)
     void load()
     return cleanup
-  }, [attempt, bytes, dismissSelection, initialCfi, metadata.name, projectId, relativePath, sourceFingerprint])
+  }, [attempt, bytes, dismissSelection, metadata.name, projectId, relativePath, sourceFingerprint])
+
+  React.useEffect(() => {
+    if (
+      status !== 'ready'
+      || !initialCfi
+      || revealRevision <= lastRevealRevisionRef.current
+    ) return
+    const rendition = renditionRef.current
+    if (!rendition) return
+    lastRevealRevisionRef.current = revealRevision
+    dismissSelection()
+    void displayEpubHighlightLocation(rendition, initialCfi).catch(revealError => {
+      console.error('[ProjectFileEpubReader] Reference reveal failed:', revealError)
+      setNotice(t('reference.couldNotOpenSelection'))
+    })
+  }, [dismissSelection, initialCfi, revealRevision, status, t])
 
   const currentChapter = React.useMemo(
     () => findCurrentEpubTocNode(toc, location.href),
@@ -637,6 +678,29 @@ export function ProjectFileEpubReader({
       setSavingHighlight(false)
     }
   }, [dismissSelection, highlights, selection])
+
+  const handleReferenceAction = React.useCallback(async (
+    action: ProjectFileReferenceAction,
+  ) => {
+    if (!selection || !onReferenceAction) return
+    setHandlingReference(true)
+    try {
+      const reference = buildProjectFileReferenceFromSelection({
+        identity: { projectId, relativePath },
+        sourceFingerprint,
+        fileName: metadata.name,
+        selection: selection.snapshot,
+      })
+      const result = await onReferenceAction(action, reference)
+      if (shouldDismissReaderSelection(result)) dismissSelection()
+    } catch (referenceError) {
+      setNotice(referenceError instanceof Error
+        ? referenceError.message
+        : String(referenceError))
+    } finally {
+      setHandlingReference(false)
+    }
+  }, [dismissSelection, metadata.name, onReferenceAction, projectId, relativePath, selection, sourceFingerprint])
 
   const deleteHighlight = React.useCallback(async (highlight: EpubHighlightV1) => {
     const coordinator = coordinatorRef.current
@@ -830,8 +894,20 @@ export function ProjectFileEpubReader({
             <ProjectFileReaderSelectionToolbar
               anchorRect={selection.anchorRect}
               collisionBoundary={viewportRef.current}
-              disabled={savingHighlight}
+              disabled={savingHighlight || handlingReference}
               onCreateHighlight={() => void createHighlight()}
+              onAddChat={onReferenceAction
+                ? () => void handleReferenceAction('add-chat')
+                : undefined}
+              onAddNewChat={onReferenceAction
+                ? () => void handleReferenceAction('new-chat')
+                : undefined}
+              onAddNote={onReferenceAction
+                ? () => void handleReferenceAction('add-note')
+                : undefined}
+              onChooseNoteTarget={onReferenceAction
+                ? () => void handleReferenceAction('choose-note-target')
+                : undefined}
               onDismiss={dismissSelection}
             />
           )}

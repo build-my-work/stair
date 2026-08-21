@@ -21,6 +21,29 @@ describe('conversation-summary helpers', () => {
     expect(transcript.length).toBe(12_000)
   })
 
+  it('never truncates a reference data block at message or transcript limits', () => {
+    const referenceContext = [
+      '<stair_reference_data trust="untrusted">',
+      JSON.stringify([{ relativePath: 'docs/guide.md', quote: 'q'.repeat(300) }], null, 2),
+      '</stair_reference_data>',
+    ].join('\n')
+
+    const transcript = buildConversationSummaryTranscript([{
+      type: 'user',
+      content: 'visible content '.repeat(40),
+      referenceContext,
+    }], {
+      maxMessageChars: 40,
+      maxTranscriptChars: 80,
+    })
+
+    expect(transcript).toContain('visible content')
+    expect(transcript).toContain('...[truncated]')
+    expect(transcript).toContain(referenceContext)
+    expect(transcript.match(/<stair_reference_data trust="untrusted">/g)).toHaveLength(1)
+    expect(transcript.match(/<\/stair_reference_data>/g)).toHaveLength(1)
+  })
+
   it('builds the same reusable summary prompt used by branch fallback', () => {
     const prompt = buildConversationSummaryPrompt([
       { type: 'user', content: 'Need to ship the mobile fix.' },

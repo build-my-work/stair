@@ -1,4 +1,5 @@
 import { atom } from 'jotai'
+import type { ProjectFileOpenIntent } from '@craft-agent/shared/project-files'
 
 export interface SessionWorkbenchPanel {
   id: string
@@ -13,6 +14,12 @@ export interface ProjectFileWorkbenchPanel {
   projectId: string
   relativePath: string
   presentation: 'preview' | 'explicit'
+  /** Panel-local target used by Add Chat/Add Note; never drives presentation. */
+  chatTargetSessionId: string | null
+  /** Latest semantic reveal intent for this Project File reader. */
+  openIntent?: ProjectFileOpenIntent
+  /** Increments for every explicit reveal, including repeated clicks of one locator. */
+  openIntentRevision: number
 }
 
 export type WorkbenchPanel = SessionWorkbenchPanel | ProjectFileWorkbenchPanel

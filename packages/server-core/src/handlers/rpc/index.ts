@@ -22,6 +22,7 @@ import { registerSettingsHandlers } from './settings'
 import { registerProjectsHandlers } from './projects'
 import { registerPagesHandlers } from './pages'
 import { registerProjectFileHandlers } from './project-files'
+import { registerProjectNoteHandlers } from './project-notes'
 import { registerReaderStateHandlers } from './reader-state'
 import { registerSkillsHandlers } from './skills'
 import { registerSourcesHandlers } from './sources'
@@ -55,6 +56,7 @@ export function registerCoreRpcHandlers(
   registerPrWatchHandlers(server, deps)
   registerCodingReposHandlers(server, deps)
   registerProjectFileHandlers(server, deps)
+  registerProjectNoteHandlers(server, deps)
   registerReaderStateHandlers(server, deps)
   registerSkillsHandlers(server, deps)
   registerSourcesHandlers(server, deps)

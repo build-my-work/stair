@@ -1,3 +1,5 @@
+import type { Reference } from './reference.ts';
+
 /**
  * Message types for conversations
  */
@@ -279,14 +281,20 @@ export interface Message {
   badges?: ContentBadge[];
   /** Annotation payloads for this message */
   annotations?: AnnotationV1[];
+  /** Structured source references attached to this user turn. */
+  references?: Reference[];
   isError?: boolean;
   isStreaming?: boolean;
   // Pending: streaming text where we don't yet know if it's intermediate
   // Set to true when text_delta creates message, false when text_complete arrives
   // Also used for optimistic user messages before backend confirmation
   isPending?: boolean;
+  // Canonical server id for an optimistic renderer message whose stable UI id is retained.
+  serverMessageId?: string;
   // Queued: user message that is waiting to be processed (sent during ongoing response)
   isQueued?: boolean;
+  // Pending restore: queued input is retained until the renderer persists its draft and acks.
+  queuedRestoreId?: string;
   // Intermediate text (commentary between tool calls, not final response)
   isIntermediate?: boolean;
   // Hidden: a system-generated message that must reach the model (it drives a
@@ -373,6 +381,8 @@ export interface StoredMessage {
   badges?: ContentBadge[];
   /** Annotations persisted at message level */
   annotations?: AnnotationV1[];
+  /** Structured source references persisted with the user message. */
+  references?: Reference[];
   // Turn grouping - critical for TurnCard rendering after reload
   isIntermediate?: boolean;
   turnId?: string;
@@ -418,6 +428,8 @@ export interface StoredMessage {
   authWorkspace?: string;
   // Queued: user message that is waiting to be processed (persisted for recovery)
   isQueued?: boolean;
+  // Pending restore: prevents a stopped queued message from replaying after restart.
+  queuedRestoreId?: string;
 }
 
 /**

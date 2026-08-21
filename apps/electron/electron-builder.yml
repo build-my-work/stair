@@ -115,6 +115,15 @@ mac:
     # ripgrep (used by packages/server-core/src/services/search.ts).
     - from: node_modules/@vscode/ripgrep
       to: app/node_modules/@vscode/ripgrep
+    - from: ../../node_modules/koffi
+      to: app/node_modules/koffi
+      filter:
+        - package.json
+        - index.js
+        - indirect.js
+        - lib/**/*
+        - build/koffi/darwin_arm64/**/*
+        - build/koffi/darwin_x64/**/*
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
     - from: ../../packages/messaging-whatsapp-worker/dist/worker.cjs
       to: messaging-whatsapp-worker/worker.cjs
@@ -176,6 +185,14 @@ win:
       to: app/node_modules/@anthropic-ai/claude-agent-sdk-binary
     - from: node_modules/@vscode/ripgrep
       to: app/node_modules/@vscode/ripgrep
+    - from: ../../node_modules/koffi
+      to: app/node_modules/koffi
+      filter:
+        - package.json
+        - index.js
+        - indirect.js
+        - lib/**/*
+        - build/koffi/win32_x64/**/*
     - from: vendor/bun/bun.exe
       to: vendor/bun/bun.exe
     - from: resources/bin/win32-x64
@@ -207,6 +224,15 @@ linux:
       to: app/node_modules/@anthropic-ai/claude-agent-sdk-binary
     - from: node_modules/@vscode/ripgrep
       to: app/node_modules/@vscode/ripgrep
+    - from: ../../node_modules/koffi
+      to: app/node_modules/koffi
+      filter:
+        - package.json
+        - index.js
+        - indirect.js
+        - lib/**/*
+        - build/koffi/linux_arm64/**/*
+        - build/koffi/linux_x64/**/*
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
     - from: ../../packages/messaging-whatsapp-worker/dist/worker.cjs
       to: messaging-whatsapp-worker/worker.cjs

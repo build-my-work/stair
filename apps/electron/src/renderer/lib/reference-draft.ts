@@ -1,0 +1,165 @@
+import {
+  MAX_REFERENCES_PER_MESSAGE,
+  referenceKey,
+  referencesFitSerializedLimits,
+  type Reference,
+} from '@craft-agent/core'
+import type {
+  DraftAttachmentRef,
+  SessionDraft,
+} from '@craft-agent/shared/config'
+
+function normalizeDraft(draft: SessionDraft): SessionDraft | null {
+  return draft.text.length > 0
+    || (draft.attachments?.length ?? 0) > 0
+    || (draft.references?.length ?? 0) > 0
+    ? draft
+    : null
+}
+
+export function setSessionDraftText(
+  existing: SessionDraft | null | undefined,
+  text: string,
+): SessionDraft | null {
+  return normalizeDraft({
+    text,
+    ...(existing?.attachments?.length ? { attachments: existing.attachments } : {}),
+    ...(existing?.references?.length ? { references: existing.references } : {}),
+  })
+}
+
+export function setSessionDraftAttachments(
+  existing: SessionDraft | null | undefined,
+  attachments: DraftAttachmentRef[],
+): SessionDraft | null {
+  return normalizeDraft({
+    text: existing?.text ?? '',
+    ...(attachments.length ? { attachments } : {}),
+    ...(existing?.references?.length ? { references: existing.references } : {}),
+  })
+}
+
+export function addSessionDraftReference(
+  existing: SessionDraft | null | undefined,
+  targetProjectId: string,
+  reference: Reference,
+): SessionDraft | null {
+  if (reference.projectId !== targetProjectId) return null
+  const references = existing?.references ?? []
+  const key = referenceKey(reference)
+  if (references.some(candidate => referenceKey(candidate) === key)) {
+    return existing ?? { text: '', references: [reference] }
+  }
+  if (references.length >= MAX_REFERENCES_PER_MESSAGE) return null
+
+  const nextReferences = [...references, reference]
+  if (!referencesFitSerializedLimits(nextReferences)) return null
+
+  return {
+    text: existing?.text ?? '',
+    ...(existing?.attachments?.length ? { attachments: existing.attachments } : {}),
+    references: nextReferences,
+  }
+}
+
+export function setSessionDraftReferences(
+  existing: SessionDraft | null | undefined,
+  targetProjectId: string,
+  values: Reference[],
+): SessionDraft | null {
+  const references: Reference[] = []
+  const seen = new Set<string>()
+  for (const reference of values) {
+    if (reference.projectId !== targetProjectId) return null
+    const key = referenceKey(reference)
+    if (!seen.has(key)) {
+      seen.add(key)
+      references.push(reference)
+    }
+  }
+  if (references.length > MAX_REFERENCES_PER_MESSAGE) return null
+  if (!referencesFitSerializedLimits(references)) return null
+
+  return normalizeDraft({
+    text: existing?.text ?? '',
+    ...(existing?.attachments?.length ? { attachments: existing.attachments } : {}),
+    ...(references.length ? { references } : {}),
+  })
+}
+
+export type SessionDraftRestoreResult =
+  | { ok: true; draft: SessionDraft | null }
+  | {
+      ok: false
+      draft: SessionDraft | null
+      reason: 'reference-boundary'
+    }
+
+export function restoreSessionDraftContent(
+  existing: SessionDraft | null | undefined,
+  targetProjectId: string | null | undefined,
+  text: string,
+  references: Reference[],
+): SessionDraftRestoreResult {
+  const restoredText = text
+    ? (existing?.text ? `${existing.text}\n\n${text}` : text)
+    : (existing?.text ?? '')
+  const restoredTextDraft = setSessionDraftText(existing, restoredText)
+  if (references.length === 0) {
+    return { ok: true, draft: restoredTextDraft }
+  }
+  if (!targetProjectId) {
+    return {
+      ok: false,
+      draft: existing ?? null,
+      reason: 'reference-boundary',
+    }
+  }
+
+  const restoredDraft = setSessionDraftReferences(
+    restoredTextDraft,
+    targetProjectId,
+    [...(existing?.references ?? []), ...references],
+  )
+  if (!restoredDraft) {
+    return {
+      ok: false,
+      draft: existing ?? null,
+      reason: 'reference-boundary',
+    }
+  }
+  return { ok: true, draft: restoredDraft }
+}
+
+export function mergeHydratedSessionDrafts(
+  current: ReadonlyMap<string, SessionDraft>,
+  persisted: Record<string, SessionDraft>,
+  mutatedSessionIds: ReadonlySet<string>,
+): { drafts: Map<string, SessionDraft>; hydratedSessionIds: string[] } {
+  const drafts = new Map(current)
+  const hydratedSessionIds: string[] = []
+
+  for (const [sessionId, draft] of Object.entries(persisted)) {
+    if (mutatedSessionIds.has(sessionId) || drafts.has(sessionId)) continue
+    drafts.set(sessionId, draft)
+    hydratedSessionIds.push(sessionId)
+  }
+
+  return { drafts, hydratedSessionIds }
+}
+
+export function removeSessionDraftReference(
+  existing: SessionDraft | null | undefined,
+  reference: Reference,
+): SessionDraft | null {
+  if (!existing?.references?.length) return existing ?? null
+  const key = referenceKey(reference)
+  const references = existing.references.filter(
+    candidate => referenceKey(candidate) !== key,
+  )
+  return normalizeDraft({
+    text: existing.text,
+    ...(existing.attachments?.length ? { attachments: existing.attachments } : {}),
+    ...(references.length ? { references } : {}),
+  })
+}

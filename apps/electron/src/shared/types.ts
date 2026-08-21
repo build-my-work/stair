@@ -20,6 +20,7 @@ import type {
   ContentBadge,
   ToolDisplayMeta,
   AnnotationV1,
+  Reference,
 } from '@craft-agent/core/types';
 
 // Mode types from dedicated subpath export (avoids pulling in SDK)
@@ -255,6 +256,7 @@ export interface ElectronAPI {
   getBackgroundTaskOutput(sessionId: string, taskId: string, kind?: 'agent' | 'shell' | 'workflow'): Promise<BackgroundTaskOutput | null>
   /** Stop one background task (shell, agent or workflow); the stopped status arrives as a task_completed event */
   stopBackgroundTask(sessionId: string, taskId: string): Promise<StopBackgroundTaskResult>
+  acknowledgeQueuedInputRestore(sessionId: string, restoreId: string, messageIds: string[]): Promise<void>
 
   // Tasks (Conductor)
   validateTask(workspaceId: string, yaml: string): Promise<TaskValidationResultDto>
@@ -306,7 +308,13 @@ export interface ElectronAPI {
   importRemoteSessionTransfer(targetWorkspaceId: string, payload: RemoteSessionTransferPayload): Promise<ImportRemoteSessionTransferResult>
 
   // Pending plan execution (for reload recovery)
-  getPendingPlanExecution(sessionId: string): Promise<{ planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean; executionDispatched: boolean } | null>
+  getPendingPlanExecution(sessionId: string): Promise<{
+    planPath: string
+    draftInputSnapshot?: string
+    draftReferencesSnapshot?: Reference[]
+    awaitingCompaction: boolean
+    executionDispatched: boolean
+  } | null>
   // Permission mode reconciliation
   getSessionPermissionModeState(sessionId: string): Promise<PermissionModeState | null>
 
@@ -786,6 +794,8 @@ export interface ElectronAPI {
   applyPdfStateMutation(request: import('@craft-agent/shared/protocol').ApplyPdfStateMutationRequest): Promise<import('@craft-agent/shared/protocol').ApplyPdfStateMutationResponse>
   onProjectFilesFlushRequested(callback: (requestId: string) => void): () => void
   completeProjectFilesFlush(requestId: string, error?: string): Promise<void>
+  configureProjectNoteTarget(request: import('@craft-agent/shared/protocol').ConfigureProjectNoteTargetRequest): Promise<import('@craft-agent/shared/protocol').ConfigureProjectNoteTargetResponse>
+  appendProjectNote(request: import('@craft-agent/shared/protocol').AppendProjectNoteRequest): Promise<import('@craft-agent/shared/protocol').AppendProjectNoteResponse>
 
   // Automations
   getAutomations(workspaceId: string): Promise<unknown>

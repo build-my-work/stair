@@ -36,6 +36,7 @@ import {
   handleRetry,
   handleInfo,
   handleInterrupted,
+  handleQueuedInputRestored,
   handleTitleGenerated,
   handleTitleRegenerating,
   handleAsyncOperation,
@@ -136,6 +137,9 @@ export function processEvent(
 
     case 'interrupted':
       return handleInterrupted(state, event)
+
+    case 'queued_input_restored':
+      return handleQueuedInputRestored(state, event)
 
     case 'title_generated':
       return handleTitleGenerated(state, event)

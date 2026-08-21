@@ -13,6 +13,7 @@ import type {
   ToolDisplayMeta,
   AnnotationV1,
   ContextUsageSnapshot,
+  Reference,
   PermissionRequest as BasePermissionRequest,
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
@@ -93,6 +94,32 @@ export interface SaveTextFileRequest {
 
 export interface SaveTextFileResponse {
   saved: boolean
+}
+
+export interface ConfigureProjectNoteTargetRequest {
+  sessionId: string
+  projectId: string
+  relativePath: string | null
+}
+
+export interface ConfigureProjectNoteTargetResponse {
+  projectId: string
+  relativePath: string | null
+  recentPaths: string[]
+}
+
+export interface AppendProjectNoteRequest {
+  requestId: string
+  sessionId: string
+  projectId: string
+  expectedTargetPath: string
+  selection: Reference
+}
+
+export interface AppendProjectNoteResponse {
+  projectId: string
+  relativePath: string
+  appendedAt: string
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +206,9 @@ export interface Session {
   supportsBranching?: boolean
   /** Immutable workspace-scoped Project id this Session belongs to. */
   projectId: string
+  projectNoteTargetPath?: string
+  projectNoteTargetRootFingerprint?: string
+  projectNoteRecentTargetPaths?: string[]
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */
@@ -507,7 +537,8 @@ export type SessionEvent =
   | { type: 'error'; sessionId: string; error: string; timestamp?: number }
   | { type: 'typed_error'; sessionId: string; error: TypedError; timestamp?: number }
   | { type: 'complete'; sessionId: string; tokenUsage?: Session['tokenUsage']; hasUnread?: boolean; backgroundTasksAlive?: boolean }
-  | { type: 'interrupted'; sessionId: string; message?: Message; queuedMessages?: string[] }
+  | { type: 'interrupted'; sessionId: string; message?: Message; queuedMessages?: string[]; queuedReferences?: Reference[]; queuedRestoreId?: string; queuedMessageIds?: string[] }
+  | { type: 'queued_input_restored'; sessionId: string; queuedRestoreId: string; messageIds: string[] }
   | { type: 'status'; sessionId: string; message: string; statusType?: 'compacting' }
   | { type: 'info'; sessionId: string; message: string; statusType?: 'compaction_complete'; level?: 'info' | 'warning' | 'error' | 'success'; timestamp?: number }
   | { type: 'title_generated'; sessionId: string; title: string }
@@ -537,7 +568,14 @@ export type SessionEvent =
   | { type: 'name_changed'; sessionId: string; name?: string }
   | { type: 'session_model_changed'; sessionId: string; model: string | null }
   | { type: 'session_status_changed'; sessionId: string; sessionStatus: SessionStatus }
-  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug'>> }
+  | {
+      type: 'session_metadata_changed'
+      sessionId: string
+      changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectNoteRecentTargetPaths'>> & {
+        projectNoteTargetPath?: string | null
+        projectNoteTargetRootFingerprint?: string | null
+      }
+    }
   | { type: 'session_deleted'; sessionId: string }
   | { type: 'session_created'; sessionId: string; projectId: string }
   | { type: 'session_shared'; sessionId: string; sharedUrl: string }
@@ -553,6 +591,8 @@ export interface SendMessageOptions {
   skillSlugs?: string[]
   badges?: ContentBadge[]
   optimisticMessageId?: string
+  /** Structured source references attached independently from message text. */
+  references?: import('@craft-agent/core').Reference[]
   /**
    * When true, the message drives a turn (reaches the model) but is marked
    * `hidden` on the persisted `Message` so it never renders as a transcript
@@ -598,7 +638,12 @@ export type SessionCommand =
   | { type: 'revokeShare' }
   | { type: 'refreshTitle' }
   | { type: 'setConnection'; connectionSlug: string }
-  | { type: 'setPendingPlanExecution'; planPath: string; draftInputSnapshot?: string }
+  | {
+      type: 'setPendingPlanExecution'
+      planPath: string
+      draftInputSnapshot?: string
+      draftReferencesSnapshot?: Reference[]
+    }
   | { type: 'markCompactionComplete' }
   | { type: 'markPendingPlanExecutionDispatched' }
   | { type: 'clearPendingPlanExecution' }

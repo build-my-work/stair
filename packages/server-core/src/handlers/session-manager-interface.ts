@@ -6,7 +6,7 @@
  * satisfy it at runtime.
  */
 
-import type { Workspace, WorkspaceInfo, ActiveSessionInfo } from '@craft-agent/core/types'
+import type { Workspace, WorkspaceInfo, ActiveSessionInfo, Reference } from '@craft-agent/core/types'
 import type { StoredAttachment, AnnotationV1 } from '@craft-agent/core/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/mode-types'
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
@@ -105,6 +105,18 @@ export interface ISessionManager {
   updateWorkingDirectory(sessionId: string, path: string): void
   setSessionSources(sessionId: string, sourceSlugs: string[]): Promise<void>
   setSessionLabels(sessionId: string, labels: string[]): void
+  setSessionProjectNoteTarget(
+    sessionId: string,
+    projectId: string,
+    relativePath: string | null,
+    rootFingerprint: string | null,
+  ): Promise<{ relativePath: string | null; recentPaths: string[] } | null>
+  clearSessionProjectNoteTargetIfMatches(
+    sessionId: string,
+    projectId: string,
+    relativePath: string,
+    rootFingerprint: string,
+  ): Promise<void>
   /** Apply the reserved Task labeling (mint / inherit the per-task item label under the Task
    *  root). Returns the resolved ITEM label id, or undefined if the session is unknown.
    *  See SessionManager.applyTaskLabel. */
@@ -147,6 +159,11 @@ export interface ISessionManager {
   getBackgroundTaskOutput(sessionId: string, taskId: string, kind?: 'agent' | 'shell' | 'workflow'): Promise<BackgroundTaskOutput | null>
   /** Stop one background task (shell, agent or workflow) of the session through its live agent. */
   stopBackgroundTask(sessionId: string, taskId: string): Promise<StopBackgroundTaskResult>
+  acknowledgeQueuedInputRestore(
+    sessionId: string,
+    restoreId: string,
+    messageIds: string[],
+  ): Promise<void>
 
   // --- Tasks Conductor seams (in-process; not renderer events, not agent-facing) ---
   /**
@@ -186,10 +203,21 @@ export interface ISessionManager {
   // Plans
   // ---------------------------------------------------------------------------
 
-  setPendingPlanExecution(sessionId: string, planPath: string, draftInputSnapshot?: string): Promise<void>
+  setPendingPlanExecution(
+    sessionId: string,
+    planPath: string,
+    draftInputSnapshot?: string,
+    draftReferencesSnapshot?: Reference[],
+  ): Promise<void>
   markPendingPlanExecutionDispatched(sessionId: string): Promise<boolean>
   clearPendingPlanExecution(sessionId: string): Promise<void>
-  getPendingPlanExecution(sessionId: string): { planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean; executionDispatched: boolean } | null
+  getPendingPlanExecution(sessionId: string): {
+    planPath: string
+    draftInputSnapshot?: string
+    draftReferencesSnapshot?: Reference[]
+    awaitingCompaction: boolean
+    executionDispatched: boolean
+  } | null
   markCompactionComplete(sessionId: string): Promise<void>
 
   /**

@@ -38,6 +38,8 @@ export type { ToolCheckResult } from '../mode-manager.ts';
 export interface RecoveryMessage {
   type: 'user' | 'assistant';
   content: string;
+  /** Opaque model context that must remain intact when visible content is truncated. */
+  referenceContext?: string;
 }
 
 /**

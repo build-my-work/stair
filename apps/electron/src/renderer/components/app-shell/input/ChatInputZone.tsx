@@ -118,6 +118,7 @@ export function ChatInputZone({
   const handleClearDraft = React.useCallback(() => {
     inputProps.onInputChange?.('')
     inputProps.onAttachmentsChange?.([])
+    inputProps.onReferencesChange?.([])
   }, [inputProps])
 
   const handleLabelAdd = React.useCallback((labelId: string) => {

@@ -21,6 +21,7 @@ import {
   formatVolatileGitDeveloperContext,
 } from '../../prompts/developer-context.ts';
 import { getSessionPlansPath, getSessionDataPath, getSessionPath } from '../../sessions/storage.ts';
+import { formatRecoveryMessageContent } from '../recovery-message.ts';
 import type {
   PromptBuilderConfig,
   ContextBlockOptions,
@@ -254,10 +255,7 @@ export class PromptBuilder {
     // Format messages as a conversation block
     const formattedMessages = messages.map((m) => {
       const role = m.type === 'user' ? 'User' : 'Assistant';
-      // Truncate very long messages to avoid bloating context
-      const content = m.content.length > 1000
-        ? m.content.slice(0, 1000) + '...[truncated]'
-        : m.content;
+      const content = formatRecoveryMessageContent(m, 1000);
       return `[${role}]: ${content}`;
     }).join('\n\n');
 

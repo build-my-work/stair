@@ -74,6 +74,20 @@ describe('Project Files RPC', () => {
     }])
   })
 
+  it('在结果上限前按扩展名过滤，避免 Note Picker 被无效文件挤满', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(join(root, 'notes'), { recursive: true })
+    writeFileSync(join(root, 'notes', 'target-note.md'), 'target')
+    for (let index = 0; index < 60; index += 1) {
+      writeFileSync(join(root, `noise-note-${index}.bin`), 'noise')
+    }
+
+    expect(await searchProjectFilesWithinRoot(root, 'note', ['md'])).toEqual([{
+      name: 'target-note.md',
+      relativePath: 'notes/target-note.md',
+    }])
+  })
+
   it('在 Project 根目录或普通子目录创建空文件和目录', async () => {
     const root = join(sandbox, 'project')
     mkdirSync(join(root, 'docs'), { recursive: true })

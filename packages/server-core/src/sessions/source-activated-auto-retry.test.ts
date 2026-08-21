@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import type { Reference } from '@craft-agent/core'
 import { SessionManager, createManagedSession, claimAutoRetryPending } from './SessionManager.ts'
+import { formatReferencesForModel } from './message-references.ts'
 
 // Regression test for craft-agents-oss#804.
 //
@@ -126,6 +128,110 @@ describe('source_activated auto-retry', () => {
     await new Promise(r => setTimeout(r, 150))
 
     expect(calls).toEqual(['list my repos\n\n[github activated]'])
+  })
+
+  it('re-sends referenced input as visible text plus persisted structured references', async () => {
+    const source = buildSession('referenced-source')
+    source.messages.push({
+      id: 'source-message',
+      role: 'assistant',
+      content: 'selected text',
+      timestamp: Date.now(),
+    })
+    const target = buildSession('referenced-retry')
+    const reference: Reference = {
+      version: 1,
+      kind: 'chat-message',
+      projectId: target.projectId,
+      sessionId: source.id,
+      messageId: 'source-message',
+      role: 'assistant',
+      quote: 'selected text',
+      locator: {
+        type: 'text-quote',
+        exact: 'selected text',
+        start: 0,
+        end: 13,
+      },
+    }
+    target.messages.push({
+      id: 'original-user-message',
+      role: 'user',
+      content: 'explain this',
+      timestamp: Date.now(),
+      references: [reference],
+    })
+    target.lastSentMessage = 'explain this'
+    target.isProcessing = true
+    const events: Array<{ type: string; originalMessage?: string }> = []
+    sm.setEventSink((_channel, _target, event) => events.push(event as never))
+
+    await fireSourceActivated(
+      target.id,
+      'github',
+      `${formatReferencesForModel('explain this', [reference])}\n\n<system-reminder>internal retry guidance</system-reminder>`,
+    )
+    // The reference was already validated and persisted with the original turn.
+    // Durable replay must not depend on the source Session still being loaded.
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.delete(source.id)
+    await new Promise(r => setTimeout(r, 250))
+
+    const retry = target.messages.at(-1)
+    expect(retry?.content).toBe('explain this\n\n[github activated]')
+    expect(retry?.content).not.toContain('<stair_reference_data')
+    expect(retry?.references).toEqual([reference])
+    expect(target.messageQueue.at(-1)?.options?.references).toEqual([reference])
+    expect(events.find(event => event.type === 'source_activated')?.originalMessage)
+      .toBe('explain this')
+  })
+
+  it('legacy retry that wins the race inherits the pending persisted references', async () => {
+    const source = buildSession('legacy-reference-source')
+    source.messages.push({
+      id: 'source-message',
+      role: 'assistant',
+      content: 'selected text',
+      timestamp: Date.now(),
+    })
+    const target = buildSession('legacy-reference-retry')
+    const reference: Reference = {
+      version: 1,
+      kind: 'chat-message',
+      projectId: target.projectId,
+      sessionId: source.id,
+      messageId: 'source-message',
+      role: 'assistant',
+      quote: 'selected text',
+      locator: {
+        type: 'text-quote',
+        exact: 'selected text',
+        start: 0,
+        end: 13,
+      },
+    }
+    target.messages.push({
+      id: 'original-user-message',
+      role: 'user',
+      content: 'explain this',
+      timestamp: Date.now(),
+      references: [reference],
+    })
+    target.lastSentMessage = 'explain this'
+    target.isProcessing = true
+
+    await fireSourceActivated(
+      target.id,
+      'github',
+      formatReferencesForModel('explain this', [reference]),
+    )
+    await sm.sendMessage(target.id, 'explain this\n\n[github activated]')
+    await new Promise(r => setTimeout(r, 150))
+
+    const retries = target.messages.filter(message => (
+      message.role === 'user' && message.content.endsWith('[github activated]')
+    ))
+    expect(retries).toHaveLength(1)
+    expect(retries[0]?.references).toEqual([reference])
   })
 
   it('chained activations — produces two retries with different suffixes', async () => {

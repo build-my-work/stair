@@ -1,5 +1,8 @@
 import { atom, type Getter, type Setter } from 'jotai'
-import { isCanonicalProjectRelativePath } from '@craft-agent/shared/project-files'
+import {
+  isCanonicalProjectRelativePath,
+  type ProjectFileOpenIntent,
+} from '@craft-agent/shared/project-files'
 import {
   flushOpenProjectFile,
   flushOpenProjectFilesForProject,
@@ -31,6 +34,7 @@ function createProjectFilePanel(
   projectId: string,
   relativePath: string,
   presentation: ProjectFileWorkbenchPanel['presentation'],
+  openIntent?: ProjectFileOpenIntent,
 ): ProjectFileWorkbenchPanel {
   nextPanelId += 1
   return {
@@ -39,6 +43,9 @@ function createProjectFilePanel(
     projectId,
     relativePath,
     presentation,
+    chatTargetSessionId: null,
+    openIntentRevision: openIntent ? 1 : 0,
+    ...(openIntent ? { openIntent } : {}),
   }
 }
 
@@ -240,6 +247,58 @@ export const openSessionInNewPanelAtom = atom(
   },
 )
 
+export const openSessionFromProjectFileAtom = atom(
+  null,
+  (get, set, input: {
+    sessionId: string
+    sessionProjectId: string
+    source: {
+      panelId: string
+      projectId: string
+      relativePath: string
+    }
+  }): boolean => {
+    if (
+      !validId(input.sessionId)
+      || !validId(input.sessionProjectId)
+      || !validId(input.source.panelId)
+      || !validId(input.source.projectId)
+      || !isCanonicalProjectRelativePath(input.source.relativePath)
+      || input.sessionProjectId !== input.source.projectId
+    ) return false
+
+    const current = get(workbenchAtom)
+    const layout = activeLayout(current, input.source.projectId)
+    if (!layout) return false
+    if (getWorkbenchPanels(layout).some(panel => (
+      panel.kind === 'session' && panel.sessionId === input.sessionId
+    ))) return false
+
+    const sourceIndex = layout.auxiliary.findIndex(panel => (
+      panel.id === input.source.panelId
+      && panel.kind === 'project-file'
+      && panel.projectId === input.source.projectId
+      && panel.relativePath === input.source.relativePath
+    ))
+    if (sourceIndex < 0) return false
+
+    const source = layout.auxiliary[sourceIndex] as ProjectFileWorkbenchPanel
+    const panel = createSessionPanel(input.sessionId, input.sessionProjectId)
+    const auxiliary = [
+      ...layout.auxiliary.slice(0, sourceIndex),
+      { ...source, chatTargetSessionId: input.sessionId },
+      panel,
+      ...layout.auxiliary.slice(sourceIndex + 1),
+    ]
+    set(workbenchAtom, withActiveLayout(current, input.source.projectId, {
+      ...layout,
+      auxiliary,
+      focusedPanelId: panel.id,
+    }))
+    return true
+  },
+)
+
 export const focusWorkbenchPanelAtom = atom(
   null,
   (get, set, input: { projectId: string; panelId: string }): boolean => {
@@ -266,7 +325,11 @@ function auxiliaryInsertionIndex(layout: ProjectWorkbench): number {
 
 export const openProjectFilePreviewAtom = atom(
   null,
-  async (get, set, input: { projectId: string; relativePath: string }): Promise<boolean> => {
+  async (get, set, input: {
+    projectId: string
+    relativePath: string
+    openIntent?: ProjectFileOpenIntent
+  }): Promise<boolean> => {
     if (!validId(input.projectId) || !isCanonicalProjectRelativePath(input.relativePath)) {
       return false
     }
@@ -274,14 +337,23 @@ export const openProjectFilePreviewAtom = atom(
     const layout = activeLayout(current, input.projectId)
     if (!layout) return false
 
-    const explicit = layout.auxiliary.find(panel => (
+    const explicit = layout.auxiliary.find((panel): panel is ProjectFileWorkbenchPanel => (
       panel.kind === 'project-file'
       && panel.presentation === 'explicit'
       && panel.relativePath === input.relativePath
     ))
     if (explicit) {
+      const nextExplicit = {
+        ...explicit,
+        openIntent: input.openIntent,
+        openIntentRevision: (explicit.openIntentRevision ?? 0) + Number(Boolean(input.openIntent)),
+      }
+      const auxiliary = layout.auxiliary.map(panel => (
+        panel.id === explicit.id ? nextExplicit : panel
+      ))
       set(workbenchAtom, withActiveLayout(current, input.projectId, {
         ...layout,
+        auxiliary,
         focusedPanelId: explicit.id,
       }))
       set(workbenchPanelRevealRevisionAtom, get(workbenchPanelRevealRevisionAtom) + 1)
@@ -296,8 +368,17 @@ export const openProjectFilePreviewAtom = atom(
       preview?.kind === 'project-file'
       && preview.relativePath === input.relativePath
     ) {
+      const nextPreview = {
+        ...preview,
+        openIntent: input.openIntent,
+        openIntentRevision: (preview.openIntentRevision ?? 0) + Number(Boolean(input.openIntent)),
+      }
+      const auxiliary = layout.auxiliary.map(panel => (
+        panel.id === preview.id ? nextPreview : panel
+      ))
       set(workbenchAtom, withActiveLayout(current, input.projectId, {
         ...layout,
+        auxiliary,
         focusedPanelId: preview.id,
       }))
       set(workbenchPanelRevealRevisionAtom, get(workbenchPanelRevealRevisionAtom) + 1)
@@ -316,6 +397,9 @@ export const openProjectFilePreviewAtom = atom(
         ...preview,
         relativePath: input.relativePath,
         presentation: 'preview',
+        chatTargetSessionId: null,
+        openIntent: input.openIntent,
+        openIntentRevision: input.openIntent ? (preview.openIntentRevision ?? 0) + 1 : 0,
       }
       const auxiliary = [...layout.auxiliary]
       auxiliary[previewIndex] = replacement
@@ -326,7 +410,12 @@ export const openProjectFilePreviewAtom = atom(
         focusedPanelId: replacement.id,
       }))
     } else {
-      const panel = createProjectFilePanel(input.projectId, input.relativePath, 'preview')
+      const panel = createProjectFilePanel(
+        input.projectId,
+        input.relativePath,
+        'preview',
+        input.openIntent,
+      )
       const insertAt = auxiliaryInsertionIndex(layout)
       const auxiliary = [
         ...layout.auxiliary.slice(0, insertAt),
@@ -341,6 +430,43 @@ export const openProjectFilePreviewAtom = atom(
       }))
     }
     set(workbenchPanelRevealRevisionAtom, get(workbenchPanelRevealRevisionAtom) + 1)
+    return true
+  },
+)
+
+export const setProjectFileChatTargetAtom = atom(
+  null,
+  (get, set, input: {
+    panelId: string
+    projectId: string
+    sessionId: string | null
+    sessionProjectId: string
+  }): boolean => {
+    if (
+      !validId(input.panelId)
+      || !validId(input.projectId)
+      || !validId(input.sessionProjectId)
+      || (input.sessionId !== null && !validId(input.sessionId))
+      || input.sessionProjectId !== input.projectId
+    ) return false
+
+    const current = get(workbenchAtom)
+    const layout = activeLayout(current, input.projectId)
+    if (!layout) return false
+    const targetIndex = layout.auxiliary.findIndex(panel => (
+      panel.id === input.panelId && panel.kind === 'project-file'
+    ))
+    if (targetIndex < 0) return false
+
+    const auxiliary = [...layout.auxiliary]
+    auxiliary[targetIndex] = {
+      ...auxiliary[targetIndex] as ProjectFileWorkbenchPanel,
+      chatTargetSessionId: input.sessionId,
+    }
+    set(workbenchAtom, withActiveLayout(current, input.projectId, {
+      ...layout,
+      auxiliary,
+    }))
     return true
   },
 )

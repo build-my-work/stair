@@ -4,6 +4,7 @@ import { useTheme } from '@/hooks/useTheme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
 import type { Session, Workspace, WorkspaceSettings, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
 import type { SessionDraft, DraftAttachmentRef } from '@craft-agent/shared/config'
+import type { Reference } from '@craft-agent/core'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
 import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
 import { generateMessageId } from '../shared/types'
@@ -32,6 +33,15 @@ import {
 } from '@/contexts/NavigationContext'
 import { navigate, routes } from './lib/navigate'
 import { attachmentFromContentRef, toDraftRef } from './lib/drafts'
+import {
+  addSessionDraftReference,
+  mergeHydratedSessionDrafts,
+  restoreSessionDraftContent,
+  setSessionDraftAttachments,
+  setSessionDraftReferences,
+  setSessionDraftText,
+} from './lib/reference-draft'
+import { rollbackRejectedOptimisticUserMessage } from './lib/send-message-recovery'
 import { stripMarkdown } from './utils/text'
 import { coerceInputText } from './lib/input-text'
 import { getSessionsToRefreshAfterStaleReconnect } from './lib/reconnect-recovery'
@@ -413,6 +423,13 @@ export default function App() {
   // hydrated via readFileAttachment() on session switch.
   const sessionDraftsRef = useRef<Map<string, SessionDraft>>(new Map())
   const draftSaveTimeoutRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  // Keep deletion tombstones until the Workspace changes so stale async hydration
+  // cannot resurrect a draft that has already been edited or cleared in memory.
+  const mutatedSessionDraftsRef = useRef<Set<string>>(new Set())
+  const draftHydrationGenerationRef = useRef(0)
+  const markSessionDraftMutation = useCallback((sessionId: string) => {
+    mutatedSessionDraftsRef.current.add(sessionId)
+  }, [])
   const hydratingCreatedSessionsRef = useRef<Set<string>>(new Set())
   const createdSessionsWithEarlyEventsRef = useRef<Set<string>>(new Set())
   // Unified session options for all session-scoped settings
@@ -813,6 +830,8 @@ export default function App() {
   // Load workspaces, sessions, model, notifications setting, and drafts when app is ready
   useEffect(() => {
     if (appState !== 'ready') return
+    let cancelled = false
+    const hydrationGeneration = draftHydrationGenerationRef.current
 
     window.electronAPI.getWorkspaces().then(setWorkspaces)
     window.electronAPI.getNotificationsEnabled().then(setNotificationsEnabled).catch(() => {})
@@ -839,11 +858,28 @@ export default function App() {
     // Load persisted input drafts into ref (no re-render needed).
     // Attachment files are not read here — hydration happens lazily when the session
     // is opened so app startup isn't delayed by reading potentially large files.
-    window.electronAPI.getAllDrafts().then((drafts) => {
-      if (Object.keys(drafts).length > 0) {
-        sessionDraftsRef.current = new Map(Object.entries(drafts))
+    void window.electronAPI.getAllDrafts().then((persistedDrafts) => {
+      if (cancelled || draftHydrationGenerationRef.current !== hydrationGeneration) return
+      const { drafts, hydratedSessionIds } = mergeHydratedSessionDrafts(
+        sessionDraftsRef.current,
+        persistedDrafts,
+        mutatedSessionDraftsRef.current,
+      )
+      sessionDraftsRef.current = drafts
+      for (const sessionId of hydratedSessionIds) {
+        window.dispatchEvent(new CustomEvent('stair:draft-references-changed', {
+          detail: {
+            sessionId,
+            references: drafts.get(sessionId)?.references ?? [],
+          },
+        }))
       }
+    }).catch(error => {
+      rendererLog.warn('[drafts] Failed to hydrate drafts', { error })
     })
+    return () => {
+      cancelled = true
+    }
   }, [appState, loadSessionsFromServer, resolveDefaultConnectionSlug])
 
   // Subscribe to LLM connections change events (live updates when models are fetched)
@@ -941,19 +977,58 @@ export default function App() {
             break
           }
           case 'restore_input': {
-            // Queued messages were removed from chat on abort — restore their text to the input field.
-            // Append to existing draft (user may have started typing) rather than overwrite.
+            // Append queued input to the existing draft (the user may already
+            // have started typing). The server retains queued bubbles until
+            // this draft is durably persisted and explicitly acknowledged.
             const existingDraft = sessionDraftsRef.current.get(sessionId)
-            const existingText = coerceInputText(existingDraft?.text)
-            const restoredText = coerceInputText(effect.text)
-            const restored = existingText
-              ? `${existingText}\n\n${restoredText}`
-              : restoredText
-            handleInputChange(sessionId, restored)
-            // handleInputChange updates the ref but ChatPage has local state.
-            // Dispatch a custom event so ChatPage re-reads the draft.
+            const targetProjectId = store.get(sessionMetaMapAtom).get(sessionId)?.projectId
+              ?? store.get(sessionAtomFamily(sessionId))?.projectId
+            const restoreResult = restoreSessionDraftContent(
+              existingDraft,
+              targetProjectId,
+              coerceInputText(effect.text),
+              effect.references ?? [],
+            )
+            const restoredDraft = restoreResult.draft
+            if (restoreResult.ok && restoredDraft) {
+              markSessionDraftMutation(sessionId)
+              sessionDraftsRef.current.set(sessionId, restoredDraft)
+              void (async () => {
+                try {
+                  await window.electronAPI.setDraft(sessionId, restoredDraft)
+                } catch (error) {
+                  rendererLog.warn('[drafts] Failed to persist restored input', { sessionId, error })
+                  return
+                }
+
+                if (effect.queuedRestoreId && effect.messageIds?.length) {
+                  try {
+                    await window.electronAPI.acknowledgeQueuedInputRestore(
+                      sessionId,
+                      effect.queuedRestoreId,
+                      effect.messageIds,
+                    )
+                  } catch (error) {
+                    rendererLog.warn('[drafts] Failed to acknowledge restored input', {
+                      sessionId,
+                      queuedRestoreId: effect.queuedRestoreId,
+                      error,
+                    })
+                  }
+                }
+              })()
+            } else if (!restoreResult.ok) {
+              rendererLog.warn('[drafts] Queued input restoration exceeded reference boundaries', {
+                sessionId,
+              })
+              toast.error(t('reference.couldNotAdd'))
+            }
+            // ChatPage has local state, so notify it to re-read this draft.
             window.dispatchEvent(new CustomEvent('craft:restore-input', {
-              detail: { sessionId, text: restored },
+              detail: { sessionId, text: restoredDraft?.text ?? '' },
+            }))
+            window.dispatchEvent(new CustomEvent('stair:draft-references-changed', {
+              detail: { sessionId, references: restoredDraft?.references ?? [] },
             }))
             break
           }
@@ -1185,6 +1260,8 @@ export default function App() {
     syncSessionOptionsFromSession,
     applyPermissionModeState,
     reconcilePermissionModeState,
+    markSessionDraftMutation,
+    t,
   ])
 
   // Transport reconnect recovery — refresh session metadata plus active/processing
@@ -1294,12 +1371,13 @@ export default function App() {
       clearTimeout(pendingDraftSave)
       draftSaveTimeoutRef.current.delete(sessionId)
     }
+    markSessionDraftMutation(sessionId)
     sessionDraftsRef.current.delete(sessionId)
     // Remove from per-session atom and metadata map (no sessionsAtom)
     removeSessionFromWorkbench(sessionId)
     removeSession(sessionId)
     return true
-  }, [store, removeSession, removeSessionFromWorkbench])
+  }, [store, removeSession, removeSessionFromWorkbench, markSessionDraftMutation])
 
   const handleAutoDeleteEmptySession = useCallback(async (sessionId: string) => {
     try {
@@ -1393,7 +1471,8 @@ export default function App() {
     window.electronAPI.sessionCommand(sessionId, { type: 'rename', name })
   }, [updateSessionById])
 
-  const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[]) => {
+  const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[], references?: Reference[]) => {
+    let optimisticMessageId: string | null = null
     try {
       // Capture pre-send processing state so we can flag mid-stream sends
       // for the queued badge (#616 follow-up — covers Pi steer path which
@@ -1528,9 +1607,11 @@ export default function App() {
         timestamp: Date.now(),
         attachments: storedAttachments,
         badges: badges.length > 0 ? badges : undefined,
+        references: references?.length ? references : undefined,
         isPending: true,  // Optimistic - will be confirmed by backend
         isQueued: sendingMidStream,
       }
+      optimisticMessageId = userMessage.id
 
       // Optimistic UI update - add user message and set processing state
       updateSessionById(sessionId, (s) => ({
@@ -1543,24 +1624,64 @@ export default function App() {
       await window.electronAPI.sendMessage(sessionId, message, processedAttachments, storedAttachments, {
         skillSlugs,
         badges: badges.length > 0 ? badges : undefined,
+        references: references?.length ? references : undefined,
         optimisticMessageId: userMessage.id,
       })
     } catch (error) {
       console.error('Failed to send message:', error)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      const referenceValidationRejected = Boolean(
+        references?.length && errorMessage.includes('MESSAGE_REFERENCE_'),
+      )
+      if (referenceValidationRejected) {
+        const existingDraft = sessionDraftsRef.current.get(sessionId)
+        const targetProjectId = store.get(sessionMetaMapAtom).get(sessionId)?.projectId
+          ?? store.get(sessionAtomFamily(sessionId))?.projectId
+        const restoreResult = restoreSessionDraftContent(
+          existingDraft,
+          targetProjectId,
+          message,
+          references ?? [],
+        )
+        const restoredDraft = restoreResult.draft
+        if (restoreResult.ok && restoredDraft) {
+          markSessionDraftMutation(sessionId)
+          sessionDraftsRef.current.set(sessionId, restoredDraft)
+          void window.electronAPI.setDraft(sessionId, restoredDraft).catch(draftError => {
+            rendererLog.warn('[drafts] Failed to persist rejected reference input', {
+              sessionId,
+              error: draftError,
+            })
+          })
+        } else if (!restoreResult.ok) {
+          rendererLog.warn('[drafts] Rejected input restoration exceeded reference boundaries', {
+            sessionId,
+          })
+          toast.error(t('reference.couldNotAdd'))
+        }
+        window.dispatchEvent(new CustomEvent('craft:restore-input', {
+          detail: { sessionId, text: restoredDraft?.text ?? '' },
+        }))
+        window.dispatchEvent(new CustomEvent('stair:draft-references-changed', {
+          detail: { sessionId, references: restoredDraft?.references ?? [] },
+        }))
+      }
       updateSessionById(sessionId, (s) => ({
         isProcessing: false,
         messages: [
-          ...s.messages,
+          ...(referenceValidationRejected
+            ? rollbackRejectedOptimisticUserMessage(s.messages, optimisticMessageId)
+            : s.messages),
           {
             id: generateMessageId(),
             role: 'error' as const,
-            content: `Failed to send message: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            content: `Failed to send message: ${errorMessage}`,
             timestamp: Date.now()
           }
         ]
       }))
     }
-  }, [sessionOptions, updateSessionById, skills, sources, windowWorkspaceId])
+  }, [sessionOptions, updateSessionById, skills, sources, windowWorkspaceId, markSessionDraftMutation, store, t])
 
   /**
    * Unified handler for all session option changes.
@@ -1624,6 +1745,11 @@ export default function App() {
     return Array.isArray(attachments) ? attachments : []
   }, [])
 
+  const getDraftReferences = useCallback((sessionId: string): Reference[] => {
+    const references = sessionDraftsRef.current.get(sessionId)?.references
+    return Array.isArray(references) ? references : []
+  }, [])
+
   // Hydrate persisted attachment refs into full FileAttachment objects.
   //  - Track C (ref.content set): reconstruct directly from the inlined bytes.
   //  - Track P (path-only): re-read from disk via the readUserAttachment RPC.
@@ -1670,24 +1796,20 @@ export default function App() {
     draftSaveTimeoutRef.current.set(sessionId, timeout)
   }, [])
 
+  const updateSessionDraft = useCallback((sessionId: string, draft: SessionDraft | null) => {
+    markSessionDraftMutation(sessionId)
+    if (draft) sessionDraftsRef.current.set(sessionId, draft)
+    else sessionDraftsRef.current.delete(sessionId)
+    schedulePersistDraft(sessionId)
+  }, [markSessionDraftMutation, schedulePersistDraft])
+
   const handleInputChange = useCallback((sessionId: string, value: string) => {
     const text = coerceInputText(value)
-    const existing = sessionDraftsRef.current.get(sessionId)
-    const existingAttachments = Array.isArray(existing?.attachments) ? existing.attachments : []
-    const nextDraft: SessionDraft = {
-      text,
-      ...(existingAttachments.length > 0
-        ? { attachments: existingAttachments }
-        : {}),
-    }
-    const isEmpty = !nextDraft.text && (!nextDraft.attachments || nextDraft.attachments.length === 0)
-    if (isEmpty) {
-      sessionDraftsRef.current.delete(sessionId)
-    } else {
-      sessionDraftsRef.current.set(sessionId, nextDraft)
-    }
-    schedulePersistDraft(sessionId)
-  }, [schedulePersistDraft])
+    updateSessionDraft(
+      sessionId,
+      setSessionDraftText(sessionDraftsRef.current.get(sessionId), text),
+    )
+  }, [updateSessionDraft])
 
   const handleAttachmentsChange = useCallback((sessionId: string, attachments: FileAttachment[]) => {
     const existing = sessionDraftsRef.current.get(sessionId)
@@ -1700,18 +1822,41 @@ export default function App() {
         console.warn('[drafts] attachment exceeds per-draft size cap, not persisted:', a.name, a.size)
       }
     }
-    const nextDraft: SessionDraft = {
-      text: coerceInputText(existing?.text),
-      ...(refs.length > 0 ? { attachments: refs } : {}),
-    }
-    const isEmpty = !nextDraft.text && (!nextDraft.attachments || nextDraft.attachments.length === 0)
-    if (isEmpty) {
-      sessionDraftsRef.current.delete(sessionId)
-    } else {
-      sessionDraftsRef.current.set(sessionId, nextDraft)
-    }
-    schedulePersistDraft(sessionId)
-  }, [schedulePersistDraft])
+    updateSessionDraft(sessionId, setSessionDraftAttachments(existing, refs))
+  }, [updateSessionDraft])
+
+  const handleReferencesChange = useCallback((sessionId: string, references: Reference[]): boolean => {
+    const session = store.get(sessionMetaMapAtom).get(sessionId)
+    if (!session) return false
+    const next = setSessionDraftReferences(
+      sessionDraftsRef.current.get(sessionId),
+      session.projectId,
+      references,
+    )
+    if (!next && references.length > 0) return false
+    updateSessionDraft(sessionId, next)
+    window.dispatchEvent(new CustomEvent('stair:draft-references-changed', {
+      detail: { sessionId, references: next?.references ?? [] },
+    }))
+    return true
+  }, [store, updateSessionDraft])
+
+  const handleAddDraftReference = useCallback((sessionId: string, reference: Reference): boolean => {
+    const session = store.get(sessionMetaMapAtom).get(sessionId)
+    if (!session) return false
+    const next = addSessionDraftReference(
+      sessionDraftsRef.current.get(sessionId),
+      session.projectId,
+      reference,
+    )
+    if (!next) return false
+    updateSessionDraft(sessionId, next)
+    const references = next.references ?? []
+    window.dispatchEvent(new CustomEvent('stair:draft-references-changed', {
+      detail: { sessionId, references },
+    }))
+    return true
+  }, [store, updateSessionDraft])
 
   // Open new chat - creates session and selects it
   // Used by components via AppShellContext and for programmatic navigation
@@ -1959,7 +2104,9 @@ export default function App() {
 
       // 6. Clear message drafts from previous workspace
       // (prevents memory growth on repeated workspace switches)
+      draftHydrationGenerationRef.current += 1
       sessionDraftsRef.current.clear()
+      mutatedSessionDraftsRef.current.clear()
 
       // 7. Reset sources and skills atoms to empty
       // (prevents stale data flash during workspace switch - AppShell will reload)
@@ -2014,6 +2161,7 @@ export default function App() {
     pendingCredentials,
     getDraft,
     getDraftAttachmentRefs,
+    getDraftReferences,
     hydrateDraftAttachments,
     sessionOptions,
     // Session callbacks
@@ -2046,6 +2194,8 @@ export default function App() {
     onSessionOptionsChange: handleSessionOptionsChange,
     onInputChange: handleInputChange,
     onAttachmentsChange: handleAttachmentsChange,
+    onReferencesChange: handleReferencesChange,
+    onAddDraftReference: handleAddDraftReference,
     // New chat (via deep link navigation)
     openNewChat,
   }), [
@@ -2061,6 +2211,7 @@ export default function App() {
     pendingCredentials,
     getDraft,
     getDraftAttachmentRefs,
+    getDraftReferences,
     hydrateDraftAttachments,
     sessionOptions,
     handleCreateSession,
@@ -2088,6 +2239,8 @@ export default function App() {
     handleSessionOptionsChange,
     handleInputChange,
     handleAttachmentsChange,
+    handleReferencesChange,
+    handleAddDraftReference,
     openNewChat,
   ])
 

@@ -101,6 +101,10 @@ export function ProjectFilePanelSlot({
           projectId={panel.projectId}
           relativePath={panel.relativePath}
           presentation={panel.presentation}
+          panelId={panel.id}
+          chatTargetSessionId={panel.chatTargetSessionId}
+          openIntent={panel.openIntent}
+          openIntentRevision={panel.openIntentRevision}
         />
       </AppShellProvider>
     </div>

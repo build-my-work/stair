@@ -29,6 +29,7 @@ export interface RecallPromptArrowUpState {
   isProcessing: boolean
   input: string
   attachmentCount: number
+  referenceCount: number
   loadingAttachmentCount: number
   followUpItemCount: number
   inlineMenuOpen: boolean
@@ -50,6 +51,7 @@ export function shouldRecallPromptOnArrowUp({
   isProcessing,
   input,
   attachmentCount,
+  referenceCount,
   loadingAttachmentCount,
   followUpItemCount,
   inlineMenuOpen,
@@ -67,6 +69,7 @@ export function shouldRecallPromptOnArrowUp({
     && !disableSend
     && input === ''
     && attachmentCount === 0
+    && referenceCount === 0
     && loadingAttachmentCount === 0
     && followUpItemCount === 0
     && !inlineMenuOpen

@@ -20,6 +20,7 @@ import type {
   PdfProgressV1,
   PdfTextQuoteLocatorV1,
   ProjectFileMetadata,
+  ProjectFileReferenceV1,
   SourceFingerprint,
 } from '@craft-agent/shared/project-files'
 
@@ -37,9 +38,17 @@ import {
   pdfPageRenderWindow,
   pdfPageScrollTop,
 } from './project-file-pdf-layout'
-import { ProjectFileReaderSelectionToolbar } from './ProjectFileReaderSelectionToolbar'
+import {
+  ProjectFileReaderSelectionToolbar,
+  type ProjectFileReferenceAction,
+} from './ProjectFileReaderSelectionToolbar'
+import {
+  shouldDismissReaderSelection,
+  type ReaderSelectionActionResult,
+} from './selection-action-result'
 import {
   buildPdfHighlightsMarkdown,
+  buildPdfProjectFileReference,
   capturePdfSelectionRects,
   comparePdfHighlights,
   createOptimisticPdfHighlight,
@@ -144,6 +153,8 @@ export function ProjectFilePdfReader({
   bytes,
   sourceFingerprint,
   initialLocator,
+  revealRevision = 0,
+  onReferenceAction,
 }: {
   projectId: string
   relativePath: string
@@ -151,6 +162,11 @@ export function ProjectFilePdfReader({
   bytes: Uint8Array
   sourceFingerprint: SourceFingerprint
   initialLocator?: PdfTextQuoteLocatorV1 & { anchor: NonNullable<PdfTextQuoteLocatorV1['anchor']> }
+  revealRevision?: number
+  onReferenceAction?: (
+    action: ProjectFileReferenceAction,
+    reference: ProjectFileReferenceV1,
+  ) => ReaderSelectionActionResult | Promise<ReaderSelectionActionResult>
 }) {
   const { isDark } = useTheme()
   const { t } = useTranslation()
@@ -179,6 +195,7 @@ export function ProjectFilePdfReader({
   const [notice, setNotice] = React.useState('')
   const [error, setError] = React.useState('')
   const [savingHighlight, setSavingHighlight] = React.useState(false)
+  const [handlingReference, setHandlingReference] = React.useState(false)
   const [exporting, setExporting] = React.useState(false)
   const file = React.useMemo(() => ({ data: bytes.slice() }), [bytes])
   const viewerKey = `${projectId}\0${relativePath}\0${sourceFingerprint}`
@@ -314,7 +331,7 @@ export function ProjectFilePdfReader({
       || savedProgress === undefined
     ) return
     const locatorKey = initialLocator ? JSON.stringify(initialLocator) : ''
-    const restoreKey = `${viewerKey}\0${locatorKey}`
+    const restoreKey = `${viewerKey}\0${locatorKey}\0${revealRevision}`
     if (restoreKeyRef.current === restoreKey) return
     let target: { pageNumber: number; offset: number } | null = null
     if (initialLocator) {
@@ -333,7 +350,7 @@ export function ProjectFilePdfReader({
     requestAnimationFrame(() => {
       revealPage(Math.min(numPages, target.pageNumber), target.offset, 'auto')
     })
-  }, [initialLocator, numPages, pageLayout.length, revealPage, savedProgress, viewerKey])
+  }, [initialLocator, numPages, pageLayout.length, revealPage, revealRevision, savedProgress, viewerKey])
 
   React.useEffect(() => () => {
     if (scrollFrameRef.current !== undefined) {
@@ -472,6 +489,29 @@ export function ProjectFilePdfReader({
       setSavingHighlight(false)
     }
   }, [dismissSelection, highlights, selection])
+
+  const handleReferenceAction = React.useCallback(async (
+    action: ProjectFileReferenceAction,
+  ) => {
+    if (!selection || !onReferenceAction) return
+    setHandlingReference(true)
+    try {
+      const reference = buildPdfProjectFileReference({
+        identity: { projectId, relativePath },
+        sourceFingerprint,
+        fileName: metadata.name,
+        selection: selection.snapshot,
+      })
+      const result = await onReferenceAction(action, reference)
+      if (shouldDismissReaderSelection(result)) dismissSelection()
+    } catch (referenceError) {
+      setNotice(referenceError instanceof Error
+        ? referenceError.message
+        : String(referenceError))
+    } finally {
+      setHandlingReference(false)
+    }
+  }, [dismissSelection, metadata.name, onReferenceAction, projectId, relativePath, selection, sourceFingerprint])
 
   const deleteHighlight = React.useCallback(async (highlight: PdfHighlightV1) => {
     const coordinator = coordinatorRef.current
@@ -764,8 +804,20 @@ export function ProjectFilePdfReader({
             <ProjectFileReaderSelectionToolbar
               anchorRect={selection.anchorRect}
               collisionBoundary={viewportRef.current}
-              disabled={savingHighlight}
+              disabled={savingHighlight || handlingReference}
               onCreateHighlight={() => void createHighlight()}
+              onAddChat={onReferenceAction
+                ? () => void handleReferenceAction('add-chat')
+                : undefined}
+              onAddNewChat={onReferenceAction
+                ? () => void handleReferenceAction('new-chat')
+                : undefined}
+              onAddNote={onReferenceAction
+                ? () => void handleReferenceAction('add-note')
+                : undefined}
+              onChooseNoteTarget={onReferenceAction
+                ? () => void handleReferenceAction('choose-note-target')
+                : undefined}
               onDismiss={dismissSelection}
             />
           )}

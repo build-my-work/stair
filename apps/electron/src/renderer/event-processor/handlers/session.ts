@@ -28,6 +28,7 @@ import type {
   RetryEvent,
   InfoEvent,
   InterruptedEvent,
+  QueuedInputRestoredEvent,
   TitleGeneratedEvent,
   TitleRegeneratingEvent,
   AsyncOperationEvent,
@@ -84,16 +85,18 @@ export function handleComplete(
     })
   }
 
-  // Clear isQueued from any user messages once the turn completes. Pi's steer
-  // path never emits a 'processing' status update to clear it (the message is
-  // injected mid-stream and absorbed into the current response), so this is
-  // the natural place to drop the indicator. Claude's queued path has already
-  // cleared via the 'processing' status update before this fires; this is
-  // a safe no-op for that case.
-  const hasQueuedUserBubbles = updatedMessages.some(m => m.role === 'user' && m.isQueued)
+  // Clear isQueued from delivered user messages once the turn completes. Pi's
+  // steer path never emits a 'processing' status update to clear it. Messages
+  // awaiting draft acknowledgement keep their queued state until the server's
+  // queued_input_restored confirmation removes them.
+  const hasQueuedUserBubbles = updatedMessages.some(
+    m => m.role === 'user' && m.isQueued && !m.queuedRestoreId,
+  )
   if (hasQueuedUserBubbles) {
     updatedMessages = updatedMessages.map(m =>
-      m.role === 'user' && m.isQueued ? { ...m, isQueued: false } : m
+      m.role === 'user' && m.isQueued && !m.queuedRestoreId
+        ? { ...m, isQueued: false }
+        : m
     )
   }
 
@@ -327,9 +330,9 @@ export function handleInfo(
  *
  * Two distinct shapes:
  * - **User-initiated stop** (`event.message` present): user clicked the Stop
- *   button. We render the "Response interrupted" notice, drop queued user
- *   bubbles, and restore their text to the input field so the user can edit
- *   and re-send.
+ *   button. We render the "Response interrupted" notice, retain queued user
+ *   bubbles until draft persistence is acknowledged, and restore their text
+ *   to the input field so the user can edit and re-send.
  * - **Silent redirect** (`event.message` absent): the agent aborted internally
  *   so a new message could be processed. The backend's `processNextQueuedMessage`
  *   will auto-replay queued messages — we must NOT remove the queued bubbles
@@ -343,16 +346,21 @@ export function handleInterrupted(
   const { session } = state
   const effects: Effect[] = []
   const isUserInitiated = !!event.message
+  const pendingRestoreMessageIds = event.queuedRestoreId
+    ? new Set(event.queuedMessageIds ?? [])
+    : undefined
 
   // Clear transient streaming state (isPending, isStreaming) and mark running tools as interrupted
   // These fields are not persisted, so this matches the state after a reload
   // Also filter out status messages - they are transient UI state that shouldn't persist after interruption
   const updatedMessages = session.messages
     .filter(m => m.role !== 'status')  // Remove transient status messages
-    // Only drop queued bubbles when the user explicitly stopped — silent
-    // redirects auto-replay them so they must remain visible (#616).
-    .filter(m => !(isUserInitiated && m.isQueued))
     .map(m => {
+      const matchesPendingRestore = pendingRestoreMessageIds?.has(m.id)
+        || !!(m.serverMessageId && pendingRestoreMessageIds?.has(m.serverMessageId))
+      if (matchesPendingRestore && m.role === 'user' && m.isQueued) {
+        return { ...m, queuedRestoreId: event.queuedRestoreId }
+      }
       // Mark running tools as interrupted
       if (m.role === 'tool' && m.toolResult === undefined && m.toolStatus !== 'completed' && m.toolStatus !== 'error') {
         return { ...m, toolStatus: 'error' as const, toolResult: 'Interrupted', isError: true }
@@ -376,6 +384,13 @@ export function handleInterrupted(
     effects.push({
       type: 'restore_input',
       text: event.queuedMessages.join('\n\n'),
+      ...(event.queuedReferences?.length ? { references: event.queuedReferences } : {}),
+      ...(event.queuedRestoreId && event.queuedMessageIds?.length
+        ? {
+            queuedRestoreId: event.queuedRestoreId,
+            messageIds: event.queuedMessageIds,
+          }
+        : {}),
     })
   }
 
@@ -390,6 +405,26 @@ export function handleInterrupted(
       streaming: null,
     },
     effects,
+  }
+}
+
+export function handleQueuedInputRestored(
+  state: SessionState,
+  event: QueuedInputRestoredEvent,
+): ProcessResult {
+  const restoredMessageIds = new Set(event.messageIds)
+  return {
+    state: {
+      ...state,
+      session: {
+        ...state.session,
+        messages: state.session.messages.filter(message => (
+          !restoredMessageIds.has(message.id)
+          && !(message.serverMessageId && restoredMessageIds.has(message.serverMessageId))
+        )),
+      },
+    },
+    effects: [],
   }
 }
 
@@ -598,6 +633,7 @@ export function handleUserMessage(
         return {
           ...m,
           ...(status === 'processing' ? { timestamp: message.timestamp } : {}),
+          ...(message.id !== m.id ? { serverMessageId: message.id } : {}),
           isPending: false,
           isQueued: status === 'queued',
         }
@@ -621,8 +657,8 @@ export function handleUserMessage(
         messages: updatedMessages,
         lastMessageAt: Date.now(),
         lastMessageRole: 'user',  // Clear plan badge when user responds
-        // Set isProcessing when message is accepted/processing (enables multi-window sync)
-        isProcessing: status === 'accepted' || status === 'processing',
+        // A queued follow-up does not stop the response already in flight.
+        isProcessing: status === 'queued' ? session.isProcessing : true,
       },
       streaming,
     },
@@ -745,9 +781,23 @@ export function handleSessionMetadataChanged(
   event: SessionMetadataChangedEvent
 ): ProcessResult {
   const { session, streaming } = state
+  const {
+    projectNoteTargetPath,
+    projectNoteTargetRootFingerprint,
+    ...changes
+  } = event.changes
   return {
     state: {
-      session: { ...session, ...event.changes },
+      session: {
+        ...session,
+        ...changes,
+        ...(Object.hasOwn(event.changes, 'projectNoteTargetPath')
+          ? { projectNoteTargetPath: projectNoteTargetPath ?? undefined }
+          : {}),
+        ...(Object.hasOwn(event.changes, 'projectNoteTargetRootFingerprint')
+          ? { projectNoteTargetRootFingerprint: projectNoteTargetRootFingerprint ?? undefined }
+          : {}),
+      },
       streaming,
     },
     effects: [],

@@ -112,6 +112,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     prWatch,
     codingRepos,
     projectFiles,
+    projectNotes,
     readerState,
     saveTextFile,
   ] = await Promise.all([
@@ -138,6 +139,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/pr-watch'),
     import('@craft-agent/server-core/handlers/rpc/coding-repos'),
     import('@craft-agent/server-core/handlers/rpc/project-files'),
+    import('@craft-agent/server-core/handlers/rpc/project-notes'),
     import('@craft-agent/server-core/handlers/rpc/reader-state'),
     import('@craft-agent/server-core/handlers/rpc/save-text-file'),
   ])
@@ -174,6 +176,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     ...prWatch.HANDLED_CHANNELS,
     ...codingRepos.HANDLED_CHANNELS,
     ...projectFiles.HANDLED_CHANNELS,
+    ...projectNotes.HANDLED_CHANNELS,
     ...readerState.HANDLED_CHANNELS,
     ...saveTextFile.HANDLED_CHANNELS,
     ...browser.HANDLED_CHANNELS,

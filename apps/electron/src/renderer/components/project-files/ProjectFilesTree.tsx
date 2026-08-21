@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -48,7 +49,10 @@ interface ProjectFilesTreeProps {
   project?: LoadedProject
   openFilePaths: ReadonlySet<string>
   onOpenFile: (relativePath: string) => void
-  onOpenFileInPanel: (relativePath: string) => void
+  onOpenFileInPanel?: (relativePath: string) => void
+  fileFilter?: (relativePath: string) => boolean
+  fileFilterError?: string
+  searchExtensions?: readonly string[]
 }
 
 interface InlineCreateState {
@@ -86,6 +90,7 @@ function TreeEntry({
   onSelectDirectory,
   onOpenFile,
   onOpenFileInPanel,
+  fileFilter,
 }: {
   entry: ProjectDirectoryEntry
   depth: number
@@ -97,10 +102,12 @@ function TreeEntry({
   onToggleDirectory: (relativePath: string) => void
   onSelectDirectory: (relativePath: string) => void
   onOpenFile: (relativePath: string) => void
-  onOpenFileInPanel: (relativePath: string) => void
+  onOpenFileInPanel?: (relativePath: string) => void
+  fileFilter?: (relativePath: string) => boolean
 }) {
   const { t } = useTranslation()
   const isDirectory = entry.type === 'directory'
+  if (!isDirectory && fileFilter && !fileFilter(entry.relativePath)) return null
   const expanded = isDirectory && expandedPaths.has(entry.relativePath)
   const state = isDirectory ? directoryStates.get(entry.relativePath) : undefined
   const button = (
@@ -141,7 +148,7 @@ function TreeEntry({
 
   return (
     <div>
-      {isDirectory ? button : (
+      {isDirectory || !onOpenFileInPanel ? button : (
         <ContextMenu>
           <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
           <StyledContextMenuContent>
@@ -182,6 +189,7 @@ function TreeEntry({
               onSelectDirectory={onSelectDirectory}
               onOpenFile={onOpenFile}
               onOpenFileInPanel={onOpenFileInPanel}
+              fileFilter={fileFilter}
             />
           ))}
           {state?.truncated && (
@@ -236,6 +244,9 @@ export function ProjectFilesTree({
   openFilePaths,
   onOpenFile,
   onOpenFileInPanel,
+  fileFilter,
+  fileFilterError,
+  searchExtensions,
 }: ProjectFilesTreeProps) {
   const { t } = useTranslation()
   const [directoryStates, setDirectoryStates] = useState<Map<string, DirectoryState>>(new Map())
@@ -250,6 +261,11 @@ export function ProjectFilesTree({
   const [revision, setRevision] = useState(0)
   const projectId = project?.config.id
   const workingDirectory = project?.config.workingDirectory
+  const searchExtensionsKey = searchExtensions?.join('\0') ?? ''
+  const visibleSearchResults = useMemo(
+    () => searchResults?.filter(result => !fileFilter || fileFilter(result.relativePath)) ?? null,
+    [fileFilter, searchResults],
+  )
 
   useEffect(() => { statesRef.current = directoryStates }, [directoryStates])
 
@@ -306,7 +322,13 @@ export function ProjectFilesTree({
     setSearchFailed(false)
     let cancelled = false
     const timeout = window.setTimeout(() => {
-      window.electronAPI.searchProjectFiles({ projectId, query })
+      window.electronAPI.searchProjectFiles({
+        projectId,
+        query,
+        ...(searchExtensionsKey
+          ? { extensions: searchExtensionsKey.split('\0') }
+          : {}),
+      })
         .then(results => {
           if (!cancelled) setSearchResults(results)
         })
@@ -321,7 +343,7 @@ export function ProjectFilesTree({
       cancelled = true
       window.clearTimeout(timeout)
     }
-  }, [filter, projectId, revision, workingDirectory])
+  }, [filter, projectId, revision, searchExtensionsKey, workingDirectory])
 
   const handleToggleDirectory = useCallback((relativePath: string) => {
     setExpandedPaths(previous => {
@@ -369,6 +391,16 @@ export function ProjectFilesTree({
       } : null)
       return
     }
+    const candidatePath = inlineCreate.parentRelativePath
+      ? `${inlineCreate.parentRelativePath}/${name}`
+      : name
+    if (inlineCreate.kind === 'file' && fileFilter && !fileFilter(candidatePath)) {
+      setInlineCreate(current => current ? {
+        ...current,
+        error: fileFilterError ?? t('filesSidebar.invalidPath'),
+      } : null)
+      return
+    }
     const pending = inlineCreate
     setInlineCreate({ ...pending, submitting: true, error: undefined })
     try {
@@ -393,7 +425,7 @@ export function ProjectFilesTree({
           .replace(/^PROJECT_FILE_[A-Z_]+:\s*/u, ''),
       } : null)
     }
-  }, [inlineCreate, loadDirectory, onOpenFile, projectId, t])
+  }, [fileFilter, fileFilterError, inlineCreate, loadDirectory, onOpenFile, projectId, t])
 
   const handleCreateKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (!inlineCreate || !(event.target instanceof HTMLInputElement)) return
@@ -489,9 +521,9 @@ export function ProjectFilesTree({
             <div className="px-2 py-3 text-xs text-muted-foreground">{t('common.loading')}</div>
           ) : searchFailed ? (
             <div className="px-2 py-3 text-xs text-destructive">{t('filesSidebar.loadError')}</div>
-          ) : searchResults.length === 0 ? (
+          ) : visibleSearchResults?.length === 0 ? (
             <div className="px-2 py-3 text-xs text-muted-foreground">{t('filesSidebar.noMatches')}</div>
-          ) : searchResults.map(result => (
+          ) : visibleSearchResults?.map(result => (
             <button
               key={result.relativePath}
               type="button"
@@ -533,6 +565,7 @@ export function ProjectFilesTree({
                 onSelectDirectory={setSelectedDirectoryPath}
                 onOpenFile={onOpenFile}
                 onOpenFileInPanel={onOpenFileInPanel}
+                fileFilter={fileFilter}
               />
             ))}
           </>

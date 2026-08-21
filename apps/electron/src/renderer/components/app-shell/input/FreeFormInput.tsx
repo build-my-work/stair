@@ -6,7 +6,7 @@ import {
   Paperclip,
   ChevronUp,
 } from 'lucide-react'
-import { Icon_Home, consoleSnippetCommand } from '@craft-agent/ui'
+import { Icon_Home, consoleSnippetCommand, MessageReferencePreview } from '@craft-agent/ui'
 
 import { IconButton } from '@/components/ui/button'
 import {
@@ -81,6 +81,7 @@ import { ComposerModeChip } from './ComposerModeChip'
 import { ContextUsageChip } from './ContextUsageChip'
 import { FollowUpChips } from './FollowUpChips'
 import { SendButton } from './SendButton'
+import { referenceKey, type Reference } from '@craft-agent/core'
 
 
 /** Platform-specific modifier key for keyboard shortcuts */
@@ -118,7 +119,7 @@ export interface FreeFormInputProps {
   /** Whether the session is currently processing */
   isProcessing?: boolean
   /** Callback when message is submitted (skillSlugs from @mentions) */
-  onSubmit: (message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => void
+  onSubmit: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[]) => void
   /** Callback to stop processing. Pass silent=true to skip "Response interrupted" message */
   onStop?: (silent?: boolean) => void
   /** External ref for the input */
@@ -154,6 +155,12 @@ export interface FreeFormInputProps {
   attachmentsValue?: FileAttachment[]
   /** Callback when attachment list changes (add, remove, clear on send) */
   onAttachmentsChange?: (attachments: FileAttachment[]) => void
+  /** Structured references attached to this draft. */
+  referencesValue?: Reference[]
+  /** Callback when a reference is removed or the draft is sent. */
+  onReferencesChange?: (references: Reference[]) => void
+  /** Reveal the selected reference source from the draft preview. */
+  onReferenceActivate?: (reference: Reference) => void
   /** When true, removes container styling (shadow, bg, rounded) - used when wrapped by InputContainer */
   unstyled?: boolean
   /** Total height budget, including actions; supplied by InputContainer when wrapped. */
@@ -272,6 +279,9 @@ export function FreeFormInput({
   onInputChange,
   attachmentsValue,
   onAttachmentsChange,
+  referencesValue = [],
+  onReferencesChange,
+  onReferenceActivate,
   unstyled = false,
   onHeightChange,
   maxHeight,
@@ -667,11 +677,18 @@ export function FreeFormInput({
 
   const handleToggleModelVision = useModelVisionToggle()
 
-  const consumeInputDraftSnapshot = React.useCallback((): string => {
-    const snapshot = input.trim()
+  const consumeInputDraftSnapshot = React.useCallback((): {
+    text: string
+    references: Reference[]
+  } => {
+    const snapshot = {
+      text: input.trim(),
+      references: [...referencesValue],
+    }
     clearInputDraft()
+    onReferencesChange?.([])
     return snapshot
-  }, [input, clearInputDraft])
+  }, [clearInputDraft, input, onReferencesChange, referencesValue])
 
   type PlanApprovalEventDetail = {
     sessionId?: string
@@ -691,10 +708,12 @@ export function FreeFormInput({
       }
 
       const shouldIncludeDraft = e.detail?.includeDraftInput !== false
-      const draftInput = shouldIncludeDraft ? consumeInputDraftSnapshot() : ''
+      const draftSnapshot = shouldIncludeDraft
+        ? consumeInputDraftSnapshot()
+        : { text: '', references: [] }
       const text = buildPlanApprovalMessage({
         planPath: e.detail?.planPath,
-        draftInput,
+        draftInput: draftSnapshot.text,
       })
 
       // Leave Explore mode so the plan can run without prompts (back to Guarded if the session
@@ -703,7 +722,7 @@ export function FreeFormInput({
         onPermissionModeChange?.(planExecutionMode(previousPermissionMode))
       }
 
-      onSubmit(text, undefined)
+      onSubmit(text, undefined, undefined, draftSnapshot.references)
     }
 
     window.addEventListener('craft:approve-plan', handleApprovePlan as EventListener)
@@ -725,7 +744,7 @@ export function FreeFormInput({
       submit: pending => onSubmit(buildPlanApprovalMessage({
         planPath: pending.planPath,
         draftInput: pending.draftInputSnapshot,
-      }), undefined),
+      }), undefined, undefined, pending.draftReferencesSnapshot),
       clear: () => window.electronAPI.sessionCommand(sessionId, { type: 'clearPendingPlanExecution' }),
     })
     const request = () => {
@@ -763,14 +782,17 @@ export function FreeFormInput({
       if (preparing || processingRef.current) return
       preparing = true
       try {
-        const draftInputSnapshot = event.detail?.includeDraftInput !== false ? consumeInputDraftSnapshot() : ''
+        const draftSnapshot = event.detail?.includeDraftInput !== false
+          ? consumeInputDraftSnapshot()
+          : { text: '', references: [] as Reference[] }
         if (permissionMode === 'safe') onPermissionModeChange?.(planExecutionMode(previousPermissionMode))
         // Persist first. Only actual successful manual compaction changes this
         // readiness; failure/automatic compaction events never authorize a send.
         await window.electronAPI.sessionCommand(sessionId, {
           type: 'setPendingPlanExecution',
           planPath: event.detail?.planPath ?? '',
-          draftInputSnapshot,
+          draftInputSnapshot: draftSnapshot.text,
+          draftReferencesSnapshot: draftSnapshot.references,
         })
         onSubmit('/compact', undefined)
       } catch (error) {
@@ -1239,7 +1261,10 @@ export function FreeFormInput({
 
   // Submit message - backend handles queueing and interruption
   const submitMessage = React.useCallback(() => {
-    const hasContent = input.trim() || attachments.length > 0 || followUpItems.length > 0
+    const hasContent = input.trim()
+      || attachments.length > 0
+      || referencesValue.length > 0
+      || followUpItems.length > 0
     if (!hasContent || disabled) return false
 
     // Tutorial may disable sending to guide user through specific steps
@@ -1271,7 +1296,8 @@ export function FreeFormInput({
     onSubmit(
       input.trim(),
       attachmentSnapshot.length > 0 ? attachmentSnapshot : undefined,
-      mentions.skills.length > 0 ? mentions.skills : undefined
+      mentions.skills.length > 0 ? mentions.skills : undefined,
+      referencesValue.length > 0 ? referencesValue : undefined,
     )
     setInput('')
     setAttachments([])
@@ -1279,6 +1305,7 @@ export function FreeFormInput({
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
     onInputChange?.('')
     onAttachmentsChange?.([])
+    onReferencesChange?.([])
     prevInputValueRef.current = ''
 
     // Restore focus after state updates
@@ -1287,7 +1314,7 @@ export function FreeFormInput({
     })
 
     return true
-  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir, showAttachmentSizeProblem])
+  }, [input, attachments, referencesValue, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onReferencesChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir, showAttachmentSizeProblem])
 
   // Listen for craft:submit-input events (simulate pressing the Send button)
   React.useEffect(() => {
@@ -1370,6 +1397,7 @@ export function FreeFormInput({
       isProcessing,
       input,
       attachmentCount: attachments.length,
+      referenceCount: referencesValue.length,
       loadingAttachmentCount: loadingCount,
       followUpItemCount: followUpItems.length,
       inlineMenuOpen: inlineMention.isOpen || inlineSlash.isOpen || inlineLabel.isOpen,
@@ -1555,7 +1583,10 @@ export function FreeFormInput({
     return () => window.clearTimeout(timer)
   }, [followUpLayoutKey])
 
-  const hasContent = input.trim() || attachments.length > 0 || followUpItems.length > 0
+  const hasContent = input.trim()
+    || attachments.length > 0
+    || referencesValue.length > 0
+    || followUpItems.length > 0
 
   // Pre-flight image-support check: warn when staged images would be silently
   // stripped by Pi SDK because the active custom-endpoint model is text-only.
@@ -1685,6 +1716,21 @@ export function FreeFormInput({
           disabled={disabled}
           loadingCount={loadingCount}
         />
+
+        {referencesValue.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-3 pt-3.5">
+            {referencesValue.map(reference => (
+              <MessageReferencePreview
+                key={referenceKey(reference)}
+                reference={reference}
+                onActivate={onReferenceActivate}
+                onRemove={removed => {
+                  onReferencesChange?.(referencesValue.filter(candidate => candidate !== removed))
+                }}
+              />
+            ))}
+          </div>
+        )}
 
         {/* Follow-up context chips */}
         <FollowUpChips

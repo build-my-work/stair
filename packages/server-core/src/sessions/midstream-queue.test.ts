@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import type { StoredMessage } from '@craft-agent/core/types'
+import {
+  getSessionFilePath,
+  loadSession,
+  writeSessionJsonl,
+  type StoredSession,
+} from '@craft-agent/shared/sessions'
 import { getPendingPlanExecution, saveSession } from '../../../shared/src/sessions/storage.ts'
 import * as backendFactory from '../../../shared/src/agent/backend/factory.ts'
 import { ClaudeAgent } from '../../../shared/src/agent/claude-agent.ts'
@@ -13,6 +20,7 @@ import {
   shouldAttemptMidStreamSteer,
   canSteerTextPayload,
 } from './SessionManager.ts'
+import { formatReferencesForModel } from './message-references'
 
 describe('mid-stream queue runtime invariants', () => {
   let tmpRoot: string
@@ -366,5 +374,241 @@ describe('mid-stream queue runtime invariants', () => {
     expect(processingEvent?.message.timestamp).toBe(replayed?.timestamp)
     expect(processingEvent?.optimisticMessageId).toBe('optimistic-user')
     expect(sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('retains queued messages until the restored draft is acknowledged', async () => {
+    const managed = buildSession('queue-stop')
+    const reference = {
+      version: 1,
+      kind: 'chat-message',
+      projectId: 'project-general',
+      sessionId: 'source-session',
+      messageId: 'source-message',
+      role: 'assistant',
+      quote: 'quoted text',
+      locator: {
+        type: 'text-quote',
+        exact: 'quoted text',
+        start: 0,
+        end: 11,
+      },
+    } as const
+    managed.isProcessing = true
+    managed.messages = [{
+      id: 'queued-user',
+      role: 'user',
+      content: 'queued with reference',
+      timestamp: Date.now(),
+      isQueued: true,
+      references: [reference],
+    }]
+    managed.messageQueue.push({
+      message: 'queued with reference',
+      messageId: 'queued-user',
+      options: { references: [reference] },
+    })
+    managed.agent = { forceAbort: () => {} } as never
+
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    await sm.cancelProcessing(managed.id)
+
+    const interrupted = events.find(event => event.type === 'interrupted')
+    expect(interrupted?.queuedMessages).toEqual(['queued with reference'])
+    expect(interrupted?.queuedReferences).toEqual([reference])
+    expect(interrupted?.queuedRestoreId).toBeString()
+    expect(interrupted?.queuedMessageIds).toEqual(['queued-user'])
+    expect(managed.messages.find(message => message.id === 'queued-user')).toEqual(expect.objectContaining({
+      isQueued: true,
+      queuedRestoreId: interrupted.queuedRestoreId,
+    }))
+    expect(loadSession(tmpRoot, managed.id)?.messages.find(message => message.id === 'queued-user'))
+      .toEqual(expect.objectContaining({
+        isQueued: true,
+        queuedRestoreId: interrupted.queuedRestoreId,
+      }))
+
+    managed.isProcessing = false
+  })
+
+  it('acknowledges only matching queued restore messages and is idempotent', async () => {
+    const managed = buildSession('queue-restore-ack')
+    managed.isProcessing = true
+    managed.messages = [
+      {
+        id: 'queued-one',
+        role: 'user',
+        content: 'queued one',
+        timestamp: Date.now(),
+        isQueued: true,
+      },
+      {
+        id: 'queued-two',
+        role: 'user',
+        content: 'queued two',
+        timestamp: Date.now() + 1,
+        isQueued: true,
+      },
+    ]
+    managed.messageQueue.push(
+      { message: 'queued one', messageId: 'queued-one' },
+      { message: 'queued two', messageId: 'queued-two' },
+    )
+    managed.agent = { forceAbort: () => {} } as never
+
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+    await sm.cancelProcessing(managed.id)
+    managed.isProcessing = false
+
+    const interrupted = events.find(event => event.type === 'interrupted')
+    const acknowledge = (restoreId: string, messageIds: string[]) => (
+      sm as unknown as {
+        acknowledgeQueuedInputRestore: (
+          sessionId: string,
+          restoreId: string,
+          messageIds: string[],
+        ) => Promise<void>
+      }
+    ).acknowledgeQueuedInputRestore(managed.id, restoreId, messageIds)
+
+    await acknowledge('wrong-restore', ['queued-one'])
+    expect(managed.messages.map(message => message.id)).toContain('queued-one')
+
+    await acknowledge(interrupted.queuedRestoreId, ['queued-one', 'not-queued'])
+    expect(managed.messages.map(message => message.id)).not.toContain('queued-one')
+    expect(managed.messages.map(message => message.id)).toContain('queued-two')
+    expect(events.find(event => event.type === 'queued_input_restored')).toEqual({
+      type: 'queued_input_restored',
+      sessionId: managed.id,
+      queuedRestoreId: interrupted.queuedRestoreId,
+      messageIds: ['queued-one'],
+    })
+    expect(events.filter(event => event.type === 'queued_input_restored')).toHaveLength(1)
+
+    await acknowledge(interrupted.queuedRestoreId, ['queued-one', 'not-queued'])
+    expect(managed.messages.map(message => message.id)).toEqual(['queued-two', expect.any(String)])
+    expect(events.filter(event => event.type === 'queued_input_restored')).toHaveLength(1)
+    expect(loadSession(tmpRoot, managed.id)?.messages.map(message => message.id))
+      .toEqual(['queued-two', expect.any(String)])
+  })
+
+  it('does not auto-replay a pending queued restore after a cold load', async () => {
+    const sessionId = 'pending-restore-cold-load'
+    const filePath = getSessionFilePath(tmpRoot, sessionId)
+    mkdirSync(dirname(filePath), { recursive: true })
+    writeSessionJsonl(filePath, {
+      id: sessionId,
+      projectId: 'project-general',
+      workspaceRootPath: tmpRoot,
+      name: 'pending restore',
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      messages: [{
+        id: 'pending-queued-user',
+        type: 'user',
+        content: 'do not replay me',
+        timestamp: Date.now(),
+        isQueued: true,
+        queuedRestoreId: 'restore-after-restart',
+      } as StoredMessage],
+    } as StoredSession)
+
+    const managed = createManagedSession(
+      { id: sessionId, name: 'pending restore', projectId: 'project-general' },
+      {
+        id: 'ws-test',
+        name: 'Test Workspace',
+        rootPath: tmpRoot,
+        createdAt: Date.now(),
+      } as never,
+    )
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, managed)
+
+    await sm.getSession(sessionId)
+
+    expect(managed.messageQueue).toEqual([])
+    expect(managed.messages[0]).toEqual(expect.objectContaining({
+      id: 'pending-queued-user',
+      isQueued: true,
+      queuedRestoreId: 'restore-after-restart',
+    }))
+  })
+
+  it('把未送达 steer 的结构化引用按原始消息重新入队', async () => {
+    const managed = buildSession('steer-undelivered-reference')
+    const reference = {
+      version: 1,
+      kind: 'chat-message',
+      projectId: managed.projectId,
+      sessionId: 'source-session',
+      messageId: 'source-message',
+      role: 'assistant',
+      quote: 'quoted text',
+      locator: {
+        type: 'text-quote',
+        exact: 'quoted text',
+        start: 0,
+        end: 11,
+      },
+    } as const
+    managed.messages.push({
+      id: 'steered-user',
+      role: 'user',
+      content: 'explain',
+      timestamp: Date.now(),
+      references: [reference],
+    })
+    ;(sm as unknown as { persistSession: () => void }).persistSession = () => {}
+    ;(sm as unknown as { flushSession: () => Promise<void> }).flushSession = async () => {}
+
+    await (sm as unknown as {
+      processEvent: (session: typeof managed, event: {
+        type: 'steer_undelivered'
+        message: string
+      }) => Promise<void>
+    }).processEvent(managed, {
+      type: 'steer_undelivered',
+      message: formatReferencesForModel('explain', [reference]),
+    })
+
+    expect(managed.messageQueue).toEqual([expect.objectContaining({
+      message: 'explain',
+      messageId: 'steered-user',
+      options: { references: [reference] },
+    })])
+    expect(managed.messages[0]?.isQueued).toBe(true)
+  })
+
+  it('找不到原消息时也不会把内部引用数据块重新入队', async () => {
+    const managed = buildSession('steer-undelivered-fallback')
+    const reference = {
+      version: 1,
+      kind: 'chat-message',
+      projectId: managed.projectId,
+      sessionId: 'source-session',
+      messageId: 'source-message',
+      role: 'assistant',
+      quote: 'quoted text',
+      locator: {
+        type: 'text-quote',
+        exact: 'quoted text',
+        start: 0,
+        end: 11,
+      },
+    } as const
+
+    await (sm as unknown as {
+      processEvent: (session: typeof managed, event: {
+        type: 'steer_undelivered'
+        message: string
+      }) => Promise<void>
+    }).processEvent(managed, {
+      type: 'steer_undelivered',
+      message: formatReferencesForModel('raw user text', [reference]),
+    })
+
+    expect(managed.messageQueue).toEqual([{ message: 'raw user text' }])
   })
 })

@@ -13,10 +13,12 @@ import {
   focusPreviousWorkbenchPanelAtom,
   focusWorkbenchPanelAtom,
   initializeWorkbenchAtom,
+  openSessionFromProjectFileAtom,
   openSessionInNewPanelAtom,
   openProjectFileInPanelAtom,
   openProjectFilePreviewAtom,
   removeSessionFromWorkbenchAtom,
+  setProjectFileChatTargetAtom,
   selectSessionFromNavigatorAtom,
   showSessionInPrimaryAtom,
   switchWorkbenchProjectAtom,
@@ -45,6 +47,17 @@ function sessionIds(store: ReturnType<typeof createStore>) {
 
 function isSessionPanel(panel: WorkbenchPanel): panel is Extract<WorkbenchPanel, { kind: 'session' }> {
   return panel.kind === 'session'
+}
+
+function projectFilePanel(
+  store: ReturnType<typeof createStore>,
+  relativePath: string,
+): Extract<WorkbenchPanel, { kind: 'project-file' }> {
+  const panel = store.get(activeProjectWorkbenchAtom)?.auxiliary.find(candidate => (
+    candidate.kind === 'project-file' && candidate.relativePath === relativePath
+  ))
+  expect(panel?.kind).toBe('project-file')
+  return panel as Extract<WorkbenchPanel, { kind: 'project-file' }>
 }
 
 describe('Session-only Workbench commands', () => {
@@ -293,6 +306,213 @@ describe('Session-only Workbench commands', () => {
 })
 
 describe('Project File Workbench commands', () => {
+  it('只设置同 Project Chat Target，不修改 Panel 展示、顺序或 Focus', async () => {
+    const store = initializedStore()
+    await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'docs/one.md',
+    })
+    const before = structuredClone(store.get(activeProjectWorkbenchAtom)!)
+    const panel = before.auxiliary.find(candidate => candidate.kind === 'project-file')!
+
+    expect(store.set(setProjectFileChatTargetAtom, {
+      panelId: panel.id,
+      projectId: 'project-a',
+      sessionId: 'session-a',
+      sessionProjectId: 'project-a',
+    })).toBe(true)
+    const next = store.get(activeProjectWorkbenchAtom)!
+    expect(next.primary).toEqual(before.primary)
+    expect(next.auxiliary.map(candidate => candidate.id))
+      .toEqual(before.auxiliary.map(candidate => candidate.id))
+    expect(next.focusedPanelId).toBe(before.focusedPanelId)
+    expect(next.auxiliary.find(candidate => candidate.id === panel.id))
+      .toEqual(expect.objectContaining({ chatTargetSessionId: 'session-a' }))
+
+    const accepted = structuredClone(store.get(workbenchAtom))
+    expect(store.set(setProjectFileChatTargetAtom, {
+      panelId: panel.id,
+      projectId: 'project-a',
+      sessionId: 'session-b',
+      sessionProjectId: 'project-b',
+    })).toBe(false)
+    expect(store.get(workbenchAtom)).toEqual(accepted)
+  })
+
+  it('New Chat 等待期间焦点切到其他 Panel，仍紧邻来源文件 Panel 原子提交', async () => {
+    const store = initializedStore()
+    await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'docs/source.md',
+    })
+    const source = projectFilePanel(store, 'docs/source.md')
+    store.set(openSessionInNewPanelAtom, {
+      sessionId: 'focused-elsewhere',
+      projectId: 'project-a',
+    })
+
+    expect(store.set(openSessionFromProjectFileAtom, {
+      sessionId: 'new-session',
+      sessionProjectId: 'project-a',
+      source: {
+        panelId: source.id,
+        projectId: 'project-a',
+        relativePath: 'docs/source.md',
+      },
+    })).toBe(true)
+
+    const layout = store.get(activeProjectWorkbenchAtom)!
+    expect(layout.auxiliary.map(panel => (
+      panel.kind === 'session' ? `session:${panel.sessionId}` : `file:${panel.relativePath}`
+    ))).toEqual([
+      'file:docs/source.md',
+      'session:new-session',
+      'session:focused-elsewhere',
+    ])
+    expect(projectFilePanel(store, 'docs/source.md').chatTargetSessionId).toBe('new-session')
+    expect(layout.focusedPanelId).toBe(layout.auxiliary[1].id)
+  })
+
+  it('New Chat 等待期间 Preview 被替换时拒绝提交且不修改新文件 target', async () => {
+    const store = initializedStore()
+    await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'docs/source.md',
+    })
+    const source = projectFilePanel(store, 'docs/source.md')
+    await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'docs/replacement.md',
+    })
+    const before = structuredClone(store.get(workbenchAtom))
+
+    expect(store.set(openSessionFromProjectFileAtom, {
+      sessionId: 'new-session',
+      sessionProjectId: 'project-a',
+      source: {
+        panelId: source.id,
+        projectId: 'project-a',
+        relativePath: 'docs/source.md',
+      },
+    })).toBe(false)
+    expect(store.get(workbenchAtom)).toEqual(before)
+    expect(projectFilePanel(store, 'docs/replacement.md').chatTargetSessionId).toBeNull()
+  })
+
+  it('New Chat 等待期间来源 Panel 被关闭时拒绝提交且不残留 Session Panel', async () => {
+    const store = initializedStore()
+    await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'docs/source.md',
+    })
+    const source = projectFilePanel(store, 'docs/source.md')
+    expect(await store.set(closeWorkbenchPanelAtom, {
+      projectId: 'project-a',
+      panelId: source.id,
+    })).toBe(true)
+    const before = structuredClone(store.get(workbenchAtom))
+
+    expect(store.set(openSessionFromProjectFileAtom, {
+      sessionId: 'new-session',
+      sessionProjectId: 'project-a',
+      source: {
+        panelId: source.id,
+        projectId: 'project-a',
+        relativePath: 'docs/source.md',
+      },
+    })).toBe(false)
+    expect(store.get(workbenchAtom)).toEqual(before)
+    expect(store.get(workbenchPanelsAtom).some(panel => (
+      panel.kind === 'session' && panel.sessionId === 'new-session'
+    ))).toBe(false)
+  })
+
+  it('New Chat 等待期间切换 Project 时拒绝写入当前或 parked layout', async () => {
+    const store = initializedStore()
+    await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'docs/source.md',
+    })
+    const source = projectFilePanel(store, 'docs/source.md')
+    expect(await store.set(switchWorkbenchProjectAtom, { projectId: 'project-b' })).toBe(true)
+    const before = structuredClone(store.get(workbenchAtom))
+
+    expect(store.set(openSessionFromProjectFileAtom, {
+      sessionId: 'new-session',
+      sessionProjectId: 'project-a',
+      source: {
+        panelId: source.id,
+        projectId: 'project-a',
+        relativePath: 'docs/source.md',
+      },
+    })).toBe(false)
+    expect(store.get(workbenchAtom)).toEqual(before)
+    const parkedSource = store.get(workbenchAtom).layoutsByProject['project-a'].auxiliary[0]
+    expect(parkedSource).toEqual(expect.objectContaining({ chatTargetSessionId: null }))
+  })
+
+  it('点击消息引用复用当前文件 Panel，并传递 locator 而不增加 Panel', async () => {
+    const store = initializedStore()
+    await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'book.epub',
+    })
+    const before = structuredClone(store.get(activeProjectWorkbenchAtom)!)
+    const beforeReveal = store.get(workbenchPanelRevealRevisionAtom)
+
+    expect(await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'book.epub',
+      openIntent: {
+        expectedFingerprint: `sha256:${'c'.repeat(64)}`,
+        locator: {
+          type: 'epub-cfi',
+          cfiRange: 'epubcfi(/6/2!/4/2,/1:0,/1:7)',
+        },
+      },
+    })).toBe(true)
+
+    const next = store.get(activeProjectWorkbenchAtom)!
+    expect(next.auxiliary).toHaveLength(before.auxiliary.length)
+    expect(next.auxiliary[0]).toEqual(expect.objectContaining({
+      openIntent: expect.objectContaining({
+        locator: expect.objectContaining({ type: 'epub-cfi' }),
+      }),
+    }))
+    expect(store.get(workbenchPanelRevealRevisionAtom)).toBe(beforeReveal + 1)
+  })
+
+  it('重复点击同一文件 locator 也递增 Panel 内的 reveal 意图版本', async () => {
+    const store = initializedStore()
+    const openIntent = {
+      expectedFingerprint: `sha256:${'c'.repeat(64)}` as const,
+      locator: {
+        type: 'text-quote' as const,
+        exact: 'same quote',
+        start: 0,
+        end: 10,
+      },
+    }
+    await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'notes.md',
+      openIntent,
+    })
+    const first = store.get(activeProjectWorkbenchAtom)!.auxiliary[0]
+    expect(first).toEqual(expect.objectContaining({ openIntentRevision: 1 }))
+
+    await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'notes.md',
+      openIntent,
+    })
+    const second = store.get(activeProjectWorkbenchAtom)!.auxiliary[0]
+    expect(second).toEqual(expect.objectContaining({
+      id: first?.id,
+      openIntentRevision: 2,
+    }))
+  })
+
   it('复用唯一 Preview，不修改 Primary 或显式 Auxiliary', async () => {
     const store = initializedStore()
     store.set(showSessionInPrimaryAtom, { sessionId: 'primary', projectId: 'project-a' })

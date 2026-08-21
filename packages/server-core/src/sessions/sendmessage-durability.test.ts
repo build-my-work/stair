@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { getSessionFilePath } from '@craft-agent/shared/sessions/storage'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
+import type { Reference } from '@craft-agent/core'
 
 // Regression test for the High-severity finding in eb81086e:
 //
@@ -51,6 +52,13 @@ describe('sendMessage durability', () => {
     const lines = readFileSync(path, 'utf-8').trim().split('\n')
     // First line is the header, remaining lines are messages.
     return lines.slice(1).map(l => JSON.parse(l)).map(m => m.id as string)
+  }
+
+  function readPersistedMessages(sessionId: string): Array<Record<string, unknown>> {
+    const path = getSessionFilePath(tmpRoot, sessionId)
+    if (!existsSync(path)) return []
+    const lines = readFileSync(path, 'utf-8').trim().split('\n')
+    return lines.slice(1).map(line => JSON.parse(line) as Record<string, unknown>)
   }
 
   it('user message is on disk before onAck fires (normal branch)', async () => {
@@ -110,5 +118,133 @@ describe('sendMessage durability', () => {
 
     expect(ackedMessageId).not.toBeNull()
     expect(onDiskAtAck).toBe(true)
+  })
+
+  it('persists validated references before acknowledging a queued message', async () => {
+    const source = buildSession('reference-source')
+    source.messages.push({
+      id: 'source-message',
+      role: 'assistant',
+      content: 'selected text',
+      timestamp: Date.now(),
+    })
+    const target = buildSession('reference-target')
+    target.isProcessing = true
+    const reference: Reference = {
+      version: 1,
+      kind: 'chat-message',
+      projectId: 'project-general',
+      sessionId: source.id,
+      messageId: 'source-message',
+      role: 'assistant',
+      quote: 'selected text',
+      locator: {
+        type: 'text-quote',
+        exact: 'selected text',
+        start: 0,
+        end: 13,
+      },
+    }
+
+    await sm.sendMessage(
+      target.id,
+      'explain',
+      undefined,
+      undefined,
+      { references: [reference] },
+    )
+
+    expect(readPersistedMessages(target.id).at(-1)).toEqual(expect.objectContaining({
+      isQueued: true,
+      references: [reference],
+    }))
+  })
+
+  it('rejects a cross-Project chat reference before persistence', async () => {
+    const source = buildSession('cross-project-source')
+    source.projectId = 'project-other'
+    source.messages.push({
+      id: 'source-message',
+      role: 'assistant',
+      content: 'private text',
+      timestamp: Date.now(),
+    })
+    const target = buildSession('cross-project-target')
+    target.isProcessing = true
+
+    await expect(sm.sendMessage(
+      target.id,
+      'explain',
+      undefined,
+      undefined,
+      {
+        references: [{
+          version: 1,
+          kind: 'chat-message',
+          projectId: 'project-general',
+          sessionId: source.id,
+          messageId: 'source-message',
+          role: 'assistant',
+          quote: 'private text',
+          locator: {
+            type: 'text-quote',
+            exact: 'private text',
+            start: 0,
+            end: 12,
+          },
+        }],
+      },
+    )).rejects.toThrow('MESSAGE_REFERENCE_PROJECT_MISMATCH')
+    expect(readPersistedMessages(target.id)).toEqual([])
+  })
+
+  it('replays an already-persisted validated reference after its source Session disappears', async () => {
+    const source = buildSession('replay-source')
+    source.messages.push({
+      id: 'source-message',
+      role: 'assistant',
+      content: 'selected text',
+      timestamp: Date.now(),
+    })
+    const target = buildSession('replay-target')
+    const reference: Reference = {
+      version: 1,
+      kind: 'chat-message',
+      projectId: target.projectId,
+      sessionId: source.id,
+      messageId: 'source-message',
+      role: 'assistant',
+      quote: 'selected text',
+      locator: {
+        type: 'text-quote',
+        exact: 'selected text',
+        start: 0,
+        end: 13,
+      },
+    }
+    const queuedMessageId = 'queued-with-reference'
+    target.messages.push({
+      id: queuedMessageId,
+      role: 'user',
+      content: 'explain',
+      timestamp: Date.now(),
+      references: [reference],
+    })
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.delete(source.id)
+
+    let error: unknown
+    try {
+      await sm.sendMessage(
+        target.id,
+        'explain',
+        undefined,
+        undefined,
+        { references: [reference] },
+        queuedMessageId,
+      )
+    } catch (caught) {
+      error = caught
+    }
+    expect(String(error)).not.toContain('MESSAGE_REFERENCE_SOURCE_INVALID')
   })
 })

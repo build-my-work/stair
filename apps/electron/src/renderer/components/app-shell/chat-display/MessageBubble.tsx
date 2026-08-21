@@ -1,12 +1,13 @@
 import * as React from "react"
 import { useTranslation } from "react-i18next"
 import { CheckCircle2, CircleAlert, ExternalLink, Info, TriangleAlert } from "lucide-react"
-import { Spinner, UserMessageBubble } from "@craft-agent/ui"
+import { Spinner, UserMessageBubble, type ChatTextSelectionAction } from "@craft-agent/ui"
 import { cn } from "@/lib/utils"
 import { IconButton } from "@/components/ui/button"
 import { Markdown, CollapsibleMarkdownProvider, StreamingMarkdown, type RenderMode } from "@/components/markdown"
 import type { Message } from "../../../../shared/types"
 import { ErrorMessage } from "./ErrorMessage"
+import type { Reference } from "@craft-agent/core"
 
 /**
  * MessageBubble - Renders a single message based on its role
@@ -25,6 +26,11 @@ export interface MessageBubbleProps {
   message: Message
   onOpenFile: (path: string) => void
   onOpenUrl: (url: string) => void
+  onRevealReference?: (reference: Reference) => void
+  onAddSelectionToChat?: ChatTextSelectionAction
+  onAddSelectionToNewChat?: ChatTextSelectionAction
+  onAddSelectionToNote?: ChatTextSelectionAction
+  onAddSelectionToNoteTarget?: ChatTextSelectionAction
   sessionId?: string
   /**
    * Markdown render mode for assistant messages
@@ -53,6 +59,11 @@ export function MessageBubble({
   message,
   onOpenFile,
   onOpenUrl,
+  onRevealReference,
+  onAddSelectionToChat,
+  onAddSelectionToNewChat,
+  onAddSelectionToNote,
+  onAddSelectionToNoteTarget,
   sessionId,
   renderMode = 'minimal',
   onPopOut,
@@ -65,9 +76,16 @@ export function MessageBubble({
   if (message.role === 'user') {
     return (
       <UserMessageBubble
+        messageId={message.id}
         content={message.content}
         attachments={message.attachments}
         badges={message.badges}
+        references={message.references}
+        onReferenceActivate={onRevealReference}
+        onAddSelectionToChat={onAddSelectionToChat}
+        onAddSelectionToNewChat={onAddSelectionToNewChat}
+        onAddSelectionToNote={onAddSelectionToNote}
+        onAddSelectionToNoteTarget={onAddSelectionToNoteTarget}
         isPending={message.isPending}
         isQueued={message.isQueued}
         onUrlClick={onOpenUrl}
@@ -198,6 +216,12 @@ export const MemoizedMessageBubble = React.memo(MessageBubble, (prev, next) => {
     prev.message.id === next.message.id &&
     prev.message.content === next.message.content &&
     prev.message.role === next.message.role &&
+    prev.message.references === next.message.references &&
+    prev.onRevealReference === next.onRevealReference &&
+    prev.onAddSelectionToChat === next.onAddSelectionToChat &&
+    prev.onAddSelectionToNewChat === next.onAddSelectionToNewChat &&
+    prev.onAddSelectionToNote === next.onAddSelectionToNote &&
+    prev.onAddSelectionToNoteTarget === next.onAddSelectionToNoteTarget &&
     prev.sessionId === next.sessionId &&
     prev.compactMode === next.compactMode
   )

@@ -160,6 +160,15 @@ import {
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
+import type { Reference } from '@craft-agent/core'
+import { ProjectNoteTargetDialog } from './ProjectNoteTargetDialog'
+import { queueChatReferenceReveal } from './chat-reference-reveal'
+
+interface PendingProjectNote {
+  sessionId: string
+  reference: Reference
+  resolve: (added: boolean) => void
+}
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -1181,6 +1190,161 @@ function AppShellContent({
   // This prevents closures from retaining full message arrays
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
   const setSessionMetaMap = useSetAtom(sessionMetaMapAtom)
+  const [pendingProjectNote, setPendingProjectNote] = useState<PendingProjectNote | null>(null)
+  const [projectNoteBusy, setProjectNoteBusy] = useState(false)
+  const [projectNoteError, setProjectNoteError] = useState('')
+  const pendingProjectNoteRef = useRef<PendingProjectNote | null>(null)
+
+  const appendProjectNote = useCallback(async (
+    sessionId: string,
+    reference: Reference,
+    targetPath: string,
+  ) => {
+    await window.electronAPI.appendProjectNote({
+      requestId: globalThis.crypto.randomUUID(),
+      sessionId,
+      projectId: reference.projectId,
+      expectedTargetPath: targetPath,
+      selection: reference,
+    })
+  }, [])
+
+  const openProjectNoteTargetDialog = useCallback((
+    sessionId: string,
+    reference: Reference,
+  ): Promise<boolean> => {
+    if (pendingProjectNoteRef.current) {
+      toast.error(t('projectNoteTarget.inProgress'))
+      return Promise.resolve(false)
+    }
+    return new Promise(resolve => {
+      const pending = { sessionId, reference, resolve }
+      pendingProjectNoteRef.current = pending
+      setProjectNoteError('')
+      setPendingProjectNote(pending)
+    })
+  }, [t])
+
+  const handleAddSelectionNote = useCallback(async (
+    sessionId: string,
+    reference: Reference,
+    mode: 'current' | 'choose-target' = 'current',
+  ): Promise<boolean> => {
+    const session = sessionMetaMap.get(sessionId)
+    if (!session || session.projectId !== reference.projectId) {
+      toast.error(t('reference.couldNotAddNote'), {
+        description: t('reference.crossProjectBlocked'),
+      })
+      return false
+    }
+    if (!projects.some(project => project.config.id === reference.projectId)) {
+      toast.error(t('reference.couldNotAddNote'), {
+        description: t('reference.projectUnavailable'),
+      })
+      return false
+    }
+
+    if (mode === 'current' && session.projectNoteTargetPath) {
+      try {
+        await appendProjectNote(sessionId, reference, session.projectNoteTargetPath)
+        toast.success(t('reference.addedToNote'), {
+          description: session.projectNoteTargetPath,
+        })
+        return true
+      } catch (error) {
+        const code = (error as { code?: string }).code
+          ?? (error instanceof Error ? error.message.split(':', 1)[0] : '')
+        if (![
+          'PROJECT_NOTE_TARGET_REQUIRED',
+          'PROJECT_NOTE_TARGET_CHANGED',
+          'PROJECT_NOTE_TARGET_NOT_FOUND',
+          'PROJECT_NOTE_TARGET_ACCESS_DENIED',
+        ].includes(code)) {
+          toast.error(t('reference.couldNotAddNote'), {
+            description: error instanceof Error ? error.message : String(error),
+          })
+          return false
+        }
+      }
+    }
+    return openProjectNoteTargetDialog(sessionId, reference)
+  }, [appendProjectNote, openProjectNoteTargetDialog, projects, sessionMetaMap, t])
+
+  const handleRevealReference = useCallback(async (reference: Reference): Promise<boolean> => {
+    if (reference.kind === 'project-file') {
+      return openProjectFilePreview({
+        projectId: reference.projectId,
+        relativePath: reference.relativePath,
+        openIntent: {
+          expectedFingerprint: reference.sourceFingerprint,
+          locator: reference.locator,
+        },
+      })
+    }
+
+    const sourceSession = sessionMetaMap.get(reference.sessionId)
+    if (!sourceSession || sourceSession.projectId !== reference.projectId) return false
+    const revealIntent = {
+      messageId: reference.messageId,
+      locator: reference.locator,
+    }
+    queueChatReferenceReveal(reference.sessionId, revealIntent)
+    navigateToSession(reference.sessionId)
+    window.dispatchEvent(new CustomEvent('stair:reveal-chat-reference', {
+      detail: {
+        sessionId: reference.sessionId,
+        ...revealIntent,
+      },
+    }))
+    return true
+  }, [navigateToSession, openProjectFilePreview, sessionMetaMap])
+
+  const closeProjectNoteTargetDialog = useCallback((added: boolean) => {
+    const pending = pendingProjectNoteRef.current
+    pendingProjectNoteRef.current = null
+    setPendingProjectNote(null)
+    setProjectNoteError('')
+    setProjectNoteBusy(false)
+    pending?.resolve(added)
+  }, [])
+
+  useEffect(() => () => {
+    const pending = pendingProjectNoteRef.current
+    pendingProjectNoteRef.current = null
+    pending?.resolve(false)
+  }, [])
+
+  const confirmProjectNoteTarget = useCallback(async (relativePath: string) => {
+    const pending = pendingProjectNoteRef.current
+    if (!pending || projectNoteBusy) return
+    setProjectNoteBusy(true)
+    setProjectNoteError('')
+    try {
+      const configured = await window.electronAPI.configureProjectNoteTarget({
+        sessionId: pending.sessionId,
+        projectId: pending.reference.projectId,
+        relativePath,
+      })
+      if (!configured.relativePath) throw new Error(t('projectNoteTarget.chooseFile'))
+      await appendProjectNote(pending.sessionId, pending.reference, configured.relativePath)
+      setSessionMetaMap(previous => {
+        const existing = previous.get(pending.sessionId)
+        if (!existing) return previous
+        const next = new Map(previous)
+        next.set(pending.sessionId, {
+          ...existing,
+          projectNoteTargetPath: configured.relativePath ?? undefined,
+          projectNoteRecentTargetPaths: configured.recentPaths,
+        })
+        return next
+      })
+      toast.success(t('reference.addedToNote'), { description: configured.relativePath })
+      closeProjectNoteTargetDialog(true)
+    } catch (error) {
+      setProjectNoteError(error instanceof Error ? error.message : String(error))
+      setProjectNoteBusy(false)
+    }
+  }, [appendProjectNote, closeProjectNoteTargetDialog, projectNoteBusy, setSessionMetaMap, t])
 
   const hasPendingPrompt = React.useCallback((sessionId: string) => {
     return (pendingPermissions.get(sessionId)?.length ?? 0) > 0
@@ -1490,6 +1654,8 @@ function AppShellContent({
     sessionStatuses: effectiveSessionStatuses,
     onSessionSourcesChange: handleSessionSourcesChange,
     onJumpToTaskSessions: handleJumpToTaskSessions,
+    onAddSelectionNote: handleAddSelectionNote,
+    onRevealReference: handleRevealReference,
     rightSidebarButton: null,
     isCompactMode: isAutoCompact,
     // Search state for ChatDisplay highlighting
@@ -1504,7 +1670,7 @@ function AppShellContent({
     automationTestResults,
     getAutomationHistory,
     onReplayAutomation: handleReplayAutomation,
-  }), [contextValue, handleDeleteSession, sources, skills, chatStarters, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
+  }), [contextValue, handleDeleteSession, sources, skills, chatStarters, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, handleAddSelectionNote, handleRevealReference, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {
@@ -3044,6 +3210,23 @@ function AppShellContent({
         open={createProjectDialogOpen}
         onCancel={() => setCreateProjectDialogOpen(false)}
         onSubmit={handleCreateProjectSubmit}
+      />
+
+      <ProjectNoteTargetDialog
+        open={Boolean(pendingProjectNote)}
+        project={projects.find(project => (
+          project.config.id === pendingProjectNote?.reference.projectId
+        ))}
+        initialPath={pendingProjectNote
+          ? sessionMetaMap.get(pendingProjectNote.sessionId)?.projectNoteTargetPath
+          : undefined}
+        recentPaths={pendingProjectNote
+          ? sessionMetaMap.get(pendingProjectNote.sessionId)?.projectNoteRecentTargetPaths ?? []
+          : []}
+        busy={projectNoteBusy}
+        error={projectNoteError}
+        onCancel={() => closeProjectNoteTargetDialog(false)}
+        onConfirm={relativePath => { void confirmProjectNoteTarget(relativePath) }}
       />
 
       {/* Messaging dialogs (pairing-code + WA connect) — driven by messagingDialogAtom.
