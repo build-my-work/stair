@@ -6,7 +6,7 @@
 
 ## 当前阶段
 
-阶段 30 已完成：阶段 3 的 Project File 生命周期审查修复与交付收口。阶段 4 尚未开始。
+阶段 33 已完成：阶段 0—4 功能等价回归已经收口并完成审查与验证；停止在阶段 4，不进入阶段 5。
 
 ## 成功条件
 
@@ -334,6 +334,10 @@
 | 三个仓库 lint 入口引用不存在的 shell 脚本 | 阶段 28 静态检查 | `check-raw-sends.sh`、`check-task-tool-checks.sh`、`lint-i18n-strings.sh` 均在上游当前树缺失；聚焦 ESLint、类型检查、locale parity/sorted 和测试独立完成，不伪报这三项通过 |
 | 首次 package 级测试命令因递归清理临时目录被策略拒绝 | 阶段 28 扩大测试 | 命令在启动前被拒绝，没有测试或删除发生；改用 `/tmp` 临时配置目录并交由系统清理后重新运行 |
 | package 级测试首次运行的工作目录与启动夹具不完整 | 阶段 28 扩大测试 | server-core 的空配置缺少启动期 `config-defaults.json`；Renderer 从 app 目录又发现 `release/Stair.app` 副本；改为先调用 `ensureConfigDir()`，并直接在 `apps/electron/src/renderer` 运行源码测试 |
+| Claude、Kimi、Pi 审查指出大 PDF 全页挂载、状态预算/损坏恢复和 Reader 资源边界风险 | 阶段 31 | 先补聚焦测试，再改为 5 页渲染窗口、4 MiB 动态预算、损坏状态隔离、字段上限和 section 级 EPUB 资源缓存；无需调整 Craft 原有架构 |
+| 阶段 4 真实验收时开发窗口在长时间 HMR 后灰屏 | 阶段 31 | Vite 仍在监听但旧 Renderer 未重新挂载；只重启本轮启动的 Electron 开发进程，用户 Workspace 数据未清理，窗口恢复后继续验收 |
+| PDF 第 98 页已落盘，但关闭重开一度显示第 1 页 | 阶段 31 | 追到 `numPages=0` 与空布局被误判为就绪，恢复标记被提前消费；先补失败回归，再增加非空页数初始化守卫，真实 Electron 重开恢复到 98/240 |
+| `bun install --frozen-lockfile --ignore-scripts` 因当前精简 checkout 缺少历史 workspace 而要求改锁 | 阶段 31 | 不为环境差异重排整个 lockfile；通过依赖实际解析、类型检查、测试和生产构建验证阶段 4 依赖 |
 
 ### 阶段 30：Project File 生命周期审查修复
 
@@ -341,6 +345,39 @@
 - [x] 补齐冲突放弃/重载、恢复后继续自动保存，以及保存失败 veto 回归。
 - [x] 修正空文件、末尾换行、NUL 文本、dotfile 和 Project File 错误码边界。
 - [x] 运行相关包完整源码测试、三层类型检查、locale 与差异检查。
+- **状态：** 完成
+
+### 阶段 31：重建方案阶段 4——EPUB 与 PDF
+
+- [x] 复用现有 `project-file` Preview/显式 Auxiliary 和 Document Registry，不改变 Craft 原有领域与 Workbench 所有权。
+- [x] 实现 EPUB/PDF 安全二进制读取、Reader State RPC、原子状态存储与 fingerprint 隔离。
+- [x] 实现目录、连续阅读、进度、选区、红色波浪划线、稳定 locator 和 Reader 内 reveal。
+- [x] 对大 PDF 使用稳定占位布局和 5 页渲染窗口，并限制页数、二进制、状态和 EPUB 解压预算。
+- [x] 执行 Code Simplifier，再由 Claude、Kimi、Pi 审查并修复有效问题。
+- [x] 完成 Renderer 550/550、Reader/RPC/IPC 52/52、三层类型检查、聚焦 lint、生产构建和差异检查。
+- [x] 使用 Computer Use 验收真实 EPUB、1 页 PDF、240 页 PDF，以及关闭重开后的阅读进度恢复。
+- [x] 更新中文权威方案与进度记录，并按用户要求停止，不启动阶段 5。
+- **状态：** 完成
+
+### 阶段 32：阶段 0—4 功能等价审计与 EPUB 窄栏修复
+
+- [x] 以旧产品 `6dc6c9fb`、旧 Workbench `6be3dd4b` 和当前工作树建立能力对照基线。
+- [x] 为 EPUB 840 px 响应式边界先增加失败测试，再恢复覆盖式目录。
+- [x] 在当前 `os` Project 的真实 Electron 窗口中确认窄 Auxiliary 目录覆盖正文，并恢复测试前状态。
+- [x] 区分意外回归、计划漏项、阶段 5—9 明确延期和此前批准的语义变化。
+- [x] 调用 Claude 与 Kimi 独立审查，并只采纳经当前/旧版源码复核的结论。
+- [x] 形成中文演进、实现和质量三份研究文档，并纠正权威计划中过度的完成声明。
+- [x] 梳理其余回归并等待用户确认恢复范围。
+- **状态：** 审计与 EPUB 修复完成；后续收口见阶段 33
+
+### 阶段 33：阶段 0—4 功能等价收口
+
+- [x] 恢复 HMR Root、WindowManager、Draft 授权、空 Session、PDF overlay、Markdown 链接、Save Draft As、选区生命周期和 pageLabels。
+- [x] 恢复 Project Files 搜索/创建/图片/扩展名，以及 Reader 导出、分组、作者和相对路径信息。
+- [x] Panel 数量策略与 Craft 保持一致，不增加额外上限。
+- [x] 执行 Code Simplifier，并完成 Claude、Kimi、Pi 审查和有效问题修复。
+- [x] 运行聚焦测试、三层类型检查、相关 lint、Electron 构建、差异检查和真实 Electron 验收。
+- [x] 更新中文权威方案和进度记录；停止在阶段 4，不启动阶段 5。
 - **状态：** 完成
 
 ## 执行约束

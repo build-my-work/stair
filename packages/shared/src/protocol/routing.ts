@@ -294,6 +294,9 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.fs.SEARCH,
   RPC_CHANNELS.fs.LIST_DIRECTORY,
 
+  // dialog — workspace-server request completed by a local client capability
+  RPC_CHANNELS.dialog.SAVE_TEXT_FILE,
+
   // credentials — remote server's credential state
   RPC_CHANNELS.credentials.HEALTH_CHECK,
 
@@ -430,9 +433,17 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projects.CHANGED,
 
   // projectFiles — Project-scoped working-directory access
+  RPC_CHANNELS.projectFiles.SEARCH,
   RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
+  RPC_CHANNELS.projectFiles.CREATE_FILE,
+  RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
   RPC_CHANNELS.projectFiles.READ_TEXT,
+  RPC_CHANNELS.projectFiles.READ_BINARY,
   RPC_CHANNELS.projectFiles.SAVE_TEXT_FILE,
+  RPC_CHANNELS.projectFiles.GET_EPUB_STATE,
+  RPC_CHANNELS.projectFiles.APPLY_EPUB_STATE_MUTATION,
+  RPC_CHANNELS.projectFiles.GET_PDF_STATE,
+  RPC_CHANNELS.projectFiles.APPLY_PDF_STATE_MUTATION,
 
   // git — workspace filesystem
   RPC_CHANNELS.git.GET_BRANCH,

@@ -11,6 +11,7 @@ import type { SavedWindow } from './window-state'
 
 // Vite dev server URL for hot reload
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL
+const CHROMIUM_ERR_ABORTED = -3
 
 /**
  * Get the appropriate background material for Windows transparency effects
@@ -339,6 +340,7 @@ export class WindowManager {
           // Preserve pathname and search from saved URL, use dev server host
           devUrl.pathname = savedUrl.pathname
           devUrl.search = savedUrl.search
+          devUrl.hash = savedUrl.hash
           window.loadURL(devUrl.toString())
         } catch {
           // Fallback if URL parsing fails
@@ -354,7 +356,10 @@ export class WindowManager {
           const savedUrl = new URL(restoreUrl)
           const query: Record<string, string> = {}
           savedUrl.searchParams.forEach((value, key) => { query[key] = value })
-          window.loadFile(join(__dirname, 'renderer/index.html'), { query })
+          window.loadFile(join(__dirname, 'renderer/index.html'), {
+            query,
+            hash: savedUrl.hash,
+          })
         } catch {
           window.loadFile(join(__dirname, 'renderer/index.html'), { query: { workspaceId } })
         }
@@ -374,24 +379,70 @@ export class WindowManager {
       }
     }
 
-    // Fallback: if the renderer fails to load (e.g. stale path, disk error),
-    // recover gracefully by loading the default state instead of showing a white screen. See #13.
-    // In dev mode, retry the Vite dev server (it may not be ready yet) instead of falling back
-    // to file:// which doesn't exist during development.
     let failLoadRetries = 0
-    window.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-      windowLog.warn('Failed to load renderer:', errorCode, errorDescription)
-      if (VITE_DEV_SERVER_URL && failLoadRetries < 5) {
-        failLoadRetries++
-        windowLog.info(`Retrying Vite dev server (attempt ${failLoadRetries}/5)...`)
-        setTimeout(() => {
-          const params = new URLSearchParams({ workspaceId }).toString()
-          window.loadURL(`${VITE_DEV_SERVER_URL}?${params}`)
-        }, 1000)
-      } else {
-        window.loadFile(join(__dirname, 'renderer/index.html'), { query: { workspaceId } })
-      }
+    let failLoadRetryTimer: NodeJS.Timeout | null = null
+    let lastSuccessfulRendererUrl = ''
+    const clearFailLoadRetry = () => {
+      if (!failLoadRetryTimer) return
+      clearTimeout(failLoadRetryTimer)
+      failLoadRetryTimer = null
+    }
+    const rememberRendererUrl = (url: string) => {
+      if (this.isRendererAppUrl(url)) lastSuccessfulRendererUrl = url
+    }
+
+    window.webContents.on('did-finish-load', () => {
+      failLoadRetries = 0
+      clearFailLoadRetry()
+      rememberRendererUrl(window.webContents.getURL())
     })
+    window.webContents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
+      if (isMainFrame) rememberRendererUrl(url)
+    })
+    window.webContents.on(
+      'did-fail-load',
+      (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+        if (!isMainFrame || errorCode === CHROMIUM_ERR_ABORTED) return
+
+        windowLog.warn('Failed to load renderer:', errorCode, errorDescription, validatedURL)
+        if (failLoadRetries >= 5) {
+          windowLog.error('Renderer recovery stopped after 5 failed attempts')
+          return
+        }
+        failLoadRetries++
+
+        const recoveryUrl = [
+          validatedURL,
+          lastSuccessfulRendererUrl,
+          window.webContents.getURL(),
+        ].find(url => url && this.isRendererAppUrl(url))
+        const retry = () => {
+          failLoadRetryTimer = null
+          if (window.isDestroyed()) return
+
+          if (recoveryUrl) {
+            window.loadURL(recoveryUrl)
+            return
+          }
+
+          const query: Record<string, string> = { workspaceId }
+          if (focused) query.focused = 'true'
+          if (VITE_DEV_SERVER_URL) {
+            const params = new URLSearchParams(query).toString()
+            window.loadURL(`${VITE_DEV_SERVER_URL}?${params}`)
+          } else {
+            window.loadFile(join(__dirname, 'renderer/index.html'), { query })
+          }
+        }
+
+        if (VITE_DEV_SERVER_URL) {
+          windowLog.info(`Retrying Vite dev server (attempt ${failLoadRetries}/5)...`)
+          failLoadRetryTimer = setTimeout(retry, 1000)
+        } else {
+          retry()
+        }
+      },
+    )
 
     // If an initial deep link was provided, navigate to it after the window is ready
     if (initialDeepLink) {

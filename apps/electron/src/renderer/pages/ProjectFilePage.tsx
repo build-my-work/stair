@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useSetAtom } from 'jotai'
+import { toast } from 'sonner'
 import { AlertTriangle, Check, Eye, FileQuestion, Loader2, Pencil, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -7,10 +9,11 @@ import {
   getLanguageFromPath,
 } from '@craft-agent/ui'
 import {
-  classifyProjectTextFile,
+  classifyProjectFile,
   isCanonicalProjectRelativePath,
   isEditableProjectTextFile,
   MAX_EDITABLE_PROJECT_FILE_BYTES,
+  type ProjectFileBinaryResponse,
   type ProjectFileTextResponse,
 } from '@craft-agent/shared/project-files'
 import { useAppShellContext } from '@/context/AppShellContext'
@@ -25,6 +28,12 @@ import {
   ProjectTextDocumentController,
   type ProjectTextDocumentState,
 } from '@/components/project-files/project-text-document-controller'
+import { ProjectFileEpubReader } from '@/components/project-files/ProjectFileEpubReader'
+import { ProjectFilePdfReader } from '@/components/project-files/ProjectFilePdfReader'
+import { openProjectFilePreviewAtom } from '@/workbench/workbench-commands'
+import { resolveProjectFileMarkdownTarget } from './project-file-markdown-links'
+import { createProjectFileImageDataUrl } from './project-file-image'
+import { saveTextFile } from '@/lib/save-text-file'
 
 interface ProjectFilePageProps {
   projectId: string
@@ -48,12 +57,13 @@ function saveStatusKey(state: ProjectTextDocumentState): string | null {
 export default function ProjectFilePage({
   projectId,
   relativePath,
-  presentation,
 }: ProjectFilePageProps) {
   const { t } = useTranslation()
   const { resolvedMode, shikiTheme } = useTheme()
-  const { rightSidebarButton } = useAppShellContext()
+  const { onOpenFile, onOpenUrl, rightSidebarButton } = useAppShellContext()
+  const openProjectFilePreview = useSetAtom(openProjectFilePreviewAtom)
   const [response, setResponse] = useState<ProjectFileTextResponse | null>(null)
+  const [binaryResponse, setBinaryResponse] = useState<ProjectFileBinaryResponse | null>(null)
   const [editorContent, setEditorContent] = useState('')
   const [documentState, setDocumentState] = useState<ProjectTextDocumentState>(CLEAN_STATE)
   const [isEditing, setIsEditing] = useState(false)
@@ -62,17 +72,26 @@ export default function ProjectFilePage({
   const [reloadRevision, setReloadRevision] = useState(0)
   const controllerRef = useRef<ProjectTextDocumentController | null>(null)
   const fileName = relativePath.split('/').at(-1) ?? relativePath
-  const kind = classifyProjectTextFile(relativePath)
+  const kind = classifyProjectFile(relativePath)
   const canRead = isCanonicalProjectRelativePath(relativePath) && kind !== 'unknown'
   const canEdit = Boolean(
     response
     && response.metadata.byteLength <= MAX_EDITABLE_PROJECT_FILE_BYTES
     && isEditableProjectTextFile(relativePath),
   )
+  const imageUrl = useMemo(() => (
+    kind === 'image' && binaryResponse
+      ? createProjectFileImageDataUrl(
+          binaryResponse.metadata.mimeType,
+          binaryResponse.bytes,
+        )
+      : null
+  ), [binaryResponse, kind])
 
   useEffect(() => {
     let cancelled = false
     setResponse(null)
+    setBinaryResponse(null)
     setEditorContent('')
     setDocumentState(CLEAN_STATE)
     setIsEditing(false)
@@ -80,11 +99,18 @@ export default function ProjectFilePage({
     if (!canRead) return
 
     setIsLoading(true)
-    void window.electronAPI.readProjectTextFile({ projectId, relativePath })
+    const load = kind === 'epub' || kind === 'pdf' || kind === 'image'
+      ? window.electronAPI.readProjectFileBinary({ projectId, relativePath })
+      : window.electronAPI.readProjectTextFile({ projectId, relativePath })
+    void load
       .then(result => {
         if (cancelled) return
-        setResponse(result)
-        setEditorContent(result.text)
+        if ('bytes' in result) {
+          setBinaryResponse(result)
+        } else {
+          setResponse(result)
+          setEditorContent(result.text)
+        }
       })
       .catch(loadError => {
         if (!cancelled) {
@@ -96,7 +122,7 @@ export default function ProjectFilePage({
       })
 
     return () => { cancelled = true }
-  }, [canRead, projectId, relativePath, reloadRevision])
+  }, [canRead, kind, projectId, relativePath, reloadRevision])
 
   useEffect(() => {
     if (!response || !canEdit) return
@@ -162,6 +188,34 @@ export default function ProjectFilePage({
     setReloadRevision(revision => revision + 1)
   }, [t])
 
+  const handleSaveDraftAs = useCallback(async () => {
+    const extensionIndex = fileName.lastIndexOf('.')
+    const suggestedName = extensionIndex > 0
+      ? `${fileName.slice(0, extensionIndex)}.draft${fileName.slice(extensionIndex)}`
+      : `${fileName}.draft.txt`
+    const result = await saveTextFile({
+      suggestedName,
+      content: editorContent,
+    })
+    if (result.saved) toast.success(t('projectFileEditor.draftSaved'))
+  }, [editorContent, fileName, t])
+
+  const handleMarkdownLink = useCallback((target: string) => {
+    const resolved = resolveProjectFileMarkdownTarget(relativePath, target)
+    if (resolved.kind === 'project-file') {
+      void openProjectFilePreview({
+        projectId,
+        relativePath: resolved.relativePath,
+      })
+    } else if (resolved.kind === 'file') {
+      onOpenFile(resolved.path)
+    } else if (resolved.kind === 'url') {
+      onOpenUrl(resolved.url)
+    } else {
+      onOpenUrl(resolved.target)
+    }
+  }, [onOpenFile, onOpenUrl, openProjectFilePreview, projectId, relativePath])
+
   const editButton = canEdit ? (
     <PanelHeaderCenterButton
       icon={isEditing ? <Eye className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
@@ -180,11 +234,14 @@ export default function ProjectFilePage({
     <div className="flex h-full min-h-0 flex-col">
       <PanelHeader
         title={fileName}
-        badge={presentation === 'preview' ? (
-          <span className="rounded bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
-            {t('projectFileEditor.preview')}
+        badge={(
+          <span
+            className="max-w-[min(34vw,360px)] truncate font-mono text-[10px] font-normal text-muted-foreground/60"
+            title={relativePath}
+          >
+            {relativePath}
           </span>
-        ) : undefined}
+        )}
         actions={editButton}
         rightSidebarButton={rightSidebarButton}
       />
@@ -198,15 +255,39 @@ export default function ProjectFilePage({
           )}
           <span>{statusLabel}</span>
           {(documentState.status === 'conflict' || documentState.status === 'error') && (
-            <button
-              type="button"
-              className="ml-auto underline underline-offset-2"
-              onClick={documentState.status === 'conflict'
-                ? handleReloadAfterConflict
-                : () => controllerRef.current?.retry()}
-            >
-              {t(documentState.status === 'conflict' ? 'common.reload' : 'common.retry')}
-            </button>
+            <div className="ml-auto flex items-center gap-3">
+              {documentState.status === 'error' && (
+                <button
+                  type="button"
+                  className="underline underline-offset-2"
+                  onClick={() => controllerRef.current?.retry()}
+                >
+                  {t('common.retry')}
+                </button>
+              )}
+              <button
+                type="button"
+                className="underline underline-offset-2"
+                onClick={() => {
+                  void handleSaveDraftAs().catch(saveError => {
+                    toast.error(saveError instanceof Error
+                      ? saveError.message
+                      : String(saveError))
+                  })
+                }}
+              >
+                {t('projectFileEditor.saveDraftAs')}
+              </button>
+              {documentState.status === 'conflict' && (
+                <button
+                  type="button"
+                  className="underline underline-offset-2"
+                  onClick={handleReloadAfterConflict}
+                >
+                  {t('common.reload')}
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -235,6 +316,32 @@ export default function ProjectFilePage({
             <FileQuestion className="h-8 w-8 opacity-60" />
             <p className="text-sm">{t('filesSidebar.previewUnavailable')}</p>
           </div>
+        ) : kind === 'epub' && binaryResponse ? (
+          <ProjectFileEpubReader
+            key={`${projectId}\0${relativePath}\0${binaryResponse.sourceFingerprint}`}
+            projectId={projectId}
+            relativePath={relativePath}
+            metadata={binaryResponse.metadata}
+            bytes={binaryResponse.bytes}
+            sourceFingerprint={binaryResponse.sourceFingerprint}
+          />
+        ) : kind === 'pdf' && binaryResponse ? (
+          <ProjectFilePdfReader
+            key={`${projectId}\0${relativePath}\0${binaryResponse.sourceFingerprint}`}
+            projectId={projectId}
+            relativePath={relativePath}
+            metadata={binaryResponse.metadata}
+            bytes={binaryResponse.bytes}
+            sourceFingerprint={binaryResponse.sourceFingerprint}
+          />
+        ) : kind === 'image' && imageUrl ? (
+          <div className="flex h-full items-center justify-center overflow-auto p-6">
+            <img
+              src={imageUrl}
+              alt={fileName}
+              className="max-h-full max-w-full rounded-[6px] object-contain shadow-minimal"
+            />
+          </div>
         ) : isEditing ? (
           <div className="h-full" onKeyDown={handleKeyDown}>
             <ShikiCodeEditor
@@ -246,7 +353,13 @@ export default function ProjectFilePage({
           </div>
         ) : response && kind === 'markdown' ? (
           <div className="h-full overflow-auto px-8 py-6">
-            <Markdown mode="full">{response.text}</Markdown>
+            <Markdown
+              mode="full"
+              onFileClick={handleMarkdownLink}
+              onUrlClick={handleMarkdownLink}
+            >
+              {response.text}
+            </Markdown>
           </div>
         ) : response ? (
           <ShikiCodeViewer

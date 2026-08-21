@@ -22,6 +22,16 @@ import type {
   CredentialInputMode as SharedCredentialInputMode,
   CredentialAuthRequest as SharedCredentialAuthRequest,
 } from '../agent/index'
+import type {
+  EpubDocumentStateV1,
+  EpubHighlightV1,
+  EpubStateMutation,
+  PdfDocumentStateV1,
+  PdfHighlightV1,
+  PdfStateMutation,
+  ProjectFileRequest,
+  SourceFingerprint,
+} from '../project-files'
 
 // Re-export generateMessageId for handler convenience
 export { generateMessageId } from '@craft-agent/core/types'
@@ -31,12 +41,57 @@ export type {
   ProjectDirectoryEntriesResult,
   ProjectDirectoryEntry,
   ProjectFileFingerprint,
+  ProjectFileBinaryResponse,
   ProjectFileMetadata,
   ProjectFileRequest,
   ProjectFileTextResponse,
   SaveProjectTextFileRequest,
   SaveProjectTextFileResponse,
+  SourceFingerprint,
+  EpubDocumentStateV1,
+  EpubHighlightV1,
+  EpubStateMutation,
+  PdfDocumentStateV1,
+  PdfHighlightV1,
+  PdfStateMutation,
 } from '../project-files'
+
+export interface ReaderStateRequest extends ProjectFileRequest {
+  sourceFingerprint: SourceFingerprint
+}
+
+export interface ApplyEpubStateMutationRequest extends ReaderStateRequest {
+  mutation: EpubStateMutation
+}
+
+export interface ApplyEpubStateMutationResponse {
+  revision: number
+  applied: boolean
+  canonicalHighlight?: EpubHighlightV1
+}
+
+export type GetEpubStateResponse = EpubDocumentStateV1 | null
+
+export interface ApplyPdfStateMutationRequest extends ReaderStateRequest {
+  mutation: PdfStateMutation
+}
+
+export interface ApplyPdfStateMutationResponse {
+  revision: number
+  applied: boolean
+  canonicalHighlight?: PdfHighlightV1
+}
+
+export type GetPdfStateResponse = PdfDocumentStateV1 | null
+
+export interface SaveTextFileRequest {
+  suggestedName: string
+  content: string
+}
+
+export interface SaveTextFileResponse {
+  saved: boolean
+}
 
 // ---------------------------------------------------------------------------
 // Session types

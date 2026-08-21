@@ -8,6 +8,7 @@
 - 已完成：阶段 1—18、21—26。
 - 仍进行中：阶段 19 的少量 Computer Use 指针场景、阶段 20 的 native Browser 滚动闪烁最终像素复验。
 - 当前文档：`task_plan.md` 记录计划与约束，`findings.md` 记录结论与原因，本文件记录执行和验证时间线。
+- 当前状态：阶段 0—4 的新架构主链和本轮确认的功能等价回归已经收口；阶段 5 未开始。
 
 ## 2026-08-06：领域模型与 Workbench 初版
 
@@ -242,9 +243,9 @@
 
 1. 当前在哪里：`codex/stair-rebuild-v2`，基于 `upstream/main@50ffa143ab76`。
 2. 最终目标是什么：不保留旧数据，以最小边界重建 Stair 产品能力。
-3. 已完成什么：重建方案阶段 0—3，包括领域不变量、最小 Workbench、Project Files、文本文档生命周期及配套验证。
-4. 还剩什么：重建方案阶段 4—9；旧分支阶段 19—20 只保留为历史问题记录。
-5. 下一步如何验证：等待用户确认后，从阶段 4 的 EPUB/PDF Fixture 和统一文档边界开始，不提前接入引用或 Browser。
+3. 已完成什么：重建方案阶段 0—4，包括领域不变量、最小 Workbench、Project Files、文本文档生命周期、EPUB/PDF 阅读与新 Reader 状态边界及配套验证。
+4. 还剩什么：重建方案阶段 5—9；旧分支阶段 19—20 只保留为历史问题记录。
+5. 下一步如何验证：按用户要求停止在阶段 4；阶段 5 的引用消费和 Add Note 不启动，等待用户另行确认。
 
 ## 当前快照
 
@@ -253,7 +254,7 @@
 - Navigator 可以独立收起和恢复，Workbench 布局保持不变。
 - Project File 普通打开复用唯一 Preview，显式打开才新增持久 Auxiliary，Primary 不变。
 - 文本文档支持 dirty、自动保存、比较保存和关闭前 flush；阶段 3 已完成真实 Electron 验收。
-- 阶段 4—9 尚未开始；`promo/` 仍不在范围内。
+- 阶段 4 已完成，阶段 5—9 尚未开始；`promo/` 仍不在范围内。
 
 ## 2026-08-12：彻底完成阶段 0（完成）
 
@@ -351,3 +352,44 @@
 - 审查后聚焦回归 52/52 通过，共 188 个断言、11 个文件；shared/server-core/Renderer 完整源码回归分别为 2211/239/508 项通过，均为 0 项失败。
 - shared、server-core、Electron 三层类型检查通过；7 份 locale 各 1661 个 key，parity 与排序检查通过；聚焦 lint 为 0 error。
 - 本轮新增测试先复现上述缺口，再以最小实现转绿；阶段 4 仍未开始，`promo/` 未触碰。
+
+## 2026-08-13：开始重建方案阶段 4
+
+- 阶段 4 范围冻结为 EPUB/PDF 阅读、进度、划线、选区、稳定 locator 和 Reader 内 reveal；Reference Preview 消费、Add Note 与聊天目标写入仍属于阶段 5。
+- 架构审计确认可复用当前 `project-file` Panel、Project 授权 RPC 与 Document Registry，不需要改变 Craft 原有 Session、Workspace 或 Workbench 所有权，因此未触发暂停确认。
+- 旧 Stair 分支只作为安全校验、状态 Schema、locator 和阅读器行为规格来源；旧 `PanelStack`、Session 目标路由、Add Note、Browser 和迁移逻辑不移植。
+- 已冻结阶段 4 的自动化测试文件、压缩 `mimetype` EPUB、目录 EPUB、text-layer PDF 和真实 Electron 验收步骤；下一步先增加失败测试。
+
+## 2026-08-13：完成重建方案阶段 4
+
+- EPUB/PDF 已作为现有 `project-file` Panel 内容类型接入，普通打开继续复用唯一 Preview，显式打开才新增 Auxiliary；没有改变 Craft 原有 Session、Workbench、Workspace 或 Project 所有权。
+- 新增带 SHA-256 fingerprint 的 32 MiB 安全二进制读取、EPUB ZIP 实际解压预算、Reader State RPC，以及 Project 自有 `reader-state/v1` 原子状态存储。
+- EPUB 支持目录、连续阅读、样式/图片、内部链接、选区、红色波浪划线、进度、划线 reveal 和 CFI locator；PDF 支持目录、连续滚动、text layer 选区、划线、页内 reveal 和 text-quote/矩形 locator。
+- PDF 按稳定页面几何保留连续滚动，只渲染当前页附近 5 页；对 1000 页以上文档明确拒绝，避免大文档一次挂载全部 canvas。
+- Reader State 限制字段长度、目录深度、矩形数、1000 条划线和 4 MiB JSON；损坏/超限状态会隔离，mutation 超预算会在覆盖旧状态前失败。
+- 已执行 `code-simplifier`；Claude、Kimi、Pi 分别完成审查。已修复大 PDF 全页挂载、状态预算与损坏恢复、字段边界、EPUB 资源缓存/上下文放大、初始化与卸载竞态等有效问题；相对链接由 epub.js 现有内部导航处理，未重复实现。
+- 自动化回归：Renderer 550/550，共 1059 个断言；Reader/RPC/IPC 52/52，共 162 个断言；shared、server-core、Electron 三层类型检查和差异检查均通过。
+- Electron/shared 阶段 4 改动范围 lint 为 0 错误、0 警告；main、preload、toolbar preload、interceptor 和 Renderer 生产构建均通过。
+- Computer Use 真实验收：4.1 MiB EPUB（697 条目、195 张图片）可恢复到“2.1 虚拟化 CPU”；1 页 PDF 的选区/划线/删除通过；11 MiB、240 页 PDF 可从第 1 页直达第 98 页，并在关闭重开后恢复到 98/240。
+- 真实验收发现 PDF 在 `numPages=0` 时提前消费恢复标记；先增加失败回归，再用 `numPages > 0` 的最小初始化守卫修复，复测通过。
+- 稳定引用结构已经定义，但把引用写入草稿、消息、Reference Preview 或 Add Note 明确保留到阶段 5。按用户要求在此停止，阶段 5 未开始，`promo/` 未触碰。
+
+## 2026-08-21：阶段 0—4 功能等价审计与 EPUB 窄栏修复
+
+- 用户指出当前 EPUB 目录会挤压正文，而旧版在窄 Panel 中使用覆盖式目录。
+- 先增加 839/840/1200 px 边界测试；首次因布局函数不存在而失败，再以 Reader 内 `ResizeObserver` 和 overlay 分支最小修复，同一测试文件转为 21 项通过、0 项失败。
+- 修复没有改变 Workbench、Panel、Project、Session 或 RPC 所有权，也没有恢复旧 `PanelStack`/sizing 模块。
+- 对照 `6dc6c9fb`、`6be3dd4b`、`50ffa143` 与当前工作树，确认重建从干净上游开始时漏移植了 HMR Root 复用和主窗口加载失败过滤两项旧修复。
+- 真实开发窗口在 HMR 后曾出现已开 Panels 被清空，Computer Use 也一度遇到窗口不可用，与上述两个源码缺口一致；在窗口重新稳定后，已于当前 `os` Project 的实际 EPUB 中确认窄 Auxiliary 目录以遮罩层覆盖正文，Project Files 保持固定，测试后恢复为目录关闭状态。
+- 进一步确认 Draft Workspace 授权、空 Session 清理、PDF 窄栏、Markdown 链接、Save Draft As、Project Files 搜索/创建/图片、Reader 选区生命周期/pageLabels/导出等差异。
+- 已将“意外回归/计划漏项”“阶段 5—9 明确延期”“此前批准的语义变化”分开记录到 `docs/code-research/stair-stage-0-4-feature-parity/`。
+- Kimi 的独立审查覆盖了主要差异；Claude 第一轮过浅，第二次受本机模型别名干扰，最终以 safe-mode 明确指定 `claude-sonnet-4-6` 完成审查。最终 Claude 正确确认 HMR、`did-fail-load`、PDF responsive/pageLabels，但误判空 Session 清理和 Draft 授权仍存在；错误结论已按当前源码驳回。
+- 当前仍停止在阶段 4；除 EPUB overlay 外，本轮只审计和记录其他差异，等待用户确认修复范围。`promo/` 未触碰。
+
+## 2026-08-21：阶段 0—4 功能等价收口完成
+
+- 按确认顺序恢复 HMR Root 复用、WindowManager 主框架失败过滤、Draft Workspace 授权、空 Session 清理、PDF 窄栏 overlay、Markdown 链接、Save Draft As、EPUB 选区生命周期和 PDF pageLabels。
+- 恢复 Project Files 搜索、普通文件/目录创建、图片预览和旧文本/代码扩展名，以及 EPUB/PDF 高亮导出、EPUB 目录分组、作者和相对路径信息。
+- Panel 数量策略与 Craft 当前行为保持一致，不额外恢复“最多 8 个 Panel”限制；没有重新引入旧 PanelStack、兼容层或多状态所有者。
+- 已执行 Code Simplifier，并由 Claude、Kimi、Pi 审查；有效问题补测试后修复。相关回归、三层类型检查、聚焦 lint、Electron 构建和真实 Electron 验收均已完成。
+- 当前停止在阶段 4，不进入阶段 5；`promo/` 未触碰。

@@ -19,6 +19,16 @@ if (!en) throw new Error("en.json is required as the source-of-truth locale");
 
 const otherLangs = Object.entries(locales).filter(([lang]) => lang !== "en");
 const enKeys = Object.keys(en);
+const restoredProjectFilesKeys = [
+  "filesSidebar.createEnterName",
+  "filesSidebar.createTrimName",
+  "filesSidebar.filterPlaceholder",
+  "filesSidebar.newFile",
+  "filesSidebar.newFileName",
+  "filesSidebar.newFolder",
+  "filesSidebar.newFolderName",
+  "filesSidebar.noMatches",
+];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,6 +98,13 @@ describe("i18n locale parity", () => {
         }
       }
       expect(mismatches).toEqual([]);
+    });
+
+    it(`${lang} keeps the restored Project Files translations localized`, () => {
+      const untranslated = restoredProjectFilesKeys.filter(
+        (key) => translations[key] === en[key],
+      );
+      expect(untranslated).toEqual([]);
     });
   }
 

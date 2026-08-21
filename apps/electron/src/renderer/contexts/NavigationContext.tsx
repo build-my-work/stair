@@ -60,7 +60,8 @@ import {
   showSessionInPrimaryAtom,
   switchWorkbenchProjectAtom,
 } from '@/workbench/workbench-commands'
-import { workbenchAtom } from '@/workbench/workbench-state'
+import { visibleWorkbenchSessionIdsAtom, workbenchAtom } from '@/workbench/workbench-state'
+import { findEmptySessionsLeavingWorkbench } from '@/workbench/session-auto-cleanup'
 import { flushOpenProjectFilesForProject } from '@/components/project-files/project-file-document-registry'
 
 export { routes }
@@ -103,6 +104,8 @@ interface NavigationProviderProps {
   onSwitchWorkspaceBySlug?: (slug: string) => void
   onCreateSession: (workspaceId: string, options?: import('../../shared/types').CreateSessionOptions) => Promise<Session>
   onInputChange?: (sessionId: string, value: string) => void
+  hasSessionDraft?: (sessionId: string) => boolean
+  onAutoDeleteEmptySession?: (sessionId: string) => void
   isReady?: boolean
   isSessionsReady?: boolean
   remoteWorkspaceId?: string | null
@@ -116,6 +119,8 @@ export function NavigationProvider({
   onSwitchWorkspaceBySlug,
   onCreateSession,
   onInputChange,
+  hasSessionDraft,
+  onAutoDeleteEmptySession,
   isReady = true,
   isSessionsReady = true,
   remoteWorkspaceId,
@@ -129,6 +134,7 @@ export function NavigationProvider({
   const openSessionPanel = useSetAtom(openSessionInNewPanelAtom)
   const switchWorkbenchProject = useSetAtom(switchWorkbenchProjectAtom)
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
+  const visibleSessionIds = useAtomValue(visibleWorkbenchSessionIdsAtom)
   const sessionMetas = useMemo(() => Array.from(sessionMetaMap.values()), [sessionMetaMap])
   const updateSessionMeta = useSetAtom(updateSessionMetaAtom)
   const { labels: labelConfigs } = useLabels(workspaceId)
@@ -153,6 +159,7 @@ export function NavigationProvider({
   const isPopstateSwitchRef = useRef(false)
   const pendingNavigationRef = useRef<{ route: Route; options?: NavigateOptions } | null>(null)
   const suppressAutoSelectRef = useRef(false)
+  const previousVisibleSessionIdsRef = useRef<Set<string> | null>(null)
 
   const updateCanGoBackForward = useCallback(() => {
     setCanGoBack(historySeqRef.current > 0)
@@ -550,6 +557,24 @@ export function NavigationProvider({
     if (!workspaceId || !defaultProjectId) return
     initializeWorkbench({ workspaceId, defaultProjectId })
   }, [defaultProjectId, initializeWorkbench, workspaceId])
+
+  useEffect(() => {
+    const currentVisibleSessionIds = new Set(visibleSessionIds)
+    const previousVisibleSessionIds = previousVisibleSessionIdsRef.current
+    previousVisibleSessionIdsRef.current = currentVisibleSessionIds
+
+    if (!previousVisibleSessionIds || !hasSessionDraft || !onAutoDeleteEmptySession) return
+
+    for (const sessionId of findEmptySessionsLeavingWorkbench(
+      previousVisibleSessionIds,
+      currentVisibleSessionIds,
+      sessionMetaMap,
+      hasSessionDraft,
+      workspaceId ?? '',
+    )) {
+      onAutoDeleteEmptySession(sessionId)
+    }
+  }, [hasSessionDraft, onAutoDeleteEmptySession, sessionMetaMap, visibleSessionIds, workspaceId])
 
   useEffect(() => {
     if (!isReady || !isSessionsReady || !workspaceId || !workspaceSlug || !defaultProjectId) return

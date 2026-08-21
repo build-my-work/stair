@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { constants, type Stats } from 'node:fs'
 import {
   lstat,
+  mkdir,
   open,
   readdir,
   realpath,
@@ -17,11 +18,16 @@ import {
   isEditableProjectTextFile,
   isProjectFileFingerprint,
   MAX_EDITABLE_PROJECT_FILE_BYTES,
+  MAX_PROJECT_FILE_BINARY_BYTES,
   MAX_PROJECT_FILE_TEXT_BYTES,
   type ProjectDirectoryEntriesRequest,
   type ProjectDirectoryEntriesResult,
   type ProjectDirectoryEntry,
+  type ProjectFileSearchRequest,
+  type ProjectFileSearchResult,
+  type CreateProjectEntryRequest,
   type ProjectFileFingerprint,
+  type ProjectFileBinaryResponse,
   type ProjectFileMetadata,
   type ProjectFileRequest,
   type ProjectFileTextResponse,
@@ -34,28 +40,56 @@ import { getMimeType } from '@craft-agent/shared/utils'
 import { validatePathFormat } from '../../utils/path-validation'
 import type { RequestContext, RpcServer } from '../../transport'
 import type { HandlerDeps } from '../handler-deps'
+import {
+  EpubArchiveValidationError,
+  validateEpubArchive,
+} from '../../project-files/epub-archive-validator'
 
 const MAX_DIRECTORY_ENTRIES = 500
+const MAX_PROJECT_FILE_SEARCH_RESULTS = 50
+const MAX_PROJECT_FILE_NAME_BYTES = 255
+const SKIPPED_SEARCH_DIRECTORIES = new Set([
+  'node_modules', '.git', '.svn', '.hg', 'dist', 'build', '.next', '.nuxt',
+  '.cache', '__pycache__', 'vendor', '.idea', '.vscode', 'coverage',
+  '.nyc_output', '.turbo', 'out',
+])
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf])
 const PROJECT_FILE_MIME_TYPES: Record<string, string> = {
+  '.avif': 'image/avif',
+  '.bmp': 'image/bmp',
   '.css': 'text/css',
   '.csv': 'text/csv',
+  '.gif': 'image/gif',
   '.htm': 'text/html',
   '.html': 'text/html',
+  '.ico': 'image/x-icon',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
   '.js': 'text/javascript',
   '.json': 'application/json',
   '.md': 'text/markdown',
   '.mdx': 'text/markdown',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
   '.ts': 'text/typescript',
   '.tsx': 'text/typescript',
   '.xml': 'application/xml',
+  '.webp': 'image/webp',
   '.yaml': 'application/yaml',
   '.yml': 'application/yaml',
 }
+const PROJECT_FILE_BINARY_EXTENSIONS = new Set([
+  '.epub', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
+  '.bmp', '.ico', '.avif',
+])
 
 export const HANDLED_CHANNELS = [
+  RPC_CHANNELS.projectFiles.SEARCH,
   RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
+  RPC_CHANNELS.projectFiles.CREATE_FILE,
+  RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
   RPC_CHANNELS.projectFiles.READ_TEXT,
+  RPC_CHANNELS.projectFiles.READ_BINARY,
   RPC_CHANNELS.projectFiles.SAVE_TEXT_FILE,
   RPC_CHANNELS.projectFiles.FLUSH_COMPLETED,
 ] as const
@@ -126,6 +160,56 @@ function validateDirectoryRequest(value: unknown): ProjectDirectoryEntriesReques
   return {
     projectId: validateProjectId(request.projectId),
     ...(request.relativePath ? { relativePath: request.relativePath } : {}),
+  }
+}
+
+function validateSearchRequest(value: unknown): ProjectFileSearchRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Project File search request is required')
+  }
+  const request = value as Partial<ProjectFileSearchRequest>
+  if (
+    typeof request.query !== 'string'
+    || request.query !== request.query.trim()
+    || request.query.length === 0
+    || Buffer.byteLength(request.query, 'utf8') > 256
+  ) {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Invalid Project File search query')
+  }
+  return { projectId: validateProjectId(request.projectId), query: request.query }
+}
+
+function validateCreateRequest(value: unknown): CreateProjectEntryRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Project entry request is required')
+  }
+  const request = value as Partial<CreateProjectEntryRequest>
+  if (
+    request.parentRelativePath !== undefined
+    && request.parentRelativePath !== ''
+    && !isCanonicalProjectRelativePath(request.parentRelativePath)
+  ) {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Invalid Project parent directory')
+  }
+  if (
+    typeof request.name !== 'string'
+    || request.name.length === 0
+    || request.name !== request.name.trim()
+    || request.name === '.'
+    || request.name === '..'
+    || request.name.includes('\0')
+    || request.name.includes('/')
+    || request.name.includes('\\')
+    || Buffer.byteLength(request.name, 'utf8') > MAX_PROJECT_FILE_NAME_BYTES
+  ) {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Name must be one valid path segment')
+  }
+  return {
+    projectId: validateProjectId(request.projectId),
+    ...(request.parentRelativePath
+      ? { parentRelativePath: request.parentRelativePath }
+      : {}),
+    name: request.name,
   }
 }
 
@@ -258,6 +342,90 @@ export async function listProjectDirectoryEntriesWithinRoot(
   return { entries, truncated }
 }
 
+export async function searchProjectFilesWithinRoot(
+  rootPath: string,
+  query: string,
+): Promise<ProjectFileSearchResult[]> {
+  const root = await canonicalRoot(rootPath)
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) return []
+  const results: ProjectFileSearchResult[] = []
+  let queue = ['']
+
+  while (queue.length > 0 && results.length < MAX_PROJECT_FILE_SEARCH_RESULTS) {
+    const nextQueue: string[] = []
+    for (const relativeDirectory of queue) {
+      let entries
+      try {
+        entries = await readdir(
+          relativeDirectory ? join(root, relativeDirectory) : root,
+          { withFileTypes: true },
+        )
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        if (results.length >= MAX_PROJECT_FILE_SEARCH_RESULTS) break
+        if (entry.isSymbolicLink() || SKIPPED_SEARCH_DIRECTORIES.has(entry.name)) continue
+        const relativePath = relativeDirectory
+          ? `${relativeDirectory}/${entry.name}`
+          : entry.name
+        if (entry.isDirectory()) {
+          nextQueue.push(relativePath)
+        } else if (
+          entry.isFile()
+          && relativePath.toLowerCase().includes(normalizedQuery)
+        ) {
+          results.push({ name: entry.name, relativePath })
+        }
+      }
+    }
+    queue = nextQueue
+  }
+  return results.sort((left, right) => (
+    left.name.length - right.name.length
+    || left.relativePath.localeCompare(right.relativePath)
+  ))
+}
+
+export async function createProjectEntryWithinRoot(
+  rootPath: string,
+  request: CreateProjectEntryRequest,
+  type: ProjectDirectoryEntry['type'],
+): Promise<ProjectDirectoryEntry> {
+  const validated = validateCreateRequest(request)
+  const parent = await resolveProjectPath(
+    rootPath,
+    validated.parentRelativePath ?? '',
+    'directory',
+  )
+  const relativePath = validated.parentRelativePath
+    ? posix.join(validated.parentRelativePath, validated.name)
+    : validated.name
+  if (!isCanonicalProjectRelativePath(relativePath)) {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Created Project path is invalid')
+  }
+  const targetPath = join(parent.targetPath, validated.name)
+  if (!isPathWithinRoot(parent.rootPath, targetPath)) {
+    throw projectFileError('PROJECT_FILE_ACCESS_DENIED', 'Project entry is outside the working directory')
+  }
+
+  try {
+    if (type === 'directory') {
+      await mkdir(targetPath)
+    } else {
+      const handle = await open(targetPath, 'wx')
+      await handle.close()
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw projectFileError('PROJECT_FILE_ALREADY_EXISTS', 'A file or directory with this name already exists')
+    }
+    throw projectFileError('PROJECT_FILE_ACCESS_DENIED', 'Project entry could not be created')
+  }
+  return { name: validated.name, relativePath, type }
+}
+
 function statSnapshotsMatch(left: FileStatSnapshot, right: FileStatSnapshot): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
@@ -374,6 +542,48 @@ export async function readProjectTextFileWithinRoot(
   return {
     metadata: metadata(validated.projectId, validated.relativePath, stable.stat),
     text: decodeUtf8(stable.bytes),
+    sourceFingerprint: fingerprint(stable.bytes),
+  }
+}
+
+export async function readProjectFileBinaryWithinRoot(
+  rootPath: string,
+  request: ProjectFileRequest,
+): Promise<ProjectFileBinaryResponse> {
+  const validated = validateFileRequest(request)
+  const extension = extname(validated.relativePath).toLowerCase()
+  if (!PROJECT_FILE_BINARY_EXTENSIONS.has(extension)) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Binary Project File reading is limited to EPUB, PDF, and image readers',
+    )
+  }
+  const stable = await readStableProjectFile(
+    rootPath,
+    validated.relativePath,
+    MAX_PROJECT_FILE_BINARY_BYTES,
+  )
+  if (extension === '.epub') {
+    try {
+      await validateEpubArchive(stable.bytes)
+    } catch (error) {
+      if (error instanceof EpubArchiveValidationError) {
+        throw projectFileError(
+          error.code === 'EPUB_ARCHIVE_TOO_LARGE'
+            || error.code === 'EPUB_ARCHIVE_TOO_MANY_ENTRIES'
+            || error.code === 'EPUB_ARCHIVE_ENTRY_TOO_LARGE'
+            || error.code === 'EPUB_ARCHIVE_COMPRESSION_RATIO_EXCEEDED'
+            ? 'PROJECT_FILE_TOO_LARGE'
+            : 'PROJECT_FILE_INVALID_REQUEST',
+          error.message,
+        )
+      }
+      throw error
+    }
+  }
+  return {
+    metadata: metadata(validated.projectId, validated.relativePath, stable.stat),
+    bytes: stable.bytes,
     sourceFingerprint: fingerprint(stable.bytes),
   }
 }
@@ -548,6 +758,14 @@ async function resolveAuthorizedProjectRoot(
 
 export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps): void {
   server.handle(
+    RPC_CHANNELS.projectFiles.SEARCH,
+    async (context, rawRequest: unknown) => {
+      const request = validateSearchRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(context, deps, request.projectId)
+      return searchProjectFilesWithinRoot(rootPath, request.query)
+    },
+  )
+  server.handle(
     RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
     async (context, rawRequest: unknown) => {
       const request = validateDirectoryRequest(rawRequest)
@@ -561,6 +779,30 @@ export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps
       const request = validateFileRequest(rawRequest)
       const rootPath = await resolveAuthorizedProjectRoot(context, deps, request.projectId)
       return readProjectTextFileWithinRoot(rootPath, request)
+    },
+  )
+  server.handle(
+    RPC_CHANNELS.projectFiles.CREATE_FILE,
+    async (context, rawRequest: unknown) => {
+      const request = validateCreateRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(context, deps, request.projectId)
+      return createProjectEntryWithinRoot(rootPath, request, 'file')
+    },
+  )
+  server.handle(
+    RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
+    async (context, rawRequest: unknown) => {
+      const request = validateCreateRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(context, deps, request.projectId)
+      return createProjectEntryWithinRoot(rootPath, request, 'directory')
+    },
+  )
+  server.handle(
+    RPC_CHANNELS.projectFiles.READ_BINARY,
+    async (context, rawRequest: unknown) => {
+      const request = validateFileRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(context, deps, request.projectId)
+      return readProjectFileBinaryWithinRoot(rootPath, request)
     },
   )
   server.handle(

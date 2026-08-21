@@ -190,6 +190,7 @@ export const CHANNEL_MAP = {
 
   // Folder dialog
   openFolderDialog: invoke(RPC_CHANNELS.dialog.OPEN_FOLDER),
+  saveTextFile: invoke(RPC_CHANNELS.dialog.SAVE_TEXT_FILE),
 
   // Filesystem search
   searchFiles: invoke(RPC_CHANNELS.fs.SEARCH),
@@ -396,9 +397,17 @@ export const CHANNEL_MAP = {
   onProjectsChanged: listener(RPC_CHANNELS.projects.CHANGED),
 
   // Project Files
+  searchProjectFiles: invoke(RPC_CHANNELS.projectFiles.SEARCH),
   listProjectDirectoryEntries: invoke(RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES),
+  createProjectFile: invoke(RPC_CHANNELS.projectFiles.CREATE_FILE),
+  createProjectDirectory: invoke(RPC_CHANNELS.projectFiles.CREATE_DIRECTORY),
   readProjectTextFile: invoke(RPC_CHANNELS.projectFiles.READ_TEXT),
+  readProjectFileBinary: invoke(RPC_CHANNELS.projectFiles.READ_BINARY),
   saveProjectTextFile: invoke(RPC_CHANNELS.projectFiles.SAVE_TEXT_FILE),
+  getEpubDocumentState: invoke(RPC_CHANNELS.projectFiles.GET_EPUB_STATE),
+  applyEpubStateMutation: invoke(RPC_CHANNELS.projectFiles.APPLY_EPUB_STATE_MUTATION),
+  getPdfDocumentState: invoke(RPC_CHANNELS.projectFiles.GET_PDF_STATE),
+  applyPdfStateMutation: invoke(RPC_CHANNELS.projectFiles.APPLY_PDF_STATE_MUTATION),
   onProjectFilesFlushRequested: listener(RPC_CHANNELS.projectFiles.FLUSH_REQUESTED),
   completeProjectFilesFlush: invoke(RPC_CHANNELS.projectFiles.FLUSH_COMPLETED),
 

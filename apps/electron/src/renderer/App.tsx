@@ -66,6 +66,10 @@ import {
 } from '@/atoms/background-finished'
 import { visibleWorkbenchSessionIdsAtom } from '@/workbench/workbench-state'
 import { removeSessionFromWorkbenchAtom } from '@/workbench/workbench-commands'
+import {
+  findEmptySessionsLeavingWorkbench,
+  sessionDraftHasContent,
+} from '@/workbench/session-auto-cleanup'
 import { getSessionTitle } from '@/utils/session'
 import { extractBadges } from '@/lib/mentions'
 import { getDefaultStore } from 'jotai'
@@ -382,6 +386,7 @@ export default function App() {
   // during typing; attachments are stored as lightweight refs (path + name) and
   // hydrated via readFileAttachment() on session switch.
   const sessionDraftsRef = useRef<Map<string, SessionDraft>>(new Map())
+  const draftSaveTimeoutRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const hydratingCreatedSessionsRef = useRef<Set<string>>(new Set())
   const createdSessionsWithEarlyEventsRef = useRef<Set<string>>(new Set())
   // Unified session options for all session-scoped settings
@@ -1252,11 +1257,46 @@ export default function App() {
     }
 
     await window.electronAPI.deleteSession(sessionId)
+    const pendingDraftSave = draftSaveTimeoutRef.current.get(sessionId)
+    if (pendingDraftSave) {
+      clearTimeout(pendingDraftSave)
+      draftSaveTimeoutRef.current.delete(sessionId)
+    }
+    sessionDraftsRef.current.delete(sessionId)
     // Remove from per-session atom and metadata map (no sessionsAtom)
     removeSessionFromWorkbench(sessionId)
     removeSession(sessionId)
     return true
   }, [store, removeSession, removeSessionFromWorkbench])
+
+  const handleAutoDeleteEmptySession = useCallback(async (sessionId: string) => {
+    try {
+      if (sessionDraftHasContent(sessionDraftsRef.current.get(sessionId))) return
+
+      const persistedDraft = await window.electronAPI.getDraft(sessionId)
+      if (sessionDraftHasContent(persistedDraft) || !windowWorkspaceId) return
+
+      const stillEmpty = findEmptySessionsLeavingWorkbench(
+        new Set([sessionId]),
+        store.get(visibleWorkbenchSessionIdsAtom),
+        store.get(sessionMetaMapAtom),
+        candidateId => sessionDraftHasContent(
+          sessionDraftsRef.current.get(candidateId),
+        ),
+        windowWorkspaceId,
+      ).includes(sessionId)
+      if (stillEmpty) await handleDeleteSession(sessionId, true)
+    } catch (error) {
+      rendererLog.warn('[sessions] Failed to auto-delete empty session', {
+        sessionId,
+        error,
+      })
+    }
+  }, [handleDeleteSession, store, windowWorkspaceId])
+
+  const hasSessionDraft = useCallback((sessionId: string): boolean => {
+    return sessionDraftHasContent(sessionDraftsRef.current.get(sessionId))
+  }, [])
 
   const handleFlagSession = useCallback((sessionId: string) => {
     updateSessionById(sessionId, { isFlagged: true })
@@ -1510,9 +1550,6 @@ export default function App() {
     }
   }, [sessionOptions])
 
-  // Handle input draft changes per session with debounced persistence
-  const draftSaveTimeoutRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
-
   // Cleanup draft save timers on unmount to prevent memory leaks
   useEffect(() => {
     return () => {
@@ -1575,7 +1612,9 @@ export default function App() {
     }
     const timeout = setTimeout(() => {
       const draft = sessionDraftsRef.current.get(sessionId) ?? { text: '' }
-      window.electronAPI.setDraft(sessionId, draft)
+      void window.electronAPI.setDraft(sessionId, draft).catch(error => {
+        rendererLog.warn('[drafts] Failed to persist draft', { sessionId, error })
+      })
       draftSaveTimeoutRef.current.delete(sessionId)
     }, DRAFT_SAVE_DEBOUNCE_MS)
     draftSaveTimeoutRef.current.set(sessionId, timeout)
@@ -2125,6 +2164,8 @@ export default function App() {
           onSwitchWorkspaceBySlug={handleSwitchWorkspaceBySlug}
           onCreateSession={handleCreateSession}
           onInputChange={handleInputChange}
+          hasSessionDraft={hasSessionDraft}
+          onAutoDeleteEmptySession={handleAutoDeleteEmptySession}
           isReady={appState === 'ready'}
           isSessionsReady={sessionsLoaded}
           remoteWorkspaceId={windowRemoteWorkspaceId}

@@ -126,6 +126,7 @@ import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeC
 import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, setBeforeUpdateInstallHook, setInstallQuitFailedHook } from './auto-update'
 import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
 import { requestClientProjectFilesFlush } from '@craft-agent/server-core/handlers/rpc/project-files'
+import { registerSaveTextFileIpc } from './save-text-file'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
 
 // Initialize electron-log for renderer process support
@@ -556,6 +557,7 @@ app.whenReady().then(async () => {
       const result = await dialog.showOpenDialog(win, spec)
       return { canceled: result.canceled, filePaths: result.filePaths }
     })
+    registerSaveTextFileIpc({ ipcMain, dialog, BrowserWindow })
 
     if (!isClientOnly) {
       // Restore persisted Git Bash path on Windows (must happen before any SDK subprocess spawn)

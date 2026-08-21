@@ -10,6 +10,7 @@ import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import { requestClientOpenFileDialog } from '@craft-agent/server-core/transport'
 import { isValidWorkingDirectory } from '../../utils/path-validation'
+import { assertDraftSessionAccess, filterDraftsForWorkspace } from './draft-access'
 
 export const HANDLED_CHANNELS = [
   RPC_CHANNELS.workspace.SETTINGS_GET,
@@ -206,23 +207,42 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
   // ============================================================
 
   // Get draft for a session (text + attachment refs)
-  server.handle(RPC_CHANNELS.drafts.GET, async (_ctx, sessionId: string) => {
+  server.handle(RPC_CHANNELS.drafts.GET, async (ctx, sessionId: string) => {
+    assertDraftSessionAccess(
+      ctx.workspaceId,
+      deps.sessionManager.getSessions(ctx.workspaceId ?? undefined),
+      sessionId,
+    )
     return getSessionDraft(sessionId)
   })
 
   // Set draft for a session (empty drafts are cleared)
-  server.handle(RPC_CHANNELS.drafts.SET, async (_ctx, sessionId: string, draft: import('@craft-agent/shared/config').SessionDraft) => {
+  server.handle(RPC_CHANNELS.drafts.SET, async (ctx, sessionId: string, draft: import('@craft-agent/shared/config').SessionDraft) => {
+    assertDraftSessionAccess(
+      ctx.workspaceId,
+      deps.sessionManager.getSessions(ctx.workspaceId ?? undefined),
+      sessionId,
+    )
     setSessionDraft(sessionId, draft)
   })
 
   // Delete draft for a session
-  server.handle(RPC_CHANNELS.drafts.DELETE, async (_ctx, sessionId: string) => {
+  server.handle(RPC_CHANNELS.drafts.DELETE, async (ctx, sessionId: string) => {
+    assertDraftSessionAccess(
+      ctx.workspaceId,
+      deps.sessionManager.getSessions(ctx.workspaceId ?? undefined),
+      sessionId,
+    )
     deleteSessionDraft(sessionId)
   })
 
   // Get all drafts (for loading on app start)
-  server.handle(RPC_CHANNELS.drafts.GET_ALL, async () => {
-    return getAllSessionDrafts()
+  server.handle(RPC_CHANNELS.drafts.GET_ALL, async (ctx) => {
+    return filterDraftsForWorkspace(
+      ctx.workspaceId,
+      deps.sessionManager.getSessions(ctx.workspaceId ?? undefined),
+      getAllSessionDrafts(),
+    )
   })
 
   // ============================================================

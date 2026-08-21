@@ -34,7 +34,7 @@ mock.module('../../ui/styled-dropdown', () => ({
 
 const { TopBar } = await import('../TopBar')
 
-function renderTopBar(isCompact = false) {
+function renderTopBar(isCompact = false, isProjectFilesAvailable = true) {
   return renderToStaticMarkup(
     <TopBar
       workspaces={[]}
@@ -51,6 +51,9 @@ function renderTopBar(isCompact = false) {
       canGoForward={false}
       onToggleSidebar={() => {}}
       onToggleNavigator={() => {}}
+      onToggleRightSidebar={() => {}}
+      isRightSidebarVisible={false}
+      isProjectFilesAvailable={isProjectFilesAvailable}
       onToggleFocusMode={() => {}}
       onAddSessionPanel={() => {}}
       onAddBrowserPanel={() => {}}
@@ -66,5 +69,18 @@ describe('TopBar Navigator toggle', () => {
 
   it('does not add the desktop shell toggle to compact mode', () => {
     expect(renderTopBar(true)).not.toContain('aria-label="menu.toggleNavigator"')
+  })
+})
+
+describe('TopBar Project Files toggle', () => {
+  it('keeps Project Files at window level on desktop and compact layouts', () => {
+    expect(renderTopBar()).toContain('aria-label="filesSidebar.toggle"')
+    expect(renderTopBar(true)).toContain('aria-label="filesSidebar.toggle"')
+  })
+
+  it('disables Project Files when there is no active Project', () => {
+    expect(renderTopBar(false, false)).toMatch(
+      /<button[^>]*disabled=""[^>]*aria-label="filesSidebar\.toggle"/,
+    )
   })
 })
