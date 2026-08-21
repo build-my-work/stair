@@ -2,12 +2,12 @@
 
 ## 文档状态
 
-- 状态：阶段 5 实现、自动化验证、三方审查与真实 Electron 验收均已收口；不进入阶段 6
+- 状态：阶段 6 原生 Browser 的实现、自动化验证、四路审查与真实 Electron 验收均已收口；不进入阶段 7
 - 基线：`upstream/main@50ffa143`（`v0.11.4`）
 - 分支：`codex/stair-rebuild-v2`
 - 更新日期：2026-08-22
 - 范围：保留 Stair 产品能力，不迁移 Craft 或旧 Stair 用户数据
-- 代码状态：阶段 5 的统一引用、同 Project Add Chat/New Chat 与 Add Note 已接入现有边界；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
+- 代码状态：阶段 6 的原生 Browser Surface、选区引用、书签与链接偏好已接入现有 Workbench 边界；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
 
 ## 当前实施进度
 
@@ -19,7 +19,8 @@
 | 阶段 3：Project Files 与文本文档 | 功能等价完成 | 搜索、普通文件/目录创建、图片预览、旧文本/代码扩展名、Markdown 链接和 Save Draft As 均已恢复。 |
 | 阶段 4：EPUB 与 PDF | 功能等价完成 | EPUB/PDF 窄栏 overlay、选区生命周期、印刷页码、导出/分组以及作者/相对路径信息均已恢复。 |
 | 阶段 5：引用与 Add Note | 完成 | 统一引用、Add Chat/New Chat、Add Note、审查修复、真实 Pointer/Reader/Chat 验收与 queue/ack 恢复链均已完成。 |
-| 阶段 6—9 | 未开始 | 原生 Browser、Drawnix、布局持久化和正式发布打包尚未进入实施。 |
+| 阶段 6：原生 Browser | 完成 | Browser Auxiliary、原生 Surface 生命周期、选区引用、书签、链接偏好、审查修复与真实 Electron 视觉/Pointer 验收均已完成。 |
+| 阶段 7—9 | 未开始 | Drawnix、布局持久化和正式发布打包尚未进入实施。 |
 
 ### 2026-08-21 功能等价审计与收口
 
@@ -31,7 +32,7 @@
 - WindowManager 只恢复真实主框架加载失败，忽略 EPUB iframe 等子框架和 `ERR_ABORTED`；完整 URL 最多重试 5 次，开发模式耗尽后不再错误加载生产 Renderer。
 - Draft Workspace 授权、空 Session 自动清理、PDF 窄栏、Markdown 链接、Save Draft As 以及 Project Files 搜索/创建/图片等阶段 0—4 回归均已按旧产品行为恢复。
 - EPUB/PDF 的 pageLabels、选区失效清理、高亮 Markdown 导出、EPUB 目录分组以及作者/相对路径辅助信息已经补齐。
-- 阶段 6—9 的明确延期继续保持，不以延期解释上述意外回归。
+- 本次审计当时仍保持阶段 6—9 延期；阶段 6 后续在用户明确授权后独立实施，没有以新阶段掩盖上述意外回归。
 
 完整证据与修复顺序见：
 
@@ -104,10 +105,25 @@
 - queued 输入在 Stop 时先写入持久草稿，再以 restore ID 和 canonical message ID 确认删除服务端与 Renderer bubble；失败或陈旧确认均为保守 no-op。真实验收另补齐了 queued 事件保持当前运行态，以及 optimistic UI ID 到 server ID 的瞬时映射。
 - 本阶段沿用现有 Workbench、Session、Project File 与服务端状态边界，没有修改 Craft 默认导航语义，也没有增加 Panel 数量限制。
 
+### 阶段 6 已完成实现
+
+- Browser 使用显式 Auxiliary Panel；Workbench Panel ID 与 Electron Browser Runtime ID 分离，普通导航、后台状态和移除事件都不能隐式增加 Panel、替换 Primary、切换 Project 或改变焦点。
+- Electron Main 独占原生 Runtime、`WebContentsView`、Bounds、Focus、Pointer、窗口与页面生命周期；Renderer 只提交可见几何和显式 presentation/close/park 命令。
+- Browser Surface 会随窗口 Resize、Navigator 展开/收起、横向 Workbench Overflow 和遮挡状态同步位置与可见性；Modal/Dialog 遮挡时不会穿透到原生页面。
+- 切换 Project 前先 park 当前 Project 的 Browser Surface，切回时恢复同一进程内的 Runtime 与页面状态；关闭 Panel 先销毁 Runtime，再由唯一 Workbench 命令移除 Panel。
+- Browser 页面选区使用与文本、EPUB、PDF 相同的 Project-scoped 引用协议，支持 Add Note、Add Chat 和 New Chat；New Chat 原子更新 Browser Chat Target 并在来源 Browser 后插入同 Project Session Auxiliary。
+- 书签以 Workspace 为边界持久化，支持新增、列表和删除；聊天、Markdown 与文档网页链接遵守 System Browser/Built-in Browser 用户偏好。
+- 开发脚本会构建并监听 Browser toolbar、page 与 overlay preload；阶段 6 不持久化 Workbench 布局或原生 Runtime，应用重启不会自动恢复 Browser Panel。
+- 本阶段继续使用现有 Workbench command 作为唯一布局写入口，没有恢复旧 PanelStack，也没有引入 Browser 自有布局状态。
+
 ### 当前验证结果
 
 | 检查 | 结果 | 说明 |
 | --- | --- | --- |
+| 阶段 6 完整源码回归 | 通过 | Electron 1081/1081 项通过、3694 个断言；core 4/4、shared 3037 项通过/12 项跳过、server-core 309/309、ui 299/299。 |
+| 阶段 6 类型、构建与静态检查 | 通过 | core、shared、server-core、ui 与 Electron 类型检查均通过；Electron 构建、locale parity/排序、阶段 6 变更 lint 和 `git diff --check` 通过。 |
+| 阶段 6 四路审查 | 通过 | Code Simplifier 完成后，由 Codex、Claude、Kimi、Pi 并行审查当前实现；确认的生命周期、几何、选区、书签、链接偏好和 Workbench 边界问题均已在本阶段补测试并修复。 |
+| 阶段 6 真实 Electron 验收 | 通过 | Computer Use 在 macOS 开发版 Electron 中使用确定性本地 HTML 夹具，完成真实 Pointer/选区、Resize、Navigator、横向 Overflow、Scroll、Modal Occlusion、Project park/restore、Bookmark 新增/列表/删除、Built-in/System Link Preference 和单击 Close；最终确认 Panel 与原生 Runtime 同时消失。 |
 | 阶段 5 审查后聚焦回归 | 通过 | 36 个相关测试文件共 180/180 项通过、519 个断言；覆盖引用协议、草稿恢复、消息持久化、模型输入、重复 reveal、Add Chat/New Chat、Add Note 授权与写入。 |
 | 阶段 5 类型检查 | 通过 | core、shared、server-core、ui 与 Electron 五层类型检查均通过。 |
 | 阶段 5 三方审查 | 通过 | Claude 的完整引用恢复、Kimi 的 queued 草稿确认协议、Pi 的 Project Note 固定目录句柄均已按现有边界补失败测试并修复；真实验收追加发现的 Stop 运行态与 optimistic/server ID 映射问题也已闭环。 |
@@ -154,15 +170,15 @@
 
 ### 当前限制
 
-- 阶段 0—5 已交付；阶段 6—9 未开始，不能把本次交付理解为全部产品能力已经完成。
+- 阶段 0—6 已交付；阶段 7—9 未开始，不能把本次交付理解为全部产品能力已经完成。
 - Panel 数量策略已确认与 Craft 保持一致：当前不设置“最多 8 个 Panel”的额外限制，本轮无需修改业务代码。
 - 按用户最新要求，桌面验收使用当前已经选择的 `os` Project，不再以临时隔离 Workspace 作为阻塞条件；这不改变产品最终需要独立 Stair 数据命名空间的目标。
-- 原生 Browser、Drawnix、布局持久化和正式发布仍属于阶段 6—9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
+- Drawnix、布局持久化和正式发布仍属于阶段 7—9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
 - Windows Project Note 路径已按 ABI 与结构布局实现并完成类型/构建验证，但本轮运行环境为 macOS，尚未执行真实 Windows 原生运行时 smoke。
 - queued 恢复若在 Renderer 收到 restore 事件后、持久草稿与 ack 完成前崩溃，会保留服务端 queued bubble 且不自动重试写入草稿；该保守状态不会丢数据，但需用户重新触发恢复。
 - 为保证引用标记与 JSON 完整，恢复/摘要字符上限允许被一个完整引用块软超出；不会再产生半个引用协议，但极大引用可能比旧硬上限多一个块。
 - `bun install --frozen-lockfile` 与独立 server build smoke 仍可能被当前环境访问 GitHub 归档时的 TLS `UNKNOWN_CERTIFICATE_VERIFICATION_ERROR` 阻断；源码测试、类型检查、Electron/Stair 构建与打包 Koffi smoke 不受影响。
-- 本地 `Stair.app` 目录包在当前机器上仍会出现“进程已启动但没有窗口”，且停在业务主进程日志加载之前；阶段 3 已在 `bun run stair:dev` 的真实 Electron 窗口验收通过，该打包运行问题保留到阶段 9 单独处理。
+- 本地 `Stair.app` 目录包当前因未包含 hoisted 的 `@anthropic-ai/claude-agent-sdk` 而在 Main Process 启动时失败；开发版 Electron 的阶段 6 验收不受影响，该依赖打包问题保留到阶段 9 单独处理。
 
 ### 阶段 0 实施记录
 
@@ -539,7 +555,7 @@ Project 前置条件：
 - Busy/Background 目标 Session 不修改 Workbench 展示。
 - 服务端 Project 与路径校验是最终权威。
 
-### 阶段 6：原生 Browser（未开始）
+### 阶段 6：原生 Browser（完成）
 
 范围：
 
@@ -555,6 +571,14 @@ Project 前置条件：
 - 关闭 Panel 时销毁运行时；切换 Project 时在当前进程内暂存/分离，并在切回后恢复。应用重启后，显式重新打开/呈现根据描述符创建新运行时；阶段 8 再增加布局驱动的自动恢复。
 - 书签新增/删除/列表以及内部/系统浏览器打开偏好都有全新数据验收用例。
 - 单元测试或模拟 Electron 测试不能单独满足本阶段完成条件。
+
+实施结果：
+
+- 自动化覆盖 Runtime/Panel 身份、异步 presentation、close veto、REMOVED 竞态、park/restore、跨 Project 拒绝、后台事件不改布局、Surface geometry/occlusion、书签、链接偏好与统一引用。
+- 真实 Electron 以 `http://127.0.0.1:47891/` 本地夹具验证页面 Pointer、选区工具条、Scroll、Resize、Navigator、横向 Overflow 和 Modal Occlusion。
+- 两个 Project 间切换时原生 Surface 正确 detach/restore，同一进程内 URL 与工具条状态保留；应用重启后不恢复 Browser Panel。
+- Built-in Browser 点击创建并聚焦新的 Browser Auxiliary；System Browser 点击只打开系统 Chrome，不增加内部 Runtime。
+- Native Bookmark 菜单完成新增、列表与删除；单击 Browser Panel Close 后 Main Process 报告 Runtime `removed=true`，AX 树中 Panel 与原生页面/toolbar 同时消失。
 
 ### 阶段 7：Drawnix 与 Agent 工具（未开始）
 
@@ -747,4 +771,4 @@ git diff --check
 
 ## 11. 立即下一步
 
-阶段 5 已完成。保持当前分支和测试现场，不进入阶段 6；等待用户明确授权后再开始原生 Browser。Panel 数量策略继续沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制。
+阶段 6 已完成。提交当前阶段后进入阶段 7：先冻结 Drawnix Project Document、Document Controller 与 Project-scoped Agent Tool 的失败测试和真实 Electron 验收矩阵，再按编码、测试、Code Simplifier、四路审查、修复、Computer Use 与单阶段提交顺序实施。Panel 数量策略继续沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制。

@@ -48,10 +48,23 @@ const chatReference: Reference = {
   },
 }
 
+const webReference: Reference = {
+  version: 1,
+  kind: 'web-selection',
+  projectId: 'project-a',
+  url: 'https://example.com/article',
+  title: 'Example article',
+  quote: '网页内容',
+  locator: {
+    type: 'web-text-quote',
+    exact: '网页内容',
+  },
+}
+
 describe('消息引用进入模型前的服务端校验', () => {
-  it('只接受目标 Session 同 Project 的 Project File 和聊天来源', () => {
+  it('只接受目标 Session 同 Project 的 Project File、聊天和 Web 来源', () => {
     expect(validateReferencesForSession(
-      [projectReference, chatReference],
+      [projectReference, chatReference, webReference],
       { id: 'session-target', workspaceId: 'workspace-a', projectId: 'project-a' },
       sessionId => sessionId === 'session-source'
         ? {
@@ -61,7 +74,7 @@ describe('消息引用进入模型前的服务端校验', () => {
             messages: [{ id: 'message-source', role: 'assistant', content: '聊天内容' }],
           }
         : null,
-    )).toEqual([projectReference, chatReference])
+    )).toEqual([projectReference, chatReference, webReference])
   })
 
   it('拒绝跨 Project、缺失消息和角色不一致', () => {
@@ -129,16 +142,24 @@ describe('消息引用进入模型前的服务端校验', () => {
   })
 
   it('模型输入包含结构化来源，但持久消息正文无需被改写', () => {
-    const modelInput = formatReferencesForModel('请解释', [projectReference, chatReference])
+    const modelInput = formatReferencesForModel('请解释', [projectReference, chatReference, webReference])
     expect(modelInput).toContain('请解释')
     expect(modelInput).toContain('docs/guide.md')
     expect(modelInput).toContain('session-source')
     expect(modelInput).toContain('引用内容')
     expect(modelInput).toContain('聊天内容')
+    expect(modelInput).toContain('https://example.com/article')
     expect(modelInput).toContain('<stair_reference_data trust="untrusted">')
     expect(modelInput).toContain('&quot;locator&quot;')
     expect(modelInput).toContain('&quot;relativePath&quot;')
     expect(modelInput).not.toContain('<stair-references>')
+  })
+
+  it('拒绝跨 Project 的 Web 来源', () => {
+    expect(() => normalizeReferencesForSession(
+      [{ ...webReference, projectId: 'project-b' }],
+      { id: 'session-target', workspaceId: 'workspace-a', projectId: 'project-a' },
+    )).toThrow('MESSAGE_REFERENCE_PROJECT_MISMATCH')
   })
 
   it('完整引用 JSON 作为不可信数据转义，不允许闭合上下文标签', () => {

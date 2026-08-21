@@ -7,6 +7,10 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
+import type {
+  BrowserBookmark,
+  ToggleBrowserBookmarkResult,
+} from '@craft-agent/shared/browser-bookmarks'
 
 const CHANNELS = {
   NAVIGATE: 'browser-toolbar:navigate',
@@ -14,10 +18,10 @@ const CHANNELS = {
   GO_FORWARD: 'browser-toolbar:go-forward',
   RELOAD: 'browser-toolbar:reload',
   STOP: 'browser-toolbar:stop',
-  MENU_GEOMETRY: 'browser-toolbar:menu-geometry',
-  FORCE_CLOSE_MENU: 'browser-toolbar:force-close-menu',
-  HIDE: 'browser-toolbar:hide',
-  DESTROY: 'browser-toolbar:destroy',
+  LIST_BOOKMARKS: 'browser-toolbar:list-bookmarks',
+  TOGGLE_BOOKMARK: 'browser-toolbar:toggle-bookmark',
+  BOOKMARKS_CHANGED: 'browser-toolbar:bookmarks-changed',
+  SHOW_MENU: 'browser-toolbar:show-menu',
   STATE_UPDATE: 'browser-toolbar:state-update',
   THEME_COLOR: 'browser-toolbar:theme-color',
 } as const
@@ -32,9 +36,12 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   goForward: () => ipcRenderer.invoke(CHANNELS.GO_FORWARD, instanceId),
   reload: () => ipcRenderer.invoke(CHANNELS.RELOAD, instanceId),
   stop: () => ipcRenderer.invoke(CHANNELS.STOP, instanceId),
-  setMenuGeometry: (open: boolean, height = 0) => ipcRenderer.invoke(CHANNELS.MENU_GEOMETRY, instanceId, open, height),
-  hideWindow: () => ipcRenderer.invoke(CHANNELS.HIDE, instanceId),
-  closeWindowEntirely: () => ipcRenderer.invoke(CHANNELS.DESTROY, instanceId),
+  listBookmarks: (): Promise<BrowserBookmark[]> =>
+    ipcRenderer.invoke(CHANNELS.LIST_BOOKMARKS, instanceId),
+  toggleBookmark: (): Promise<ToggleBrowserBookmarkResult> =>
+    ipcRenderer.invoke(CHANNELS.TOGGLE_BOOKMARK, instanceId),
+  showMenu: (kind: 'bookmarks' | 'window') =>
+    ipcRenderer.invoke(CHANNELS.SHOW_MENU, instanceId, kind),
   onStateUpdate: (callback: (state: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
     ipcRenderer.on(CHANNELS.STATE_UPDATE, handler)
@@ -45,9 +52,12 @@ contextBridge.exposeInMainWorld('browserToolbar', {
     ipcRenderer.on(CHANNELS.THEME_COLOR, handler)
     return () => { ipcRenderer.removeListener(CHANNELS.THEME_COLOR, handler) }
   },
-  onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, payload: { reason?: string }) => callback(payload)
-    ipcRenderer.on(CHANNELS.FORCE_CLOSE_MENU, handler)
-    return () => { ipcRenderer.removeListener(CHANNELS.FORCE_CLOSE_MENU, handler) }
+  onBookmarksChanged: (callback: (bookmarks: BrowserBookmark[]) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      bookmarks: BrowserBookmark[],
+    ) => callback(bookmarks)
+    ipcRenderer.on(CHANNELS.BOOKMARKS_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(CHANNELS.BOOKMARKS_CHANGED, handler) }
   },
 })

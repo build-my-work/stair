@@ -17,6 +17,7 @@ import {
   cpSync,
 } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { expandPath, toPortablePath } from '../utils/paths.ts';
 import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
@@ -27,7 +28,6 @@ import { loadConfigDefaults } from '../config/storage.ts';
 import { parsePermissionMode, DEFAULT_PERMISSION_MODES } from '../agent/mode-types.ts';
 import { normalizeThinkingLevel } from '../agent/thinking-levels.ts';
 import { createProject } from '../projects/storage.ts';
-import { CONFIG_DIR } from '../config/paths.ts';
 import type {
   WorkspaceConfig,
   CreateWorkspaceInput,

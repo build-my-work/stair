@@ -363,7 +363,11 @@ describe('Project File Workbench commands', () => {
 
     const layout = store.get(activeProjectWorkbenchAtom)!
     expect(layout.auxiliary.map(panel => (
-      panel.kind === 'session' ? `session:${panel.sessionId}` : `file:${panel.relativePath}`
+      panel.kind === 'session'
+        ? `session:${panel.sessionId}`
+        : panel.kind === 'project-file'
+          ? `file:${panel.relativePath}`
+          : `browser:${panel.runtimeId}`
     ))).toEqual([
       'file:docs/source.md',
       'session:new-session',

@@ -228,6 +228,10 @@ import type {
   WorkspaceSettings,
   PermissionModeState,
   BrowserInstanceInfo,
+  BrowserSurfaceState,
+  BrowserPresentRequest,
+  BrowserSelectionActionPayload,
+  BrowserSelectionRevealResult,
   DeepLinkNavigation,
   TestAutomationPayload,
   TestAutomationResult,
@@ -611,6 +615,8 @@ export interface ElectronAPI {
   // Tools settings
   getBrowserToolEnabled(): Promise<boolean>
   setBrowserToolEnabled(enabled: boolean): Promise<void>
+  getWebLinkOpenTarget(): Promise<import('@craft-agent/shared/config').WebLinkOpenTarget>
+  setWebLinkOpenTarget(target: import('@craft-agent/shared/config').WebLinkOpenTarget): Promise<void>
 
   // Appearance settings
   getRichToolDescriptions(): Promise<boolean>
@@ -715,10 +721,21 @@ export interface ElectronAPI {
     reload(id: string): Promise<void>
     stop(id: string): Promise<void>
     focus(id: string): Promise<void>
+    attachSurface(id: string, state: BrowserSurfaceState): Promise<string>
+    updateSurface(id: string, leaseId: string, state: BrowserSurfaceState): Promise<void>
+    detachSurface(id: string, leaseId: string): Promise<void>
+    park(ids: string[]): Promise<void>
+    revealSelection(
+      reference: import('@craft-agent/core').WebSelectionReferenceV1,
+      browserId?: string,
+    ): Promise<BrowserSelectionRevealResult>
     emptyStateLaunch(payload: BrowserEmptyStateLaunchPayload): Promise<BrowserEmptyStateLaunchResult>
     onStateChanged(callback: (info: BrowserInstanceInfo) => void): () => void
     onRemoved(callback: (id: string) => void): () => void
     onInteracted(callback: (id: string) => void): () => void
+    onPresentRequested(callback: (request: BrowserPresentRequest) => void): () => void
+    onClosePanelRequested(callback: (browserId: string) => void): () => void
+    onSelectionAction(callback: (payload: BrowserSelectionActionPayload) => void): () => void
   }
 
   // LLM Connections (provider configurations)

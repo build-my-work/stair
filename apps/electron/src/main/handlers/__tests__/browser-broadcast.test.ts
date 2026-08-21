@@ -16,7 +16,11 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
-import type { BrowserInstanceInfo } from '@craft-agent/shared/protocol'
+import type {
+  BrowserInstanceInfo,
+  BrowserPresentRequest,
+  BrowserSelectionActionPayload,
+} from '@craft-agent/shared/protocol'
 
 mock.module('electron', () => ({
   ipcMain: { handle: () => {}, on: () => {} },
@@ -73,6 +77,10 @@ function makeDeps(opts: {
   captureStateCb?: (cb: (info: BrowserInstanceInfo) => void) => void
   captureRemovedCb?: (cb: (id: string) => void) => void
   captureInteractedCb?: (cb: (id: string) => void) => void
+  capturePresentCb?: (cb: (request: BrowserPresentRequest, hostId: number) => void) => void
+  captureCloseCb?: (cb: (browserId: string, hostId: number) => void) => void
+  captureSelectionCb?: (cb: (payload: BrowserSelectionActionPayload, hostId: number) => void) => void
+  clientIdForWindow?: (hostId: number) => string | null
 }): HandlerDeps {
   return {
     sessionManager: {} as HandlerDeps['sessionManager'],
@@ -88,12 +96,23 @@ function makeDeps(opts: {
         process: async () => Buffer.from(''),
       },
     },
-    windowManager: {} as HandlerDeps['windowManager'],
+    windowManager: {
+      getClientIdForWindow: opts.clientIdForWindow ?? (() => null),
+    } as HandlerDeps['windowManager'],
     browserPaneManager: {
       listInstances: () => opts.instances,
       onStateChange: (cb: (info: BrowserInstanceInfo) => void) => opts.captureStateCb?.(cb),
       onRemoved: (cb: (id: string) => void) => opts.captureRemovedCb?.(cb),
       onInteracted: (cb: (id: string) => void) => opts.captureInteractedCb?.(cb),
+      onPresentRequest: (cb: (request: BrowserPresentRequest, hostId: number) => void) => (
+        opts.capturePresentCb?.(cb)
+      ),
+      onClosePanelRequest: (cb: (browserId: string, hostId: number) => void) => (
+        opts.captureCloseCb?.(cb)
+      ),
+      onSelectionAction: (cb: (payload: BrowserSelectionActionPayload, hostId: number) => void) => (
+        opts.captureSelectionCb?.(cb)
+      ),
     } as unknown as NonNullable<HandlerDeps['browserPaneManager']>,
     oauthFlowStore: {} as HandlerDeps['oauthFlowStore'],
   }
@@ -202,6 +221,54 @@ describe('browser handler — workspace filtering', () => {
         'remote-tab',
         'unbound',
       ])
+    })
+  })
+
+  describe('native surface host routing', () => {
+    it('routes presentation, close, and selection actions only to the owning renderer', async () => {
+      let present: ((request: BrowserPresentRequest, hostId: number) => void) | null = null
+      let close: ((browserId: string, hostId: number) => void) | null = null
+      let selection: ((payload: BrowserSelectionActionPayload, hostId: number) => void) | null = null
+      const { registerBrowserHandlers } = await import('../browser')
+      registerBrowserHandlers(recorder.server, makeDeps({
+        instances: [],
+        capturePresentCb: cb => { present = cb },
+        captureCloseCb: cb => { close = cb },
+        captureSelectionCb: cb => { selection = cb },
+        clientIdForWindow: hostId => hostId === 42 ? 'renderer-42' : null,
+      }))
+
+      present!({ browserId: 'browser-a', workspaceId: 'workspace-a' }, 42)
+      close!('browser-a', 42)
+      selection!({
+        eventId: 'selection-a',
+        action: 'add-chat',
+        browserId: 'browser-a',
+        source: {
+          url: 'https://example.com',
+          title: 'Example',
+          quote: 'evidence',
+          locator: { type: 'web-text-quote', exact: 'evidence' },
+        },
+      }, 42)
+
+      expect(recorder.pushes.map(push => push.target)).toEqual([
+        { to: 'client', clientId: 'renderer-42' },
+        { to: 'client', clientId: 'renderer-42' },
+        { to: 'client', clientId: 'renderer-42' },
+      ])
+    })
+
+    it('falls back to all renderers when the native host is no longer registered', async () => {
+      let present: ((request: BrowserPresentRequest, hostId: number) => void) | null = null
+      const { registerBrowserHandlers } = await import('../browser')
+      registerBrowserHandlers(recorder.server, makeDeps({
+        instances: [],
+        capturePresentCb: cb => { present = cb },
+      }))
+
+      present!({ browserId: 'browser-a' }, 99)
+      expect(recorder.pushes[0].target).toEqual({ to: 'all' })
     })
   })
 })

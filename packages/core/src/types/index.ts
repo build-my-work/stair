@@ -68,6 +68,8 @@ export type {
   ProjectFileSelectionLocatorV1,
   ProjectFileReferenceV1,
   ChatMessageReferenceV1,
+  WebSelectionReferenceV1,
+  WebTextQuoteLocatorV1,
   Reference,
 } from './reference.ts';
 export {
@@ -78,9 +80,12 @@ export {
   MAX_REFERENCE_TOC_DEPTH,
   MAX_REFERENCE_TOC_ORDER_DEPTH,
   MAX_REFERENCE_PATH_BYTES,
+  MAX_REFERENCE_URL_CHARS,
+  MAX_REFERENCE_TITLE_CHARS,
   MAX_REFERENCE_SERIALIZED_BYTES,
   MAX_REFERENCES_SERIALIZED_BYTES,
   isProjectFileReference,
+  isWebSelectionReference,
   isChatMessageReference,
   isReference,
   referenceSerializedByteLength,

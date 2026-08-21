@@ -211,4 +211,44 @@ describe('WindowManager renderer lifecycle', () => {
     expect(window.loadURL).toHaveBeenCalledWith(latestUrl)
     expect(window.loadFile).not.toHaveBeenCalled()
   })
+
+  it('parks native Browser surfaces before renderer replacement and teardown', () => {
+    const manager = new WindowManager()
+    const parkSurfaces = mock((_webContentsId: number) => {})
+    manager.setRendererSurfaceParkingHandler(parkSurfaces)
+    manager.createWindow({ workspaceId: 'workspace-1' })
+    const window = createdWindows[0]
+    const webContentsId = window.webContents.id
+
+    window.webContents._emit('did-start-navigation', {
+      isMainFrame: false,
+      isSameDocument: false,
+      url: 'http://localhost:5173/child',
+    })
+    window.webContents._emit('did-start-navigation', {
+      isMainFrame: true,
+      isSameDocument: true,
+      url: 'http://localhost:5173/#section',
+    })
+    window.webContents._emit('did-start-navigation', {
+      isMainFrame: true,
+      isSameDocument: false,
+      url: 'http://localhost:5173/',
+    })
+    window.webContents._emit(
+      'did-fail-load',
+      {},
+      -105,
+      'ERR_NAME_NOT_RESOLVED',
+      'http://localhost:5173/',
+      true,
+    )
+    window.webContents._emit('render-process-gone', {}, { reason: 'crashed' })
+    window.webContents._emit('destroyed')
+
+    expect(parkSurfaces).toHaveBeenCalledTimes(4)
+    for (const call of parkSurfaces.mock.calls) {
+      expect(call[0]).toBe(webContentsId)
+    }
+  })
 })

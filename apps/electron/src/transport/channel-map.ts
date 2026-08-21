@@ -318,6 +318,8 @@ export const CHANNEL_MAP = {
   // Tools settings
   getBrowserToolEnabled: invoke(RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED),
   setBrowserToolEnabled: invoke(RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED),
+  getWebLinkOpenTarget: invoke(RPC_CHANNELS.tools.GET_WEB_LINK_OPEN_TARGET),
+  setWebLinkOpenTarget: invoke(RPC_CHANNELS.tools.SET_WEB_LINK_OPEN_TARGET),
 
   // Prompt caching & context
   getExtendedPromptCache: invoke(RPC_CHANNELS.caching.GET_EXTENDED_PROMPT_CACHE),
@@ -397,10 +399,18 @@ export const CHANNEL_MAP = {
   'browserPane.reload': invoke(RPC_CHANNELS.browserPane.RELOAD),
   'browserPane.stop': invoke(RPC_CHANNELS.browserPane.STOP),
   'browserPane.focus': invoke(RPC_CHANNELS.browserPane.FOCUS),
+  'browserPane.attachSurface': invoke(RPC_CHANNELS.browserPane.ATTACH_SURFACE),
+  'browserPane.updateSurface': invoke(RPC_CHANNELS.browserPane.UPDATE_SURFACE),
+  'browserPane.detachSurface': invoke(RPC_CHANNELS.browserPane.DETACH_SURFACE),
+  'browserPane.park': invoke(RPC_CHANNELS.browserPane.PARK),
+  'browserPane.revealSelection': invoke(RPC_CHANNELS.browserPane.REVEAL_SELECTION),
   'browserPane.emptyStateLaunch': invoke(RPC_CHANNELS.browserPane.LAUNCH),
   'browserPane.onStateChanged': listener(RPC_CHANNELS.browserPane.STATE_CHANGED),
   'browserPane.onRemoved': listener(RPC_CHANNELS.browserPane.REMOVED),
   'browserPane.onInteracted': listener(RPC_CHANNELS.browserPane.INTERACTED),
+  'browserPane.onPresentRequested': listener(RPC_CHANNELS.browserPane.PRESENT_REQUESTED),
+  'browserPane.onClosePanelRequested': listener(RPC_CHANNELS.browserPane.CLOSE_PANEL_REQUESTED),
+  'browserPane.onSelectionAction': listener(RPC_CHANNELS.browserPane.SELECTION_ACTION),
 
   // LLM Connections
   listLlmConnections: invoke(RPC_CHANNELS.llmConnections.LIST),

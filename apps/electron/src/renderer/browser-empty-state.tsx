@@ -1,10 +1,15 @@
 import React, { useCallback } from 'react'
-import { useTranslation } from 'react-i18next'
+import { initReactI18next, useTranslation } from 'react-i18next'
+import LanguageDetector from 'i18next-browser-languagedetector'
 import ReactDOM from 'react-dom/client'
+import { setupI18n } from '@craft-agent/shared/i18n'
 import { BrowserEmptyStateCard } from '@craft-agent/ui'
 import { routes } from '../shared/routes'
 import { EMPTY_STATE_PROMPT_SAMPLES } from './components/browser/empty-state-prompts'
 import './index.css'
+
+document.title = __APP_PRODUCT_NAME__
+setupI18n([LanguageDetector, initReactI18next], { productName: __APP_PRODUCT_NAME__ })
 
 function BrowserEmptyStateApp() {
   const { t } = useTranslation()

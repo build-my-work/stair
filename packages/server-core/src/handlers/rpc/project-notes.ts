@@ -255,6 +255,9 @@ function sourceLabel(reference: Reference, session: Pick<Session, 'id' | 'name'>
     }[reference.role]
     return `Chat · ${role} · ${inlineCode(session.name ?? session.id)}`
   }
+  if (reference.kind === 'web-selection') {
+    return `Web · ${escapeQuoteLine(reference.title.replace(/\s+/g, ' ').trim())} · ${inlineCode(reference.url)}`
+  }
   const parts = [inlineCode(reference.relativePath)]
   if (reference.chapterTitle) {
     parts.push(escapeQuoteLine(reference.chapterTitle.replace(/\s+/g, ' ').trim()))
@@ -332,7 +335,7 @@ async function validateSource(
   }
   if (reference.kind === 'chat-message') {
     await validateChatSource(reference, targetSession, deps)
-  } else {
+  } else if (reference.kind === 'project-file') {
     await validateProjectFileSource(reference, targetSession, workspace)
   }
 }

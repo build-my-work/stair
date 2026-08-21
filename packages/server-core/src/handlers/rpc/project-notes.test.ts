@@ -165,6 +165,22 @@ describe('Project Note', () => {
       },
     }, { id: 'session-a', name: 'Research' })
     expect(projectFileNote).toContain('\\[unsafe\\](javascript:alert(1))')
+
+    const webNote = serializeProjectNote({
+      version: 1,
+      kind: 'web-selection',
+      projectId: 'project-a',
+      url: 'https://example.com/article',
+      title: 'Example [article]\nspoof',
+      quote: '<script>alert(1)</script>\n![image](file:///tmp/private)',
+      locator: {
+        type: 'web-text-quote',
+        exact: '<script>alert(1)</script>\n![image](file:///tmp/private)',
+      },
+    }, { id: 'session-a', name: 'Research' })
+    expect(webNote).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+    expect(webNote).toContain('Example \\[article\\] spoof')
+    expect(webNote).toContain('`https://example.com/article`')
   })
 
   it('RPC 以当前 Workspace 和 Session Project 为最终授权边界', async () => {
@@ -266,6 +282,40 @@ describe('Project Note', () => {
 
     await expect(append(rpcContext(workspace.id), {
       ...appendRequest,
+      requestId: 'append-web-selection',
+      selection: {
+        version: 1,
+        kind: 'web-selection',
+        projectId: project.id,
+        url: 'https://example.com/source',
+        title: 'Web Source',
+        quote: 'web evidence',
+        locator: {
+          type: 'web-text-quote',
+          exact: 'web evidence',
+        },
+      },
+    })).resolves.toMatchObject({ relativePath: 'notes.md' })
+
+    await expect(append(rpcContext(workspace.id), {
+      ...appendRequest,
+      requestId: 'append-cross-project-web-selection',
+      selection: {
+        version: 1,
+        kind: 'web-selection',
+        projectId: 'project-other',
+        url: 'https://example.com/source',
+        title: 'Web Source',
+        quote: 'web evidence',
+        locator: {
+          type: 'web-text-quote',
+          exact: 'web evidence',
+        },
+      },
+    })).rejects.toThrow(/^PROJECT_NOTE_SOURCE_INVALID:/)
+
+    await expect(append(rpcContext(workspace.id), {
+      ...appendRequest,
       requestId: 'append-oversized-reference',
       selection: {
         ...appendRequest.selection,
@@ -275,5 +325,6 @@ describe('Project Note', () => {
 
     const note = await readFile(join(projectRoot, 'notes.md'), 'utf8')
     expect(note.match(/before bold after/g)).toHaveLength(1)
+    expect(note).toContain('web evidence')
   })
 })

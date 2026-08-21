@@ -234,7 +234,7 @@ export function BrowserTabStrip({
           onSelect={() => focusBrowserWindow(instance)}
         >
           <Icons.Monitor className="h-3.5 w-3.5" />
-          Show Browser Window
+          Show Browser Panel
         </StyledDropdownMenuItem>
 
         <StyledDropdownMenuItem

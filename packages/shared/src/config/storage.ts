@@ -90,6 +90,7 @@ export interface StoredConfig {
   richToolDescriptions?: boolean;  // Add intent/action metadata to all tool calls (default: true)
   // Tools
   browserToolEnabled?: boolean;  // Enable built-in browser tool (default: true). Disable for Playwright/Puppeteer.
+  webLinkOpenTarget?: import('./types.ts').WebLinkOpenTarget;
   allowRemoteEvaluate?: boolean;  // Allow remote agents to call `browser_tool evaluate` on local browser (default: true).
   // Prompt caching & context
   extendedPromptCache?: boolean;  // Use 1h prompt cache TTL instead of 5m (default: false)
@@ -142,6 +143,7 @@ const FALLBACK_CONFIG_DEFAULTS: ConfigDefaults = {
     richToolDescriptions: true,
     extendedPromptCache: false,
     browserToolEnabled: true,
+    webLinkOpenTarget: 'system',
     allowRemoteEvaluate: true,
   },
   workspaceDefaults: {
@@ -535,6 +537,21 @@ export function setBrowserToolEnabled(enabled: boolean): void {
   // Clear session tool caches so all sessions pick up the change immediately.
   // Lazy import to avoid circular dependency (storage ← session-scoped-tools ← storage).
   import('../agent/session-scoped-tools.ts').then(m => m.invalidateAllSessionToolsCaches()).catch(() => {});
+}
+
+export function getWebLinkOpenTarget(): import('./types.ts').WebLinkOpenTarget {
+  const stored = loadStoredConfig()?.webLinkOpenTarget
+  if (stored === 'system' || stored === 'built-in') return stored
+  return loadConfigDefaults().defaults.webLinkOpenTarget === 'built-in'
+    ? 'built-in'
+    : 'system'
+}
+
+export function setWebLinkOpenTarget(target: import('./types.ts').WebLinkOpenTarget): void {
+  const config = loadStoredConfig()
+  if (!config) return
+  config.webLinkOpenTarget = target
+  saveConfig(config)
 }
 
 /**

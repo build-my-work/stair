@@ -62,6 +62,7 @@ export class WindowManager {
   private pendingCloseTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Fallback timeouts for window close
   private eventSink: ((channel: string, target: import('@craft-agent/shared/protocol').PushTarget, ...args: any[]) => void) | null = null
   private clientResolver: ((wcId: number) => string | undefined) | null = null
+  private rendererSurfaceParkingHandler: ((webContentsId: number) => void) | null = null
   private keyboardCloseIntents: Set<number> = new Set()  // webContents.id flagged by Cmd/Ctrl+W before close
   private keyboardCloseIntentTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Auto-clear stale keyboard-close intents
   private isAppQuitting = false  // Skip layered close interception during app quit
@@ -76,6 +77,23 @@ export class WindowManager {
   ): void {
     this.eventSink = sink
     this.clientResolver = resolver
+  }
+
+  setRendererSurfaceParkingHandler(
+    handler: (webContentsId: number) => void,
+  ): void {
+    this.rendererSurfaceParkingHandler = handler
+  }
+
+  private parkRendererSurfaces(webContentsId: number, reason: string): void {
+    try {
+      this.rendererSurfaceParkingHandler?.(webContentsId)
+    } catch (error) {
+      windowLog.warn(
+        `Failed to park Browser surfaces for renderer ${webContentsId} (${reason}):`,
+        error,
+      )
+    }
   }
 
   /** Return current RPC event sink, if transport has been initialized. */
@@ -398,6 +416,19 @@ export class WindowManager {
       if (this.isRendererAppUrl(url)) lastSuccessfulRendererUrl = url
     }
 
+    window.webContents.on('did-start-navigation', details => {
+      if (
+        details.isMainFrame
+        && !details.isSameDocument
+        && this.isRendererAppUrl(details.url)
+      ) this.parkRendererSurfaces(webContentsId, 'main-frame-navigation')
+    })
+    window.webContents.on('render-process-gone', (_event, details) => {
+      this.parkRendererSurfaces(webContentsId, `render-process-gone:${details.reason}`)
+    })
+    window.webContents.once('destroyed', () => {
+      this.parkRendererSurfaces(webContentsId, 'web-contents-destroyed')
+    })
     window.webContents.on('did-finish-load', () => {
       failLoadRetries = 0
       clearFailLoadRetry()
@@ -412,6 +443,7 @@ export class WindowManager {
         if (!isMainFrame || errorCode === CHROMIUM_ERR_ABORTED) return
 
         windowLog.warn('Failed to load renderer:', errorCode, errorDescription, validatedURL)
+        this.parkRendererSurfaces(webContentsId, 'main-frame-load-failed')
         if (failLoadRetries >= 5) {
           windowLog.error('Renderer recovery stopped after 5 failed attempts')
           return
@@ -551,6 +583,7 @@ export class WindowManager {
 
     // Handle window closed - clean up theme listener and internal state
     window.on('closed', () => {
+      clearFailLoadRetry()
       // Clean up any pending close timeout to prevent memory leaks
       const timeout = this.pendingCloseTimeouts.get(webContentsId)
       if (timeout) {

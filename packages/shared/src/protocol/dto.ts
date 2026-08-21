@@ -14,6 +14,7 @@ import type {
   AnnotationV1,
   ContextUsageSnapshot,
   Reference,
+  WebTextQuoteLocatorV1,
   PermissionRequest as BasePermissionRequest,
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
@@ -1032,6 +1033,43 @@ export interface BrowserSecurityChallenge {
   signals: string[]
   /** Evidence too weak for a hand-off, e.g. a visible Turnstile widget: worth a note only. */
   suspected?: boolean
+}
+
+export interface BrowserSurfaceState {
+  /** Visible native surface in host-window coordinates. */
+  bounds: { x: number; y: number; width: number; height: number }
+  /** Full page viewport relative to `bounds`; stable while the Workbench scrolls. */
+  contentBounds: { x: number; y: number; width: number; height: number }
+  visible: boolean
+  order: number
+}
+
+export interface BrowserPresentRequest {
+  browserId: string
+  sessionId?: string | null
+  workspaceId?: string | null
+}
+
+export interface BrowserSelectionSource {
+  url: string
+  title: string
+  quote: string
+  locator: WebTextQuoteLocatorV1
+}
+
+export interface BrowserSelectionActionPayload {
+  eventId: string
+  action: 'add-note' | 'add-note-to' | 'add-chat' | 'new-chat'
+  browserId: string
+  source: BrowserSelectionSource
+}
+
+export interface BrowserSelectionRevealResult {
+  ok: boolean
+  browserId?: string
+  created?: boolean
+  found?: boolean
+  reason?: 'invalid_reference' | 'navigation_failed' | 'selection_not_found'
 }
 
 export interface DeepLinkNavigation {

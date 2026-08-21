@@ -75,10 +75,24 @@ const references: Reference[] = [
       end: 8,
     },
   },
+  {
+    version: 1,
+    kind: 'web-selection',
+    projectId: 'project-a',
+    url: 'https://example.com/article',
+    title: 'Example article',
+    quote: '网页选区',
+    locator: {
+      type: 'web-text-quote',
+      exact: '网页选区',
+      prefix: 'before',
+      suffix: 'after',
+    },
+  },
 ]
 
-describe('阶段 5 统一引用协议', () => {
-  it('文本、EPUB、PDF 和聊天引用共用同一校验入口', () => {
+describe('统一引用协议', () => {
+  it('文本、EPUB、PDF、聊天和 Web 引用共用同一校验入口', () => {
     for (const reference of references) {
       expect(isReference(reference)).toBe(true)
       expect(referenceKey(reference)).toBeString()
@@ -120,6 +134,14 @@ describe('阶段 5 统一引用协议', () => {
     expect(isReference({
       ...references[3],
       messageId: ' message-source',
+    })).toBe(false)
+    expect(isReference({
+      ...references[4],
+      url: 'file:///tmp/private.html',
+    })).toBe(false)
+    expect(isReference({
+      ...references[4],
+      locator: { type: 'web-text-quote', exact: '另一段文字' },
     })).toBe(false)
   })
 

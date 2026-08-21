@@ -6,24 +6,30 @@
  * preload script (browser-toolbar preload).
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, {
+  useCallback,
+  useEffect,
+  useState,
+} from 'react'
 import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { EyeOff, X, XCircle } from 'lucide-react'
+import type {
+  BrowserBookmark,
+  ToggleBrowserBookmarkResult,
+} from '@craft-agent/shared/browser-bookmarks'
+import {
+  Bookmark,
+  Star,
+  X,
+} from 'lucide-react'
 import { BrowserControls } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  StyledDropdownMenuContent,
-  StyledDropdownMenuItem,
-} from '@/components/ui/styled-dropdown'
 import './index.css'
 
 // This is a standalone entry (browser-toolbar.html) — i18n must be initialized
-// here or BrowserControls and the menu below render raw translation keys.
+// here or BrowserControls renders raw translation keys.
 document.title = __APP_PRODUCT_NAME__
 setupI18n([LanguageDetector, initReactI18next], { productName: __APP_PRODUCT_NAME__ })
 
@@ -38,6 +44,7 @@ interface ToolbarState {
   canGoBack: boolean
   canGoForward: boolean
   themeColor?: string | null
+  isPanel?: boolean
 }
 
 declare global {
@@ -49,12 +56,12 @@ declare global {
       goForward: () => Promise<void>
       reload: () => Promise<void>
       stop: () => Promise<void>
-      setMenuGeometry: (open: boolean, height?: number) => Promise<void>
-      hideWindow: () => Promise<void>
-      closeWindowEntirely: () => Promise<void>
+      listBookmarks: () => Promise<BrowserBookmark[]>
+      toggleBookmark: () => Promise<ToggleBrowserBookmarkResult>
+      showMenu: (kind: 'bookmarks' | 'window') => Promise<void>
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
       onThemeColor: (callback: (color: string | null) => void) => () => void
-      onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => () => void
+      onBookmarksChanged: (callback: (bookmarks: BrowserBookmark[]) => void) => () => void
     }
   }
 }
@@ -73,10 +80,25 @@ function BrowserToolbarApp() {
     canGoForward: false,
   })
   const [themeColor, setThemeColor] = useState<string | null>(null)
-  const [windowMenuOpen, setWindowMenuOpen] = useState(false)
-  const menuContentRef = useRef<HTMLDivElement | null>(null)
+  const [bookmarks, setBookmarks] = useState<BrowserBookmark[]>([])
 
   const api = window.browserToolbar
+  const isBookmarkable = (() => {
+    try {
+      const protocol = new URL(state.url).protocol
+      return protocol === 'http:' || protocol === 'https:'
+    } catch {
+      return false
+    }
+  })()
+  const isBookmarked = isBookmarkable
+    && bookmarks.some(bookmark => bookmark.url === state.url)
+  const bookmarkActionLabel = t(
+    isBookmarked
+      ? 'browser.removeCurrentBookmark'
+      : 'browser.bookmarkCurrentPage',
+  )
+  const bookmarksLabel = t('browser.bookmarks')
 
   useEffect(() => {
     if (!api) return
@@ -94,44 +116,25 @@ function BrowserToolbarApp() {
     return api.onThemeColor(setThemeColor)
   }, [api])
 
-  useEffect(() => {
+  const loadBookmarks = useCallback(async () => {
     if (!api) return
-    return api.onForceCloseMenu(() => {
-      setWindowMenuOpen(false)
-    })
+    try {
+      setBookmarks(await api.listBookmarks())
+    } catch (error) {
+      console.error('[BrowserToolbar] Failed to load bookmarks:', error)
+    }
   }, [api])
 
   useEffect(() => {
+    void loadBookmarks()
+  }, [loadBookmarks])
+
+  useEffect(() => {
     if (!api) return
-
-    if (!windowMenuOpen) {
-      void api.setMenuGeometry(false, 0)
-      return
-    }
-
-    // Prime expansion immediately to avoid a constrained first measurement.
-    void api.setMenuGeometry(true, 120)
-
-    const sendGeometry = () => {
-      const height = Math.ceil(menuContentRef.current?.getBoundingClientRect().height ?? 0)
-      void api.setMenuGeometry(true, height)
-    }
-
-    let frame = requestAnimationFrame(sendGeometry)
-    const observer = new ResizeObserver(() => {
-      sendGeometry()
+    return api.onBookmarksChanged((nextBookmarks) => {
+      setBookmarks(nextBookmarks)
     })
-
-    if (menuContentRef.current) {
-      observer.observe(menuContentRef.current)
-    }
-
-    return () => {
-      cancelAnimationFrame(frame)
-      observer.disconnect()
-      void api.setMenuGeometry(false, 0)
-    }
-  }, [api, windowMenuOpen])
+  }, [api])
 
   const handleNavigate = useCallback((url: string) => {
     void api?.navigate(url)
@@ -153,33 +156,25 @@ function BrowserToolbarApp() {
     void api?.stop()
   }, [api])
 
-  const handleHideWindow = useCallback(() => {
-    setWindowMenuOpen(false)
-    void api?.hideWindow()
-  }, [api])
+  const handleToggleBookmark = useCallback(async () => {
+    if (!api || !isBookmarkable) return
+    try {
+      const result = await api.toggleBookmark()
+      setBookmarks(result.bookmarks)
+    } catch (error) {
+      console.error('[BrowserToolbar] Failed to toggle bookmark:', error)
+    }
+  }, [api, isBookmarkable])
 
-  const handleCloseWindowEntirely = useCallback(() => {
-    setWindowMenuOpen(false)
-    void api?.closeWindowEntirely()
-  }, [api])
+  const toolbarButtonClassName = themeColor
+    ? ''
+    : 'bg-background shadow-minimal hover:bg-foreground/5'
+  const toolbarButtonStyle = themeColor
+    ? { color: 'var(--tb-fg)' }
+    : undefined
 
   return (
     <>
-      {/*
-        Full-window outside-tap catcher while menu is open.
-        Critical for draggable titlebar windows (Windows) where outside-click
-        dismissal can be unreliable if events fall into app-region: drag zones.
-      */}
-      {windowMenuOpen && (
-        <div
-          className="fixed inset-0 z-[90] titlebar-no-drag bg-black/[0.0039215686]"
-          onPointerDown={(event) => {
-            event.preventDefault()
-            setWindowMenuOpen(false)
-          }}
-        />
-      )}
-
       <BrowserControls
         url={state.url}
         loading={state.isLoading}
@@ -192,34 +187,37 @@ function BrowserToolbarApp() {
         onStop={handleStop}
         trailingContent={(
           <div className="ml-2 flex items-center gap-1.5 titlebar-no-drag">
-            <DropdownMenu open={windowMenuOpen} onOpenChange={setWindowMenuOpen}>
-              <DropdownMenuTrigger asChild>
-                <HeaderIconButton
-                  icon={<X className="h-3.5 w-3.5" />}
-                  aria-label={t('browser.windowOptions')}
-                  className={themeColor ? '' : 'bg-background shadow-minimal hover:bg-foreground/5'}
-                  style={themeColor ? { color: 'var(--tb-fg)' } : undefined}
+            <HeaderIconButton
+              icon={(
+                <Star
+                  className="h-3.5 w-3.5"
+                  fill={isBookmarked ? 'currentColor' : 'none'}
                 />
-              </DropdownMenuTrigger>
+              )}
+              aria-label={bookmarkActionLabel}
+              title={bookmarkActionLabel}
+              disabled={!isBookmarkable}
+              onClick={() => { void handleToggleBookmark() }}
+              className={toolbarButtonClassName}
+              style={toolbarButtonStyle}
+            />
 
-              <StyledDropdownMenuContent
-                ref={menuContentRef}
-                align="end"
-                side="bottom"
-                sideOffset={6}
-                minWidth="min-w-44"
-                className="titlebar-no-drag z-[110] max-h-none overflow-visible"
-              >
-                <StyledDropdownMenuItem onSelect={handleHideWindow}>
-                  <EyeOff className="h-3.5 w-3.5" />
-                  {t('browser.hideWindow')}
-                </StyledDropdownMenuItem>
-                <StyledDropdownMenuItem variant="destructive" onSelect={handleCloseWindowEntirely}>
-                  <XCircle className="h-3.5 w-3.5" />
-                  {t('browser.closeWindowEntirely')}
-                </StyledDropdownMenuItem>
-              </StyledDropdownMenuContent>
-            </DropdownMenu>
+            <HeaderIconButton
+              icon={<Bookmark className="h-3.5 w-3.5" />}
+              aria-label={bookmarksLabel}
+              title={bookmarksLabel}
+              className={toolbarButtonClassName}
+              style={toolbarButtonStyle}
+              onClick={() => { void api?.showMenu('bookmarks') }}
+            />
+
+            <HeaderIconButton
+              icon={<X className="h-3.5 w-3.5" />}
+              aria-label={t('browser.windowOptions')}
+              className={toolbarButtonClassName}
+              style={toolbarButtonStyle}
+              onClick={() => { void api?.showMenu('window') }}
+            />
           </div>
         )}
         themeColor={themeColor}

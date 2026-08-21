@@ -334,6 +334,8 @@ export const RPC_CHANNELS = {
   tools: {
     GET_BROWSER_TOOL_ENABLED: 'tools:getBrowserToolEnabled',
     SET_BROWSER_TOOL_ENABLED: 'tools:setBrowserToolEnabled',
+    GET_WEB_LINK_OPEN_TARGET: 'tools:getWebLinkOpenTarget',
+    SET_WEB_LINK_OPEN_TARGET: 'tools:setWebLinkOpenTarget',
   },
   caching: {
     GET_EXTENDED_PROMPT_CACHE: 'caching:getExtendedPromptCache',
@@ -407,6 +409,11 @@ export const RPC_CHANNELS = {
     RELOAD: 'browser-pane:reload',
     STOP: 'browser-pane:stop',
     FOCUS: 'browser-pane:focus',
+    ATTACH_SURFACE: 'browser-pane:attach-surface',
+    UPDATE_SURFACE: 'browser-pane:update-surface',
+    DETACH_SURFACE: 'browser-pane:detach-surface',
+    PARK: 'browser-pane:park',
+    REVEAL_SELECTION: 'browser-pane:reveal-selection',
     SNAPSHOT: 'browser-pane:snapshot',
     CLICK: 'browser-pane:click',
     FILL: 'browser-pane:fill',
@@ -418,6 +425,9 @@ export const RPC_CHANNELS = {
     STATE_CHANGED: 'browser-pane:state-changed',
     REMOVED: 'browser-pane:removed',
     INTERACTED: 'browser-pane:interacted',
+    PRESENT_REQUESTED: 'browser-pane:present-requested',
+    CLOSE_PANEL_REQUESTED: 'browser-pane:close-panel-requested',
+    SELECTION_ACTION: 'browser-pane:selection-action',
   },
   automations: {
     GET: 'automations:get',

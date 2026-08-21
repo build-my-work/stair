@@ -1,4 +1,4 @@
-import { FileText, MessageSquareQuote, X } from 'lucide-react'
+import { FileText, Globe, MessageSquareQuote, X } from 'lucide-react'
 import type { Reference } from '@craft-agent/core'
 import { cn } from '../../lib/utils'
 import { useTranslation } from 'react-i18next'
@@ -19,11 +19,19 @@ export function MessageReferencePreview({
   const { t } = useTranslation()
   const label = reference.kind === 'project-file'
     ? reference.fileName
-    : `Chat · ${reference.role}`
+    : reference.kind === 'web-selection'
+      ? reference.title
+      : `Chat · ${reference.role}`
   const source = reference.kind === 'project-file'
     ? reference.relativePath
-    : reference.sessionId
-  const Icon = reference.kind === 'project-file' ? FileText : MessageSquareQuote
+    : reference.kind === 'web-selection'
+      ? reference.url
+      : reference.sessionId
+  const Icon = reference.kind === 'project-file'
+    ? FileText
+    : reference.kind === 'web-selection'
+      ? Globe
+      : MessageSquareQuote
 
   return (
     <div className={cn(

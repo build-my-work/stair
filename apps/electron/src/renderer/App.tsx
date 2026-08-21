@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { useTheme } from '@/hooks/useTheme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
 import type { Session, Workspace, WorkspaceSettings, SessionEvent, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, SetupNeeds, SessionStatus, NewChatActionParams, ContentBadge, LlmConnectionWithStatus, PermissionModeState } from '../shared/types'
-import type { SessionDraft, DraftAttachmentRef } from '@craft-agent/shared/config'
+import type { SessionDraft, DraftAttachmentRef, WebLinkOpenTarget } from '@craft-agent/shared/config'
 import type { Reference } from '@craft-agent/core'
 import type { SessionOptions, SessionOptionUpdates } from './hooks/useSessionOptions'
 import { defaultSessionOptions, mergeSessionOptions } from './hooks/useSessionOptions'
@@ -73,8 +73,8 @@ import {
   showBackgroundFinishedChipAtom,
   pushBackgroundFinishedAtom,
 } from '@/atoms/background-finished'
-import { visibleWorkbenchSessionIdsAtom } from '@/workbench/workbench-state'
-import { removeSessionFromWorkbenchAtom } from '@/workbench/workbench-commands'
+import { visibleWorkbenchSessionIdsAtom, workbenchAtom } from '@/workbench/workbench-state'
+import { presentBrowserAtom, removeSessionFromWorkbenchAtom } from '@/workbench/workbench-commands'
 import {
   findEmptySessionsLeavingWorkbench,
   sessionDraftHasContent,
@@ -1971,7 +1971,33 @@ export default function App() {
       }
     },
     openUrl: async (url) => {
+      const sourceWorkbench = store.get(workbenchAtom)
+      const sourceProjectId = sourceWorkbench.activeProjectId
+      const sourcePanelId = sourceProjectId
+        ? sourceWorkbench.layoutsByProject[sourceProjectId]?.focusedPanelId ?? null
+        : null
       try {
+        let isWebLink = false
+        try {
+          const protocol = new URL(url).protocol
+          isWebLink = protocol === 'http:' || protocol === 'https:'
+        } catch {
+          // Preserve the system URL handler's existing malformed-link error.
+        }
+
+        let target: WebLinkOpenTarget = 'system'
+        if (isWebLink && window.electronAPI.getRuntimeEnvironment() === 'electron') {
+          target = await window.electronAPI.getWebLinkOpenTarget().catch(() => 'system')
+        }
+        if (target === 'built-in') {
+          if (sourceProjectId && await store.set(presentBrowserAtom, {
+            projectId: sourceProjectId,
+            sourcePanelId,
+            url,
+          })) return
+          toast.warning(t('toast.builtInBrowserFallback'))
+        }
+
         await window.electronAPI.openUrl(url)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error'

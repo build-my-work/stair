@@ -22,7 +22,20 @@ export interface ProjectFileWorkbenchPanel {
   openIntentRevision: number
 }
 
-export type WorkbenchPanel = SessionWorkbenchPanel | ProjectFileWorkbenchPanel
+export interface BrowserWorkbenchPanel {
+  id: string
+  kind: 'browser'
+  projectId: string
+  runtimeId: string | null
+  url: string
+  title: string
+  chatTargetSessionId: string | null
+}
+
+export type WorkbenchPanel =
+  | SessionWorkbenchPanel
+  | ProjectFileWorkbenchPanel
+  | BrowserWorkbenchPanel
 
 export interface ProjectWorkbench {
   primary: SessionWorkbenchPanel | null

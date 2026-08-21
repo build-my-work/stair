@@ -11,6 +11,7 @@
     "richToolDescriptions": true,
     "extendedPromptCache": false,
     "browserToolEnabled": true,
+    "webLinkOpenTarget": "system",
     "allowRemoteEvaluate": true
   },
   "workspaceDefaults": {

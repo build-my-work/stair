@@ -5,6 +5,8 @@ export const MAX_REFERENCE_CFI_CHARS = 4_096;
 export const MAX_REFERENCE_TOC_DEPTH = 32;
 export const MAX_REFERENCE_TOC_ORDER_DEPTH = 32;
 export const MAX_REFERENCE_PATH_BYTES = 2_048;
+export const MAX_REFERENCE_URL_CHARS = 8_192;
+export const MAX_REFERENCE_TITLE_CHARS = 512;
 export const MAX_REFERENCE_SERIALIZED_BYTES = 16 * 1_024;
 export const MAX_REFERENCES_SERIALIZED_BYTES = 128 * 1_024;
 
@@ -54,6 +56,13 @@ export interface PdfTextQuoteLocatorV1 {
   anchor?: PdfPageRectV1;
 }
 
+export interface WebTextQuoteLocatorV1 {
+  type: 'web-text-quote';
+  exact: string;
+  prefix?: string;
+  suffix?: string;
+}
+
 export type ProjectFileSelectionLocatorV1 =
   | EpubCfiLocatorV1
   | TextQuoteLocatorV1
@@ -84,7 +93,20 @@ export interface ChatMessageReferenceV1 {
   locator: TextQuoteLocatorV1;
 }
 
-export type Reference = ProjectFileReferenceV1 | ChatMessageReferenceV1;
+export interface WebSelectionReferenceV1 {
+  version: 1;
+  kind: 'web-selection';
+  projectId: string;
+  url: string;
+  title: string;
+  quote: string;
+  locator: WebTextQuoteLocatorV1;
+}
+
+export type Reference =
+  | ProjectFileReferenceV1
+  | ChatMessageReferenceV1
+  | WebSelectionReferenceV1;
 
 function isBoundedText(value: unknown, max: number, allowEmpty = false): value is string {
   return typeof value === 'string'
@@ -214,8 +236,41 @@ export function isChatMessageReference(value: unknown): value is ChatMessageRefe
     && isTextQuoteLocator(reference.locator, reference.quote);
 }
 
+function isHttpUrl(value: unknown): value is string {
+  if (!isBoundedText(value, MAX_REFERENCE_URL_CHARS)) return false;
+  try {
+    const URLConstructor = (globalThis as unknown as {
+      URL: new (input: string) => { protocol: string };
+    }).URL;
+    const protocol = new URLConstructor(value).protocol;
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+export function isWebSelectionReference(value: unknown): value is WebSelectionReferenceV1 {
+  if (!value || typeof value !== 'object') return false;
+  const reference = value as WebSelectionReferenceV1;
+  const locator = reference.locator;
+  return reference.version === 1
+    && reference.kind === 'web-selection'
+    && isBoundedText(reference.projectId, 256)
+    && reference.projectId === reference.projectId.trim()
+    && isHttpUrl(reference.url)
+    && isBoundedText(reference.title, MAX_REFERENCE_TITLE_CHARS)
+    && isBoundedText(reference.quote, MAX_REFERENCE_QUOTE_CHARS)
+    && Boolean(locator)
+    && locator.type === 'web-text-quote'
+    && locator.exact === reference.quote
+    && (locator.prefix === undefined || isBoundedText(locator.prefix, MAX_REFERENCE_CONTEXT_CHARS, true))
+    && (locator.suffix === undefined || isBoundedText(locator.suffix, MAX_REFERENCE_CONTEXT_CHARS, true));
+}
+
 export function isReference(value: unknown): value is Reference {
-  return isProjectFileReference(value) || isChatMessageReference(value);
+  return isProjectFileReference(value)
+    || isChatMessageReference(value)
+    || isWebSelectionReference(value);
 }
 
 function utf8ByteLength(value: string): number {
@@ -255,6 +310,9 @@ export function referencesFitSerializedLimits(references: Reference[]): boolean 
 export function referenceKey(reference: Reference): string {
   if (reference.kind === 'chat-message') {
     return `chat:${reference.sessionId}:${reference.messageId}:${reference.locator.start}:${reference.locator.end}`;
+  }
+  if (reference.kind === 'web-selection') {
+    return `web:${reference.projectId}:${reference.url}:${JSON.stringify(reference.locator)}`;
   }
   return `file:${reference.projectId}:${reference.relativePath}:${reference.sourceFingerprint}:${JSON.stringify(reference.locator)}`;
 }

@@ -20,3 +20,5 @@ export interface NetworkProxySettings {
   httpsProxy?: string;
   noProxy?: string;
 }
+
+export type WebLinkOpenTarget = 'system' | 'built-in';

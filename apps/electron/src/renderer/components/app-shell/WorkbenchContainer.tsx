@@ -15,6 +15,7 @@ import { useIsMultiSelectActive } from '@/hooks/useSession'
 import { isDetailNavState } from '@/lib/nav-helpers'
 import { SessionPanelSlot } from './SessionPanelSlot'
 import { ProjectFilePanelSlot } from './ProjectFilePanelSlot'
+import { BrowserPanelSlot } from './BrowserPanelSlot'
 import { MainContentPanel } from './MainContentPanel'
 import {
   PANEL_EDGE_INSET,
@@ -85,7 +86,7 @@ export function WorkbenchContainer({
 
   const isWorkbenchVisible = isSessionsNavigation(navigationState)
     && navigationState.viewMode !== 'board'
-    && (!isMultiSelectActive || focusedPanel?.kind === 'project-file')
+    && (!isMultiSelectActive || focusedPanel?.kind !== 'session')
   const hasSidebar = sidebarWidth > 0
   const hasNavigator = navigatorWidth > 0
   const isAtLeftEdge = !hasSidebar && !hasNavigator
@@ -147,8 +148,17 @@ export function WorkbenchContainer({
               isAtRightEdge={!isRightSidebarVisible}
               isCompact
             />
-          ) : (
+          ) : focusedPanel.kind === 'project-file' ? (
             <ProjectFilePanelSlot
+              panel={focusedPanel}
+              isOnly
+              isFocusedPanel
+              isAtLeftEdge
+              isAtRightEdge={!isRightSidebarVisible}
+              isCompact
+            />
+          ) : (
+            <BrowserPanelSlot
               panel={focusedPanel}
               isOnly
               isFocusedPanel
@@ -241,8 +251,17 @@ export function WorkbenchContainer({
               isAtLeftEdge={index === 0 && isAtLeftEdge}
               isAtRightEdge={index === panels.length - 1 && !isRightSidebarVisible}
             />
-          ) : (
+          ) : panel.kind === 'project-file' ? (
             <ProjectFilePanelSlot
+              key={panel.id}
+              panel={panel}
+              isOnly={panels.length === 1}
+              isFocusedPanel={panels.length === 1 || panel.id === focusedPanelId}
+              isAtLeftEdge={index === 0 && isAtLeftEdge}
+              isAtRightEdge={index === panels.length - 1 && !isRightSidebarVisible}
+            />
+          ) : (
+            <BrowserPanelSlot
               key={panel.id}
               panel={panel}
               isOnly={panels.length === 1}

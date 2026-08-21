@@ -264,7 +264,7 @@ export function TopBar({
                 </StyledDropdownMenuItem>
                 <StyledDropdownMenuItem onClick={onAddBrowserPanel}>
                   <Icons.Globe className="h-3.5 w-3.5" />
-                  {t("browser.newWindow")}
+                  {t("browser.newPanel")}
                 </StyledDropdownMenuItem>
               </StyledDropdownMenuContent>
             </DropdownMenu>

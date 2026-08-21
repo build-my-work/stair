@@ -70,6 +70,7 @@ import { SessionList, type ChatGroupingMode } from "./SessionList"
 import { MainContentPanel } from "./MainContentPanel"
 import { BoardListToggle } from "./kanban/BoardListToggle"
 import { WorkbenchContainer } from "./WorkbenchContainer"
+import { BrowserPaneController } from "../browser/BrowserPaneController"
 import { CompactSessionListFilter } from "./CompactSessionListFilter"
 import type { ChatDisplayHandle } from "./ChatDisplay"
 import type { SidebarItem as SidebarNavItem } from "./LeftSidebar"
@@ -95,6 +96,7 @@ import { RtkUpdatePrompt } from "@/components/RtkUpdateDialog"
 import { skillsAtom } from "@/atoms/skills"
 import {
   focusedWorkbenchSessionIdAtom,
+  getWorkbenchPanels,
   workbenchAtom,
   workbenchPanelCountAtom,
   workbenchPanelsAtom,
@@ -104,6 +106,7 @@ import {
   focusPreviousWorkbenchPanelAtom,
   openProjectFileInPanelAtom,
   openProjectFilePreviewAtom,
+  presentBrowserAtom,
   switchWorkbenchProjectAtom,
 } from '@/workbench/workbench-commands'
 import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuses } from "@/config/session-status-config"
@@ -333,6 +336,7 @@ function AppShellContent({
   const switchWorkbenchProject = useSetAtom(switchWorkbenchProjectAtom)
   const openProjectFilePreview = useSetAtom(openProjectFilePreviewAtom)
   const openProjectFileInPanel = useSetAtom(openProjectFileInPanelAtom)
+  const presentBrowser = useSetAtom(presentBrowserAtom)
 
   const sessionsContext = React.useMemo(() => {
     if (isSessionsNavigation(navState)) {
@@ -1282,6 +1286,29 @@ function AppShellContent({
       })
     }
 
+    if (reference.kind === 'web-selection') {
+      if (workbench.activeProjectId !== reference.projectId) return false
+      const layout = workbench.layoutsByProject[reference.projectId]
+      const existing = layout && getWorkbenchPanels(layout).find(panel => (
+        panel.kind === 'browser'
+        && panel.runtimeId
+        && panel.url === reference.url
+      ))
+      const result = await window.electronAPI.browserPane.revealSelection(
+        reference,
+        existing?.kind === 'browser' ? existing.runtimeId ?? undefined : undefined,
+      )
+      if (!result.ok || !result.browserId) return false
+      const presented = await presentBrowser({
+        projectId: reference.projectId,
+        runtimeId: result.browserId,
+        url: reference.url,
+        title: reference.title,
+        destroyOnFailure: result.created,
+      })
+      return presented && result.found === true
+    }
+
     const sourceSession = sessionMetaMap.get(reference.sessionId)
     if (!sourceSession || sourceSession.projectId !== reference.projectId) return false
     const revealIntent = {
@@ -1297,7 +1324,7 @@ function AppShellContent({
       },
     }))
     return true
-  }, [navigateToSession, openProjectFilePreview, sessionMetaMap])
+  }, [navigateToSession, openProjectFilePreview, presentBrowser, sessionMetaMap, workbench])
 
   const closeProjectNoteTargetDialog = useCallback((added: boolean) => {
     const pending = pendingProjectNoteRef.current
@@ -2003,19 +2030,18 @@ function AppShellContent({
     setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
   }, [activeWorkspace, createSessionInNewPanel, focusZone, navigate, resolveInheritedNewSessionParams])
 
-  // Create a brand new dedicated browser window and focus it.
-  // Intentionally unbound: this action should always create a NEW window.
+  // Explicit Browser action: create one new Auxiliary after the focused Panel.
   const handleNewBrowserWindow = useCallback(async () => {
+    if (!activeProject) return
     try {
-      const instanceId = await window.electronAPI.browserPane.create({
-        show: true,
-      })
-      await window.electronAPI.browserPane.focus(instanceId)
+      if (!await presentBrowser({ projectId: activeProject.config.id })) {
+        throw new Error('Browser presentation was rejected')
+      }
     } catch (error) {
       console.error('[Chat] Failed to create browser window:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
-  }, [])
+  }, [activeProject, presentBrowser, t])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -2588,35 +2614,36 @@ function AppShellContent({
 
   return (
     <AppShellProvider value={appShellContextValue}>
-        {/* === TOP BAR === */}
-        <TopBar
-          workspaces={workspaces}
-          activeWorkspaceId={activeWorkspaceId}
-          onSelectWorkspace={onSelectWorkspace}
-          workspaceUnreadMap={workspaceUnreadMap}
-          onWorkspaceCreated={() => onRefreshWorkspaces?.()}
-          onWorkspaceRemoved={() => onRefreshWorkspaces?.()}
-          activeSessionId={effectiveSessionId}
-          onNewChat={() => handleNewChat()}
-          onNewWindow={() => window.electronAPI.menuNewWindow()}
-          onOpenSettings={onOpenSettings}
-          onOpenSettingsSubpage={handleSettingsClick}
-          onOpenKeyboardShortcuts={onOpenKeyboardShortcuts}
-          onOpenStoredUserPreferences={onOpenStoredUserPreferences}
-          onBack={goBack}
-          onForward={goForward}
-          canGoBack={canGoBack}
-          canGoForward={canGoForward}
-          onToggleSidebar={handleToggleSidebarFromPointer}
-          onToggleNavigator={handleToggleNavigatorFromPointer}
-          onToggleRightSidebar={handleToggleRightSidebar}
-          isRightSidebarVisible={isRightSidebarVisible}
-          isProjectFilesAvailable={Boolean(activeProject)}
-          onToggleFocusMode={handleToggleFocusModeFromPointer}
-          onAddSessionPanel={() => handleNewChat(true)}
-          onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
-          isCompact={isAutoCompact}
-        />
+      <BrowserPaneController />
+      {/* === TOP BAR === */}
+      <TopBar
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onSelectWorkspace={onSelectWorkspace}
+        workspaceUnreadMap={workspaceUnreadMap}
+        onWorkspaceCreated={() => onRefreshWorkspaces?.()}
+        onWorkspaceRemoved={() => onRefreshWorkspaces?.()}
+        activeSessionId={effectiveSessionId}
+        onNewChat={() => handleNewChat()}
+        onNewWindow={() => window.electronAPI.menuNewWindow()}
+        onOpenSettings={onOpenSettings}
+        onOpenSettingsSubpage={handleSettingsClick}
+        onOpenKeyboardShortcuts={onOpenKeyboardShortcuts}
+        onOpenStoredUserPreferences={onOpenStoredUserPreferences}
+        onBack={goBack}
+        onForward={goForward}
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
+        onToggleSidebar={handleToggleSidebarFromPointer}
+        onToggleNavigator={handleToggleNavigatorFromPointer}
+        onToggleRightSidebar={handleToggleRightSidebar}
+        isRightSidebarVisible={isRightSidebarVisible}
+        isProjectFilesAvailable={Boolean(activeProject)}
+        onToggleFocusMode={handleToggleFocusModeFromPointer}
+        onAddSessionPanel={() => handleNewChat(true)}
+        onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
+        isCompact={isAutoCompact}
+      />
 
       {/* === OUTER LAYOUT: Unified Panel Stack | Right Sidebar === */}
       <div
