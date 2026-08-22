@@ -2,12 +2,12 @@
 
 ## 文档状态
 
-- 状态：阶段 7 Drawnix 与 Agent 工具的实现、自动化验证、四路审查与真实 Electron 验收均已收口；阶段 8 尚未开始
+- 状态：阶段 8 Workbench 布局持久化与交互完善已完成实现、自动化验证、审查修复和真实 Electron 验收；阶段 9 尚未开始
 - 基线：`upstream/main@50ffa143`（`v0.11.4`）
 - 分支：`codex/stair-rebuild-v2`
 - 更新日期：2026-08-22
 - 范围：保留 Stair 产品能力，不迁移 Craft 或旧 Stair 用户数据
-- 代码状态：阶段 7 的 Drawnix Project Document、Document Controller 与 Project-scoped Mind Map 工具已接入现有 Workbench/Capability 边界；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
+- 代码状态：阶段 8 已在现有 Workbench/Server RPC 边界内加入 Workspace-scoped、Project-keyed 语义布局持久化，并完成独立比例、排序、紧凑模式与键盘可访问性；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
 
 ## 当前实施进度
 
@@ -21,7 +21,8 @@
 | 阶段 5：引用与 Add Note | 完成 | 统一引用、Add Chat/New Chat、Add Note、审查修复、真实 Pointer/Reader/Chat 验收与 queue/ack 恢复链均已完成。 |
 | 阶段 6：原生 Browser | 完成 | Browser Auxiliary、原生 Surface 生命周期、选区引用、书签、链接偏好、审查修复与真实 Electron 视觉/Pointer 验收均已完成。 |
 | 阶段 7：Drawnix 与 Agent 工具 | 完成 | Drawnix 文档、自动保存、Project-scoped `mindmap_read`/`mindmap_update`、审查修复与真实 Electron 验收均已完成。 |
-| 阶段 8—9 | 未开始 | 布局持久化、交互完善和正式发布打包尚未进入实施。 |
+| 阶段 8：布局持久化与交互完善 | 完成 | Project 独立布局、语义恢复、Panel 独立比例、拖拽排序、Compact/动画、键盘与无效条目局部失败均已完成。 |
+| 阶段 9：打包与完整验收 | 未开始 | 正式发布打包、全新安装、发布说明和累计能力矩阵尚未收口。 |
 
 ### 2026-08-21 功能等价审计与收口
 
@@ -184,10 +185,10 @@
 
 ### 当前限制
 
-- 阶段 0—7 已交付；阶段 8—9 未开始，不能把本次交付理解为全部产品能力已经完成。
+- 阶段 0—8 已交付；阶段 9 尚未完成，不能把本次交付理解为全部产品能力已经完成。
 - Panel 数量策略已确认与 Craft 保持一致：当前不设置“最多 8 个 Panel”的额外限制，本轮无需修改业务代码。
 - 按用户最新要求，桌面验收使用当前已经选择的 `os` Project，不再以临时隔离 Workspace 作为阻塞条件；这不改变产品最终需要独立 Stair 数据命名空间的目标。
-- 布局持久化和正式发布仍属于阶段 8—9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
+- 正式发布仍属于阶段 9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
 - Windows Project Note 路径已按 ABI 与结构布局实现并完成类型/构建验证，但本轮运行环境为 macOS，尚未执行真实 Windows 原生运行时 smoke。
 - queued 恢复若在 Renderer 收到 restore 事件后、持久草稿与 ack 完成前崩溃，会保留服务端 queued bubble 且不自动重试写入草稿；该保守状态不会丢数据，但需用户重新触发恢复。
 - 为保证引用标记与 JSON 完整，恢复/摘要字符上限允许被一个完整引用块软超出；不会再产生半个引用协议，但极大引用可能比旧硬上限多一个块。
@@ -439,7 +440,7 @@ Project 前置条件：
 - Electron Main 负责原生 Browser Runtime 的创建、销毁、Focus 和 Bounds。
 - 关闭 Browser Panel 时销毁对应 Runtime。
 - 切换 Project 时 park Browser Panel，detach/hide 原生 Surface，并在当前进程内保留该 Project 的 Runtime。
-- 应用退出时销毁所有运行时。阶段 6 中，应用重新启动后只保留语义 Browser 描述符，只有显式重新打开/呈现才创建运行时；Panel/运行时自动恢复要等阶段 8 的 Workbench 布局持久化。原生运行时对象永不持久化。
+- 应用退出时销毁所有运行时。阶段 8 起，应用重新启动后从语义 Browser 描述符创建新的运行时；原生运行时对象和旧 runtime ID 永不持久化。
 - 连续 Scroll 和 Resize 持续更新 Bounds。
 - Hide/Show 只用于结构变化或真实遮挡，不用于普通几何变化。
 
@@ -453,7 +454,7 @@ Project 前置条件：
 - 持久化语义 Project 布局，不持久化 React State 或原生 Runtime 对象。
 - Browser Runtime State 必须可重建。
 - 不主动迁移或删除旧 Craft/Stair 数据；Stair 只读取当前配置指向的 `~/.stair` 命名空间，不读取 Craft 命名空间。
-- 阶段 1 持久化 Project/Session 领域数据，阶段 4 持久化阅读器数据，阶段 6 持久化书签和语义 Browser 描述符。Workbench 跨重启布局持久化延后到阶段 8；阶段 2—7 只在当前进程内暂存不同 Project 的 Workbench 布局。因此阶段 6 绝不在应用重启后自动恢复 Browser Panel。
+- 阶段 1 持久化 Project/Session 领域数据，阶段 4 持久化阅读器数据，阶段 6 持久化书签和语义 Browser 描述符，阶段 8 持久化 Workspace 内每个 Project 的 Workbench 语义布局。阶段 2—7 的进程内暂存边界已经由阶段 8 的版本化布局文档替代。
 
 ## 6. 实施策略
 
@@ -582,7 +583,7 @@ Project 前置条件：
 - 端到端验证 React 提交 → DOM 几何 → IPC → Electron View。
 - 验证连续 Resize、Sidebar/Navigator 动画、横向 Overflow、Scroll、真实 Occlusion 和 Pointer Interaction。
 - 关闭和切换 Project 后不存在孤儿 Browser Surface。
-- 关闭 Panel 时销毁运行时；切换 Project 时在当前进程内暂存/分离，并在切回后恢复。应用重启后，显式重新打开/呈现根据描述符创建新运行时；阶段 8 再增加布局驱动的自动恢复。
+- 关闭 Panel 时销毁运行时；切换 Project 时在当前进程内暂存/分离，并在切回后恢复。阶段 8 已增加布局驱动的跨重启自动恢复，并始终创建新的原生运行时。
 - 书签新增/删除/列表以及内部/系统浏览器打开偏好都有全新数据验收用例。
 - 单元测试或模拟 Electron 测试不能单独满足本阶段完成条件。
 
@@ -615,7 +616,7 @@ Project 前置条件：
 - Project 切换会 flush 并停放当前布局；Session 请求只存在于另一 Project/parked layout 的脑图时返回 `MINDMAP_NOT_OPEN`，两个 Project 的布局和文件均未被跨界修改。
 - Codex、Claude、Kimi、Pi 审查确认的问题均已修复并回归，Drawnix/Agent 工具没有新增 Workbench State 写入口。
 
-### 阶段 8：布局持久化与交互完善（未开始）
+### 阶段 8：布局持久化与交互完善（完成）
 
 范围：
 
@@ -631,6 +632,16 @@ Project 前置条件：
 - Shell Pane 开关不修改持久化 Panel 比例。
 - 拖拽和调整原生 Browser Panel 时保持视觉连续。
 - 无效持久化条目局部失败，不替换整个布局。
+
+实施结果：
+
+- 新增 Workspace-scoped `workbench-layout.json` 与 Server Core RPC；文档按 Project 保存 Primary、Auxiliary 顺序、Focus、Preview 与独立宽度比例，只持久化语义描述符，不写入 Browser runtime ID 或 Project File reveal intent。
+- 启动恢复会逐 Project 清洗条目，并在当前 Project 激活时重建 Browser runtime；Workspace 切换、过期异步读取与瞬时读取失败均采用保守合并/重试，不允许旧响应覆盖新 Workspace。
+- Panel 宽度以稳定 Shell 宽度解析，Sidebar/Navigator/Project Files 开关不改写比例；Pointer Resize 只提交目标 Panel，`Escape` 可取消，Primary 固定，只有多个 Auxiliary 时显示排序手柄。
+- Auxiliary 同时支持 Pointer 与 Keyboard DnD；Panel 前后焦点快捷键、可见焦点、Compact 单 Panel/Navigator 切换、Motion 与 Reduced Motion 均沿用单一 Workbench 状态。
+- 自动化门禁通过：阶段 8 Electron 聚焦测试 `56 pass / 0 fail`，Electron 源测试 `1108 pass / 0 fail`，Server Core `319 pass / 0 fail`，Shared `3042 pass / 12 skip / 0 fail`，三层 typecheck 与 Stair profile `10 pass / 0 fail` 均通过。
+- Codex 与 Kimi 审查发现的过期恢复和瞬时读取失败问题已补测试并修复；Claude 因本机模型映射不受支持、Pi 因审查进程超时未产出可归因结论，未把它们记为通过结论。
+- Computer Use 在真实打包 Stair 中验证三 Panel 落盘、跨 Project 独立恢复、重启后 Browser runtime ID 更新、Shell Pane 比例不变、Pointer/Keyboard 排序、Resize/取消、紧凑模式焦点切换、高倍缩放以及无效 Panel 局部丢弃；无效测试记录被清理后，两条有效邻居仍完整恢复。
 
 ### 阶段 9：打包与完整验收（未开始）
 
@@ -793,4 +804,4 @@ git diff --check
 
 ## 11. 立即下一步
 
-阶段 7 已完成。提交当前阶段后进入阶段 8：先冻结每个 Project 的 Workbench 布局持久化、Panel 独立比例、Auxiliary 拖拽排序、Compact/动画与 Accessibility/Keyboard 的失败测试和真实 Electron 验收矩阵，再按编码、测试、Code Simplifier、四路审查、修复、Computer Use 与单阶段提交顺序实施。Panel 数量策略继续沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制。
+阶段 8 已完成。提交当前阶段后进入阶段 9：收口正式 Stair 打包、图标与 runtime 依赖，冻结全新安装和累计能力验收矩阵，完成发布说明，再按编码、测试、Code Simplifier、四路审查、修复、Computer Use 与单阶段提交顺序实施。Panel 数量策略继续沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制。

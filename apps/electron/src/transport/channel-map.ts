@@ -473,6 +473,8 @@ export const CHANNEL_MAP = {
   applyEpubStateMutation: invoke(RPC_CHANNELS.projectFiles.APPLY_EPUB_STATE_MUTATION),
   getPdfDocumentState: invoke(RPC_CHANNELS.projectFiles.GET_PDF_STATE),
   applyPdfStateMutation: invoke(RPC_CHANNELS.projectFiles.APPLY_PDF_STATE_MUTATION),
+  readWorkbenchLayout: invoke(RPC_CHANNELS.workbenchLayout.READ),
+  writeWorkbenchLayout: invoke(RPC_CHANNELS.workbenchLayout.WRITE),
   onProjectFilesFlushRequested: listener(RPC_CHANNELS.projectFiles.FLUSH_REQUESTED),
   completeProjectFilesFlush: invoke(RPC_CHANNELS.projectFiles.FLUSH_COMPLETED),
 

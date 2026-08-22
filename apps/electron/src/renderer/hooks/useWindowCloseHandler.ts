@@ -9,6 +9,7 @@ import {
 } from '@/workbench/workbench-state'
 import { closeWorkbenchPanelAtom } from '@/workbench/workbench-commands'
 import { flushOpenProjectFiles } from '@/components/project-files/project-file-document-registry'
+import { flushWorkbenchLayoutPersistence } from '@/workbench/workbench-persistence'
 import type { WindowCloseRequest } from '../../shared/types'
 
 /**
@@ -36,7 +37,10 @@ export function useWindowCloseHandler(isSessionWorkbenchVisible = false) {
   const closePanel = useSetAtom(closeWorkbenchPanelAtom)
 
   useEffect(() => window.electronAPI.onProjectFilesFlushRequested((requestId) => {
-    void flushOpenProjectFiles()
+    void Promise.all([
+      flushOpenProjectFiles(),
+      flushWorkbenchLayoutPersistence(),
+    ])
       .then(() => window.electronAPI.completeProjectFilesFlush(requestId))
       .catch(error => window.electronAPI.completeProjectFilesFlush(
         requestId,
@@ -81,7 +85,10 @@ export function useWindowCloseHandler(isSessionWorkbenchVisible = false) {
       // The renderer has accepted responsibility for the close. Clear main's
       // 3-second IPC fallback before a potentially slow Project File flush.
       void window.electronAPI.cancelCloseWindow()
-        .then(() => flushOpenProjectFiles())
+        .then(() => Promise.all([
+          flushOpenProjectFiles(),
+          flushWorkbenchLayoutPersistence(),
+        ]))
         .then(() => window.electronAPI.confirmCloseWindow())
         .catch(error => {
           window.electronAPI.debugLog(

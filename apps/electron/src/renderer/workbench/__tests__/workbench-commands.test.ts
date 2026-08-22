@@ -3,6 +3,7 @@ import { createStore } from 'jotai'
 import {
   activeProjectWorkbenchAtom,
   workbenchAtom,
+  workbenchKeyboardFocusRevisionAtom,
   workbenchPanelRevealRevisionAtom,
   workbenchPanelsAtom,
 } from '../workbench-state'
@@ -17,7 +18,9 @@ import {
   openSessionInNewPanelAtom,
   openProjectFileInPanelAtom,
   openProjectFilePreviewAtom,
+  reorderAuxiliaryPanelAtom,
   removeSessionFromWorkbenchAtom,
+  resizeWorkbenchPanelAtom,
   setProjectFileChatTargetAtom,
   selectSessionFromNavigatorAtom,
   showSessionInPrimaryAtom,
@@ -76,6 +79,60 @@ describe('Session-only Workbench commands', () => {
         },
       },
     })
+  })
+
+  it('resizes only one Panel without changing neighboring ratios, order, or Focus', () => {
+    const store = initializedStore()
+    store.set(showSessionInPrimaryAtom, { sessionId: 'session-a', projectId: 'project-a' })
+    store.set(openSessionInNewPanelAtom, { sessionId: 'session-b', projectId: 'project-a' })
+    store.set(openSessionInNewPanelAtom, { sessionId: 'session-c', projectId: 'project-a' })
+    const before = store.get(workbenchPanelsAtom)
+    const focusedPanelId = store.get(activeProjectWorkbenchAtom)!.focusedPanelId
+
+    expect(store.set(resizeWorkbenchPanelAtom, {
+      projectId: 'project-a',
+      panelId: before[0]!.id,
+      widthRatio: 1.5,
+    })).toBe(true)
+
+    const after = store.get(workbenchPanelsAtom)
+    expect(after.map(panel => panel.id)).toEqual(before.map(panel => panel.id))
+    expect(after.map(panel => panel.widthRatio)).toEqual([1.5, 1, 1])
+    expect(store.get(activeProjectWorkbenchAtom)!.focusedPanelId).toBe(focusedPanelId)
+
+    expect(store.set(resizeWorkbenchPanelAtom, {
+      projectId: 'project-a',
+      panelId: 'missing',
+      widthRatio: 1,
+    })).toBe(false)
+  })
+
+  it('reorders only Auxiliary Panels and preserves Primary and Focus', () => {
+    const store = initializedStore()
+    store.set(showSessionInPrimaryAtom, { sessionId: 'primary', projectId: 'project-a' })
+    store.set(openSessionInNewPanelAtom, { sessionId: 'aux-a', projectId: 'project-a' })
+    store.set(openSessionInNewPanelAtom, { sessionId: 'aux-b', projectId: 'project-a' })
+    store.set(openSessionInNewPanelAtom, { sessionId: 'aux-c', projectId: 'project-a' })
+    const layout = store.get(activeProjectWorkbenchAtom)!
+    const focusedPanelId = layout.focusedPanelId
+
+    expect(store.set(reorderAuxiliaryPanelAtom, {
+      projectId: 'project-a',
+      panelId: layout.auxiliary[2]!.id,
+      toIndex: 0,
+    })).toBe(true)
+
+    const reordered = store.get(activeProjectWorkbenchAtom)!
+    expect(reordered.primary?.sessionId).toBe('primary')
+    expect(reordered.auxiliary.filter(isSessionPanel).map(panel => panel.sessionId))
+      .toEqual(['aux-c', 'aux-a', 'aux-b'])
+    expect(reordered.focusedPanelId).toBe(focusedPanelId)
+
+    expect(store.set(reorderAuxiliaryPanelAtom, {
+      projectId: 'project-a',
+      panelId: reordered.primary!.id,
+      toIndex: 0,
+    })).toBe(false)
   })
 
   it('ordinary selection replaces Primary and never grows Auxiliary', async () => {
@@ -282,6 +339,7 @@ describe('Session-only Workbench commands', () => {
     store.set(openSessionInNewPanelAtom, { sessionId: 'aux-b', projectId: 'project-a' })
     const panels = store.get(workbenchPanelsAtom)
     store.set(focusWorkbenchPanelAtom, { projectId: 'project-a', panelId: panels[0].id })
+    const beforeRevision = store.get(workbenchKeyboardFocusRevisionAtom)
 
     expect(store.set(focusNextWorkbenchPanelAtom)).toBe(true)
     expect(store.get(activeProjectWorkbenchAtom)?.focusedPanelId).toBe(panels[1].id)
@@ -289,6 +347,7 @@ describe('Session-only Workbench commands', () => {
     expect(store.get(activeProjectWorkbenchAtom)?.focusedPanelId).toBe(panels[0].id)
     expect(store.set(focusPreviousWorkbenchPanelAtom)).toBe(true)
     expect(store.get(activeProjectWorkbenchAtom)?.focusedPanelId).toBe(panels[2].id)
+    expect(store.get(workbenchKeyboardFocusRevisionAtom)).toBe(beforeRevision + 3)
   })
 
   it('removes a deleted Session from its parked Project without switching Project', async () => {

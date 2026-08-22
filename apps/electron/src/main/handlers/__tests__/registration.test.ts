@@ -118,6 +118,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     projectNotes,
     readerState,
     saveTextFile,
+    workbenchLayout,
   ] = await Promise.all([
     import('@craft-agent/server-core/handlers/rpc/auth'),
     import('@craft-agent/server-core/handlers/rpc/automations'),
@@ -145,6 +146,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/project-notes'),
     import('@craft-agent/server-core/handlers/rpc/reader-state'),
     import('@craft-agent/server-core/handlers/rpc/save-text-file'),
+    import('@craft-agent/server-core/handlers/rpc/workbench-layout'),
   ])
 
   // GUI handler channels (remain in electron)
@@ -182,6 +184,7 @@ async function getExpectedChannels(): Promise<Set<string>> {
     ...projectNotes.HANDLED_CHANNELS,
     ...readerState.HANDLED_CHANNELS,
     ...saveTextFile.HANDLED_CHANNELS,
+    ...workbenchLayout.HANDLED_CHANNELS,
     ...browser.HANDLED_CHANNELS,
     ...guiSystem.GUI_HANDLED_CHANNELS,
     ...guiWorkspace.GUI_HANDLED_CHANNELS,

@@ -378,6 +378,10 @@ export const mockElectronAPI = {
   writePreferences: async (prefs: unknown) => {
     console.log('[Playground] writePreferences called:', prefs)
   },
+  readWorkbenchLayout: async () => ({ version: 1, layoutsByProject: {} }),
+  writeWorkbenchLayout: async (
+    document: import('@craft-agent/shared/workbench-layout').PersistedWorkbenchLayoutDocument,
+  ) => document,
 
   // FreeFormInput required mocks
   getAutoCapitalisation: async () => false,

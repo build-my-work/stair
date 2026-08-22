@@ -62,9 +62,12 @@ import {
   selectSessionFromNavigatorAtom,
   showSessionInPrimaryAtom,
   switchWorkbenchProjectAtom,
+  restoreActiveBrowserRuntimesAtom,
 } from '@/workbench/workbench-commands'
 import { visibleWorkbenchSessionIdsAtom, workbenchAtom } from '@/workbench/workbench-state'
 import { findEmptySessionsLeavingWorkbench } from '@/workbench/session-auto-cleanup'
+import { restoreWorkbenchLayoutsAtom } from '@/workbench/workbench-persistence'
+import { WorkbenchPersistenceBridge } from '@/workbench/WorkbenchPersistenceBridge'
 import { flushOpenProjectFilesForProject } from '@/components/project-files/project-file-document-registry'
 
 export { routes }
@@ -147,6 +150,8 @@ export function NavigationProvider({
   const [, setSession] = useSession()
   const store = useStore()
   const initializeWorkbench = useSetAtom(initializeWorkbenchAtom)
+  const restoreWorkbenchLayouts = useSetAtom(restoreWorkbenchLayoutsAtom)
+  const restoreActiveBrowserRuntimes = useSetAtom(restoreActiveBrowserRuntimesAtom)
   const selectSessionFromNavigator = useSetAtom(selectSessionFromNavigatorAtom)
   const showSessionInPrimary = useSetAtom(showSessionInPrimaryAtom)
   const openSessionFromProjectFile = useSetAtom(openSessionFromProjectFileAtom)
@@ -636,8 +641,13 @@ export function NavigationProvider({
     const pushHistory = !firstRestore && !isPopstateSwitchRef.current
     isPopstateSwitchRef.current = false
     void (async () => {
+      await restoreWorkbenchLayouts({ workspaceId, defaultProjectId })
       if (!await applyViewRoute(route, { pushHistory })) {
         await applyViewRoute(routes.view.allSessions(), { pushHistory })
+      }
+      const activeProjectId = store.get(workbenchAtom).activeProjectId
+      if (activeProjectId) {
+        await restoreActiveBrowserRuntimes({ projectId: activeProjectId })
       }
       if (firstRestore) {
         history.replaceState({ seq: 0 }, '', window.location.href)
@@ -656,6 +666,9 @@ export function NavigationProvider({
     updateCanGoBackForward,
     workspaceId,
     workspaceSlug,
+    restoreWorkbenchLayouts,
+    restoreActiveBrowserRuntimes,
+    store,
   ])
 
   useEffect(() => {
@@ -761,6 +774,7 @@ export function NavigationProvider({
         navigateToSession,
       }}
     >
+      <WorkbenchPersistenceBridge />
       {children}
     </NavigationContext.Provider>
   )

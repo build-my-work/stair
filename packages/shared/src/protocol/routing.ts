@@ -506,6 +506,10 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projectFiles.GET_PDF_STATE,
   RPC_CHANNELS.projectFiles.APPLY_PDF_STATE_MUTATION,
 
+  // workbenchLayout — Workspace-scoped semantic presentation state
+  RPC_CHANNELS.workbenchLayout.READ,
+  RPC_CHANNELS.workbenchLayout.WRITE,
+
   // projectNotes — Session metadata and Project-scoped note writes
   RPC_CHANNELS.projectNotes.CONFIGURE_TARGET,
   RPC_CHANNELS.projectNotes.APPEND,

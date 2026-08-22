@@ -413,6 +413,8 @@ const EXPECTED_CHANNELS: string[] = [
   'window:openWorkspace',
   'window:setTrafficLights',
   'window:switchWorkspace',
+  'workbenchLayout:read',
+  'workbenchLayout:write',
   'workspace:getPermissions',
   'workspace:readImage',
   'workspace:writeImage',

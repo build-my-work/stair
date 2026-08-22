@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSetAtom } from 'jotai'
 import { ChevronLeft, X } from 'lucide-react'
@@ -13,7 +13,7 @@ import type { SessionWorkbenchPanel } from '@/workbench/workbench-state'
 import { useAppShellContext, AppShellProvider } from '@/context/AppShellContext'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
 import { MainContentPanel } from './MainContentPanel'
-import { getPanelBottomRadius, PANEL_MIN_WIDTH, RADIUS_INNER } from './panel-constants'
+import { getPanelBottomRadius, RADIUS_INNER } from './panel-constants'
 
 interface SessionPanelSlotProps {
   panel: SessionWorkbenchPanel
@@ -23,6 +23,7 @@ interface SessionPanelSlotProps {
   isAtLeftEdge: boolean
   isAtRightEdge: boolean
   isCompact?: boolean
+  reorderHandle?: ReactNode
 }
 
 export function SessionPanelSlot({
@@ -33,6 +34,7 @@ export function SessionPanelSlot({
   isAtLeftEdge,
   isAtRightEdge,
   isCompact = false,
+  reorderHandle,
 }: SessionPanelSlotProps) {
   const { t } = useTranslation()
   const closePanel = useSetAtom(closeWorkbenchPanelAtom)
@@ -46,6 +48,7 @@ export function SessionPanelSlot({
 
   const closeButton = useMemo(() => (
     <div className="flex items-center gap-1.5">
+      {!isCompact && reorderHandle}
       {parentContext.rightSidebarButton}
       <PanelHeaderCenterButton
         icon={<X className="h-4 w-4" />}
@@ -53,7 +56,7 @@ export function SessionPanelSlot({
         tooltip={t('common.close')}
       />
     </div>
-  ), [handleClose, parentContext.rightSidebarButton, t])
+  ), [handleClose, isCompact, parentContext.rightSidebarButton, reorderHandle, t])
 
   const backButton = useMemo(() => isCompact ? (
     <PanelHeaderCenterButton
@@ -83,8 +86,9 @@ export function SessionPanelSlot({
       data-session-id={panel.sessionId}
       data-panel-id={panel.id}
       data-compact={isCompact || undefined}
+      tabIndex={isCompact ? 0 : undefined}
       className={cn(
-        'h-full overflow-hidden relative @container/panel',
+        'h-full w-full min-w-0 overflow-hidden relative @container/panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         !isOnly && isFocusedPanel ? 'shadow-panel-focused z-[1]' : 'shadow-middle z-0',
         'bg-foreground-2',
       )}
@@ -100,10 +104,6 @@ export function SessionPanelSlot({
         borderBottomLeftRadius: getPanelBottomRadius(isCompact, isAtLeftEdge),
         borderTopRightRadius: RADIUS_INNER,
         borderBottomRightRadius: getPanelBottomRadius(isCompact, isAtRightEdge),
-        flexGrow: 1,
-        flexShrink: 1,
-        flexBasis: 0,
-        minWidth: isOnly ? 0 : PANEL_MIN_WIDTH,
       }}
     >
       <div className="h-full flex flex-col">

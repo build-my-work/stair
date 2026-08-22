@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, type ReactNode } from 'react'
 import { useSetAtom } from 'jotai'
 import { useTranslation } from 'react-i18next'
 import { ChevronLeft, X } from 'lucide-react'
@@ -11,7 +11,7 @@ import {
   focusWorkbenchPanelAtom,
 } from '@/workbench/workbench-commands'
 import type { BrowserWorkbenchPanel } from '@/workbench/workbench-state'
-import { getPanelBottomRadius, PANEL_MIN_WIDTH, RADIUS_INNER } from './panel-constants'
+import { getPanelBottomRadius, RADIUS_INNER } from './panel-constants'
 
 interface BrowserPanelSlotProps {
   panel: BrowserWorkbenchPanel
@@ -20,6 +20,7 @@ interface BrowserPanelSlotProps {
   isAtLeftEdge: boolean
   isAtRightEdge: boolean
   isCompact?: boolean
+  reorderHandle?: ReactNode
 }
 
 export function BrowserPanelSlot({
@@ -29,6 +30,7 @@ export function BrowserPanelSlot({
   isAtLeftEdge,
   isAtRightEdge,
   isCompact = false,
+  reorderHandle,
 }: BrowserPanelSlotProps) {
   const { t } = useTranslation()
   const closePanel = useSetAtom(closeWorkbenchPanelAtom)
@@ -41,6 +43,7 @@ export function BrowserPanelSlot({
 
   const closeButton = useMemo(() => (
     <div className="flex items-center gap-1.5">
+      {!isCompact && reorderHandle}
       {parentContext.rightSidebarButton}
       <PanelHeaderCenterButton
         icon={<X className="h-4 w-4" />}
@@ -48,7 +51,7 @@ export function BrowserPanelSlot({
         tooltip={t('common.close')}
       />
     </div>
-  ), [handleClose, parentContext.rightSidebarButton, t])
+  ), [handleClose, isCompact, parentContext.rightSidebarButton, reorderHandle, t])
 
   const backButton = useMemo(() => isCompact ? (
     <PanelHeaderCenterButton
@@ -78,8 +81,9 @@ export function BrowserPanelSlot({
       data-browser-id={panel.runtimeId ?? undefined}
       data-panel-id={panel.id}
       data-compact={isCompact || undefined}
+      tabIndex={isCompact ? 0 : undefined}
       className={cn(
-        'h-full overflow-hidden relative @container/panel bg-foreground-2',
+        'h-full w-full min-w-0 overflow-hidden relative @container/panel bg-foreground-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         !isOnly && isFocusedPanel ? 'shadow-panel-focused z-[1]' : 'shadow-middle z-0',
       )}
       style={{
@@ -90,10 +94,6 @@ export function BrowserPanelSlot({
         borderBottomLeftRadius: getPanelBottomRadius(isCompact, isAtLeftEdge),
         borderTopRightRadius: RADIUS_INNER,
         borderBottomRightRadius: getPanelBottomRadius(isCompact, isAtRightEdge),
-        flexGrow: 1,
-        flexShrink: 1,
-        flexBasis: 0,
-        minWidth: isOnly ? 0 : PANEL_MIN_WIDTH,
       }}
     >
       <AppShellProvider value={contextOverride}>

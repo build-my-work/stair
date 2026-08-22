@@ -10,7 +10,10 @@ import {
 import {
   createEmptyProjectWorkbench,
   getWorkbenchPanels,
+  workbenchKeyboardFocusRevisionAtom,
   workbenchAtom,
+  workbenchPanelLayoutWidthAtom,
+  workbenchPersistenceReadyAtom,
   workbenchPanelRevealRevisionAtom,
   type ProjectWorkbench,
   type BrowserWorkbenchPanel,
@@ -19,16 +22,19 @@ import {
   type WindowWorkbench,
 } from './workbench-state'
 import { browserRuntimeOperationsAtom } from './browser-runtime'
+import { getDefaultWorkbenchPanelRatio } from './panel-sizing'
 
-let nextPanelId = 0
-
-function createSessionPanel(sessionId: string, projectId: string): SessionWorkbenchPanel {
-  nextPanelId += 1
+function createSessionPanel(
+  sessionId: string,
+  projectId: string,
+  panelLayoutWidth: number,
+): SessionWorkbenchPanel {
   return {
-    id: `session-panel-${nextPanelId}`,
+    id: `session-panel-${crypto.randomUUID()}`,
     kind: 'session',
     sessionId,
     projectId,
+    widthRatio: getDefaultWorkbenchPanelRatio(panelLayoutWidth),
   }
 }
 
@@ -36,16 +42,17 @@ function createProjectFilePanel(
   projectId: string,
   relativePath: string,
   presentation: ProjectFileWorkbenchPanel['presentation'],
+  panelLayoutWidth: number,
   openIntent?: ProjectFileOpenIntent,
 ): ProjectFileWorkbenchPanel {
-  nextPanelId += 1
   return {
-    id: `project-file-panel-${nextPanelId}`,
+    id: `project-file-panel-${crypto.randomUUID()}`,
     kind: 'project-file',
     projectId,
     relativePath,
     presentation,
     chatTargetSessionId: null,
+    widthRatio: getDefaultWorkbenchPanelRatio(panelLayoutWidth),
     openIntentRevision: openIntent ? 1 : 0,
     ...(openIntent ? { openIntent } : {}),
   }
@@ -54,18 +61,20 @@ function createProjectFilePanel(
 function createBrowserPanel(
   projectId: string,
   runtimeId: string,
+  panelLayoutWidth: number,
   url = 'about:blank',
   title = 'Browser',
 ): BrowserWorkbenchPanel {
-  nextPanelId += 1
   return {
-    id: `browser-panel-${nextPanelId}`,
+    id: `browser-panel-${crypto.randomUUID()}`,
     kind: 'browser',
     projectId,
     runtimeId,
     url,
     title,
     chatTargetSessionId: null,
+    restoreOnActivation: false,
+    widthRatio: getDefaultWorkbenchPanelRatio(panelLayoutWidth),
   }
 }
 
@@ -91,6 +100,68 @@ function withActiveLayout(
     },
   }
 }
+
+const restoringBrowserPanelIds = new Set<string>()
+
+export const restoreActiveBrowserRuntimesAtom = atom(
+  null,
+  async (get, set, input: { projectId: string }): Promise<boolean> => {
+    let succeeded = true
+    const initialLayout = activeLayout(get(workbenchAtom), input.projectId)
+    if (!initialLayout) return false
+    const pendingPanels = initialLayout.auxiliary.filter(
+      (panel): panel is BrowserWorkbenchPanel => (
+        panel.kind === 'browser'
+        && panel.runtimeId === null
+        && panel.restoreOnActivation
+      ),
+    )
+
+    for (const pendingPanel of pendingPanels) {
+      if (restoringBrowserPanelIds.has(pendingPanel.id)) continue
+      restoringBrowserPanelIds.add(pendingPanel.id)
+      let runtimeId: string | null = null
+      try {
+        runtimeId = await get(browserRuntimeOperationsAtom).create({
+          projectId: input.projectId,
+          url: pendingPanel.url,
+        })
+        const latest = get(workbenchAtom)
+        const layout = activeLayout(latest, input.projectId)
+        const panelIndex = layout?.auxiliary.findIndex(panel => (
+          panel.id === pendingPanel.id
+          && panel.kind === 'browser'
+          && panel.runtimeId === null
+          && panel.restoreOnActivation
+          && panel.url === pendingPanel.url
+        )) ?? -1
+        if (!layout || panelIndex < 0) {
+          await get(browserRuntimeOperationsAtom).destroy(runtimeId)
+          succeeded = false
+          continue
+        }
+        const auxiliary = [...layout.auxiliary]
+        auxiliary[panelIndex] = {
+          ...auxiliary[panelIndex] as BrowserWorkbenchPanel,
+          runtimeId,
+          restoreOnActivation: false,
+        }
+        set(workbenchAtom, withActiveLayout(latest, input.projectId, {
+          ...layout,
+          auxiliary,
+        }))
+      } catch {
+        if (runtimeId) {
+          await get(browserRuntimeOperationsAtom).destroy(runtimeId).catch(() => undefined)
+        }
+        succeeded = false
+      } finally {
+        restoringBrowserPanelIds.delete(pendingPanel.id)
+      }
+    }
+    return succeeded
+  },
+)
 
 export const initializeWorkbenchAtom = atom(
   null,
@@ -118,6 +189,7 @@ export const initializeWorkbenchAtom = atom(
         [input.defaultProjectId]: createEmptyProjectWorkbench(),
       },
     })
+    set(workbenchPersistenceReadyAtom, false)
     return true
   },
 )
@@ -162,6 +234,7 @@ export const switchWorkbenchProjectAtom = atom(
           ?? createEmptyProjectWorkbench(),
       },
     })
+    await set(restoreActiveBrowserRuntimesAtom, { projectId: input.projectId })
     return true
   },
 )
@@ -227,6 +300,7 @@ export const presentBrowserAtom = atom(
       const panel = createBrowserPanel(
         input.projectId,
         runtimeId,
+        get(workbenchPanelLayoutWidthAtom),
         input.url,
         input.title,
       )
@@ -321,7 +395,11 @@ export const selectSessionFromNavigatorAtom = atom(
     if (visible) {
       nextLayout = { ...layout, focusedPanelId: visible.id }
     } else {
-      const primary = createSessionPanel(input.sessionId, input.projectId)
+      const primary = createSessionPanel(
+        input.sessionId,
+        input.projectId,
+        get(workbenchPanelLayoutWidthAtom),
+      )
       nextLayout = { ...layout, primary, focusedPanelId: primary.id }
     }
 
@@ -357,7 +435,11 @@ export const showSessionInPrimaryAtom = atom(
       return true
     }
 
-    const primary = createSessionPanel(input.sessionId, input.projectId)
+    const primary = createSessionPanel(
+      input.sessionId,
+      input.projectId,
+      get(workbenchPanelLayoutWidthAtom),
+    )
     set(workbenchAtom, withActiveLayout(current, input.projectId, {
       ...layout,
       primary,
@@ -402,7 +484,11 @@ export const openSessionInNewPanelAtom = atom(
       if (sourceIndex >= 0) insertAt = sourceIndex + 1
     }
 
-    const panel = createSessionPanel(input.sessionId, input.projectId)
+    const panel = createSessionPanel(
+      input.sessionId,
+      input.projectId,
+      get(workbenchPanelLayoutWidthAtom),
+    )
     const auxiliary = [
       ...layout.auxiliary.slice(0, insertAt),
       panel,
@@ -453,7 +539,11 @@ export const openSessionFromProjectFileAtom = atom(
     if (sourceIndex < 0) return false
 
     const source = layout.auxiliary[sourceIndex] as ProjectFileWorkbenchPanel
-    const panel = createSessionPanel(input.sessionId, input.sessionProjectId)
+    const panel = createSessionPanel(
+      input.sessionId,
+      input.sessionProjectId,
+      get(workbenchPanelLayoutWidthAtom),
+    )
     const auxiliary = [
       ...layout.auxiliary.slice(0, sourceIndex),
       { ...source, chatTargetSessionId: input.sessionId },
@@ -504,7 +594,11 @@ export const openSessionFromBrowserAtom = atom(
     if (sourceIndex < 0) return false
 
     const source = layout.auxiliary[sourceIndex] as BrowserWorkbenchPanel
-    const panel = createSessionPanel(input.sessionId, input.sessionProjectId)
+    const panel = createSessionPanel(
+      input.sessionId,
+      input.sessionProjectId,
+      get(workbenchPanelLayoutWidthAtom),
+    )
     const auxiliary = [
       ...layout.auxiliary.slice(0, sourceIndex),
       { ...source, chatTargetSessionId: input.sessionId },
@@ -533,6 +627,65 @@ export const focusWorkbenchPanelAtom = atom(
     set(workbenchAtom, withActiveLayout(current, input.projectId, {
       ...layout,
       focusedPanelId: input.panelId,
+    }))
+    return true
+  },
+)
+
+export const resizeWorkbenchPanelAtom = atom(
+  null,
+  (get, set, input: {
+    projectId: string
+    panelId: string
+    widthRatio: number
+  }): boolean => {
+    if (!Number.isFinite(input.widthRatio) || input.widthRatio <= 0) return false
+    const current = get(workbenchAtom)
+    const layout = activeLayout(current, input.projectId)
+    if (!layout) return false
+    if (!getWorkbenchPanels(layout).some(panel => panel.id === input.panelId)) return false
+    const primary = layout.primary?.id === input.panelId
+      ? { ...layout.primary, widthRatio: input.widthRatio }
+      : layout.primary
+    const auxiliary = layout.auxiliary.map(panel => (
+      panel.id === input.panelId
+        ? { ...panel, widthRatio: input.widthRatio }
+        : panel
+    ))
+    set(workbenchAtom, withActiveLayout(current, input.projectId, {
+      ...layout,
+      primary,
+      auxiliary,
+    }))
+    return true
+  },
+)
+
+export const reorderAuxiliaryPanelAtom = atom(
+  null,
+  (get, set, input: {
+    projectId: string
+    panelId: string
+    toIndex: number
+  }): boolean => {
+    const current = get(workbenchAtom)
+    const layout = activeLayout(current, input.projectId)
+    if (
+      !layout
+      || !Number.isInteger(input.toIndex)
+      || input.toIndex < 0
+      || input.toIndex >= layout.auxiliary.length
+    ) return false
+    const fromIndex = layout.auxiliary.findIndex(panel => panel.id === input.panelId)
+    if (fromIndex < 0) return false
+    if (fromIndex === input.toIndex) return true
+
+    const auxiliary = [...layout.auxiliary]
+    const [panel] = auxiliary.splice(fromIndex, 1)
+    auxiliary.splice(input.toIndex, 0, panel)
+    set(workbenchAtom, withActiveLayout(current, input.projectId, {
+      ...layout,
+      auxiliary,
     }))
     return true
   },
@@ -635,6 +788,7 @@ export const openProjectFilePreviewAtom = atom(
         input.projectId,
         input.relativePath,
         'preview',
+        get(workbenchPanelLayoutWidthAtom),
         input.openIntent,
       )
       const insertAt = auxiliaryInsertionIndex(layout)
@@ -753,7 +907,12 @@ export const openProjectFileInPanelAtom = atom(
       return true
     }
 
-    const panel = createProjectFilePanel(input.projectId, input.relativePath, 'explicit')
+    const panel = createProjectFilePanel(
+      input.projectId,
+      input.relativePath,
+      'explicit',
+      get(workbenchPanelLayoutWidthAtom),
+    )
     const insertAt = auxiliaryInsertionIndex(layout)
     const auxiliary = [
       ...layout.auxiliary.slice(0, insertAt),
@@ -866,6 +1025,10 @@ function focusAdjacentPanel(
     ...layout,
     focusedPanelId: panels[nextIndex].id,
   }))
+  set(
+    workbenchKeyboardFocusRevisionAtom,
+    get(workbenchKeyboardFocusRevisionAtom) + 1,
+  )
   return true
 }
 

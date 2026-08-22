@@ -12,6 +12,7 @@ import {
   openSessionFromBrowserAtom,
   openSessionInNewPanelAtom,
   presentBrowserAtom,
+  restoreActiveBrowserRuntimesAtom,
   setBrowserChatTargetAtom,
   showSessionInPrimaryAtom,
   switchWorkbenchProjectAtom,
@@ -57,6 +58,61 @@ function browserPanel(store: ReturnType<typeof createStore>) {
 }
 
 describe('Browser Workbench commands', () => {
+  it('recreates only persisted Browser descriptors when their Project becomes active', async () => {
+    const create = mock(async () => 'runtime-restored')
+    const { store } = initializedStore({ create })
+    store.set(workbenchAtom, {
+      workspaceId: 'workspace-a',
+      activeProjectId: 'project-a',
+      layoutsByProject: {
+        'project-a': {
+          primary: null,
+          auxiliary: [{
+            id: 'persisted-browser',
+            kind: 'browser',
+            projectId: 'project-a',
+            runtimeId: null,
+            url: 'https://example.com/',
+            title: 'Example',
+            chatTargetSessionId: null,
+            restoreOnActivation: true,
+            widthRatio: 1,
+          }, {
+            id: 'unavailable-browser',
+            kind: 'browser',
+            projectId: 'project-a',
+            runtimeId: null,
+            url: 'https://unavailable.example/',
+            title: 'Unavailable',
+            chatTargetSessionId: null,
+            restoreOnActivation: false,
+            widthRatio: 1,
+          }],
+          previewPanelId: null,
+          focusedPanelId: 'persisted-browser',
+        },
+      },
+    })
+
+    expect(await store.set(restoreActiveBrowserRuntimesAtom, {
+      projectId: 'project-a',
+    })).toBe(true)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(create).toHaveBeenCalledWith({
+      projectId: 'project-a',
+      url: 'https://example.com/',
+    })
+    expect(store.get(activeProjectWorkbenchAtom)?.auxiliary).toMatchObject([{
+      id: 'persisted-browser',
+      runtimeId: 'runtime-restored',
+      restoreOnActivation: false,
+    }, {
+      id: 'unavailable-browser',
+      runtimeId: null,
+      restoreOnActivation: false,
+    }])
+  })
+
   it('captures the source Panel before async runtime creation and keeps Panel/runtime identities separate', async () => {
     const creation = deferred<string>()
     const { store } = initializedStore({ create: mock(() => creation.promise) })

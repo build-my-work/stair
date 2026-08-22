@@ -40,6 +40,7 @@
     "./pages/claude-artifact": "./src/pages/claude-artifact.ts",
     "./project-files": "./src/project-files/index.ts",
     "./browser-bookmarks": "./src/browser-bookmarks/index.ts",
+    "./workbench-layout": "./src/workbench-layout/index.ts",
     "./sources": "./src/sources/index.ts",
     "./sources/types": "./src/sources/types.ts",
     "./skills": "./src/skills/index.ts",

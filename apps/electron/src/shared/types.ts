@@ -504,6 +504,12 @@ export interface ElectronAPI {
   readPreferences(): Promise<{ content: string; exists: boolean; path: string }>
   writePreferences(content: string): Promise<{ success: boolean; error?: string }>
 
+  // Workspace-scoped semantic Workbench layout
+  readWorkbenchLayout(): Promise<import('@craft-agent/shared/workbench-layout').PersistedWorkbenchLayoutDocument>
+  writeWorkbenchLayout(
+    document: import('@craft-agent/shared/workbench-layout').PersistedWorkbenchLayoutDocument,
+  ): Promise<import('@craft-agent/shared/workbench-layout').PersistedWorkbenchLayoutDocument>
+
   // Session Drafts (persisted composer state — text + attachment refs)
   getDraft(sessionId: string): Promise<import('@craft-agent/shared/config').SessionDraft | null>
   setDraft(sessionId: string, draft: import('@craft-agent/shared/config').SessionDraft): Promise<void>

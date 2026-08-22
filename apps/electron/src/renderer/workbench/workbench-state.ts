@@ -1,14 +1,19 @@
 import { atom } from 'jotai'
 import type { ProjectFileOpenIntent } from '@craft-agent/shared/project-files'
+import { DEFAULT_WORKBENCH_PANEL_RATIO } from '@craft-agent/shared/workbench-layout'
 
-export interface SessionWorkbenchPanel {
+interface WorkbenchPanelLayout {
+  widthRatio: number
+}
+
+export interface SessionWorkbenchPanel extends WorkbenchPanelLayout {
   id: string
   kind: 'session'
   sessionId: string
   projectId: string
 }
 
-export interface ProjectFileWorkbenchPanel {
+export interface ProjectFileWorkbenchPanel extends WorkbenchPanelLayout {
   id: string
   kind: 'project-file'
   projectId: string
@@ -22,7 +27,7 @@ export interface ProjectFileWorkbenchPanel {
   openIntentRevision: number
 }
 
-export interface BrowserWorkbenchPanel {
+export interface BrowserWorkbenchPanel extends WorkbenchPanelLayout {
   id: string
   kind: 'browser'
   projectId: string
@@ -30,6 +35,8 @@ export interface BrowserWorkbenchPanel {
   url: string
   title: string
   chatTargetSessionId: string | null
+  /** Transient marker set only when a persisted Browser descriptor needs a new runtime. */
+  restoreOnActivation: boolean
 }
 
 export type WorkbenchPanel =
@@ -64,6 +71,14 @@ export const workbenchAtom = atom<WindowWorkbench>({
 })
 
 export const workbenchPanelRevealRevisionAtom = atom(0)
+export const workbenchKeyboardFocusRevisionAtom = atom(0)
+export const workbenchPersistenceReadyAtom = atom(false)
+/** Stable shell-width basis; Shell Pane toggles never write this atom. */
+export const workbenchPanelLayoutWidthAtom = atom(
+  typeof document === 'undefined' ? 0 : document.documentElement.clientWidth,
+)
+
+export { DEFAULT_WORKBENCH_PANEL_RATIO }
 
 export function getWorkbenchPanels(layout: ProjectWorkbench): WorkbenchPanel[] {
   return layout.primary ? [layout.primary, ...layout.auxiliary] : layout.auxiliary

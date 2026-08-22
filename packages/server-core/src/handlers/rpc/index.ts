@@ -31,6 +31,7 @@ import { registerSystemCoreHandlers } from './system'
 import { registerTasksHandlers } from './tasks'
 import { registerTransferHandlers } from './transfer'
 import { registerWorkspaceCoreHandlers } from './workspace'
+import { registerWorkbenchLayoutHandlers } from './workbench-layout'
 import { registerMessagingHandlers } from './messaging'
 import { registerSaveTextFileHandlers } from './save-text-file'
 
@@ -65,6 +66,7 @@ export function registerCoreRpcHandlers(
   registerTasksHandlers(server, deps)
   registerTransferHandlers(server)
   registerWorkspaceCoreHandlers(server, deps)
+  registerWorkbenchLayoutHandlers(server, deps)
   registerMessagingHandlers(server, deps)
   registerSaveTextFileHandlers(server)
 }

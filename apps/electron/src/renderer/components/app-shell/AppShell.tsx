@@ -2658,6 +2658,7 @@ function AppShellContent({
         }}
       >
         <WorkbenchContainer
+          shellWidth={shellWidth}
           sidebarSlot={
             <SidebarPane
               paneRef={sidebarRef}

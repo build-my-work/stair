@@ -498,6 +498,10 @@ export const RPC_CHANNELS = {
     FLUSH_REQUESTED: 'projectFiles:flushRequested',
     FLUSH_COMPLETED: 'projectFiles:flushCompleted',
   },
+  workbenchLayout: {
+    READ: 'workbenchLayout:read',
+    WRITE: 'workbenchLayout:write',
+  },
   projectNotes: {
     CONFIGURE_TARGET: 'projectNotes:configureTarget',
     APPEND: 'projectNotes:append',
