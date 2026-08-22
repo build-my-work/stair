@@ -22,6 +22,7 @@ const CHANNELS = {
   TOGGLE_BOOKMARK: 'browser-toolbar:toggle-bookmark',
   BOOKMARKS_CHANGED: 'browser-toolbar:bookmarks-changed',
   SHOW_MENU: 'browser-toolbar:show-menu',
+  REQUEST_STATE: 'browser-toolbar:request-state',
   STATE_UPDATE: 'browser-toolbar:state-update',
   THEME_COLOR: 'browser-toolbar:theme-color',
 } as const
@@ -45,6 +46,7 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   onStateUpdate: (callback: (state: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
     ipcRenderer.on(CHANNELS.STATE_UPDATE, handler)
+    ipcRenderer.send(CHANNELS.REQUEST_STATE, instanceId)
     return () => { ipcRenderer.removeListener(CHANNELS.STATE_UPDATE, handler) }
   },
   onThemeColor: (callback: (color: string | null) => void) => {

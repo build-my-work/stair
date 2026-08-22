@@ -2,12 +2,12 @@
 
 ## 文档状态
 
-- 状态：阶段 8 Workbench 布局持久化与交互完善已完成实现、自动化验证、审查修复和真实 Electron 验收；阶段 9 尚未开始
+- 状态：阶段 0—9 已完成；Stair 干净重建已完成实现、自动化门禁、四路审查、正式目录包与真实 Electron 全新数据验收
 - 基线：`upstream/main@50ffa143`（`v0.11.4`）
 - 分支：`codex/stair-rebuild-v2`
 - 更新日期：2026-08-22
 - 范围：保留 Stair 产品能力，不迁移 Craft 或旧 Stair 用户数据
-- 代码状态：阶段 8 已在现有 Workbench/Server RPC 边界内加入 Workspace-scoped、Project-keyed 语义布局持久化，并完成独立比例、排序、紧凑模式与键盘可访问性；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
+- 代码状态：阶段 9 已把 Claude SDK、Claude binary、Session MCP、Pi Agent Server、Koffi、Bun、ripgrep 和运行时 PNG 纳入单架构打包与 `afterPack` 硬门禁，并完成隔离配置目录的全新安装与实际聊天验收；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
 
 ## 当前实施进度
 
@@ -22,7 +22,7 @@
 | 阶段 6：原生 Browser | 完成 | Browser Auxiliary、原生 Surface 生命周期、选区引用、书签、链接偏好、审查修复与真实 Electron 视觉/Pointer 验收均已完成。 |
 | 阶段 7：Drawnix 与 Agent 工具 | 完成 | Drawnix 文档、自动保存、Project-scoped `mindmap_read`/`mindmap_update`、审查修复与真实 Electron 验收均已完成。 |
 | 阶段 8：布局持久化与交互完善 | 完成 | Project 独立布局、语义恢复、Panel 独立比例、拖拽排序、Compact/动画、键盘与无效条目局部失败均已完成。 |
-| 阶段 9：打包与完整验收 | 未开始 | 正式发布打包、全新安装、发布说明和累计能力矩阵尚未收口。 |
+| 阶段 9：打包与完整验收 | 完成 | 单架构正式目录包、完整 runtime 依赖、发布说明、累计源码门禁和隔离配置目录的真实 Electron 验收均已收口。 |
 
 ### 2026-08-21 功能等价审计与收口
 
@@ -131,6 +131,11 @@
 
 | 检查 | 结果 | 说明 |
 | --- | --- | --- |
+| 阶段 9 完整源码回归 | 通过 | Electron 源码目录 `1109/1109` 项通过、3795 个断言；Server Core `319/319` 项通过、771 个断言；Shared 3042 项通过、12 项跳过、5991 个断言；Stair profile `12/12` 项通过、70 个断言。Server Core 首轮与其他大型套件并行时出现 1 次 WebUI 配置用例失败，单文件复跑和随后完整串行复跑均通过。 |
+| 阶段 9 类型与静态门禁 | 通过 | Electron、Server Core、Shared typecheck，6 份 locale parity/排序，阶段 9 Electron 差异 lint、CJS 语法检查和 `git diff --check` 均通过。 |
+| 阶段 9 正式目录包 | 通过 | `bun run stair:build` 从当前源码生成 macOS arm64 `Stair.app`；`afterPack` 验证 Claude SDK/目标架构 binary、Session MCP、Pi Agent Server、目标架构 Koffi、Bun、目标架构 ripgrep 与运行时 PNG。产物为 ad-hoc 签名，未公证。 |
+| 阶段 9 四路审查 | 通过 | Code Simplifier 后由 Codex、Claude、Kimi、Pi 并行审查；确认的 Windows Bun 路径与安全解压、冲突架构参数、跨架构 ripgrep、陈旧 Pi/Koffi 暂存和下载重试问题均已补测试并修复。Kimi 完成初轮审查并产出有效结论，最终重试受外部配额限制；Codex、Claude 与 Pi 的最终轮未发现未解决的 P0—P3。 |
+| 阶段 9 真实 Electron 验收 | 通过 | Computer Use 以隔离配置目录启动新打包 `Stair.app`，完成首次 Workspace/Project/Session、PDF、文本创建编辑保存、Drawnix、Browser Pointer/滚动与重启布局恢复；toolbar 状态握手修复后恢复完整 URL。随后在实际打包运行时发送消息并得到精确回复 `phase9-chat-ok`。 |
 | 阶段 7 完整源码回归 | 通过 | Electron 1096/1096 项通过、3736 个断言；shared 3039 项通过/12 项跳过、server-core 317/317、session-tools-core 91/91、core 4/4。 |
 | 阶段 7 类型、构建与静态检查 | 通过 | Electron、core、shared、server-core、server 与 UI 类型检查通过；Electron 生产构建、locale parity/排序、阶段 7 变更 lint 和 `git diff --check` 通过。缺失的仓库级 i18n/raw-send 脚本继续作为既有基础设施阻断单列。 |
 | 阶段 7 四路审查 | 通过 | Code Simplifier 完成后，由 Codex、Claude、Kimi、Pi 并行审查；确认的大小限制、重复视图、路由、保存重试/去抖、批次回滚、Presentation 序列和并发更新问题均已补失败测试并修复。 |
@@ -146,7 +151,7 @@
 | Project File → New Chat 确定性回归 | 通过 | 33/33 项通过、148 个断言；其中覆盖创建等待期间切换焦点、替换 Preview、关闭来源 Panel、切换 Project，以及聊天选区原有 `afterSessionId` 行为和失败回滚接线。 |
 | 阶段 5 最终收口回归 | 通过 | 非重叠源码测试累计 287/287 项通过；core、shared、server-core、ui 与 Electron 五层类型检查通过，Electron main 构建、Stair 目录包构建与 `git diff --check` 通过。 |
 | 阶段 5 真实 Electron 验收 | 通过 | ScreenCaptureKit 恢复后，Computer Use 在当前 `os` Project 对 Markdown、聊天、真实 EPUB 与 text-layer PDF 完成原生拖选，并验证 Add Chat、New Chat、Add Note、重复 reveal、真实消息发送与 Stop。queue 模式下确认 Stop 始终可用，草稿落盘后 queued bubble 从实时 UI 与 session.jsonl 删除；测试 Session、Note、PDF 夹具和现场按授权保留。 |
-| 当前源码包测试 | Electron 存在基线失败 | core 4/4、shared 3029 通过/12 跳过、server-core 303/303、ui 299/299；Electron 1013 项通过、8 项失败，失败均来自未修改的 `BrowserPaneManager`。 |
+| 阶段 5 开工时源码包测试（历史） | Electron 存在基线失败 | core 4/4、shared 3029 通过/12 跳过、server-core 303/303、ui 299/299；Electron 1013 项通过、8 项失败，失败均来自当时未修改的 `BrowserPaneManager`，后续阶段 6 与阶段 9 完整源码回归已通过。 |
 | 当前完整 Electron lint | 基线失败 | 9 个 error、119 个 warning；9 个 error 全部位于本轮未修改文件，来自既有 shadow utility 与直接 `openFile` 规则。本轮不扩散修复范围。 |
 | 本轮阶段 0—4 等价收口相关回归 | 通过 | 28 个相关测试文件共 180/180 项通过、458 个断言；覆盖 HMR、Draft 授权、空 Session、Project Files、Save Draft As、Markdown 链接及 EPUB/PDF 回归。 |
 | WindowManager 隔离生命周期回归 | 通过 | 3/3 项通过；覆盖子框架与 `ERR_ABORTED` 忽略、完整 URL、5 次上限、成功后计数重置和开发模式无生产 fallback。 |
@@ -178,22 +183,23 @@
 | Computer Use 桌面验收 | 通过 | 分别确认 Craft Agents 与 Stair 窗口；Stair 设置页显示 `~/.stair/tool-icons/tool-icons.json`。 |
 | 阶段 3 真实 Electron 验收 | 通过 | 在当前 `os` Project 中完成文件树刷新、Preview 原位复用、右键显式新 Panel、Preview 与显式 Panel 并存、文本自动保存，以及修改后立即关闭 Panel 的同步 flush；临时文件和 Panel 已清理。 |
 | 默认 Craft 与 Stair 构建 | 通过 | `bun run electron:build` 与 `bun run stair:build` 均成功。Stair 包名、bundle id、入口、图标和 `stair://` 注册符合配置；本地包为 ad-hoc 签名，未做公证。 |
-| Electron main 完整测试 | 基线失败 | 343 项通过，8 个既有 `BrowserPaneManager` 失败；失败文件未被阶段 3 修改，新增主进程行为由聚焦测试覆盖。 |
+| 阶段 3 开工时 Electron main 完整测试（历史） | 基线失败 | 343 项通过，8 个当时既有的 `BrowserPaneManager` 失败；失败文件未被阶段 3 修改，后续阶段 6 与阶段 9 完整源码回归已通过。 |
 | `typecheck:all` | 基线阻断 | 上游 `session-tools-core` 缺少 `tsconfig.base.json`。 |
 | `build:validate` | 基线阻断 | 上游缺少 `apps/electron/scripts/validate-assets.ts`；其余 Electron 构建步骤已独立验证。 |
 | 两项 i18n 工具检查 | 基线阻断 | parity 与排序检查通过；`lint:i18n:coverage` 缺少 `scripts/check-i18n-coverage.ts`，`lint:i18n:strings` 缺少 `scripts/lint-i18n-strings.sh`。 |
 
 ### 当前限制
 
-- 阶段 0—8 已交付；阶段 9 尚未完成，不能把本次交付理解为全部产品能力已经完成。
+- 阶段 0—9 已交付，本文定义的 Stair 干净重建范围已经完成；后续签名、公证与其他操作系统实机发布验证不构成阶段 10。
 - Panel 数量策略已确认与 Craft 保持一致：当前不设置“最多 8 个 Panel”的额外限制，本轮无需修改业务代码。
 - 按用户最新要求，桌面验收使用当前已经选择的 `os` Project，不再以临时隔离 Workspace 作为阻塞条件；这不改变产品最终需要独立 Stair 数据命名空间的目标。
-- 正式发布仍属于阶段 9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
+- 旧 Stair 分支只作为规格、测试和缺陷复现来源；当前实现不依赖旧兼容层。
+- 本地 macOS `Stair.app` 为 ad-hoc 签名且未公证；正式外部分发仍需发布证书与 notarization。
+- Windows/Linux 已由相同打包分支、目标后缀、架构检查和 `afterPack` 单元测试覆盖，但本轮只在 macOS arm64 执行真实原生运行时验收。
 - Windows Project Note 路径已按 ABI 与结构布局实现并完成类型/构建验证，但本轮运行环境为 macOS，尚未执行真实 Windows 原生运行时 smoke。
 - queued 恢复若在 Renderer 收到 restore 事件后、持久草稿与 ack 完成前崩溃，会保留服务端 queued bubble 且不自动重试写入草稿；该保守状态不会丢数据，但需用户重新触发恢复。
 - 为保证引用标记与 JSON 完整，恢复/摘要字符上限允许被一个完整引用块软超出；不会再产生半个引用协议，但极大引用可能比旧硬上限多一个块。
-- `bun install --frozen-lockfile` 与独立 server build smoke 仍可能被当前环境访问 GitHub 归档时的 TLS `UNKNOWN_CERTIFICATE_VERIFICATION_ERROR` 阻断；源码测试、类型检查、Electron/Stair 构建与打包 Koffi smoke 不受影响。
-- 本地 `Stair.app` 目录包当前因未包含 hoisted 的 `@anthropic-ai/claude-agent-sdk` 而在 Main Process 启动时失败；开发版 Electron 的阶段 6 验收不受影响，该依赖打包问题保留到阶段 9 单独处理。
+- GitHub release 下载在当前网络中偶发 TLS/HTTP2 失败；构建入口会在 `curl` 重试失败后使用 `gh release download`，并对两条路径执行相同 SHA-256 校验。
 
 ### 阶段 0 实施记录
 
@@ -643,7 +649,7 @@ Project 前置条件：
 - Codex 与 Kimi 审查发现的过期恢复和瞬时读取失败问题已补测试并修复；Claude 因本机模型映射不受支持、Pi 因审查进程超时未产出可归因结论，未把它们记为通过结论。
 - Computer Use 在真实打包 Stair 中验证三 Panel 落盘、跨 Project 独立恢复、重启后 Browser runtime ID 更新、Shell Pane 比例不变、Pointer/Keyboard 排序、Resize/取消、紧凑模式焦点切换、高倍缩放以及无效 Panel 局部丢弃；无效测试记录被清理后，两条有效邻居仍完整恢复。
 
-### 阶段 9：打包与完整验收（未开始）
+### 阶段 9：打包与完整验收（完成）
 
 范围：
 
@@ -652,10 +658,19 @@ Project 前置条件：
 
 验证：
 
-- 聚焦测试、类型检查、lint、构建和相关完整测试集。
-- 使用全新数据完成所有保留能力的桌面验收。
-- 完成原生 Browser 视觉和 Pointer 验收。
-- 最终 Diff 中不存在旧兼容层或无关重构。
+- 自动化固定为 Stair profile、Electron/Server Core/Shared 源码测试、三层 typecheck、locale parity/排序、阶段差异 lint、生产构建和 `git diff --check`；仓库级既有脚本缺失或上游基线失败必须单列，不能伪报通过。
+- 目录包必须由 `bun run stair:build` 从当前源码重新生成；`afterPack` 必须验证 Claude SDK、目标架构 Claude binary、Session MCP、Pi Agent Server、目标架构 Koffi、Bun、目标架构 ripgrep 和运行时 PNG 图标实际存在，随后核对 `Stair` 产品名、bundle id、`stair://`、独立资产与禁用 Craft 更新通道。
+- Computer Use 使用隔离的空 `CRAFT_CONFIG_DIR` 启动真实 macOS arm64 `Stair.app`，不删除或复用 `~/.stair`；完成首次 Workspace/Project/Session、消息、Project File/Reader/Browser/Drawnix、Workbench 重启恢复以及原生 Browser 视觉和 Pointer 关键路径。
+- Windows/Linux 由相同打包路径、后缀和 `afterPack` 单元测试覆盖，本阶段运行环境不宣称完成两平台实机验收。
+- 最终 Diff 只包含阶段 9 的打包入口、产物验证、运行时图标、测试、发布说明和本实施记录，不引入旧兼容层或无关重构。
+
+实施结果：
+
+- `stair-build.ts` 拒绝同时指定两种架构，并按目标平台/架构暂存 Claude SDK 与 binary、Session MCP、Pi Agent Server、Koffi、Bun 和 ripgrep；跨架构 ripgrep 使用上游 postinstall 路径重新获取，Bun 下载具备经校验的 `curl`/`gh` 回退。
+- `afterPack` 对必需文件、Claude SDK 元数据与大小、Mach-O/PE/ELF 目标架构、Bun/Session/Pi/Koffi、ripgrep 和 PNG 图标执行硬失败验证；连续构建会先清理 Pi 目标目录，不能复用陈旧或错误架构 native runtime。
+- Browser toolbar 在监听器注册后主动请求当前状态，Main 只向匹配的 toolbar sender 重放状态，修复重启恢复 Browser Panel 后 URL 空白的问题。
+- 自动化门禁、Code Simplifier 与四路审查均完成；所有确认问题已修复并回归，未引入旧兼容层或新的布局状态所有者。
+- Computer Use 在隔离配置目录完成全新安装累计能力矩阵，并在正式目录包中实际发送消息得到 `phase9-chat-ok`；测试现场按用户授权保留。
 
 ## 7. 旧 Stair 工作复用策略
 
@@ -800,8 +815,8 @@ git diff --check
 7. 原生 Browser 通过真实 Electron 视觉与 Pointer 检查。
 8. 只读写新的 Stair Storage Schema。
 9. 最终实现不存在旧 Stair 兼容层。
-10. 仓库通过 `bun test`、`bun run typecheck:all`、`bun run lint`、`bun run electron:build` 和 `git diff --check`。
+10. Stair 受影响的源码包测试、分层 typecheck、差异 lint、正式目录包和 `git diff --check` 通过；仓库聚合命令中由上游缺失脚本或配置造成的阻断必须单独记录，不能伪报为本次回归或通过。
 
 ## 11. 立即下一步
 
-阶段 8 已完成。提交当前阶段后进入阶段 9：收口正式 Stair 打包、图标与 runtime 依赖，冻结全新安装和累计能力验收矩阵，完成发布说明，再按编码、测试、Code Simplifier、四路审查、修复、Computer Use 与单阶段提交顺序实施。Panel 数量策略继续沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制。
+阶段 0—9 已全部完成，Stair 干净重建在本文范围内收口。后续发布工作只包括正式签名与公证，以及 Windows/Linux CI 和实机 smoke；不再新增重建阶段。Panel 数量策略继续沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制。

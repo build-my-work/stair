@@ -1,10 +1,25 @@
 import { describe, expect, it } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { globSync } from 'glob'
 import { RPC_CHANNELS } from '../packages/shared/src/protocol/channels'
+import {
+  copyPiAgentServer,
+  copyRipgrep,
+  type Arch,
+  type BuildConfig,
+  type Platform,
+} from './build/common'
 import {
   createStairEnvironment,
   STAIR_DEFAULT_VITE_PORT,
@@ -13,6 +28,35 @@ import {
 const REPO_ROOT = join(import.meta.dir, '..')
 const CENTRAL_CONFIG_PATH = 'packages/shared/src/config/paths.ts'
 const DYNAMIC_PERMISSIONS_PATH = 'packages/shared/src/agent/permissions-config.ts'
+
+function writeExecutableHeader(
+  filePath: string,
+  platform: Platform,
+  arch: Arch,
+): void {
+  if (platform === 'darwin') {
+    const header = Buffer.alloc(32)
+    header.writeUInt32LE(0xfeedfacf, 0)
+    header.writeUInt32LE(arch === 'arm64' ? 0x0100000c : 0x01000007, 4)
+    writeFileSync(filePath, header)
+    return
+  }
+
+  if (platform === 'win32') {
+    const header = Buffer.alloc(128)
+    header.write('MZ', 0)
+    header.writeUInt32LE(0x40, 0x3c)
+    header.write('PE\0\0', 0x40)
+    header.writeUInt16LE(arch === 'arm64' ? 0xaa64 : 0x8664, 0x44)
+    writeFileSync(filePath, header)
+    return
+  }
+
+  const header = Buffer.alloc(64)
+  header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1])
+  header.writeUInt16LE(arch === 'arm64' ? 183 : 62, 18)
+  writeFileSync(filePath, header)
+}
 
 function moduleUrl(path: string): string {
   return pathToFileURL(join(REPO_ROOT, path)).href
@@ -90,7 +134,9 @@ describe('Stair 构建入口', () => {
       'utf8',
     )
     expect(packagedEntry).toContain('CRAFT_APP_ICON')
-    expect(packagedEntry).toContain("dist', 'resources', 'stair'")
+    expect(packagedEntry).toContain(
+      "'dist', 'resources', 'stair', 'icon.png'",
+    )
   })
 
   it('把独立深链协议注入 Renderer 构建', () => {
@@ -101,6 +147,233 @@ describe('Stair 构建入口', () => {
 
     expect(viteConfig).toContain('__APP_DEEP_LINK_SCHEME__')
     expect(viteConfig).toContain('CRAFT_DEEPLINK_SCHEME')
+  })
+
+  it('暂存并验证 packaged runtime 依赖', () => {
+    const buildEntry = readFileSync(join(REPO_ROOT, 'scripts/stair-build.ts'), 'utf8')
+    const commonBuild = readFileSync(join(REPO_ROOT, 'scripts/build/common.ts'), 'utf8')
+    const downloadBun = commonBuild.slice(
+      commonBuild.indexOf('export async function downloadBun'),
+      commonBuild.indexOf('function findFileRecursive'),
+    )
+    expect(buildEntry).toContain('await downloadBun(buildConfig)')
+    expect(buildEntry).toContain('copySessionServer(buildConfig)')
+    expect(buildEntry).toContain('copyPiAgentServer(buildConfig)')
+    expect(buildEntry).toContain('copySDK(buildConfig)')
+    expect(buildEntry).toContain('copyRipgrep(buildConfig)')
+    expect(buildEntry).toContain('verifyMcpServersExist(buildConfig)')
+    expect(buildEntry).toContain('verifySDKCopy(buildConfig)')
+    expect(buildEntry).toContain('const archFlag = `--${arch}`')
+    expect(buildEntry).toContain('...(hasExplicitArch ? [] : [archFlag])')
+    expect(buildEntry).toContain('if (hasX64 && hasArm64)')
+    expect(downloadBun).toContain('Expand-Archive')
+    expect(downloadBun).toContain('$env:STAIR_BUN_ARCHIVE')
+    expect(downloadBun).not.toContain("-LiteralPath '${zipPath}'")
+    expect(downloadBun.match(/--http1\.1/g)).toHaveLength(2)
+    expect(downloadBun.match(/--retry-all-errors/g)).toHaveLength(2)
+    expect(downloadBun).toContain('gh release download')
+    expect(downloadBun).toContain('--clobber')
+
+    const afterPack = require(join(
+      REPO_ROOT,
+      'apps/electron/scripts/afterPack.stair.cjs',
+    )) as {
+      verifyPackagedRuntimeDependencies: (
+        resourcesPath: string,
+        platform?: NodeJS.Platform,
+        arch?: 'arm64' | 'x64',
+      ) => void
+    }
+    expect(afterPack.verifyPackagedRuntimeDependencies).toBeFunction()
+
+    const resourcesPath = mkdtempSync(join(tmpdir(), 'stair-packaged-runtime-'))
+    try {
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('claude-agent-sdk')
+
+      const appModules = join(resourcesPath, 'app/node_modules')
+      const sdkDir = join(appModules, '@anthropic-ai/claude-agent-sdk')
+      const binaryDir = join(appModules, '@anthropic-ai/claude-agent-sdk-binary')
+      const ripgrepDir = join(appModules, '@vscode/ripgrep/bin')
+      mkdirSync(sdkDir, { recursive: true })
+      mkdirSync(binaryDir, { recursive: true })
+      mkdirSync(ripgrepDir, { recursive: true })
+      writeFileSync(join(sdkDir, 'package.json'), '{}')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('sdk.mjs')
+      writeFileSync(join(sdkDir, 'sdk.mjs'), '')
+      writeFileSync(
+        join(binaryDir, 'package.json'),
+        JSON.stringify({ os: ['darwin'], cpu: ['x64'] }),
+      )
+      const claudeBinary = join(binaryDir, 'claude')
+      writeFileSync(claudeBinary, '')
+      writeExecutableHeader(join(ripgrepDir, 'rg'), 'darwin', 'arm64')
+
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('icon.png')
+
+      const iconDir = join(resourcesPath, 'app/dist/resources/stair')
+      mkdirSync(iconDir, { recursive: true })
+      writeFileSync(join(iconDir, 'icon.png'), 'png')
+
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('does not match darwin-arm64')
+      writeFileSync(
+        join(binaryDir, 'package.json'),
+        JSON.stringify({ os: ['darwin'], cpu: ['arm64'] }),
+      )
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('too small')
+      truncateSync(claudeBinary, 50_000_000)
+
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('session-mcp-server')
+      const sessionServer = join(resourcesPath, 'app/resources/session-mcp-server/index.js')
+      mkdirSync(join(sessionServer, '..'), { recursive: true })
+      writeFileSync(sessionServer, 'session')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('pi-agent-server')
+
+      const piServer = join(resourcesPath, 'app/resources/pi-agent-server/index.js')
+      const koffiDir = join(resourcesPath, 'app/resources/pi-agent-server/node_modules/koffi')
+      mkdirSync(koffiDir, { recursive: true })
+      writeFileSync(piServer, 'pi')
+      writeFileSync(join(koffiDir, 'package.json'), '{}')
+      const darwinKoffi = join(koffiDir, 'build/koffi/darwin_arm64/koffi.node')
+      mkdirSync(join(darwinKoffi, '..'), { recursive: true })
+      writeFileSync(darwinKoffi, 'koffi')
+
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('vendor/bun/bun')
+      const bunBinary = join(resourcesPath, 'app/vendor/bun/bun')
+      mkdirSync(join(bunBinary, '..'), { recursive: true })
+      writeFileSync(bunBinary, 'bun')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).not.toThrow()
+
+      writeExecutableHeader(join(ripgrepDir, 'rg'), 'darwin', 'x64')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('ripgrep binary does not match darwin-arm64')
+      writeExecutableHeader(join(ripgrepDir, 'rg'), 'darwin', 'arm64')
+
+      const claudeExe = join(binaryDir, 'claude.exe')
+      writeFileSync(claudeExe, '')
+      truncateSync(claudeExe, 50_000_000)
+      writeExecutableHeader(join(ripgrepDir, 'rg.exe'), 'win32', 'x64')
+      writeFileSync(
+        join(binaryDir, 'package.json'),
+        JSON.stringify({ os: ['win32'], cpu: ['x64'] }),
+      )
+      const winKoffi = join(koffiDir, 'build/koffi/win32_x64/koffi.node')
+      mkdirSync(join(winKoffi, '..'), { recursive: true })
+      writeFileSync(winKoffi, 'koffi')
+      rmSync(bunBinary)
+      const winBun = join(resourcesPath, 'vendor/bun/bun.exe')
+      mkdirSync(join(winBun, '..'), { recursive: true })
+      writeFileSync(winBun, 'bun')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'win32', 'x64')
+      }).not.toThrow()
+    } finally {
+      rmSync(resourcesPath, { recursive: true, force: true })
+    }
+  })
+
+  it('跨架构构建会重新暂存目标架构的 ripgrep', () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'stair-ripgrep-source-'))
+    const electronDir = mkdtempSync(join(tmpdir(), 'stair-ripgrep-electron-'))
+    const platform = process.platform as Platform
+    const targetArch: Arch = process.arch === 'arm64' ? 'x64' : 'arm64'
+    const binaryName = platform === 'win32' ? 'rg.exe' : 'rg'
+    const source = join(rootDir, 'node_modules/@vscode/ripgrep')
+
+    try {
+      mkdirSync(join(source, 'bin'), { recursive: true })
+      mkdirSync(join(source, 'lib'), { recursive: true })
+      writeFileSync(join(source, 'package.json'), '{}')
+      writeFileSync(join(source, 'bin', binaryName), process.arch)
+      writeFileSync(
+        join(source, 'lib/postinstall.js'),
+        `require('node:fs').writeFileSync(require('node:path').join(__dirname, '../bin/${binaryName}'), process.env.npm_config_arch)`,
+      )
+
+      copyRipgrep({
+        platform,
+        arch: targetArch,
+        upload: false,
+        uploadLatest: false,
+        uploadScript: false,
+        rootDir,
+        electronDir,
+      } satisfies BuildConfig)
+
+      expect(
+        readFileSync(
+          join(electronDir, 'node_modules/@vscode/ripgrep/bin', binaryName),
+          'utf8',
+        ),
+      ).toBe(targetArch)
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true })
+      rmSync(electronDir, { recursive: true, force: true })
+    }
+  })
+
+  it('连续构建只保留目标架构的 Pi native runtime', () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'stair-pi-source-'))
+    const electronDir = mkdtempSync(join(tmpdir(), 'stair-pi-electron-'))
+    const piDist = join(rootDir, 'packages/pi-agent-server/dist')
+    const koffi = join(rootDir, 'node_modules/koffi')
+
+    try {
+      mkdirSync(piDist, { recursive: true })
+      mkdirSync(koffi, { recursive: true })
+      writeFileSync(join(piDist, 'index.js'), 'pi')
+      writeFileSync(join(koffi, 'package.json'), '{}')
+      for (const arch of ['arm64', 'x64'] as const) {
+        const nativeDir = join(koffi, `build/koffi/darwin_${arch}`)
+        mkdirSync(nativeDir, { recursive: true })
+        writeFileSync(join(nativeDir, 'koffi.node'), arch)
+      }
+
+      const config = {
+        platform: 'darwin',
+        upload: false,
+        uploadLatest: false,
+        uploadScript: false,
+        rootDir,
+        electronDir,
+      } as const
+      copyPiAgentServer({ ...config, arch: 'arm64' })
+      copyPiAgentServer({ ...config, arch: 'x64' })
+
+      const packagedKoffi = join(
+        electronDir,
+        'resources/pi-agent-server/node_modules/koffi/build/koffi',
+      )
+      expect(existsSync(join(packagedKoffi, 'darwin_arm64'))).toBe(false)
+      expect(existsSync(join(packagedKoffi, 'darwin_x64/koffi.node'))).toBe(true)
+
+      rmSync(join(piDist, 'index.js'))
+      copyPiAgentServer({ ...config, arch: 'arm64' })
+      expect(
+        existsSync(join(electronDir, 'resources/pi-agent-server')),
+      ).toBe(false)
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true })
+      rmSync(electronDir, { recursive: true, force: true })
+    }
   })
 })
 

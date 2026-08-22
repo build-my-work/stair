@@ -604,6 +604,41 @@ describe('BrowserPaneManager', () => {
     expect(manager.listInstances()).toHaveLength(0)
   })
 
+  it('replays current state when the toolbar renderer subscribes', () => {
+    manager.createInstance('toolbar-state-request')
+    manager.registerToolbarIpc()
+
+    const registration = (
+      mockIpcMainOn.mock.calls as unknown as Array<[
+        string,
+        (event: { sender: { id: number } }, instanceId: string) => void,
+      ]>
+    ).find(([channel]) => channel === 'browser-toolbar:request-state')
+    expect(registration).toBeTruthy()
+    if (!registration) throw new Error('Expected browser-toolbar:request-state IPC registration')
+
+    const instance = (manager as any).instances.get('toolbar-state-request')
+    instance.currentUrl = 'https://example.com/restored'
+    instance.title = 'Restored'
+    instance.canGoBack = true
+
+    const sendsBeforeRequest = instance.toolbarView.webContents.send.mock.calls.length
+    registration[1]({ sender: instance.toolbarView.webContents }, 'toolbar-state-request')
+
+    expect(instance.toolbarView.webContents.send.mock.calls.slice(sendsBeforeRequest)).toContainEqual([
+      'browser-toolbar:state-update',
+      {
+        url: 'https://example.com/restored',
+        title: 'Restored',
+        isLoading: false,
+        canGoBack: true,
+        canGoForward: false,
+        themeColor: null,
+        isPanel: false,
+      },
+    ])
+  })
+
   it('persists toolbar bookmarks and syncs browsers in the same Workspace', async () => {
     const workspaceA = mkdtempSync(join(tmpdir(), 'browser-bookmarks-a-'))
     const workspaceB = mkdtempSync(join(tmpdir(), 'browser-bookmarks-b-'))

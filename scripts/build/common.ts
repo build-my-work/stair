@@ -3,7 +3,7 @@
  */
 
 import { $ } from 'bun';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import {
   existsSync,
   mkdirSync,
@@ -125,12 +125,16 @@ export async function downloadBun(config: BuildConfig): Promise<void> {
     const zipPath = join(tempDir, `${bunDownload}.zip`);
     const checksumPath = join(tempDir, 'SHASUMS256.txt');
 
-    console.log(`  Downloading ${zipUrl}...`);
-    await $`curl -fsSL --retry 3 --retry-delay 2 -o ${zipPath} ${zipUrl}`;
+    try {
+      console.log(`  Downloading ${zipUrl}...`);
+      await $`curl --http1.1 -fsSL --retry 3 --retry-all-errors --retry-delay 2 -o ${zipPath} ${zipUrl}`;
+      console.log('  Downloading checksums...');
+      await $`curl --http1.1 -fsSL --retry 3 --retry-all-errors --retry-delay 2 -o ${checksumPath} ${checksumUrl}`;
+    } catch {
+      console.warn('  curl download failed; retrying with GitHub CLI...');
+      await $`gh release download ${BUN_VERSION} --repo oven-sh/bun --pattern ${`${bunDownload}.zip`} --pattern SHASUMS256.txt --dir ${tempDir} --clobber`;
+    }
     console.log('  Download complete');
-
-    console.log('  Downloading checksums...');
-    await $`curl -fsSL --retry 3 --retry-delay 2 -o ${checksumPath} ${checksumUrl}`;
 
     // Verify checksum
     console.log('  Verifying checksum...');
@@ -152,7 +156,28 @@ export async function downloadBun(config: BuildConfig): Promise<void> {
 
     // Extract
     console.log('  Extracting...');
-    await $`unzip -o ${zipPath} -d ${tempDir}`.quiet();
+    if (platform === 'win32') {
+      execFileSync(
+        'powershell',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          'Expand-Archive -LiteralPath $env:STAIR_BUN_ARCHIVE -DestinationPath $env:STAIR_BUN_DESTINATION -Force',
+        ],
+        {
+          env: {
+            ...process.env,
+            STAIR_BUN_ARCHIVE: zipPath,
+            STAIR_BUN_DESTINATION: tempDir,
+          },
+          stdio: 'inherit',
+        },
+      );
+    } else {
+      await $`unzip -o ${zipPath} -d ${tempDir}`.quiet();
+    }
 
     // Copy binary
     const bunBinary = platform === 'win32' ? 'bun.exe' : 'bun';
@@ -425,6 +450,18 @@ export function copyRipgrep(config: BuildConfig): void {
     rmSync(rgDest, { recursive: true, force: true });
   }
   cpSync(rgSource, rgDest, { recursive: true, dereference: true });
+
+  if (config.arch !== process.arch) {
+    execFileSync(
+      process.execPath,
+      [join(rgDest, 'lib', 'postinstall.js'), '--force'],
+      {
+        cwd: rgDest,
+        env: { ...process.env, npm_config_arch: config.arch },
+        stdio: 'inherit',
+      },
+    );
+  }
 }
 
 /**
@@ -502,6 +539,7 @@ export function copyPiAgentServer(config: BuildConfig): void {
 
   const piSourceDir = join(rootDir, 'packages', 'pi-agent-server', 'dist');
   const piDestDir = join(electronDir, 'resources', 'pi-agent-server');
+  rmSync(piDestDir, { recursive: true, force: true });
 
   if (!existsSync(join(piSourceDir, 'index.js'))) {
     console.warn(`Warning: Pi agent server not found at ${piSourceDir}/index.js. Pi SDK sessions will not work.`);

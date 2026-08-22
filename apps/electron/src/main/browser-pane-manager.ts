@@ -266,6 +266,7 @@ const TOOLBAR_CHANNELS = {
   TOGGLE_BOOKMARK: 'browser-toolbar:toggle-bookmark',
   BOOKMARKS_CHANGED: 'browser-toolbar:bookmarks-changed',
   SHOW_MENU: 'browser-toolbar:show-menu',
+  REQUEST_STATE: 'browser-toolbar:request-state',
   STATE_UPDATE: 'browser-toolbar:state-update',
   THEME_COLOR: 'browser-toolbar:theme-color',
 } as const
@@ -3436,6 +3437,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     ipcMain.handle(TOOLBAR_CHANNELS.STOP, async (_event, instanceId: string) => {
       const inst = findInstance(instanceId)
       if (inst) this.stop(inst.id)
+    })
+
+    ipcMain.on(TOOLBAR_CHANNELS.REQUEST_STATE, (event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (inst && event.sender.id === inst.toolbarView.webContents.id) {
+        this.pushToolbarState(inst)
+      }
     })
 
     ipcMain.handle(TOOLBAR_CHANNELS.LIST_BOOKMARKS, async (_event, instanceId: string) => {
