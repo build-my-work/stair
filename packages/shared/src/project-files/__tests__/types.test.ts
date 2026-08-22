@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'bun:test'
 import { isCanonicalProjectRelativePath } from '../types'
-import { classifyProjectTextFile, isEditableProjectTextFile } from '../file-classification'
+import {
+  classifyProjectFile,
+  classifyProjectTextFile,
+  isEditableProjectTextFile,
+} from '../file-classification'
 import { isErrorCode } from '../../protocol/types'
 
 describe('Project 文件相对路径', () => {
@@ -36,6 +40,13 @@ describe('Project 文本类型', () => {
     expect(isEditableProjectTextFile('.npmrc')).toBe(true)
     expect(isEditableProjectTextFile('book.epub')).toBe(false)
     expect(isEditableProjectTextFile('manual.pdf')).toBe(false)
+  })
+
+  it('把 Drawnix 识别为独立 Project Document，而不是可编辑 JSON', () => {
+    expect(classifyProjectFile('maps/tutorial.drawnix')).toBe('drawnix')
+    expect(classifyProjectFile('maps/TUTORIAL.DRAWNIX')).toBe('drawnix')
+    expect(classifyProjectTextFile('maps/tutorial.drawnix')).toBe('unknown')
+    expect(isEditableProjectTextFile('maps/tutorial.drawnix')).toBe(false)
   })
 })
 

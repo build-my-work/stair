@@ -2,12 +2,12 @@
 
 ## 文档状态
 
-- 状态：阶段 6 原生 Browser 的实现、自动化验证、四路审查与真实 Electron 验收均已收口；不进入阶段 7
+- 状态：阶段 7 Drawnix 与 Agent 工具的实现、自动化验证、四路审查与真实 Electron 验收均已收口；阶段 8 尚未开始
 - 基线：`upstream/main@50ffa143`（`v0.11.4`）
 - 分支：`codex/stair-rebuild-v2`
 - 更新日期：2026-08-22
 - 范围：保留 Stair 产品能力，不迁移 Craft 或旧 Stair 用户数据
-- 代码状态：阶段 6 的原生 Browser Surface、选区引用、书签与链接偏好已接入现有 Workbench 边界；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
+- 代码状态：阶段 7 的 Drawnix Project Document、Document Controller 与 Project-scoped Mind Map 工具已接入现有 Workbench/Capability 边界；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
 
 ## 当前实施进度
 
@@ -20,7 +20,8 @@
 | 阶段 4：EPUB 与 PDF | 功能等价完成 | EPUB/PDF 窄栏 overlay、选区生命周期、印刷页码、导出/分组以及作者/相对路径信息均已恢复。 |
 | 阶段 5：引用与 Add Note | 完成 | 统一引用、Add Chat/New Chat、Add Note、审查修复、真实 Pointer/Reader/Chat 验收与 queue/ack 恢复链均已完成。 |
 | 阶段 6：原生 Browser | 完成 | Browser Auxiliary、原生 Surface 生命周期、选区引用、书签、链接偏好、审查修复与真实 Electron 视觉/Pointer 验收均已完成。 |
-| 阶段 7—9 | 未开始 | Drawnix、布局持久化和正式发布打包尚未进入实施。 |
+| 阶段 7：Drawnix 与 Agent 工具 | 完成 | Drawnix 文档、自动保存、Project-scoped `mindmap_read`/`mindmap_update`、审查修复与真实 Electron 验收均已完成。 |
+| 阶段 8—9 | 未开始 | 布局持久化、交互完善和正式发布打包尚未进入实施。 |
 
 ### 2026-08-21 功能等价审计与收口
 
@@ -116,10 +117,23 @@
 - 开发脚本会构建并监听 Browser toolbar、page 与 overlay preload；阶段 6 不持久化 Workbench 布局或原生 Runtime，应用重启不会自动恢复 Browser Panel。
 - 本阶段继续使用现有 Workbench command 作为唯一布局写入口，没有恢复旧 PanelStack，也没有引入 Browser 自有布局状态。
 
+### 阶段 7 已完成实现
+
+- `.drawnix` 是当前 Project 内的原生 JSON 文档；Project Files 提供独立的新建入口和 Drawnix Canvas，普通点击仍沿用 Preview，显式右键才新增 Auxiliary。
+- Drawnix Document Controller 复用 Project File fingerprint 比较保存、800 ms 自动保存、关闭/替换/切换 Project 前 flush、冲突、重试和原子替换；Drawnix 文本上限为 8 MiB，普通可编辑文本仍保持 1 MiB 上限。
+- `mindmap_read` 与 `mindmap_update` 通过 Project-scoped Capability Boundary 访问已打开的 live board；Session 的不可变 `projectId` 决定路由，Panel ID 不进入领域模型，工具不导入或修改 Workbench State。
+- Agent 更新使用 `changeSeq` 乐观并发、最多 50 个操作和 Plait 单批次历史；批内失败会回滚，用户内容修改、Presentation 保存与 Agent outline 序列保持独立。
+- 同一文件存在多个可见 Canvas 时工具保守返回 `MINDMAP_AMBIGUOUS_BOARD`；关闭到单一视图后自动恢复。来源未打开、Project 已切换或仅存在于 parked layout 时返回 `MINDMAP_NOT_OPEN`，不会跨 Project 写入。
+- 本阶段继续使用现有 Workbench command 作为唯一布局写入口，没有恢复旧 PanelStack，也没有为 Drawnix 建立第二套布局或持久化所有者。
+
 ### 当前验证结果
 
 | 检查 | 结果 | 说明 |
 | --- | --- | --- |
+| 阶段 7 完整源码回归 | 通过 | Electron 1096/1096 项通过、3736 个断言；shared 3039 项通过/12 项跳过、server-core 317/317、session-tools-core 91/91、core 4/4。 |
+| 阶段 7 类型、构建与静态检查 | 通过 | Electron、core、shared、server-core、server 与 UI 类型检查通过；Electron 生产构建、locale parity/排序、阶段 7 变更 lint 和 `git diff --check` 通过。缺失的仓库级 i18n/raw-send 脚本继续作为既有基础设施阻断单列。 |
+| 阶段 7 四路审查 | 通过 | Code Simplifier 完成后，由 Codex、Claude、Kimi、Pi 并行审查；确认的大小限制、重复视图、路由、保存重试/去抖、批次回滚、Presentation 序列和并发更新问题均已补失败测试并修复。 |
+| 阶段 7 真实 Electron 验收 | 通过 | Computer Use 在 macOS 开发版 Electron 中完成 New Mind Map、真实 Pointer/键盘编辑、自动保存、关闭重开、Agent `read/update/read`、重复 Panel 歧义与恢复、Project park/restore，以及跨 Project `MINDMAP_NOT_OPEN`；测试现场按授权保留。 |
 | 阶段 6 完整源码回归 | 通过 | Electron 1081/1081 项通过、3694 个断言；core 4/4、shared 3037 项通过/12 项跳过、server-core 309/309、ui 299/299。 |
 | 阶段 6 类型、构建与静态检查 | 通过 | core、shared、server-core、ui 与 Electron 类型检查均通过；Electron 构建、locale parity/排序、阶段 6 变更 lint 和 `git diff --check` 通过。 |
 | 阶段 6 四路审查 | 通过 | Code Simplifier 完成后，由 Codex、Claude、Kimi、Pi 并行审查当前实现；确认的生命周期、几何、选区、书签、链接偏好和 Workbench 边界问题均已在本阶段补测试并修复。 |
@@ -170,10 +184,10 @@
 
 ### 当前限制
 
-- 阶段 0—6 已交付；阶段 7—9 未开始，不能把本次交付理解为全部产品能力已经完成。
+- 阶段 0—7 已交付；阶段 8—9 未开始，不能把本次交付理解为全部产品能力已经完成。
 - Panel 数量策略已确认与 Craft 保持一致：当前不设置“最多 8 个 Panel”的额外限制，本轮无需修改业务代码。
 - 按用户最新要求，桌面验收使用当前已经选择的 `os` Project，不再以临时隔离 Workspace 作为阻塞条件；这不改变产品最终需要独立 Stair 数据命名空间的目标。
-- Drawnix、布局持久化和正式发布仍属于阶段 7—9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
+- 布局持久化和正式发布仍属于阶段 8—9；旧 Stair 分支只能作为规格、测试和缺陷复现来源。
 - Windows Project Note 路径已按 ABI 与结构布局实现并完成类型/构建验证，但本轮运行环境为 macOS，尚未执行真实 Windows 原生运行时 smoke。
 - queued 恢复若在 Renderer 收到 restore 事件后、持久草稿与 ack 完成前崩溃，会保留服务端 queued bubble 且不自动重试写入草稿；该保守状态不会丢数据，但需用户重新触发恢复。
 - 为保证引用标记与 JSON 完整，恢复/摘要字符上限允许被一个完整引用块软超出；不会再产生半个引用协议，但极大引用可能比旧硬上限多一个块。
@@ -580,7 +594,7 @@ Project 前置条件：
 - Built-in Browser 点击创建并聚焦新的 Browser Auxiliary；System Browser 点击只打开系统 Chrome，不增加内部 Runtime。
 - Native Bookmark 菜单完成新增、列表与删除；单击 Browser Panel Close 后 Main Process 报告 Runtime `removed=true`，AX 树中 Panel 与原生页面/toolbar 同时消失。
 
-### 阶段 7：Drawnix 与 Agent 工具（未开始）
+### 阶段 7：Drawnix 与 Agent 工具（完成）
 
 范围：
 
@@ -592,6 +606,14 @@ Project 前置条件：
 - Drawnix 自动保存和关闭行为与文本文档一致。
 - Agent 工具不能访问所属 Project 外的文件。
 - Tool Execution 不导入或修改 Renderer Workbench State。
+
+实施结果：
+
+- Project Files 可新建并打开原生 `.drawnix`，Canvas 的真实 Pointer/键盘编辑、800 ms 自动保存、关闭 flush 与重开恢复均通过。
+- Agent 在同 Project 完成 `mindmap_read → mindmap_update → mindmap_read`，live Canvas 即时显示根节点与子节点更新，磁盘保存使用最新 fingerprint。
+- 重复打开同一脑图时工具返回 `MINDMAP_AMBIGUOUS_BOARD`，关闭一个视图后无需重启即可恢复；并发相同 `changeSeq` 只有一次更新成功。
+- Project 切换会 flush 并停放当前布局；Session 请求只存在于另一 Project/parked layout 的脑图时返回 `MINDMAP_NOT_OPEN`，两个 Project 的布局和文件均未被跨界修改。
+- Codex、Claude、Kimi、Pi 审查确认的问题均已修复并回归，Drawnix/Agent 工具没有新增 Workbench State 写入口。
 
 ### 阶段 8：布局持久化与交互完善（未开始）
 
@@ -771,4 +793,4 @@ git diff --check
 
 ## 11. 立即下一步
 
-阶段 6 已完成。提交当前阶段后进入阶段 7：先冻结 Drawnix Project Document、Document Controller 与 Project-scoped Agent Tool 的失败测试和真实 Electron 验收矩阵，再按编码、测试、Code Simplifier、四路审查、修复、Computer Use 与单阶段提交顺序实施。Panel 数量策略继续沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制。
+阶段 7 已完成。提交当前阶段后进入阶段 8：先冻结每个 Project 的 Workbench 布局持久化、Panel 独立比例、Auxiliary 拖拽排序、Compact/动画与 Accessibility/Keyboard 的失败测试和真实 Electron 验收矩阵，再按编码、测试、Code Simplifier、四路审查、修复、Computer Use 与单阶段提交顺序实施。Panel 数量策略继续沿用 Craft 当前行为，不额外设置“最多 8 个 Panel”的限制。

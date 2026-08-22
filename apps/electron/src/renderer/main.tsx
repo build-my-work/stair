@@ -8,6 +8,7 @@ import App from './App'
 import { ThemeProvider } from './context/ThemeContext'
 import { windowWorkspaceIdAtom } from './atoms/sessions'
 import { Toaster } from '@/components/ui/sonner'
+import { DrawnixBoardCapabilityBridge } from '@/components/project-files/DrawnixBoardCapabilityBridge'
 import { setupI18n, i18n } from '@craft-agent/shared/i18n'
 import { redactSensitiveHeadersInPlace, redactSensitiveKeysInPlace } from '@craft-agent/shared/utils/redaction'
 import { initReactI18next } from 'react-i18next'
@@ -116,6 +117,7 @@ export function Root() {
 
   return (
     <ThemeProvider activeWorkspaceId={workspaceId}>
+      <DrawnixBoardCapabilityBridge />
       <App />
       <Toaster />
     </ThemeProvider>

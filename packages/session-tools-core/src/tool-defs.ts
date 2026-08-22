@@ -65,6 +65,8 @@ import { handleArchiveSession } from './handlers/archive-session.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
 import { handleListMessagingChannels, handleUnbindMessagingChannel } from './handlers/messaging.ts';
 import { handleDecide } from './handlers/decide.ts';
+import { handleMindmapRead } from './handlers/mindmap-read.ts';
+import { handleMindmapUpdate } from './handlers/mindmap-update.ts';
 
 // ============================================================
 // Canonical Zod Schemas
@@ -386,6 +388,48 @@ export const ListMessagingChannelsSchema = z.object({
 
 export const UnbindMessagingChannelSchema = z.object({
   platform: z.enum(['telegram', 'whatsapp']).optional().describe('Platform to unbind. If omitted, unbinds all.'),
+});
+
+export const MindmapReadSchema = z.object({
+  relativePath: z.string().min(1).describe(
+    'Canonical Project-relative path of an already-open .drawnix file',
+  ),
+});
+
+const MindmapUpdateOperationSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('populate_empty'),
+    markdown: z.string().min(1).describe(
+      'Hierarchical Markdown used only to populate a completely empty open board',
+    ),
+  }),
+  z.object({
+    type: z.literal('insert_child'),
+    parentId: z.string().min(1),
+    topic: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal('insert_sibling'),
+    nodeId: z.string().min(1),
+    topic: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal('set_topic'),
+    nodeId: z.string().min(1),
+    topic: z.string().min(1),
+  }),
+]);
+
+export const MindmapUpdateSchema = z.object({
+  relativePath: z.string().min(1).describe(
+    'Canonical Project-relative path of the already-open .drawnix file',
+  ),
+  expectedChangeSeq: z.number().int().nonnegative().describe(
+    'changeSeq returned by the immediately preceding mindmap_read call',
+  ),
+  operations: z.array(MindmapUpdateOperationSchema).min(1).max(50).describe(
+    'Node-level updates; populate_empty must be the only operation',
+  ),
 });
 
 // ============================================================
@@ -746,6 +790,14 @@ Shows which external chat apps are connected and can send/receive messages.`,
 
   unbind_messaging_channel: `Disconnect a messaging channel from the current session.
 Messages will no longer be forwarded between the chat app and this session.`,
+
+  mindmap_read: `Read the live outline and change sequence of an already-open Drawnix mind map.
+
+The user must create the .drawnix file in Project Files and keep its canvas open. Always call this immediately before mindmap_update so user edits are protected by changeSeq.`,
+
+  mindmap_update: `Update an already-open Drawnix mind map without replacing the whole document.
+
+Pass the changeSeq from an immediately preceding mindmap_read. Use populate_empty only when roots is empty. Otherwise use node IDs returned by mindmap_read.`,
 } as const;
 
 // ============================================================
@@ -839,6 +891,8 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'get_session_info', description: TOOL_DESCRIPTIONS.get_session_info, inputSchema: GetSessionInfoSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetSessionInfo },
   { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListSessions },
   { name: 'list_background_tasks', description: TOOL_DESCRIPTIONS.list_background_tasks, inputSchema: ListBackgroundTasksSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListBackgroundTasks },
+  { name: 'mindmap_read', description: TOOL_DESCRIPTIONS.mindmap_read, inputSchema: MindmapReadSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleMindmapRead },
+  { name: 'mindmap_update', description: TOOL_DESCRIPTIONS.mindmap_update, inputSchema: MindmapUpdateSchema, executionMode: 'registry', safeMode: 'block', handler: handleMindmapUpdate },
   // Inter-session messaging
   { name: 'send_agent_message', description: TOOL_DESCRIPTIONS.send_agent_message, inputSchema: SendAgentMessageSchema, executionMode: 'registry', safeMode: 'block', handler: handleSendAgentMessage },
   // Messaging gateway tools
@@ -856,8 +910,9 @@ export type AgentProfile = 'default' | 'coding';
 
 /**
  * Session tools a `coding` profile keeps, and the condition each one needs. Everything else
- * (Pages, browser, session self-management, inter-session messaging, config/skill/mermaid
+ * (Pages, session self-management, inter-session messaging, config/skill/mermaid
  * validation, data/template/LLM helpers, preferences) serves desktop workflows and is dropped.
+ * Stair Browser and Mindmap tools retain their feature flags, permissions, and Project guards.
  * - `always`: kept in every coding session (feature flags still apply)
  * - `sources`: kept while the session has at least one enabled source (auth + MCP resources)
  * - `project`: kept while the session is bound to a project
@@ -866,6 +921,9 @@ export const CODING_PROFILE_TOOLS: Readonly<Record<string, 'always' | 'sources' 
   SubmitPlan: 'always',
   list_background_tasks: 'always',
   send_developer_feedback: 'always',
+  browser_tool: 'always',
+  mindmap_read: 'always',
+  mindmap_update: 'always',
   // PR tools are core to Coding mode; each returns a clean "unavailable" result off a GitHub checkout
   // (no async git gating — see plan D7), so they are always offered there (and only there: CODING_ONLY_TOOLS).
   pr_status: 'always',

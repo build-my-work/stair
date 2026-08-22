@@ -33,6 +33,7 @@ import {
 } from '@/components/project-files/project-text-document-controller'
 import { ProjectFileEpubReader } from '@/components/project-files/ProjectFileEpubReader'
 import { ProjectFilePdfReader } from '@/components/project-files/ProjectFilePdfReader'
+import { ProjectFileDrawnixCanvas } from '@/components/project-files/ProjectFileDrawnixCanvas'
 import { ProjectFileTextSelection } from '@/components/project-files/ProjectFileTextSelection'
 import type { ProjectFileReferenceAction } from '@/components/project-files/ProjectFileReaderSelectionToolbar'
 import {
@@ -518,6 +519,15 @@ export default function ProjectFilePage({
               className="max-h-full max-w-full rounded-[6px] object-contain shadow-minimal"
             />
           </div>
+        ) : kind === 'drawnix' && response ? (
+          <ProjectFileDrawnixCanvas
+            key={`${projectId}\0${relativePath}\0${response.sourceFingerprint}`}
+            projectId={projectId}
+            relativePath={relativePath}
+            content={response.text}
+            sourceFingerprint={response.sourceFingerprint}
+            onReload={() => setReloadRevision(revision => revision + 1)}
+          />
         ) : isEditing ? (
           <div className="h-full" onKeyDown={handleKeyDown}>
             <ShikiCodeEditor

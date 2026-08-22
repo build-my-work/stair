@@ -12,7 +12,10 @@
 import { describe, it, expect, afterEach } from 'bun:test'
 import { WsRpcServer } from '../server'
 import { WsRpcClient } from '../client'
-import { CLIENT_BROWSER_INVOKE } from '../capabilities'
+import {
+  CLIENT_BROWSER_INVOKE,
+  CLIENT_DRAWNIX_BOARD_INVOKE,
+} from '../capabilities'
 import { CodedError } from '@craft-agent/shared/protocol'
 
 const TEST_TOKEN = 'test-token-with-enough-entropy-to-pass'
@@ -145,5 +148,35 @@ describe('Transport — capability introspection', () => {
     const { server } = await startPair({ clientCapabilities: [CLIENT_BROWSER_INVOKE], workspaceId: 'ws-a' })
     expect(server.findClientsWithCapability(CLIENT_BROWSER_INVOKE, { workspaceId: 'ws-a' })).toHaveLength(1)
     expect(server.findClientsWithCapability(CLIENT_BROWSER_INVOKE, { workspaceId: 'ws-other' })).toHaveLength(0)
+  })
+
+  it('round-trips the Drawnix board capability on the owning client', async () => {
+    const { server, client } = await startPair({
+      clientCapabilities: [CLIENT_DRAWNIX_BOARD_INVOKE],
+      workspaceId: 'ws-drawnix',
+    })
+    client.handleCapability(CLIENT_DRAWNIX_BOARD_INVOKE, request => ({
+      ok: true,
+      snapshot: {
+        relativePath: request.relativePath,
+        changeSeq: 2,
+        roots: [],
+      },
+    }))
+
+    const [clientId] = server.findClientsWithCapability(
+      CLIENT_DRAWNIX_BOARD_INVOKE,
+      { workspaceId: 'ws-drawnix' },
+    )
+    expect(clientId).toBeDefined()
+    expect(await server.invokeClient(clientId!, CLIENT_DRAWNIX_BOARD_INVOKE, {
+      v: 1,
+      action: 'read',
+      projectId: 'project-a',
+      relativePath: 'maps/tutorial.drawnix',
+    })).toMatchObject({
+      ok: true,
+      snapshot: { relativePath: 'maps/tutorial.drawnix', changeSeq: 2 },
+    })
   })
 })

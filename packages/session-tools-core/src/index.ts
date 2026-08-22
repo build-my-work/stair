@@ -199,6 +199,11 @@ export type {
   PrBindToolResult,
   PrUnbindToolResult,
   PrAutoMergeToolResult,
+
+  MindmapOutlineNode,
+  MindmapSnapshot,
+  MindmapUpdateOperation,
+  MindmapUpdateRequest,
 } from './context.ts';
 
 export { createNodeFileSystem } from './context.ts';
@@ -246,6 +251,8 @@ export {
   handleDeletePage,
   // Decision model
   handleDecide,
+  handleMindmapRead,
+  handleMindmapUpdate,
 } from './handlers/index.ts';
 
 export type {
@@ -275,6 +282,8 @@ export type {
   WritePageDataArgs,
   DeletePageArgs,
   DecideArgs,
+  MindmapReadArgs,
+  MindmapUpdateArgs,
 } from './handlers/index.ts';
 
 // Tool definitions — single source of truth
@@ -298,6 +307,8 @@ export {
   TransformDataSchema,
   ScriptSandboxSchema,
   RenderTemplateSchema,
+  MindmapReadSchema,
+  MindmapUpdateSchema,
   // Browser tool schema
   BrowserToolSchema,
   // Developer feedback schema

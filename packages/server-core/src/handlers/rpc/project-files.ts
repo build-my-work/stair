@@ -33,6 +33,8 @@ import {
   type ProjectFileTextResponse,
   type SaveProjectTextFileRequest,
   type SaveProjectTextFileResponse,
+  type SaveDrawnixProjectFileRequest,
+  type SaveDrawnixProjectFileResponse,
 } from '@craft-agent/shared/project-files'
 import { loadProjectById } from '@craft-agent/shared/projects'
 import { RPC_CHANNELS, type ErrorCode } from '@craft-agent/shared/protocol'
@@ -54,11 +56,20 @@ const SKIPPED_SEARCH_DIRECTORIES = new Set([
   '.nyc_output', '.turbo', 'out',
 ])
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf])
+export const EMPTY_DRAWNIX_DOCUMENT = JSON.stringify({
+  type: 'drawnix',
+  version: 1,
+  source: 'web',
+  elements: [],
+  viewport: { zoom: 1 },
+  theme: { themeColorMode: 'default' },
+}, null, 2)
 const PROJECT_FILE_MIME_TYPES: Record<string, string> = {
   '.avif': 'image/avif',
   '.bmp': 'image/bmp',
   '.css': 'text/css',
   '.csv': 'text/csv',
+  '.drawnix': 'application/vnd.drawnix+json',
   '.gif': 'image/gif',
   '.htm': 'text/html',
   '.html': 'text/html',
@@ -87,10 +98,12 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.projectFiles.SEARCH,
   RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
   RPC_CHANNELS.projectFiles.CREATE_FILE,
+  RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE,
   RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
   RPC_CHANNELS.projectFiles.READ_TEXT,
   RPC_CHANNELS.projectFiles.READ_BINARY,
   RPC_CHANNELS.projectFiles.SAVE_TEXT_FILE,
+  RPC_CHANNELS.projectFiles.SAVE_DRAWNIX_FILE,
   RPC_CHANNELS.projectFiles.FLUSH_COMPLETED,
 ] as const
 
@@ -251,6 +264,57 @@ function validateSaveRequest(value: unknown): SaveProjectTextFileRequest {
       'PROJECT_FILE_TOO_LARGE',
       `Editable Project Files are limited to ${MAX_EDITABLE_PROJECT_FILE_BYTES} bytes`,
     )
+  }
+  return { ...request, expectedFingerprint: save.expectedFingerprint, content: save.content }
+}
+
+function validateDrawnixSaveRequest(value: unknown): SaveDrawnixProjectFileRequest {
+  const request = validateFileRequest(value)
+  const save = value as Partial<SaveDrawnixProjectFileRequest>
+  if (
+    !request.relativePath.toLowerCase().endsWith('.drawnix')
+    || !isProjectFileFingerprint(save.expectedFingerprint)
+    || typeof save.content !== 'string'
+    || Buffer.byteLength(save.content, 'utf8') > MAX_PROJECT_FILE_TEXT_BYTES
+  ) {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Invalid Drawnix save request')
+  }
+
+  let document: unknown
+  try {
+    document = JSON.parse(save.content)
+  } catch {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Drawnix content must be valid JSON')
+  }
+  const documentValue = document as {
+    type?: unknown
+    version?: unknown
+    source?: unknown
+    elements?: unknown
+    viewport?: { zoom?: unknown }
+    theme?: unknown
+  }
+  if (
+    !document
+    || typeof document !== 'object'
+    || Array.isArray(document)
+    || documentValue.type !== 'drawnix'
+    || typeof documentValue.version !== 'number'
+    || !Number.isFinite(documentValue.version)
+    || documentValue.source !== 'web'
+    || !Array.isArray(documentValue.elements)
+    || !documentValue.viewport
+    || typeof documentValue.viewport !== 'object'
+    || typeof documentValue.viewport.zoom !== 'number'
+    || !Number.isFinite(documentValue.viewport.zoom)
+    || documentValue.viewport.zoom <= 0
+    || (documentValue.theme !== undefined && (
+      !documentValue.theme
+      || typeof documentValue.theme !== 'object'
+      || Array.isArray(documentValue.theme)
+    ))
+  ) {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Content is not a native Drawnix document')
   }
   return { ...request, expectedFingerprint: save.expectedFingerprint, content: save.content }
 }
@@ -421,8 +485,19 @@ export async function createProjectEntryWithinRoot(
   rootPath: string,
   request: CreateProjectEntryRequest,
   type: ProjectDirectoryEntry['type'],
+  initialContent = '',
 ): Promise<ProjectDirectoryEntry> {
   const validated = validateCreateRequest(request)
+  if (
+    type === 'file'
+    && !initialContent
+    && validated.name.toLowerCase().endsWith('.drawnix')
+  ) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      'Use the Drawnix Project File action to create .drawnix files',
+    )
+  }
   const parent = await resolveProjectPath(
     rootPath,
     validated.parentRelativePath ?? '',
@@ -439,20 +514,38 @@ export async function createProjectEntryWithinRoot(
     throw projectFileError('PROJECT_FILE_ACCESS_DENIED', 'Project entry is outside the working directory')
   }
 
+  let createdFile = false
   try {
     if (type === 'directory') {
       await mkdir(targetPath)
     } else {
       const handle = await open(targetPath, 'wx')
-      await handle.close()
+      createdFile = true
+      try {
+        if (initialContent) await handle.writeFile(initialContent, 'utf8')
+      } finally {
+        await handle.close()
+      }
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
       throw projectFileError('PROJECT_FILE_ALREADY_EXISTS', 'A file or directory with this name already exists')
     }
+    if (createdFile) await unlink(targetPath).catch(() => undefined)
     throw projectFileError('PROJECT_FILE_ACCESS_DENIED', 'Project entry could not be created')
   }
   return { name: validated.name, relativePath, type }
+}
+
+export async function createDrawnixProjectFileWithinRoot(
+  rootPath: string,
+  request: CreateProjectEntryRequest,
+): Promise<ProjectDirectoryEntry> {
+  const validated = validateCreateRequest(request)
+  if (!validated.name.toLowerCase().endsWith('.drawnix')) {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Drawnix Project Files must use the .drawnix extension')
+  }
+  return createProjectEntryWithinRoot(rootPath, validated, 'file', EMPTY_DRAWNIX_DOCUMENT)
 }
 
 function statSnapshotsMatch(left: FileStatSnapshot, right: FileStatSnapshot): boolean {
@@ -750,6 +843,39 @@ export async function saveProjectTextFileWithinRoot(
   })
 }
 
+export async function saveDrawnixProjectFileWithinRoot(
+  rootPath: string,
+  request: SaveDrawnixProjectFileRequest,
+): Promise<SaveDrawnixProjectFileResponse> {
+  const validated = validateDrawnixSaveRequest(request)
+  return withProjectFileWriteQueue(rootPath, validated.relativePath, async () => {
+    const current = await readStableProjectFile(
+      rootPath,
+      validated.relativePath,
+      MAX_PROJECT_FILE_TEXT_BYTES,
+    )
+    if (fingerprint(current.bytes) !== validated.expectedFingerprint) {
+      throw projectFileError('PROJECT_FILE_CHANGED', 'Project File changed on disk')
+    }
+    const nextBytes = Buffer.from(validated.content, 'utf8')
+
+    const latest = await readStableProjectFile(
+      rootPath,
+      validated.relativePath,
+      MAX_PROJECT_FILE_TEXT_BYTES,
+    )
+    if (fingerprint(latest.bytes) !== validated.expectedFingerprint) {
+      throw projectFileError('PROJECT_FILE_CHANGED', 'Project File changed on disk')
+    }
+    await atomicReplace(latest.targetPath, nextBytes, latest.stat.mode)
+    const savedStat = await stat(latest.targetPath)
+    return {
+      metadata: metadata(validated.projectId, validated.relativePath, savedStat),
+      sourceFingerprint: fingerprint(nextBytes),
+    }
+  })
+}
+
 export async function resolveProjectWorkingDirectory(
   workspaceRootPath: string,
   projectId: string,
@@ -819,6 +945,14 @@ export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps
     },
   )
   server.handle(
+    RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE,
+    async (context, rawRequest: unknown) => {
+      const request = validateCreateRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(context, deps, request.projectId)
+      return createDrawnixProjectFileWithinRoot(rootPath, request)
+    },
+  )
+  server.handle(
     RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
     async (context, rawRequest: unknown) => {
       const request = validateCreateRequest(rawRequest)
@@ -840,6 +974,14 @@ export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps
       const request = validateSaveRequest(rawRequest)
       const rootPath = await resolveAuthorizedProjectRoot(context, deps, request.projectId)
       return saveProjectTextFileWithinRoot(rootPath, request)
+    },
+  )
+  server.handle(
+    RPC_CHANNELS.projectFiles.SAVE_DRAWNIX_FILE,
+    async (context, rawRequest: unknown) => {
+      const request = validateDrawnixSaveRequest(rawRequest)
+      const rootPath = await resolveAuthorizedProjectRoot(context, deps, request.projectId)
+      return saveDrawnixProjectFileWithinRoot(rootPath, request)
     },
   )
   server.handle(

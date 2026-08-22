@@ -1,5 +1,14 @@
-import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
-import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
+import type {
+  DrawnixBoardCapabilityRequest,
+  DrawnixBoardCapabilityResponse,
+  EventSink,
+  RpcServer,
+} from '@craft-agent/server-core/transport'
+import {
+  CLIENT_BROWSER_INVOKE,
+  CLIENT_DRAWNIX_BOARD_INVOKE,
+  requestClientDrawnixBoardInvoke,
+} from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
@@ -1915,6 +1924,8 @@ export class SessionManager implements ISessionManager {
   private remoteBpms = new Map<string, RemoteBrowserPaneManager>()
   /** Pinned desktop client per session for `client:browser:invoke` routing. */
   private browserHostByCanvas = new Map<string, string>()
+  /** Pinned desktop client per session for the visible Drawnix board bridge. */
+  private drawnixHostBySession = new Map<string, string>()
   private eventSink: EventSink | null = null
 
   setEventSink(sink: EventSink): void {
@@ -2013,6 +2024,9 @@ export class SessionManager implements ISessionManager {
     for (const [sid, pinned] of this.browserHostByCanvas) {
       if (pinned === clientId) this.browserHostByCanvas.delete(sid)
     }
+    for (const [sid, pinned] of this.drawnixHostBySession) {
+      if (pinned === clientId) this.drawnixHostBySession.delete(sid)
+    }
   }
 
   /**
@@ -2036,6 +2050,41 @@ export class SessionManager implements ISessionManager {
     if (!fallback) return null
     this.browserHostByCanvas.set(sid, fallback)
     return fallback
+  }
+
+  private async requestDrawnixBoardForSession(
+    sid: string,
+    request: DrawnixBoardCapabilityRequest,
+  ): Promise<DrawnixBoardCapabilityResponse | null> {
+    if (!this.rpcServer) return null
+    const session = this.sessions.get(sid)
+    if (!session) return null
+    const candidates = this.rpcServer.findClientsWithCapability(
+      CLIENT_DRAWNIX_BOARD_INVOKE,
+      { workspaceId: session.workspace.id },
+    )
+    const pinned = this.drawnixHostBySession.get(sid)
+    const ordered = pinned && candidates.includes(pinned)
+      ? [pinned, ...candidates.filter(clientId => clientId !== pinned)]
+      : candidates
+    let notOpen: DrawnixBoardCapabilityResponse | null = null
+    for (const clientId of ordered) {
+      const response = await requestClientDrawnixBoardInvoke(
+        this.rpcServer,
+        clientId,
+        request,
+      )
+      if (response.ok) {
+        this.drawnixHostBySession.set(sid, clientId)
+        return response
+      }
+      if (response.error.code !== 'MINDMAP_NOT_OPEN') return response
+      if (this.drawnixHostBySession.get(sid) === clientId) {
+        this.drawnixHostBySession.delete(sid)
+      }
+      notOpen = response
+    }
+    return notOpen
   }
 
   /** Returns a strictly increasing timestamp (ms). When Date.now() collides with
@@ -5180,6 +5229,50 @@ export class SessionManager implements ISessionManager {
           getRegistry: getPrWatchRegistry,
           getAutoFixMonitor: getPrAutoFixMonitor,
         }),
+        readMindmapFn: async (relativePath) => {
+          if (!managed.projectId) {
+            throw new Error('MINDMAP_NO_PROJECT: This Session is not linked to a Project.')
+          }
+          const response = await this.requestDrawnixBoardForSession(managed.id, {
+            v: 1,
+            action: 'read',
+            projectId: managed.projectId,
+            relativePath,
+          })
+          if (!response) {
+            throw new Error('MINDMAP_NO_CLIENT: No connected Stair client can access an open Drawnix board.')
+          }
+          if (!response.ok) {
+            throw Object.assign(
+              new Error(`${response.error.code}: ${response.error.message}`),
+              { code: response.error.code },
+            )
+          }
+          return response.snapshot
+        },
+        updateMindmapFn: async (request) => {
+          if (!managed.projectId) {
+            throw new Error('MINDMAP_NO_PROJECT: This Session is not linked to a Project.')
+          }
+          const response = await this.requestDrawnixBoardForSession(managed.id, {
+            v: 1,
+            action: 'update',
+            projectId: managed.projectId,
+            relativePath: request.relativePath,
+            expectedChangeSeq: request.expectedChangeSeq,
+            operations: request.operations,
+          })
+          if (!response) {
+            throw new Error('MINDMAP_NO_CLIENT: No connected Stair client can access an open Drawnix board.')
+          }
+          if (!response.ok) {
+            throw Object.assign(
+              new Error(`${response.error.code}: ${response.error.message}`),
+              { code: response.error.code },
+            )
+          }
+          return response.snapshot
+        },
         getSessionInfoFn: (sessionId?: string) => {
           const targetId = sessionId ?? managed.id
           const session = getSessionInSameProject(this.sessions, managed, targetId)
@@ -6603,6 +6696,7 @@ export class SessionManager implements ISessionManager {
     // Drop the per-session remote bridge + host-client pin on destroy.
     this.remoteBpms.delete(sessionId)
     this.browserHostByCanvas.delete(sessionId)
+    this.drawnixHostBySession.delete(sessionId)
 
     // Dispose agent to clean up ConfigWatchers, event listeners, MCP connections
     if (managed.agent) {
@@ -9772,11 +9866,10 @@ export class SessionManager implements ISessionManager {
         // persisted user message so an activation that force-aborted the turn still
         // continues; skip only when there is genuinely nothing to resend (preserves
         // the "no bogus empty resend" intent). See bugfix/session-continuation.
-        // The retry always uses the cleaned original: never the model-formatted
-        // text with its internal reference block or retry guidance.
         // A references-only turn (empty text, live citations) still retries.
-        const resendMessage = originalMessage.trim()
-          ? originalMessage
+        const capturedMessage = event.originalMessage ?? ''
+        const resendMessage = capturedMessage.trim()
+          ? capturedMessage
           : lastUserMessageContent(managed.messages)
         if (!resendMessage.trim() && !references?.length) {
           sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but no message to resend (empty capture, no prior user message); skipping auto-retry`)

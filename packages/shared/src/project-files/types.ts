@@ -208,6 +208,16 @@ export interface SaveProjectTextFileResponse {
   sourceFingerprint: ProjectFileFingerprint
 }
 
+export interface SaveDrawnixProjectFileRequest extends ProjectFileRequest {
+  expectedFingerprint: ProjectFileFingerprint
+  content: string
+}
+
+export interface SaveDrawnixProjectFileResponse {
+  metadata: ProjectFileMetadata
+  sourceFingerprint: ProjectFileFingerprint
+}
+
 /**
  * Project File 在状态、路由和 RPC 中只允许一种身份表示。
  * 路径必须非空、相对 Project 根、使用 POSIX 分隔符，且不包含 `.`/`..` 段。

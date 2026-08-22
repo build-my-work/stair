@@ -72,6 +72,7 @@ describe('session tool filtering helpers', () => {
     expect(allowed.has('script_sandbox')).toBe(true);
     // decide only reads and judges; Explore-safe once it is advertised
     expect(getSessionSafeAllowedToolNames({ includeDecide: true }).has('decide')).toBe(true);
+    expect(allowed.has('mindmap_read')).toBe(true);
 
     expect(blocked.has('source_oauth_trigger')).toBe(true);
     expect(blocked.has('source_credential_prompt')).toBe(true);
@@ -86,6 +87,7 @@ describe('session tool filtering helpers', () => {
     expect(blocked.has('update_page')).toBe(true);
     expect(blocked.has('write_page_data')).toBe(true);
     expect(blocked.has('delete_page')).toBe(true);
+    expect(blocked.has('mindmap_update')).toBe(true);
   });
 
   it('MCP source resource and prompt tools are read-only and Explore-safe', () => {
@@ -122,8 +124,8 @@ describe('session tool filtering helpers', () => {
     });
 
     it('keeps only the always-on coding tools in a bare coding session', () => {
-      expect(names({ profile: 'coding' })).toEqual(['SubmitPlan', 'send_developer_feedback', 'pr_status', 'pr_bind', 'pr_unbind', 'pr_set_auto_merge', 'list_background_tasks']);
-      expect(names({ profile: 'coding', includeDeveloperFeedback: false })).toEqual(['SubmitPlan', 'pr_status', 'pr_bind', 'pr_unbind', 'pr_set_auto_merge', 'list_background_tasks']);
+      expect(names({ profile: 'coding' })).toEqual(['SubmitPlan', 'send_developer_feedback', 'browser_tool', 'pr_status', 'pr_bind', 'pr_unbind', 'pr_set_auto_merge', 'list_background_tasks', 'mindmap_read', 'mindmap_update']);
+      expect(names({ profile: 'coding', includeDeveloperFeedback: false })).toEqual(['SubmitPlan', 'browser_tool', 'pr_status', 'pr_bind', 'pr_unbind', 'pr_set_auto_merge', 'list_background_tasks', 'mindmap_read', 'mindmap_update']);
     });
 
     it('adds source tools only with enabled sources, project memory only with a project', () => {
@@ -137,12 +139,30 @@ describe('session tool filtering helpers', () => {
       expect(withProject).not.toContain('source_test');
     });
 
-    it('drops desktop-workflow tools even when their own flags are on', () => {
+    it('drops other desktop-workflow tools even when their own flags are on', () => {
       const coding = names({ profile: 'coding', includeDecide: true, includeBrowser: true, hasEnabledSources: true, hasProject: true });
-      for (const dropped of ['browser_tool', 'create_page', 'set_session_labels', 'spawn_session', 'call_llm', 'decide', 'transform_data', 'update_user_preferences']) {
+      for (const dropped of ['create_page', 'set_session_labels', 'spawn_session', 'call_llm', 'decide', 'transform_data', 'update_user_preferences']) {
         expect(coding).not.toContain(dropped);
       }
       expect(coding.every(name => name in CODING_PROFILE_TOOLS)).toBe(true);
+    });
+
+    it('keeps Stair tools while respecting the Browser flag and safe-mode permissions', () => {
+      for (const includeBrowser of [true, false]) {
+        const options = { profile: 'coding' as const, includeBrowser };
+        const coding = names(options);
+        expect(coding.includes('browser_tool')).toBe(includeBrowser);
+        expect(coding).toContain('mindmap_read');
+        expect(coding).toContain('mindmap_update');
+        expect(getToolDefsAsJsonSchema(options).map(def => def.name)).toEqual(coding);
+
+        const allowed = getSessionSafeAllowedToolNames(options);
+        const blocked = getSessionSafeBlockedToolNames(options);
+        expect(allowed.has('browser_tool')).toBe(includeBrowser);
+        expect(allowed.has('mindmap_read')).toBe(true);
+        expect(allowed.has('mindmap_update')).toBe(false);
+        expect(blocked.has('mindmap_update')).toBe(true);
+      }
     });
 
     it('lists only tools that exist in the registry', () => {
@@ -152,7 +172,7 @@ describe('session tool filtering helpers', () => {
 
     it('applies the same filter to the JSON Schema view (Pi)', () => {
       const pi = getToolDefsAsJsonSchema({ prefix: 'mcp__session__', profile: 'coding' }).map(d => d.name);
-      expect(pi).toEqual(['mcp__session__SubmitPlan', 'mcp__session__send_developer_feedback', 'mcp__session__pr_status', 'mcp__session__pr_bind', 'mcp__session__pr_unbind', 'mcp__session__pr_set_auto_merge', 'mcp__session__list_background_tasks']);
+      expect(pi).toEqual(['mcp__session__SubmitPlan', 'mcp__session__send_developer_feedback', 'mcp__session__browser_tool', 'mcp__session__pr_status', 'mcp__session__pr_bind', 'mcp__session__pr_unbind', 'mcp__session__pr_set_auto_merge', 'mcp__session__list_background_tasks', 'mcp__session__mindmap_read', 'mcp__session__mindmap_update']);
     });
   });
 

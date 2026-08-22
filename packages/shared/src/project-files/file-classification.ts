@@ -1,5 +1,5 @@
 export type ProjectTextFileKind = 'markdown' | 'json' | 'code' | 'text' | 'unknown'
-export type ProjectFileKind = Exclude<ProjectTextFileKind, 'unknown'> | 'image' | 'epub' | 'pdf' | 'unknown'
+export type ProjectFileKind = Exclude<ProjectTextFileKind, 'unknown'> | 'drawnix' | 'image' | 'epub' | 'pdf' | 'unknown'
 
 const MARKDOWN_EXTENSIONS = new Set(['md', 'mdx', 'markdown'])
 const JSON_EXTENSIONS = new Set(['json', 'jsonc', 'json5'])
@@ -45,6 +45,7 @@ export function classifyProjectTextFile(relativePath: string): ProjectTextFileKi
 
 export function classifyProjectFile(relativePath: string): ProjectFileKind {
   const extension = fileExtension(relativePath)
+  if (extension === 'drawnix') return 'drawnix'
   if (IMAGE_EXTENSIONS.has(extension)) return 'image'
   if (extension === 'epub') return 'epub'
   if (extension === 'pdf') return 'pdf'

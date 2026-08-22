@@ -114,6 +114,15 @@ export interface SessionScopedToolCallbacks {
    * SessionManager bound to the invoking session; the server-side watcher holds the credentials.
    */
   prWatch?: import('@craft-agent/session-tools-core').PrWatchToolCallbacks;
+
+  /** Read the live outline of an open Drawnix board. */
+  readMindmapFn?: (
+    relativePath: string
+  ) => Promise<import('@craft-agent/session-tools-core').MindmapSnapshot>;
+  /** Apply stale-read-protected transforms to an open Drawnix board. */
+  updateMindmapFn?: (
+    request: import('@craft-agent/session-tools-core').MindmapUpdateRequest
+  ) => Promise<import('@craft-agent/session-tools-core').MindmapSnapshot>;
 }
 
 // Registry of callbacks keyed by sessionId

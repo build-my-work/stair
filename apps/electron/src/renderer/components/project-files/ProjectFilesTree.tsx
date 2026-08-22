@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  BrainCircuit,
   ChevronRight,
   File,
   FileCode2,
@@ -56,7 +57,7 @@ interface ProjectFilesTreeProps {
 }
 
 interface InlineCreateState {
-  kind: 'file' | 'directory'
+  kind: 'file' | 'directory' | 'drawnix'
   parentRelativePath: string
   name: string
   submitting: boolean
@@ -66,6 +67,7 @@ interface InlineCreateState {
 function fileIcon(name: string) {
   const extension = name.split('.').at(-1)?.toLowerCase()
   const className = 'h-3.5 w-3.5 shrink-0 text-muted-foreground/75'
+  if (extension === 'drawnix') return <BrainCircuit className={className} />
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(extension ?? '')) {
     return <Image className={className} />
   }
@@ -211,20 +213,26 @@ function InlineCreateEntry({
   depth: number
 }) {
   const { t } = useTranslation()
+  let icon = <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+  let nameLabel = 'filesSidebar.newFileName'
+  if (state.kind === 'directory') {
+    icon = <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+    nameLabel = 'filesSidebar.newFolderName'
+  } else if (state.kind === 'drawnix') {
+    icon = <BrainCircuit className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+    nameLabel = 'filesSidebar.newMindMapName'
+  }
+
   return (
     <div className="py-0.5 pr-2" style={{ paddingLeft: 8 + depth * 14 }}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="w-3.5 shrink-0" />
-        {state.kind === 'directory'
-          ? <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          : <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+        {icon}
         <input
           autoFocus
           value={state.name}
           disabled={state.submitting}
-          aria-label={t(state.kind === 'directory'
-            ? 'filesSidebar.newFolderName'
-            : 'filesSidebar.newFileName')}
+          aria-label={t(nameLabel)}
           aria-invalid={Boolean(state.error)}
           data-project-file-create-input
           className={cn(
@@ -376,25 +384,29 @@ export function ProjectFilesTree({
 
   const submitCreate = useCallback(async () => {
     if (!inlineCreate || inlineCreate.submitting || !projectId) return
-    const name = inlineCreate.name
-    if (!name.trim()) {
+    const inputName = inlineCreate.name
+    if (!inputName.trim()) {
       setInlineCreate(current => current ? {
         ...current,
         error: t('filesSidebar.createEnterName'),
       } : null)
       return
     }
-    if (name !== name.trim()) {
+    if (inputName !== inputName.trim()) {
       setInlineCreate(current => current ? {
         ...current,
         error: t('filesSidebar.createTrimName'),
       } : null)
       return
     }
+    const name = inlineCreate.kind === 'drawnix'
+      && !inputName.toLowerCase().endsWith('.drawnix')
+      ? `${inputName}.drawnix`
+      : inputName
     const candidatePath = inlineCreate.parentRelativePath
       ? `${inlineCreate.parentRelativePath}/${name}`
       : name
-    if (inlineCreate.kind === 'file' && fileFilter && !fileFilter(candidatePath)) {
+    if (inlineCreate.kind !== 'directory' && fileFilter && !fileFilter(candidatePath)) {
       setInlineCreate(current => current ? {
         ...current,
         error: fileFilterError ?? t('filesSidebar.invalidPath'),
@@ -411,9 +423,14 @@ export function ProjectFilesTree({
           : {}),
         name,
       }
-      const created = pending.kind === 'directory'
-        ? await window.electronAPI.createProjectDirectory(request)
-        : await window.electronAPI.createProjectFile(request)
+      let created: ProjectDirectoryEntry
+      if (pending.kind === 'directory') {
+        created = await window.electronAPI.createProjectDirectory(request)
+      } else if (pending.kind === 'drawnix') {
+        created = await window.electronAPI.createDrawnixProjectFile(request)
+      } else {
+        created = await window.electronAPI.createProjectFile(request)
+      }
       setInlineCreate(null)
       await loadDirectory(pending.parentRelativePath)
       if (created.type === 'file') onOpenFile(created.relativePath)
@@ -477,6 +494,12 @@ export function ProjectFilesTree({
             tooltip={t('filesSidebar.newFile')}
             disabled={Boolean(inlineCreate?.submitting)}
             onClick={() => beginCreate('file')}
+          />
+          <PanelHeaderCenterButton
+            icon={<BrainCircuit className="h-3.5 w-3.5" />}
+            tooltip={t('filesSidebar.newMindMap')}
+            disabled={Boolean(inlineCreate?.submitting)}
+            onClick={() => beginCreate('drawnix')}
           />
           <PanelHeaderCenterButton
             icon={<FolderPlus className="h-3.5 w-3.5" />}

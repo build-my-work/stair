@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test'
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -11,6 +12,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import * as config from '@craft-agent/shared/config'
 import { createProject } from '@craft-agent/shared/projects'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
@@ -18,6 +20,8 @@ import { createWorkspaceAtPath } from '@craft-agent/shared/workspaces'
 import type { HandlerFn, RpcServer } from '../../transport'
 import type { HandlerDeps } from '../handler-deps'
 import {
+  EMPTY_DRAWNIX_DOCUMENT,
+  createDrawnixProjectFileWithinRoot,
   createProjectEntryWithinRoot,
   listProjectDirectoryEntriesWithinRoot,
   readProjectFileBinaryWithinRoot,
@@ -25,6 +29,7 @@ import {
   registerProjectFileHandlers,
   requestClientProjectFilesFlush,
   searchProjectFilesWithinRoot,
+  saveDrawnixProjectFileWithinRoot,
   saveProjectTextFileWithinRoot,
 } from './project-files'
 import { registerWorkspaceCoreHandlers } from './workspace'
@@ -121,6 +126,133 @@ describe('Project Files RPC', () => {
       parentRelativePath: 'docs',
       name: 'notes.md',
     }, 'file')).rejects.toThrow('PROJECT_FILE_ALREADY_EXISTS')
+    await expect(createProjectEntryWithinRoot(root, {
+      projectId: 'project-a',
+      name: 'broken.drawnix',
+    }, 'file')).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
+    expect(existsSync(join(root, 'broken.drawnix'))).toBe(false)
+  })
+
+  it('创建初始文档失败时不残留无法重试的部分文件', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+
+    await expect(createProjectEntryWithinRoot(root, {
+      projectId: 'project-a',
+      name: 'failed.md',
+    }, 'file', {} as string)).rejects.toThrow('PROJECT_FILE_ACCESS_DENIED')
+    expect(existsSync(join(root, 'failed.md'))).toBe(false)
+  })
+
+  it('只为 .drawnix 创建可立即打开的原生空文档', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(join(root, 'maps'), { recursive: true })
+
+    expect(await createDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-a',
+      parentRelativePath: 'maps',
+      name: 'tutorial.drawnix',
+    })).toEqual({
+      name: 'tutorial.drawnix',
+      relativePath: 'maps/tutorial.drawnix',
+      type: 'file',
+    })
+    expect(JSON.parse(readFileSync(
+      join(root, 'maps', 'tutorial.drawnix'),
+      'utf8',
+    ))).toEqual({
+      type: 'drawnix',
+      version: 1,
+      source: 'web',
+      elements: [],
+      viewport: { zoom: 1 },
+      theme: { themeColorMode: 'default' },
+    })
+
+    await expect(createDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-a',
+      name: 'tutorial.json',
+    })).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
+  })
+
+  it('校验 Drawnix 文档并使用 fingerprint CAS 原子保存', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+    writeFileSync(join(root, 'tutorial.drawnix'), EMPTY_DRAWNIX_DOCUMENT)
+    const opened = await readProjectTextFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'tutorial.drawnix',
+    })
+    expect(opened.metadata.mimeType).toBe('application/vnd.drawnix+json')
+    const changed = JSON.stringify({
+      ...JSON.parse(EMPTY_DRAWNIX_DOCUMENT),
+      elements: [{ id: 'root', type: 'mind', children: [] }],
+    }, null, 2)
+
+    const saved = await saveDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'tutorial.drawnix',
+      expectedFingerprint: opened.sourceFingerprint,
+      content: changed,
+    })
+    expect(readFileSync(join(root, 'tutorial.drawnix'), 'utf8')).toBe(changed)
+    expect(saved.sourceFingerprint).toBe(
+      `sha256:${createHash('sha256').update(changed).digest('hex')}`,
+    )
+
+    await expect(saveDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'tutorial.drawnix',
+      expectedFingerprint: opened.sourceFingerprint,
+      content: EMPTY_DRAWNIX_DOCUMENT,
+    })).rejects.toThrow('PROJECT_FILE_CHANGED')
+    await expect(saveDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'tutorial.drawnix',
+      expectedFingerprint: saved.sourceFingerprint,
+      content: '{"type":"not-drawnix"}',
+    })).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
+    await expect(saveDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'tutorial.json',
+      expectedFingerprint: saved.sourceFingerprint,
+      content: EMPTY_DRAWNIX_DOCUMENT,
+    })).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
+  })
+
+  it('允许保存超过普通文本编辑上限但仍在 Project File 文本上限内的 Drawnix 文档', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+    writeFileSync(join(root, 'large.drawnix'), EMPTY_DRAWNIX_DOCUMENT)
+    const opened = await readProjectTextFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'large.drawnix',
+    })
+    const changed = JSON.stringify({
+      ...JSON.parse(EMPTY_DRAWNIX_DOCUMENT),
+      padding: 'x'.repeat(1024 * 1024),
+    })
+
+    const saved = await saveDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'large.drawnix',
+      expectedFingerprint: opened.sourceFingerprint,
+      content: changed,
+    })
+    expect(saved).toEqual(expect.objectContaining({
+      sourceFingerprint: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    }))
+    expect(readFileSync(join(root, 'large.drawnix'), 'utf8')).toBe(changed)
+
+    const changedAgain = changed.replace('"padding":"x', '"padding":"y')
+    await expect(saveDrawnixProjectFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'large.drawnix',
+      expectedFingerprint: saved.sourceFingerprint,
+      content: changedAgain,
+    })).resolves.toEqual(expect.objectContaining({
+      sourceFingerprint: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    }))
   })
 
   it('以 SHA-256 指纹比较并原子保存可编辑文本', async () => {

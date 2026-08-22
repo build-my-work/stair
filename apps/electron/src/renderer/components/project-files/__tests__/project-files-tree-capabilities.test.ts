@@ -9,6 +9,7 @@ describe('Project Files tree legacy capabilities', () => {
     )
     expect(source).toContain('window.electronAPI.searchProjectFiles')
     expect(source).toContain('window.electronAPI.createProjectFile')
+    expect(source).toContain('window.electronAPI.createDrawnixProjectFile')
     expect(source).toContain('window.electronAPI.createProjectDirectory')
   })
 })

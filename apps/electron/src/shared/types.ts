@@ -801,10 +801,13 @@ export interface ElectronAPI {
   searchProjectFiles(request: import('@craft-agent/shared/project-files').ProjectFileSearchRequest): Promise<import('@craft-agent/shared/project-files').ProjectFileSearchResult[]>
   listProjectDirectoryEntries(request: import('@craft-agent/shared/project-files').ProjectDirectoryEntriesRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntriesResult>
   createProjectFile(request: import('@craft-agent/shared/project-files').CreateProjectEntryRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntry>
+  createDrawnixProjectFile(request: import('@craft-agent/shared/project-files').CreateProjectEntryRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntry>
   createProjectDirectory(request: import('@craft-agent/shared/project-files').CreateProjectEntryRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntry>
   readProjectTextFile(request: import('@craft-agent/shared/project-files').ProjectFileRequest): Promise<import('@craft-agent/shared/project-files').ProjectFileTextResponse>
   readProjectFileBinary(request: import('@craft-agent/shared/project-files').ProjectFileRequest): Promise<import('@craft-agent/shared/project-files').ProjectFileBinaryResponse>
   saveProjectTextFile(request: import('@craft-agent/shared/project-files').SaveProjectTextFileRequest): Promise<import('@craft-agent/shared/project-files').SaveProjectTextFileResponse>
+  saveDrawnixProjectFile(request: import('@craft-agent/shared/project-files').SaveDrawnixProjectFileRequest): Promise<import('@craft-agent/shared/project-files').SaveDrawnixProjectFileResponse>
+  setDrawnixBoardCapabilityHandler(handler: ((request: import('@craft-agent/server-core/transport').DrawnixBoardCapabilityRequest) => Promise<import('@craft-agent/server-core/transport').DrawnixBoardCapabilityResponse>) | null): void
   getEpubDocumentState(request: import('@craft-agent/shared/protocol').ReaderStateRequest): Promise<import('@craft-agent/shared/protocol').GetEpubStateResponse>
   applyEpubStateMutation(request: import('@craft-agent/shared/protocol').ApplyEpubStateMutationRequest): Promise<import('@craft-agent/shared/protocol').ApplyEpubStateMutationResponse>
   getPdfDocumentState(request: import('@craft-agent/shared/protocol').ReaderStateRequest): Promise<import('@craft-agent/shared/protocol').GetPdfStateResponse>
