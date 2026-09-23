@@ -101,7 +101,27 @@ describe('RoutedClient', () => {
       const cb = mock(() => {})
       routed.on(REMOTE_CHANNEL, cb)
 
-      expect(workspace.on).toHaveBeenCalledWith(REMOTE_CHANNEL, cb)
+      expect(workspace.on).toHaveBeenCalledWith(REMOTE_CHANNEL, expect.any(Function))
+    })
+
+    it('translates remote Workspace ids before delivering remote events', () => {
+      const local = stubClient()
+      const workspace = stubClient()
+      const routed = new RoutedClient(local, workspace)
+      routed.setWorkspaceMapping('local-workspace', 'remote-workspace')
+      const cb = mock(() => {})
+
+      routed.on(RPC_CHANNELS.projects.CHANGED, cb)
+      const transportCallback = (workspace.on as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]
+      transportCallback(
+        'remote-workspace',
+        [{ workspaceId: 'remote-workspace', value: 'project' }],
+      )
+
+      expect(cb).toHaveBeenCalledWith(
+        'local-workspace',
+        [{ workspaceId: 'remote-workspace', value: 'project' }],
+      )
     })
   })
 
@@ -163,13 +183,13 @@ describe('RoutedClient', () => {
       // Subscribe a listener before switch
       const cb = mock(() => {})
       routed.on(REMOTE_CHANNEL, cb)
-      expect(workspace.on).toHaveBeenCalledWith(REMOTE_CHANNEL, cb)
+      expect(workspace.on).toHaveBeenCalledWith(REMOTE_CHANNEL, expect.any(Function))
 
       // Trigger switch
       await routed.invoke(SWITCH_CHANNEL)
 
       // Listener should be re-subscribed on the new client
-      expect(newRemote.on).toHaveBeenCalledWith(REMOTE_CHANNEL, cb)
+      expect(newRemote.on).toHaveBeenCalledWith(REMOTE_CHANNEL, expect.any(Function))
     })
 
     it('re-registers capabilities on swap', async () => {

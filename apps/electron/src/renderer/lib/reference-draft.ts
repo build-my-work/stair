@@ -17,6 +17,19 @@ function normalizeDraft(draft: SessionDraft): SessionDraft | null {
     : null
 }
 
+function mergeDraftText(authoritative: string, local: string): string {
+  if (!authoritative) return local
+  if (
+    !local
+    || local === authoritative
+    || authoritative.startsWith(`${local}\n\n`)
+  ) {
+    return authoritative
+  }
+  if (local.startsWith(`${authoritative}\n\n`)) return local
+  return `${authoritative}\n\n${local}`
+}
+
 export function setSessionDraftText(
   existing: SessionDraft | null | undefined,
   text: string,
@@ -87,6 +100,37 @@ export function setSessionDraftReferences(
   })
 }
 
+export function mergeAuthoritativeSessionDraftReferences(
+  existing: SessionDraft | null | undefined,
+  targetProjectId: string,
+  confirmedBefore: Reference[],
+  authoritative: Reference[],
+):
+  | { ok: true; draft: SessionDraft | null }
+  | { ok: false; reason: 'reference-boundary' } {
+  const local = existing?.references ?? []
+  const confirmedKeys = new Set(confirmedBefore.map(referenceKey))
+  const localKeys = new Set(local.map(referenceKey))
+  const removedKeys = new Set(
+    [...confirmedKeys].filter(key => !localKeys.has(key)),
+  )
+  const merged = authoritative.filter(reference => (
+    !removedKeys.has(referenceKey(reference))
+  ))
+  const mergedKeys = new Set(merged.map(referenceKey))
+  for (const reference of local) {
+    const key = referenceKey(reference)
+    if (!confirmedKeys.has(key) && !mergedKeys.has(key)) {
+      merged.push(reference)
+      mergedKeys.add(key)
+    }
+  }
+  const draft = setSessionDraftReferences(existing, targetProjectId, merged)
+  return draft || merged.length === 0
+    ? { ok: true, draft }
+    : { ok: false, reason: 'reference-boundary' }
+}
+
 export type SessionDraftRestoreResult =
   | { ok: true; draft: SessionDraft | null }
   | {
@@ -100,13 +144,20 @@ export function restoreSessionDraftContent(
   targetProjectId: string | null | undefined,
   text: string,
   references: Reference[],
+  attachments: DraftAttachmentRef[] = [],
 ): SessionDraftRestoreResult {
   const restoredText = text
     ? (existing?.text ? `${existing.text}\n\n${text}` : text)
     : (existing?.text ?? '')
   const restoredTextDraft = setSessionDraftText(existing, restoredText)
+  const restoredContentDraft = attachments.length > 0
+    ? setSessionDraftAttachments(
+        restoredTextDraft,
+        [...(existing?.attachments ?? []), ...attachments],
+      )
+    : restoredTextDraft
   if (references.length === 0) {
-    return { ok: true, draft: restoredTextDraft }
+    return { ok: true, draft: restoredContentDraft }
   }
   if (!targetProjectId) {
     return {
@@ -117,7 +168,7 @@ export function restoreSessionDraftContent(
   }
 
   const restoredDraft = setSessionDraftReferences(
-    restoredTextDraft,
+    restoredContentDraft,
     targetProjectId,
     [...(existing?.references ?? []), ...references],
   )
@@ -129,6 +180,96 @@ export function restoreSessionDraftContent(
     }
   }
   return { ok: true, draft: restoredDraft }
+}
+
+export function applyQueuedInputRestore(
+  existing: SessionDraft | null | undefined,
+  confirmedBefore: SessionDraft | null | undefined,
+  authoritative: SessionDraft | null,
+  targetProjectId: string | null | undefined,
+): SessionDraftRestoreResult {
+  if (!authoritative) return { ok: true, draft: existing ?? null }
+
+  const local = existing ?? { text: '' }
+  const confirmed = confirmedBefore ?? { text: '' }
+  let mergedText: string
+  if (local.text === confirmed.text) {
+    mergedText = authoritative.text
+  } else if (!confirmed.text) {
+    mergedText = mergeDraftText(authoritative.text, local.text)
+  } else {
+    const authoritativeSuffix = authoritative.text === confirmed.text
+      ? ''
+      : authoritative.text.startsWith(`${confirmed.text}\n\n`)
+        ? authoritative.text.slice(confirmed.text.length + 2)
+        : null
+    if (authoritativeSuffix !== null) {
+      const localSuffix = local.text.startsWith(`${confirmed.text}\n\n`)
+        ? local.text.slice(confirmed.text.length + 2)
+        : null
+      const localPart = localSuffix ?? local.text
+      const mergedSuffix = mergeDraftText(authoritativeSuffix, localPart)
+      const parts = localSuffix === null
+        ? [mergedSuffix]
+        : [confirmed.text, mergedSuffix]
+      mergedText = parts.filter(Boolean).join('\n\n')
+    } else {
+      mergedText = mergeDraftText(authoritative.text, local.text)
+    }
+  }
+
+  const confirmedAttachmentKeys = new Set(
+    (confirmed.attachments ?? []).map(attachment => JSON.stringify(attachment)),
+  )
+  const localAttachmentKeys = new Set(
+    (local.attachments ?? []).map(attachment => JSON.stringify(attachment)),
+  )
+  const mergedAttachments = (authoritative.attachments ?? []).filter(attachment => {
+    const key = JSON.stringify(attachment)
+    return !confirmedAttachmentKeys.has(key) || localAttachmentKeys.has(key)
+  })
+  const attachmentKeys = new Set(
+    mergedAttachments.map(attachment => JSON.stringify(attachment)),
+  )
+  for (const attachment of local.attachments ?? []) {
+    const key = JSON.stringify(attachment)
+    if (!confirmedAttachmentKeys.has(key) && !attachmentKeys.has(key)) {
+      mergedAttachments.push(attachment)
+      attachmentKeys.add(key)
+    }
+  }
+  const mergedContent = setSessionDraftAttachments(
+    setSessionDraftText(null, mergedText),
+    mergedAttachments,
+  )
+  const hasReferences = (confirmed.references?.length ?? 0) > 0
+    || (local.references?.length ?? 0) > 0
+    || (authoritative.references?.length ?? 0) > 0
+  if (!hasReferences) {
+    return { ok: true, draft: mergedContent }
+  }
+  if (!targetProjectId) {
+    return {
+      ok: false,
+      draft: existing ?? null,
+      reason: 'reference-boundary',
+    }
+  }
+  const referenceResult = mergeAuthoritativeSessionDraftReferences(
+    {
+      text: mergedContent?.text ?? '',
+      ...(mergedContent?.attachments?.length
+        ? { attachments: mergedContent.attachments }
+        : {}),
+      ...(local.references?.length ? { references: local.references } : {}),
+    },
+    targetProjectId,
+    confirmed.references ?? [],
+    authoritative.references ?? [],
+  )
+  return referenceResult.ok
+    ? referenceResult
+    : { ok: false, draft: existing ?? null, reason: referenceResult.reason }
 }
 
 export function mergeHydratedSessionDrafts(

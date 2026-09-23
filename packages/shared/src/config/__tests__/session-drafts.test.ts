@@ -14,7 +14,7 @@ function runEval(configDir: string, code: string): string {
   const run = Bun.spawnSync([
     process.execPath,
     '--eval',
-    `import { getSessionDraft, setSessionDraft, deleteSessionDraft, getAllSessionDrafts } from '${STORAGE_MODULE_PATH}'; ${code}`,
+    `import { getSessionDraft, setSessionDraft, setSessionDraftContent, addSessionDraftReferenceAtomic, reconcileSessionDraftReferences, restoreSessionDraftAtomic, deleteSessionDraft, purgeSessionDraft, getAllSessionDrafts, getSessionDraftHydrationState } from '${STORAGE_MODULE_PATH}'; ${code}`,
   ], {
     env: { ...process.env, CRAFT_CONFIG_DIR: configDir },
     stdout: 'pipe',
@@ -248,5 +248,200 @@ describe('session draft storage', () => {
     runEval(configDir, "deleteSessionDraft('s1')")
     const output = runEval(configDir, "console.log(JSON.stringify(getSessionDraft('s1')))")
     expect(output).toBe('null')
+  })
+
+  it('updates text and attachments without overwriting a concurrently added reference', () => {
+    const configDir = makeConfigDir()
+    const reference = {
+      version: 1,
+      kind: 'web-selection',
+      projectId: 'project-a',
+      url: 'https://example.com',
+      title: 'Example',
+      quote: 'selected',
+      locator: { type: 'web-text-quote', exact: 'selected' },
+    }
+    const output = runEval(configDir, `
+      addSessionDraftReferenceAtomic('s1', 'project-a', ${JSON.stringify(reference)});
+      setSessionDraftContent('s1', { text: 'typed later', attachments: [{ path: '/tmp/a.txt', name: 'a.txt' }] });
+      console.log(JSON.stringify(getSessionDraft('s1')));
+    `)
+    expect(JSON.parse(output)).toEqual({
+      text: 'typed later',
+      attachments: [{ path: '/tmp/a.txt', name: 'a.txt' }],
+      references: [reference],
+    })
+  })
+
+  it('three-way reference updates preserve a concurrent Browser reference', () => {
+    const configDir = makeConfigDir()
+    const original = {
+      version: 1,
+      kind: 'web-selection',
+      projectId: 'project-a',
+      url: 'https://example.com/original',
+      title: 'Original',
+      quote: 'original',
+      locator: { type: 'web-text-quote', exact: 'original' },
+    }
+    const concurrent = {
+      ...original,
+      url: 'https://example.com/concurrent',
+      title: 'Concurrent',
+      quote: 'concurrent',
+      locator: { type: 'web-text-quote', exact: 'concurrent' },
+    }
+    const output = runEval(configDir, `
+      setSessionDraft('s1', ${JSON.stringify({ text: 'keep', references: [original] })});
+      addSessionDraftReferenceAtomic('s1', 'project-a', ${JSON.stringify(concurrent)});
+      reconcileSessionDraftReferences('s1', 'project-a', ${JSON.stringify([original])}, []);
+      console.log(JSON.stringify(getSessionDraft('s1')));
+    `)
+    expect(JSON.parse(output)).toEqual({ text: 'keep', references: [concurrent] })
+  })
+
+  it('applies a Browser reference request exactly once across draft deletion and replay', () => {
+    const configDir = makeConfigDir()
+    const reference = {
+      version: 1,
+      kind: 'web-selection',
+      projectId: 'project-a',
+      url: 'https://example.com/once',
+      title: 'Once',
+      quote: 'selected once',
+      locator: { type: 'web-text-quote', exact: 'selected once' },
+    }
+    const output = runEval(configDir, `
+      const first = addSessionDraftReferenceAtomic(
+        's1',
+        'project-a',
+        ${JSON.stringify(reference)},
+        'browser-request-1',
+      );
+      deleteSessionDraft('s1');
+      const replay = addSessionDraftReferenceAtomic(
+        's1',
+        'project-a',
+        ${JSON.stringify(reference)},
+        'browser-request-1',
+      );
+      console.log(JSON.stringify({ first, replay, stored: getSessionDraft('s1') }));
+    `)
+    expect(JSON.parse(output)).toEqual({
+      first: { text: '', references: [reference] },
+      replay: { text: '' },
+      stored: null,
+    })
+  })
+
+  it('forgets Browser request receipts when the owning Chat is permanently deleted', () => {
+    const configDir = makeConfigDir()
+    const reference = {
+      version: 1,
+      kind: 'web-selection',
+      projectId: 'project-a',
+      url: 'https://example.com/deleted-chat',
+      title: 'Deleted Chat',
+      quote: 'selection',
+      locator: { type: 'web-text-quote', exact: 'selection' },
+    }
+    const output = runEval(configDir, `
+      addSessionDraftReferenceAtomic(
+        's1',
+        'project-a',
+        ${JSON.stringify(reference)},
+        'browser-request-deleted-chat',
+      );
+      purgeSessionDraft('s1');
+      const recreated = addSessionDraftReferenceAtomic(
+        's1',
+        'project-a',
+        ${JSON.stringify(reference)},
+        'browser-request-deleted-chat',
+      );
+      console.log(JSON.stringify(recreated));
+    `)
+    expect(JSON.parse(output)).toEqual({ text: '', references: [reference] })
+  })
+
+  it('refuses to merge a Browser reference into a draft from another Project', () => {
+    const configDir = makeConfigDir()
+    const reference = {
+      version: 1,
+      kind: 'web-selection',
+      projectId: 'project-a',
+      url: 'https://example.com',
+      title: 'Example',
+      quote: 'selected',
+      locator: { type: 'web-text-quote', exact: 'selected' },
+    }
+    const output = runEval(configDir, `
+      setSessionDraft('s1', ${JSON.stringify({ text: '', references: [reference] })});
+      console.log(JSON.stringify(addSessionDraftReferenceAtomic(
+        's1',
+        'project-b',
+        ${JSON.stringify({ ...reference, projectId: 'project-b' })},
+      )));
+    `)
+    expect(output).toBe('null')
+  })
+
+  it('restores queued input exactly once for the same restore id', () => {
+    const configDir = makeConfigDir()
+    const reference = {
+      version: 1,
+      kind: 'web-selection',
+      projectId: 'project-a',
+      url: 'https://example.com',
+      title: 'Example',
+      quote: 'selected',
+      locator: { type: 'web-text-quote', exact: 'selected' },
+    }
+    const restored = {
+      text: 'queued text',
+      attachments: [{ path: '/tmp/queued.txt', name: 'queued.txt' }],
+      references: [reference],
+    }
+    const output = runEval(configDir, `
+      setSessionDraft('s1', { text: 'typed first' });
+      const first = restoreSessionDraftAtomic('s1', 'project-a', 'restore-1', ${JSON.stringify(restored)});
+      const replay = restoreSessionDraftAtomic('s1', 'project-a', 'restore-1', ${JSON.stringify(restored)});
+      console.log(JSON.stringify({ first, replay, draft: getSessionDraft('s1') }));
+    `)
+    expect(JSON.parse(output)).toEqual({
+      first: {
+        applied: true,
+        draft: {
+          text: 'typed first\n\nqueued text',
+          attachments: restored.attachments,
+          references: [reference],
+        },
+      },
+      replay: {
+        applied: false,
+        draft: {
+          text: 'typed first\n\nqueued text',
+          attachments: restored.attachments,
+          references: [reference],
+        },
+      },
+      draft: {
+        text: 'typed first\n\nqueued text',
+        attachments: restored.attachments,
+        references: [reference],
+      },
+    })
+  })
+
+  it('hydrates restore ids with their authoritative drafts', () => {
+    const configDir = makeConfigDir()
+    const output = runEval(configDir, `
+      restoreSessionDraftAtomic('s1', 'project-a', 'restore-1', { text: 'queued' });
+      console.log(JSON.stringify(getSessionDraftHydrationState()));
+    `)
+    expect(JSON.parse(output)).toEqual({
+      drafts: { s1: { text: 'queued' } },
+      appliedRestoreIds: { s1: ['restore-1'] },
+    })
   })
 })

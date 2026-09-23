@@ -34,7 +34,7 @@ import {
 } from '@craft-agent/session-tools-core';
 import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
-import { createBrowserTools, type BrowserPaneFns } from './browser-tools.ts';
+import { createBrowserTools, type BrowserWindowFns } from './browser-tools.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
 import { getBrowserToolEnabled } from '../config/storage.ts';
 import { isDecisionFeatureActive } from '../decisions/resolve.ts';
@@ -55,8 +55,8 @@ export type {
   MicrosoftService,
 } from '@craft-agent/session-tools-core';
 
-// Re-export browser pane types for session manager wiring
-export type { BrowserPaneFns } from './browser-tools.ts';
+// Re-export browser window types for session manager wiring
+export type { BrowserWindowFns } from './browser-tools.ts';
 
 // ============================================================
 // Session-Scoped Tool Callbacks (re-exported from dedicated registry module)
@@ -320,9 +320,9 @@ export function getSessionScopedTools(
       tools.push(
         ...createBrowserTools({
           sessionId,
-          getBrowserPaneFns: () => {
+          getBrowserWindowFns: () => {
             const callbacks = getSessionScopedToolCallbacks(sessionId);
-            return callbacks?.browserPaneFns;
+            return callbacks?.browserWindowFns;
           },
         }),
       );

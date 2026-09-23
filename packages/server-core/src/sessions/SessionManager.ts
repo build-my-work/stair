@@ -7,6 +7,7 @@ import type {
 import {
   CLIENT_BROWSER_INVOKE,
   CLIENT_DRAWNIX_BOARD_INVOKE,
+  requestClientBrowserInvoke,
   requestClientDrawnixBoardInvoke,
 } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
@@ -17,7 +18,7 @@ import { basename, dirname, join } from 'path'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
-import { type AgentEvent, type ChatOptions, getPermissionMode, setPermissionMode, setGuardedModeActiveResolver, clampPermissionMode, planExecutionMode, parsePermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
+import { type AgentEvent, type ChatOptions, getPermissionMode, setPermissionMode, setGuardedModeActiveResolver, clampPermissionMode, planExecutionMode, parsePermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, type BrowserWindowFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
@@ -29,7 +30,7 @@ import {
   type BackendHostRuntimeContext,
   type PostInitResult,
 } from '@craft-agent/shared/agent/backend'
-import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior, getPersistedUiLanguage, resolveTitleLanguageName } from '@craft-agent/shared/config'
+import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, purgeSessionDraft, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior, getPersistedUiLanguage, resolveTitleLanguageName } from '@craft-agent/shared/config'
 import type { MidStreamBehavior } from '@craft-agent/shared/config'
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
 import { isValidWorkingDirectory } from '../utils/path-validation'
@@ -103,7 +104,7 @@ import { redactBrowserPasswordFills } from '@craft-agent/shared/agent'
 import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
-import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, type BackgroundTaskOutput, type StopBackgroundTaskResult, type BoundPr, type PrMonitorState, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
+import { type BrowserInstanceInfo, type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, type BackgroundTaskOutput, type StopBackgroundTaskResult, type BoundPr, type PrMonitorState, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
 import { launchOutputFile, readBackgroundTaskOutput } from './background-task-output'
 import {
   isChatMessageReference,
@@ -221,6 +222,17 @@ export const AGENT_FLAGS = {
   /** Default modes enabled for new sessions */
   defaultModesEnabled: true,
 } as const
+
+export function filterBrowserWindowsForChat(
+  windows: BrowserInstanceInfo[],
+  scope: { workspaceId: string; projectId: string; sessionId: string },
+): BrowserInstanceInfo[] {
+  return windows.filter(window => (
+    window.workspaceId === scope.workspaceId
+    && window.projectId === scope.projectId
+    && window.ownerSessionId === scope.sessionId
+  ))
+}
 
 const MAX_ADMIN_REMEMBER_MINUTES = 60
 const MAX_ANNOTATIONS_PER_MESSAGE = 200
@@ -744,6 +756,7 @@ interface RunningBackgroundTask {
 
 interface ManagedSession {
   id: string
+  creationRequestId?: string
   workspace: Workspace
   agent: AgentInstance | null  // Lazy-loaded - null until first message
   messages: Message[]
@@ -821,7 +834,6 @@ interface ManagedSession {
   projectId: string
   // Session-scoped Add Note target metadata.
   projectNoteTargetPath?: string
-  projectNoteTargetRootFingerprint?: string
   projectNoteRecentTargetPaths?: string[]
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
@@ -1373,6 +1385,10 @@ export class SessionManager implements ISessionManager {
   private sessions: Map<string, ManagedSession> = new Map()
   /** Test seam for HANDOFF_SUMMARY_WAIT_MS. */
   private handoffSummaryWaitMs = HANDOFF_SUMMARY_WAIT_MS
+  private sessionCreationRequests = new Map<string, {
+    projectId?: string
+    promise: Promise<Session>
+  }>()
   // Delta batching for performance - reduces IPC events from 50+/sec to ~20/sec
   private pendingDeltas: Map<string, PendingDelta> = new Map()
   private deltaFlushTimers: Map<string, NodeJS.Timeout> = new Map()
@@ -1398,6 +1414,8 @@ export class SessionManager implements ISessionManager {
   }> = new Map()
   // Promise deduplication for lazy-loading messages (prevents race conditions)
   private messageLoadingPromises: Map<string, Promise<void>> = new Map()
+  private emittedQueuedRestoreIds = new Set<string>()
+  private sessionLifecycleQueues = new Map<string, Promise<void>>()
   /**
    * Track which session the user is actively viewing (per workspace).
    * Map of workspaceId -> sessionId. Used to determine if a session should be
@@ -1937,6 +1955,106 @@ export class SessionManager implements ISessionManager {
     bpm.setSessionPathResolver((sessionId) => this.getSessionPath(sessionId))
   }
 
+  async beginBrowserProjectDeletion(
+    workspaceId: string,
+    projectId: string,
+  ): Promise<void> {
+    if (this.browserPaneManager) {
+      this.browserPaneManager.beginProjectDeletion(workspaceId, projectId)
+      return
+    }
+
+    const rpcServer = this.rpcServer
+    if (!rpcServer) return
+    const clientIds = rpcServer.findClientsWithCapability(
+      CLIENT_BROWSER_INVOKE,
+      { workspaceId },
+    )
+    const results = await Promise.allSettled(clientIds.map(clientId => requestClientBrowserInvoke(
+      rpcServer,
+      clientId,
+      {
+        v: 1,
+        method: 'beginProjectDeletion',
+        args: [workspaceId, projectId],
+        sessionId: '__project_cleanup__',
+        workspaceId,
+      },
+    )))
+    const failure = results.find(result => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+  }
+
+  async finishBrowserProjectDeletion(
+    workspaceId: string,
+    projectId: string,
+    deleted: boolean,
+  ): Promise<void> {
+    if (this.browserPaneManager) {
+      this.browserPaneManager.finishProjectDeletion(workspaceId, projectId, deleted)
+      return
+    }
+
+    const rpcServer = this.rpcServer
+    if (!rpcServer) return
+    const clientIds = rpcServer.findClientsWithCapability(
+      CLIENT_BROWSER_INVOKE,
+      { workspaceId },
+    )
+    await Promise.all(clientIds.map(clientId => requestClientBrowserInvoke(
+      rpcServer,
+      clientId,
+      {
+        v: 1,
+        method: 'finishProjectDeletion',
+        args: [workspaceId, projectId, deleted],
+        sessionId: '__project_cleanup__',
+        workspaceId,
+      },
+    )))
+  }
+
+  async destroyBrowserWindowsForSession(
+    workspaceId: string,
+    sessionId: string,
+  ): Promise<void> {
+    if (this.browserPaneManager) {
+      try {
+        this.browserPaneManager.destroyForSession(sessionId, workspaceId)
+      } catch (error) {
+        sessionLog.warn(
+          `Failed to clean up Browser windows for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+      return
+    }
+
+    const rpcServer = this.rpcServer
+    if (!rpcServer) return
+    const clientIds = rpcServer.findClientsWithCapability(
+      CLIENT_BROWSER_INVOKE,
+      { workspaceId },
+    )
+    const results = await Promise.allSettled(clientIds.map(clientId => requestClientBrowserInvoke(
+      rpcServer,
+      clientId,
+      {
+        v: 1,
+        method: 'destroyForSession',
+        args: [sessionId, workspaceId],
+        sessionId,
+        workspaceId,
+      },
+    )))
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        sessionLog.warn(
+          `Failed to clean up a remote Browser window for ${sessionId}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        )
+      }
+    }
+  }
+
   /**
    * Inject the page thumbnail capturer (Electron main only — needs a
    * BrowserWindow). Headless/WebUI hosts never call this, so
@@ -2027,6 +2145,60 @@ export class SessionManager implements ISessionManager {
     for (const [sid, pinned] of this.drawnixHostBySession) {
       if (pinned === clientId) this.drawnixHostBySession.delete(sid)
     }
+    // A renderer can disconnect after receiving a queued-restore event but
+    // before acknowledging the durable draft write. Re-arm those delivery
+    // markers so the next cold Session load can safely replay them.
+    this.emittedQueuedRestoreIds.clear()
+  }
+
+  onClientConnected(clientId: string, workspaceId: string | null): void {
+    if (!this.eventSink || !workspaceId) return
+    for (const managed of this.sessions.values()) {
+      if (managed.workspace.id !== workspaceId || !managed.messagesLoaded) continue
+      const pendingRestores = new Map<string, Message[]>()
+      for (const message of managed.messages) {
+        if (message.role !== 'user' || !message.isQueued || !message.queuedRestoreId) continue
+        const group = pendingRestores.get(message.queuedRestoreId) ?? []
+        group.push(message)
+        pendingRestores.set(message.queuedRestoreId, group)
+      }
+      for (const [queuedRestoreId, messages] of pendingRestores) {
+        this.eventSink(
+          RPC_CHANNELS.sessions.EVENT,
+          { to: 'client', clientId },
+          {
+            type: 'interrupted',
+            sessionId: managed.id,
+            queuedMessages: messages.map(message => message.content),
+            ...(messages.some(message => message.references?.length)
+              ? { queuedReferences: messages.flatMap(message => message.references ?? []) }
+              : {}),
+            ...(messages.some(message => message.attachments?.length)
+              ? { queuedAttachments: messages.flatMap(message => message.attachments ?? []) }
+              : {}),
+            queuedRestoreId,
+            queuedMessageIds: messages.map(message => message.id),
+          },
+        )
+        this.emittedQueuedRestoreIds.add(`${managed.id}\0${queuedRestoreId}`)
+      }
+    }
+  }
+
+  async withSessionLifecycleLock<T>(
+    sessionId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.sessionLifecycleQueues.get(sessionId) ?? Promise.resolve()
+    const result = previous.catch(() => {}).then(operation)
+    const settled = result.then(() => {}, () => {})
+    this.sessionLifecycleQueues.set(sessionId, settled)
+    void settled.finally(() => {
+      if (this.sessionLifecycleQueues.get(sessionId) === settled) {
+        this.sessionLifecycleQueues.delete(sessionId)
+      }
+    })
+    return result
   }
 
   /**
@@ -2067,7 +2239,7 @@ export class SessionManager implements ISessionManager {
     const ordered = pinned && candidates.includes(pinned)
       ? [pinned, ...candidates.filter(clientId => clientId !== pinned)]
       : candidates
-    let notOpen: DrawnixBoardCapabilityResponse | null = null
+    let retryableFailure: DrawnixBoardCapabilityResponse | null = null
     for (const clientId of ordered) {
       const response = await requestClientDrawnixBoardInvoke(
         this.rpcServer,
@@ -2078,13 +2250,18 @@ export class SessionManager implements ISessionManager {
         this.drawnixHostBySession.set(sid, clientId)
         return response
       }
-      if (response.error.code !== 'MINDMAP_NOT_OPEN') return response
+      const canTryAnotherClient = response.error.code === 'MINDMAP_NOT_OPEN'
+        || (
+          request.action === 'create'
+          && response.error.code === 'MINDMAP_PROJECT_NOT_ACTIVE'
+        )
+      if (!canTryAnotherClient) return response
       if (this.drawnixHostBySession.get(sid) === clientId) {
         this.drawnixHostBySession.delete(sid)
       }
-      notOpen = response
+      retryableFailure = response
     }
-    return notOpen
+    return retryableFailure
   }
 
   /** Returns a strictly increasing timestamp (ms). When Date.now() collides with
@@ -2212,24 +2389,20 @@ export class SessionManager implements ISessionManager {
 
     const oldProjectNoteTarget = JSON.stringify([
       managed.projectNoteTargetPath,
-      managed.projectNoteTargetRootFingerprint,
       managed.projectNoteRecentTargetPaths ?? [],
     ])
     const newProjectNoteTarget = JSON.stringify([
       header.projectNoteTargetPath,
-      header.projectNoteTargetRootFingerprint,
       header.projectNoteRecentTargetPaths ?? [],
     ])
     if (oldProjectNoteTarget !== newProjectNoteTarget) {
       managed.projectNoteTargetPath = header.projectNoteTargetPath
-      managed.projectNoteTargetRootFingerprint = header.projectNoteTargetRootFingerprint
       managed.projectNoteRecentTargetPaths = header.projectNoteRecentTargetPaths
       this.sendEvent({
         type: 'session_metadata_changed',
         sessionId,
         changes: {
           projectNoteTargetPath: header.projectNoteTargetPath ?? null,
-          projectNoteTargetRootFingerprint: header.projectNoteTargetRootFingerprint ?? null,
           projectNoteRecentTargetPaths: header.projectNoteRecentTargetPaths ?? [],
         },
       }, managed.workspace.id)
@@ -3169,6 +3342,11 @@ export class SessionManager implements ISessionManager {
       .sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0))
   }
 
+  hasSession(sessionId: string, workspaceId?: string): boolean {
+    const session = this.sessions.get(sessionId)
+    return !!session && (!workspaceId || session.workspace.id === workspaceId)
+  }
+
   /**
    * Aggregate unread state across all workspaces.
    * Excludes hidden and archived sessions from counts/indicators.
@@ -3236,6 +3414,35 @@ export class SessionManager implements ISessionManager {
 
     // Lazy-load messages from disk if not yet loaded
     await this.ensureMessagesLoaded(m)
+
+    if (this.eventSink) {
+      const pendingRestores = new Map<string, Message[]>()
+      for (const message of m.messages) {
+        if (message.role !== 'user' || !message.isQueued || !message.queuedRestoreId) continue
+        const key = `${m.id}\0${message.queuedRestoreId}`
+        if (this.emittedQueuedRestoreIds.has(key)) continue
+        const group = pendingRestores.get(message.queuedRestoreId) ?? []
+        group.push(message)
+        pendingRestores.set(message.queuedRestoreId, group)
+      }
+      for (const [queuedRestoreId, messages] of pendingRestores) {
+        const key = `${m.id}\0${queuedRestoreId}`
+        this.sendEvent({
+          type: 'interrupted',
+          sessionId: m.id,
+          queuedMessages: messages.map(message => message.content),
+          ...(messages.some(message => message.references?.length)
+            ? { queuedReferences: messages.flatMap(message => message.references ?? []) }
+            : {}),
+          ...(messages.some(message => message.attachments?.length)
+            ? { queuedAttachments: messages.flatMap(message => message.attachments ?? []) }
+            : {}),
+          queuedRestoreId,
+          queuedMessageIds: messages.map(message => message.id),
+        }, m.workspace.id)
+        this.emittedQueuedRestoreIds.add(key)
+      }
+    }
 
     return managedToSession(m, { messages: m.messages })
   }
@@ -3336,8 +3543,48 @@ export class SessionManager implements ISessionManager {
     // announced to the renderer (see notifySessionCreated). Callers that register the session
     // themselves — the `sessions:create` RPC adds it from the return value — pass
     // `{ emitCreatedEvent: false }` to avoid a redundant hydrate.
-    internal?: { emitCreatedEvent?: boolean },
+    internal?: { emitCreatedEvent?: boolean; idempotencyClaimed?: boolean },
   ): Promise<Session> {
+    const creationRequestId = options?.creationRequestId?.trim()
+    if (creationRequestId && !internal?.idempotencyClaimed) {
+      if (creationRequestId.length > 128) {
+        throw new Error('Invalid Session creation request id')
+      }
+      const existing = Array.from(this.sessions.values()).find(session => (
+        session.workspace.id === workspaceId
+        && session.creationRequestId === creationRequestId
+      ))
+      if (existing) {
+        if (options?.projectId && existing.projectId !== options.projectId) {
+          throw new Error('SESSION_CREATE_REQUEST_CONFLICT: request id belongs to another Project')
+        }
+        return managedToSession(existing)
+      }
+
+      const key = `${workspaceId}\0${creationRequestId}`
+      const pending = this.sessionCreationRequests.get(key)
+      if (pending) {
+        if (options?.projectId && pending.projectId !== options.projectId) {
+          throw new Error('SESSION_CREATE_REQUEST_CONFLICT: request id belongs to another Project')
+        }
+        return pending.promise
+      }
+      const request = this.createSession(workspaceId, options, {
+        ...internal,
+        idempotencyClaimed: true,
+      })
+      this.sessionCreationRequests.set(key, {
+        projectId: options?.projectId,
+        promise: request,
+      })
+      try {
+        return await request
+      } finally {
+        if (this.sessionCreationRequests.get(key)?.promise === request) {
+          this.sessionCreationRequests.delete(key)
+        }
+      }
+    }
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) {
       throw new Error(`Workspace ${workspaceId} not found`)
@@ -3646,6 +3893,7 @@ export class SessionManager implements ISessionManager {
 
     // Use storage layer to create and persist the session
     const storedSession = await createStoredSession(workspaceRootPath, {
+      creationRequestId,
       name: options?.name,
       permissionMode: defaultPermissionMode,
       workingDirectory: resolvedWorkingDir,
@@ -4405,8 +4653,7 @@ export class SessionManager implements ISessionManager {
         managed.mcpPool.setSummarizeCallback(managed.agent.getSummarizeCallback())
       }
 
-      // Wire up browser pane tools — merge BrowserPaneFns into session callbacks
-      // so browser_* tools can delegate to BrowserPaneManager.
+      // Wire Browser window tools into this Chat's callbacks.
       //
       // Always register when EITHER a local BPM is set OR an RPC server is
       // available (which lets `getBrowserPaneManagerForSession` lazily build a
@@ -4422,7 +4669,7 @@ export class SessionManager implements ISessionManager {
         const sid = managed.id
         const bpm = this.getBrowserPaneManagerForSession(sid)
         if (!bpm) {
-          throw new Error('Browser pane manager unavailable despite passing the gate — this is a bug.')
+          throw new Error('Browser window manager unavailable despite passing the gate — this is a bug.')
         }
         sessionLog.info('[browser-pane] BPF block resolved BPM', {
           sessionId: sid,
@@ -4430,10 +4677,16 @@ export class SessionManager implements ISessionManager {
         })
 
         const workspaceId = managed.workspace.id
+        const projectId = managed.projectId
+        const listSessionWindows = async () => filterBrowserWindowsForChat(
+          await bpm.listInstancesAsync(),
+          { workspaceId, projectId, sessionId: sid },
+        )
         const resolveSessionBrowserInstance = async (toolName: string, options?: { show?: boolean }): Promise<string> => {
           const instanceId = await bpm.createForSessionAsync(sid, {
             show: options?.show ?? false,
             workspaceId,
+            projectId,
           })
           const info = await bpm.getInstanceAsync(instanceId)
           sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} ownerType=${info?.ownerType ?? 'unknown'} ownerSessionId=${info?.ownerSessionId ?? 'none'} visible=${info?.isVisible ?? false}`)
@@ -4441,7 +4694,7 @@ export class SessionManager implements ISessionManager {
         }
 
         const resolveLifecycleWindowTarget = async (command: 'release' | 'close' | 'hide', requestedInstanceId?: string) => {
-          const windows = await bpm.listInstancesAsync()
+          const windows = await listSessionWindows()
 
           if (windows.length === 0) {
             return { windows, reason: 'No browser windows are available. Use "open" first.' }
@@ -4452,12 +4705,12 @@ export class SessionManager implements ISessionManager {
               return { ok: false as const, reason: `Browser window "${requestedInstanceId}" not found. Use "windows" to list available windows.` }
             }
 
-            if (target.boundSessionId && target.boundSessionId !== sid) {
-              return { ok: false as const, reason: `Browser window "${target.id}" is locked to session ${target.boundSessionId}.` }
+            if (target.workspaceId !== workspaceId || target.projectId !== projectId) {
+              return { ok: false as const, reason: `Browser window "${target.id}" belongs to another Project.` }
             }
 
-            if (!target.boundSessionId && target.ownerSessionId && target.ownerSessionId !== sid) {
-              return { ok: false as const, reason: `Browser window "${target.id}" is currently owned by session ${target.ownerSessionId}.` }
+            if (target.ownerSessionId !== sid) {
+              return { ok: false as const, reason: `Browser window "${target.id}" is not owned by this Chat.` }
             }
 
             return { ok: true as const, target }
@@ -4486,13 +4739,13 @@ export class SessionManager implements ISessionManager {
           return { windows, target: validated.target }
         }
 
-        sessionLog.info('[browser-pane] BPF registering browserPaneFns', { sessionId: sid })
+        sessionLog.info('[browser-pane] BPF registering browserWindowFns', { sessionId: sid })
         mergeSessionScopedToolCallbacks(sid, {
-          browserPaneFns: {
-            openPanel: async (options) => {
+          browserWindowFns: {
+            openWindow: async (options) => {
               const instanceId = options?.background
-                ? await bpm.createForSessionAsync(sid, { show: false, workspaceId })
-                : await bpm.focusBoundForSessionAsync(sid, { workspaceId })
+                ? await bpm.createForSessionAsync(sid, { show: false, workspaceId, projectId })
+                : await bpm.focusBoundForSessionAsync(sid, { workspaceId, projectId })
               const info = await bpm.getInstanceAsync(instanceId)
               sessionLog.info(`[browser-pane] route decision: browser_open session=${sid} instance=${instanceId} background=${options?.background ?? false} ownerType=${info?.ownerType ?? 'unknown'} ownerSessionId=${info?.ownerSessionId ?? 'none'} visible=${info?.isVisible ?? false}`)
               return { instanceId }
@@ -4590,7 +4843,7 @@ export class SessionManager implements ISessionManager {
               return bpm.evaluate(instanceId, expression)
             },
             focusWindow: async (targetInstanceId) => {
-              const windows = await bpm.listInstancesAsync()
+              const windows = await listSessionWindows()
               if (windows.length === 0) {
                 throw new Error('No browser windows available to focus. Use "open" first.')
               }
@@ -4606,13 +4859,16 @@ export class SessionManager implements ISessionManager {
                 throw new Error('No browser window is currently bound to this session. Use "open --foreground" to create or reuse one.')
               }
 
-              const availableToSession = !target.boundSessionId || target.boundSessionId === sid
-              if (!availableToSession) {
-                throw new Error(`Browser window "${target.id}" is locked to session ${target.boundSessionId}.`)
+              if (
+                target.workspaceId !== workspaceId
+                || target.projectId !== projectId
+                || target.ownerSessionId !== sid
+              ) {
+                throw new Error(`Browser window "${target.id}" is not owned by this Chat and Project.`)
               }
 
               if (!target.boundSessionId) {
-                bpm.bindSession(target.id, sid, { workspaceId })
+                bpm.bindSession(target.id, sid, { workspaceId, projectId })
               }
 
               bpm.focus(target.id)
@@ -4625,10 +4881,10 @@ export class SessionManager implements ISessionManager {
             },
             releaseControl: async (requestedInstanceId) => {
               if (requestedInstanceId === 'all') {
-                const before = await bpm.listInstancesAsync()
+                const before = await listSessionWindows()
                 const beforeActive = before.filter((w) => !!w.agentControlActive).length
                 bpm.clearAgentControl(sid)
-                const after = await bpm.listInstancesAsync()
+                const after = await listSessionWindows()
                 const afterActive = after.filter((w) => !!w.agentControlActive).length
                 const released = afterActive < beforeActive
 
@@ -4710,13 +4966,13 @@ export class SessionManager implements ISessionManager {
               }
             },
             listWindows: async () => {
-              return bpm.listInstancesAsync()
+              return listSessionWindows()
             },
             detectChallenge: async () => {
               const instanceId = await resolveSessionBrowserInstance('browser_detect_challenge')
               return bpm.detectSecurityChallenge(instanceId)
             },
-          } satisfies BrowserPaneFns,
+          } satisfies BrowserWindowFns,
         })
       }
 
@@ -5229,6 +5485,28 @@ export class SessionManager implements ISessionManager {
           getRegistry: getPrWatchRegistry,
           getAutoFixMonitor: getPrAutoFixMonitor,
         }),
+        createMindmapFn: async (request) => {
+          if (!managed.projectId) {
+            throw new Error('MINDMAP_NO_PROJECT: This Session is not linked to a Project.')
+          }
+          const response = await this.requestDrawnixBoardForSession(managed.id, {
+            v: 1,
+            action: 'create',
+            projectId: managed.projectId,
+            relativePath: request.relativePath,
+            markdown: request.markdown,
+          })
+          if (!response) {
+            throw new Error('MINDMAP_NO_CLIENT: No connected Stair client can create a Drawnix board.')
+          }
+          if (!response.ok) {
+            throw Object.assign(
+              new Error(`${response.error.code}: ${response.error.message}`),
+              { code: response.error.code },
+            )
+          }
+          return response.snapshot
+        },
         readMindmapFn: async (relativePath) => {
           if (!managed.projectId) {
             throw new Error('MINDMAP_NO_PROJECT: This Session is not linked to a Project.')
@@ -6637,6 +6915,10 @@ export class SessionManager implements ISessionManager {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
+    return this.withSessionLifecycleLock(sessionId, () => this.deleteSessionLocked(sessionId))
+  }
+
+  private async deleteSessionLocked(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       sessionLog.warn(`Cannot delete session: ${sessionId} not found`)
@@ -6688,19 +6970,17 @@ export class SessionManager implements ISessionManager {
     // Clean up session-scoped tool callbacks to prevent memory accumulation
     unregisterSessionScopedToolCallbacks(sessionId)
 
-    // Destroy browser instances bound to this session
-    const sessionBpm = this.getBrowserPaneManagerForSession(sessionId)
-    if (sessionBpm) {
-      sessionBpm.destroyForSession(sessionId)
-    }
-    // Drop the per-session remote bridge + host-client pin on destroy.
-    this.remoteBpms.delete(sessionId)
-    this.browserHostByCanvas.delete(sessionId)
-    this.drawnixHostBySession.delete(sessionId)
+    // Make the Chat unavailable to Browser target validation before cleanup starts.
+    // This prevents a new Browser from binding in the cleanup/delete race window.
+    this.sessions.delete(sessionId)
 
     // Dispose agent to clean up ConfigWatchers, event listeners, MCP connections
     if (managed.agent) {
-      managed.agent.dispose()
+      try {
+        managed.agent.dispose()
+      } catch (error) {
+        sessionLog.warn(`Failed to dispose agent for deleted session ${sessionId}:`, error)
+      }
     }
 
     // Stop pool server (HTTP MCP server for external SDK subprocesses)
@@ -6717,8 +6997,6 @@ export class SessionManager implements ISessionManager {
     }
     managed.autoRetryPending = undefined
 
-    this.sessions.delete(sessionId)
-
     // Clean up session metadata in AutomationSystem (prevents memory leak)
     const automationSystem = this.automationSystems.get(workspaceRootPath)
     if (automationSystem) {
@@ -6727,10 +7005,18 @@ export class SessionManager implements ISessionManager {
 
     // Delete from disk too
     deleteStoredSession(workspaceRootPath, sessionId)
+    purgeSessionDraft(sessionId)
 
     // Notify all windows for this workspace that the session was deleted
     this.sendEvent({ type: 'session_deleted', sessionId }, managed.workspace.id)
     this.emitUnreadSummaryChanged()
+
+    // Clean up Browser windows only after the authoritative in-memory and disk
+    // deletion is visible. A slow remote client must not leave a half-deleted Chat.
+    await this.destroyBrowserWindowsForSession(managed.workspace.id, sessionId)
+    this.remoteBpms.delete(sessionId)
+    this.browserHostByCanvas.delete(sessionId)
+    this.drawnixHostBySession.delete(sessionId)
 
     // Clean up attachments directory (handled by deleteStoredSession for workspace-scoped storage)
     sessionLog.info(`Deleted session ${sessionId}`)
@@ -7506,6 +7792,7 @@ export class SessionManager implements ISessionManager {
     // Collect queued message text for input restoration before clearing
     const queuedTexts = managed.messageQueue.map(q => q.message)
     const queuedReferences = managed.messageQueue.flatMap(q => q.options?.references ?? [])
+    const queuedAttachments = managed.messageQueue.flatMap(q => q.storedAttachments ?? [])
 
     const queuedMessageIds = Array.from(new Set(
       managed.messageQueue.map(q => q.messageId).filter((id): id is string => !!id)
@@ -7576,6 +7863,7 @@ export class SessionManager implements ISessionManager {
       // Include queued input so the renderer can restore it before acknowledging.
       ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
       ...(queuedReferences.length > 0 ? { queuedReferences } : {}),
+      ...(queuedAttachments.length > 0 ? { queuedAttachments } : {}),
       ...(queuedRestoreId && pendingRestoreMessageIds.length > 0
         ? { queuedRestoreId, queuedMessageIds: pendingRestoreMessageIds }
         : {}),
@@ -7918,9 +8206,8 @@ export class SessionManager implements ISessionManager {
       // Has queued messages - process next
       this.processNextQueuedMessage(sessionId)
     } else {
-      // Session is truly done — release browser ownership.
-      // The window stays alive (hidden) and becomes reusable by future sessions.
-      // On the next turn, getOrCreateForSession() will re-bind it.
+      // Session is truly done — release active control while preserving the
+      // Browser window's stable Chat and Project ownership for the next turn.
       const doneBpm = this.getBrowserPaneManagerForSession(sessionId)
       if (doneBpm) {
         // Teardown must never block completion. On a headless/WebUI server the BPM is
@@ -8435,23 +8722,17 @@ export class SessionManager implements ISessionManager {
   async setSessionProjectNoteTarget(
     sessionId: string,
     projectId: string,
-    relativePath: string | null,
-    rootFingerprint: string | null,
-  ): Promise<{ relativePath: string | null; recentPaths: string[] } | null> {
+    relativePath: string,
+  ): Promise<{ relativePath: string; recentPaths: string[] } | null> {
     const managed = this.sessions.get(sessionId)
     if (!managed || managed.projectId !== projectId) return null
 
-    const recentPaths = relativePath
-      ? [
-          relativePath,
-          ...(managed.projectNoteRecentTargetPaths ?? [])
-            .filter(path => path !== relativePath),
-        ].slice(0, 5)
-      : [...(managed.projectNoteRecentTargetPaths ?? [])]
-    managed.projectNoteTargetPath = relativePath ?? undefined
-    managed.projectNoteTargetRootFingerprint = relativePath
-      ? rootFingerprint ?? undefined
-      : undefined
+    const recentPaths = [
+      relativePath,
+      ...(managed.projectNoteRecentTargetPaths ?? [])
+        .filter(path => path !== relativePath),
+    ].slice(0, 5)
+    managed.projectNoteTargetPath = relativePath
     managed.projectNoteRecentTargetPaths = recentPaths
     this.setMetadataWriteGuard(managed)
     this.persistSession(managed)
@@ -8461,38 +8742,18 @@ export class SessionManager implements ISessionManager {
     if (
       current !== managed
       || current.projectId !== projectId
-      || current.projectNoteTargetPath !== (relativePath ?? undefined)
-      || current.projectNoteTargetRootFingerprint !== (relativePath
-        ? rootFingerprint ?? undefined
-        : undefined)
+      || current.projectNoteTargetPath !== relativePath
     ) return null
 
     this.sendEvent({
       type: 'session_metadata_changed',
       sessionId,
       changes: {
-        projectNoteTargetPath: managed.projectNoteTargetPath ?? null,
-        projectNoteTargetRootFingerprint: managed.projectNoteTargetRootFingerprint ?? null,
+        projectNoteTargetPath: managed.projectNoteTargetPath,
         projectNoteRecentTargetPaths: recentPaths,
       },
     }, managed.workspace.id)
     return { relativePath, recentPaths }
-  }
-
-  async clearSessionProjectNoteTargetIfMatches(
-    sessionId: string,
-    projectId: string,
-    relativePath: string,
-    rootFingerprint: string,
-  ): Promise<void> {
-    const managed = this.sessions.get(sessionId)
-    if (
-      !managed
-      || managed.projectId !== projectId
-      || managed.projectNoteTargetPath !== relativePath
-      || managed.projectNoteTargetRootFingerprint !== rootFingerprint
-    ) return
-    await this.setSessionProjectNoteTarget(sessionId, projectId, null, null)
   }
 
   /**
@@ -9275,8 +9536,11 @@ export class SessionManager implements ISessionManager {
 
         const overlayBpm = this.getBrowserPaneManagerForSession(sessionId)
         if (overlayBpm && shouldActivateOverlay) {
-          // Ensure first browser action in a turn gets an instance before overlay activation.
-          overlayBpm.getOrCreateForSession(sessionId, { workspaceId })
+          // Ensure first browser action in a turn gets its Chat-owned window before overlay activation.
+          overlayBpm.getOrCreateForSession(sessionId, {
+            workspaceId,
+            projectId: managed.projectId,
+          })
 
           const resolvedDisplayName = toolDisplayMeta?.displayName
             ?? event.displayName
@@ -9284,7 +9548,6 @@ export class SessionManager implements ISessionManager {
           overlayBpm.setAgentControl(
             sessionId,
             { displayName: resolvedDisplayName, intent: event.intent },
-            { workspaceId },
           )
         }
 

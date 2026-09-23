@@ -21,8 +21,11 @@ export function getPanelBottomRadius(isCompact: boolean, isAtEdge: boolean): num
 /** Minimum width for any content panel */
 export const PANEL_MIN_WIDTH = 440
 
-/** Default desktop width before a Panel is explicitly resized. */
+/** Default desktop width for Session Panels. */
 export const PANEL_DEFAULT_WIDTH = 560
+
+/** Default desktop width for Project File Panels. */
+export const PANEL_WIDE_DEFAULT_WIDTH = 840
 
 /** Extra vertical space reserved in panel stack for box-shadows. */
 export const PANEL_STACK_VERTICAL_OVERFLOW = 8

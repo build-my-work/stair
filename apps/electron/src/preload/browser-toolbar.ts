@@ -22,6 +22,7 @@ const CHANNELS = {
   TOGGLE_BOOKMARK: 'browser-toolbar:toggle-bookmark',
   BOOKMARKS_CHANGED: 'browser-toolbar:bookmarks-changed',
   SHOW_MENU: 'browser-toolbar:show-menu',
+  OPEN_TARGET_CHAT: 'browser-toolbar:open-target-chat',
   REQUEST_STATE: 'browser-toolbar:request-state',
   STATE_UPDATE: 'browser-toolbar:state-update',
   THEME_COLOR: 'browser-toolbar:theme-color',
@@ -41,8 +42,9 @@ contextBridge.exposeInMainWorld('browserToolbar', {
     ipcRenderer.invoke(CHANNELS.LIST_BOOKMARKS, instanceId),
   toggleBookmark: (): Promise<ToggleBrowserBookmarkResult> =>
     ipcRenderer.invoke(CHANNELS.TOGGLE_BOOKMARK, instanceId),
-  showMenu: (kind: 'bookmarks' | 'window') =>
+  showMenu: (kind: 'bookmarks' | 'projects' | 'chats' | 'window') =>
     ipcRenderer.invoke(CHANNELS.SHOW_MENU, instanceId, kind),
+  openTargetChat: () => ipcRenderer.invoke(CHANNELS.OPEN_TARGET_CHAT, instanceId),
   onStateUpdate: (callback: (state: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
     ipcRenderer.on(CHANNELS.STATE_UPDATE, handler)

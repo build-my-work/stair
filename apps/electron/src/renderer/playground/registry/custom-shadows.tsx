@@ -56,7 +56,7 @@ const activeShadowSpecs: ShadowSpec[] = [
 const runtimeShadowSpecs: ShadowSpec[] = [
   {
     id: 'browser-pane-overlay',
-    component: 'Browser pane live overlay',
+    component: 'Browser window live overlay',
     file: 'main/browser-pane-manager.ts + shared/browser-live-fx.ts',
     kind: 'runtime',
     shadow: "overlay.style.boxShadow = 'inset ... color-mix(...)'",

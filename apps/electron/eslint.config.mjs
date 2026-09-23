@@ -130,6 +130,7 @@ export default [
           'shadow-elev-2',
           'shadow-elev-3',
           'shadow-minimal',
+          'shadow-dragging',
           'shadow-tinted',
           'shadow-thin',
           'shadow-middle',

@@ -8,8 +8,8 @@
  *   workspace client transparently.
  *
  * Thin-client mode (CRAFT_SERVER_URL):
- *   Creates a single WsRpcClient connected to the remote server.
- *   All channels go to the remote server.
+ *   Uses the same RoutedClient model. Electron-only channels stay on the
+ *   loopback host; workspace data goes to CRAFT_SERVER_URL.
  *
  * On localhost the WS handshake completes in <1ms. The React app takes >100ms
  * to initialise, so by the time any component calls an API method, the
@@ -43,16 +43,22 @@ import {
   CLIENT_OPEN_FILE_DIALOG,
   CLIENT_SAVE_TEXT_FILE,
   CLIENT_BROWSER_INVOKE,
+  CLIENT_BROWSER_APPLICATION_INVOKE,
   CLIENT_DRAWNIX_BOARD_INVOKE,
   LOCAL_CLIENT_CAPABILITIES,
 } from '@craft-agent/server-core/transport'
 import type {
   BrowserCapabilityRequest,
+  BrowserApplicationCapabilityRequest,
   ConfirmDialogSpec,
   DrawnixBoardCapabilityRequest,
   DrawnixBoardCapabilityResponse,
   FileDialogSpec,
 } from '@craft-agent/server-core/transport'
+import {
+  handleBrowserApplicationCapability,
+  type BrowserApplicationHandler,
+} from './browser-application-capability'
 import type { SaveTextFileRequest } from '@craft-agent/shared/protocol'
 import type { RpcClient } from '@craft-agent/server-core/transport'
 import type { RemoteServerConfig } from '@craft-agent/core/types'
@@ -76,103 +82,72 @@ interface TransportClient extends RpcClient {
 const webContentsId: number = ipcRenderer.sendSync('__get-web-contents-id')
 const isClientOnly = !!process.env.CRAFT_SERVER_URL
 
-let client: TransportClient
+const localPort: number = ipcRenderer.sendSync('__get-ws-port')
+const localToken: string = ipcRenderer.sendSync('__get-ws-token')
+const localWorkspaceId: string = ipcRenderer.sendSync('__get-workspace-id')
+const localClient = new WsRpcClient(`ws://127.0.0.1:${localPort}`, {
+  token: localToken,
+  workspaceId: localWorkspaceId,
+  webContentsId,
+  autoReconnect: true,
+  mode: 'local',
+  clientCapabilities: [...LOCAL_CLIENT_CAPABILITIES],
+})
 
+let remoteConfig: RemoteServerConfig | null
 if (isClientOnly) {
-  // ── Thin-client mode ───────────────────────────────────────────────────
-  // Single WsRpcClient connected directly to the remote server.
-  // No local server, no routing — all channels go to remote.
-
-  const wsUrl = process.env.CRAFT_SERVER_URL!
-  const wsToken = process.env.CRAFT_SERVER_TOKEN ?? ''
-
-  // Block unencrypted ws:// to non-localhost servers — tokens would be sent in cleartext
-  const parsed = new URL(wsUrl)
-  const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1'
+  const url = process.env.CRAFT_SERVER_URL!
+  const parsed = new URL(url)
+  const isLocalhost = parsed.hostname === 'localhost'
+    || parsed.hostname === '127.0.0.1'
+    || parsed.hostname === '::1'
   if (parsed.protocol === 'ws:' && !isLocalhost) {
     throw new Error(
-      `Refusing to connect to remote server over unencrypted ws://. ` +
-      `Use wss:// (TLS) for non-localhost connections. ` +
-      `Set CRAFT_RPC_TLS_CERT/KEY on the server to enable TLS.`
+      `Refusing to connect to remote server over unencrypted ws://. `
+      + `Use wss:// (TLS) for non-localhost connections. `
+      + `Set CRAFT_RPC_TLS_CERT/KEY on the server to enable TLS.`,
     )
   }
+  remoteConfig = {
+    url,
+    token: process.env.CRAFT_SERVER_TOKEN ?? '',
+    remoteWorkspaceId: process.env.CRAFT_WORKSPACE_ID || localWorkspaceId,
+  }
+} else {
+  remoteConfig = ipcRenderer.sendSync('__get-workspace-remote-config')
+}
 
-  // Workspace ID is optional — if missing, renderer shows a workspace picker
-  const workspaceId = process.env.CRAFT_WORKSPACE_ID || ipcRenderer.sendSync('__get-workspace-id') || undefined
-
-  const wsClient = new WsRpcClient(wsUrl, {
-    token: wsToken,
-    workspaceId,
+let initialWorkspaceClient: WsRpcClient = localClient
+if (remoteConfig && typeof remoteConfig.url === 'string') {
+  initialWorkspaceClient = new WsRpcClient(remoteConfig.url, {
+    token: remoteConfig.token,
+    workspaceId: remoteConfig.remoteWorkspaceId,
     webContentsId,
     autoReconnect: true,
     mode: 'remote',
     clientCapabilities: [...LOCAL_CLIENT_CAPABILITIES],
+    tlsRejectUnauthorized: false,
   })
-  wsClient.connect()
-  client = wsClient
+  initialWorkspaceClient.connect()
+}
 
-} else {
-  // ── Normal mode ────────────────────────────────────────────────────────
-  // RoutedClient routes LOCAL_ONLY to local server, REMOTE_ELIGIBLE to
-  // whichever server owns the workspace (local or remote).
-
-  const wsPort: number = ipcRenderer.sendSync('__get-ws-port')
-  const wsToken: string = ipcRenderer.sendSync('__get-ws-token')
-  const workspaceId: string = ipcRenderer.sendSync('__get-workspace-id')
-
-  const localClient = new WsRpcClient(`ws://127.0.0.1:${wsPort}`, {
-    token: wsToken,
-    workspaceId,
+const routedClient = new RoutedClient(localClient, initialWorkspaceClient)
+if (remoteConfig) {
+  routedClient.setWorkspaceMapping(localWorkspaceId, remoteConfig.remoteWorkspaceId)
+}
+routedClient.setClientFactory((remoteServer: RemoteServerConfig) => (
+  new WsRpcClient(remoteServer.url, {
+    token: remoteServer.token,
+    workspaceId: remoteServer.remoteWorkspaceId,
     webContentsId,
     autoReconnect: true,
-    mode: 'local',
+    mode: 'remote',
     clientCapabilities: [...LOCAL_CLIENT_CAPABILITIES],
+    tlsRejectUnauthorized: false,
   })
-
-  // Check if the current workspace is remote (synchronous IPC during preload eval)
-  const remoteConfig: RemoteServerConfig | null = ipcRenderer.sendSync('__get-workspace-remote-config')
-
-  let initialWorkspaceClient: WsRpcClient
-  if (remoteConfig && typeof remoteConfig.url === 'string') {
-    // Workspace is remote — create a direct connection to the remote server
-    initialWorkspaceClient = new WsRpcClient(remoteConfig.url, {
-      token: remoteConfig.token,
-      workspaceId: remoteConfig.remoteWorkspaceId,
-      webContentsId,
-      autoReconnect: true,
-      mode: 'remote',
-      clientCapabilities: [...LOCAL_CLIENT_CAPABILITIES],
-      tlsRejectUnauthorized: false,
-    })
-    initialWorkspaceClient.connect()
-  } else {
-    // Workspace is local — workspace client IS the local client
-    initialWorkspaceClient = localClient
-  }
-
-  const routedClient = new RoutedClient(localClient, initialWorkspaceClient)
-
-  // Set workspace ID mapping if initial workspace is remote
-  if (remoteConfig) {
-    routedClient.setWorkspaceMapping(workspaceId, remoteConfig.remoteWorkspaceId)
-  }
-
-  // Factory for creating remote workspace clients on switch
-  routedClient.setClientFactory((remoteServer: RemoteServerConfig) => {
-    return new WsRpcClient(remoteServer.url, {
-      token: remoteServer.token,
-      workspaceId: remoteServer.remoteWorkspaceId,
-      webContentsId,
-      autoReconnect: true,
-      mode: 'remote',
-      clientCapabilities: [...LOCAL_CLIENT_CAPABILITIES],
-      tlsRejectUnauthorized: false,
-    })
-  })
-
-  localClient.connect()
-  client = routedClient
-}
+))
+localClient.connect()
+const client: TransportClient = routedClient
 
 // ---------------------------------------------------------------------------
 // Register client-side capability handlers (server can invoke these)
@@ -201,13 +176,28 @@ client.handleCapability(CLIENT_SAVE_TEXT_FILE, async (request: SaveTextFileReque
   return ipcRenderer.invoke('__dialog:saveTextFile', request)
 })
 
-// Browser pane invocation. The remote server packages an IBrowserPaneManager
+// Browser window invocation. The remote server packages an IBrowserPaneManager
 // method call as a BrowserCapabilityRequest; we dispatch it to the local
 // `BrowserPaneManager` via the `__browser:invoke` IPC channel registered in
 // `apps/electron/src/main/browser-pane-manager.ts:registerCapabilityIpc()`.
 client.handleCapability(CLIENT_BROWSER_INVOKE, async (req: BrowserCapabilityRequest) => {
   return await ipcRenderer.invoke('__browser:invoke', req)
 })
+
+let browserApplicationHandler: BrowserApplicationHandler | null = null
+let browserApplicationWorkspaceId: string | null = null
+
+client.handleCapability(
+  CLIENT_BROWSER_APPLICATION_INVOKE,
+  async (request: BrowserApplicationCapabilityRequest) => (
+    handleBrowserApplicationCapability(
+      client,
+      request,
+      browserApplicationHandler,
+      browserApplicationWorkspaceId,
+    )
+  ),
+)
 
 let drawnixBoardHandler:
   | ((request: DrawnixBoardCapabilityRequest) => Promise<DrawnixBoardCapabilityResponse>)
@@ -248,6 +238,13 @@ client.handleCapability(
 const api = buildClientApi(client, CHANNEL_MAP, (ch) => client.isChannelAvailable(ch))
 
 ;(api as any).getRuntimeEnvironment = (): 'electron' | 'web' => 'electron'
+;(api as any).setBrowserApplicationHandler = (
+  workspaceId: string | null,
+  handler: BrowserApplicationHandler | null,
+) => {
+  browserApplicationWorkspaceId = workspaceId
+  browserApplicationHandler = handler
+}
 ;(api as any).setDrawnixBoardCapabilityHandler = (
   handler: ((request: DrawnixBoardCapabilityRequest) => Promise<DrawnixBoardCapabilityResponse>) | null,
 ) => {

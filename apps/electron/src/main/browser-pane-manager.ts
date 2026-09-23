@@ -1,9 +1,8 @@
 /**
  * BrowserPaneManager
  *
- * Owns browser instances independently of their current presentation.
- * Each instance keeps one native view tree in its BrowserWindow or an
- * application panel.
+ * Owns independent browser windows. Each instance keeps one native view tree
+ * for its entire lifetime; it is never reparented into the application window.
  */
 
 import { join, parse as parsePath } from 'path'
@@ -41,10 +40,8 @@ import {
   type BrowserEmptyStateLaunchPayload,
   type BrowserEmptyStateLaunchResult,
   type BrowserInstanceInfo,
-  type BrowserPresentRequest,
-  type BrowserSelectionActionPayload,
+  type BrowserPaneReconcileInput,
   type BrowserSelectionRevealResult,
-  type BrowserSurfaceState,
 } from '../shared/types'
 import type { WebSelectionReferenceV1 } from '@craft-agent/core/types'
 import {
@@ -71,6 +68,7 @@ import {
   isBrowserSelectionAction,
   sanitizeBrowserSelectionCapture,
   sanitizeWebSelectionReference,
+  type BrowserSelectionAction,
   type BrowserSelectionCapturePayload,
   type BrowserSelectionSource,
 } from '../shared/browser-selection'
@@ -80,6 +78,7 @@ import type {
   BrowserClickResult,
 } from '@craft-agent/server-core/handlers'
 import type {
+  BrowserApplicationProjectTarget,
   BrowserCapabilityRequest,
   ScreenshotResultWire,
 } from '@craft-agent/server-core/transport'
@@ -110,6 +109,14 @@ const EARLY_THEME_EXTRACTION_DELAY_MS = 100
 const BROWSER_EMPTY_STATE_PAGE = 'browser-empty-state.html'
 
 const CRAFT_DEEPLINK_SCHEME_PREFIX = `${process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'}://`
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
 const POPUP_WINDOW_FEATURES = new Set([
   'popup',
   'width',
@@ -266,6 +273,7 @@ const TOOLBAR_CHANNELS = {
   TOGGLE_BOOKMARK: 'browser-toolbar:toggle-bookmark',
   BOOKMARKS_CHANGED: 'browser-toolbar:bookmarks-changed',
   SHOW_MENU: 'browser-toolbar:show-menu',
+  OPEN_TARGET_CHAT: 'browser-toolbar:open-target-chat',
   REQUEST_STATE: 'browser-toolbar:request-state',
   STATE_UPDATE: 'browser-toolbar:state-update',
   THEME_COLOR: 'browser-toolbar:theme-color',
@@ -298,16 +306,6 @@ interface BrowserInstance {
    */
   pageWebContentsId: number
   nativeOverlayView: WebContentsView
-  presentation:
-    | { mode: 'window' }
-    | { mode: 'parked'; hostWebContentsId: number | null }
-    | {
-        mode: 'panel'
-        hostWebContentsId: number
-        leaseId: string
-        state: BrowserSurfaceState
-      }
-  surfaceHostClosedListener: (() => void) | null
   cdp: BrowserCDP
   currentUrl: string
   title: string
@@ -315,22 +313,28 @@ interface BrowserInstance {
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
+  targetSessionId: string | null
+  targetChat: BrowserChatTarget | null
+  targetRefreshToken: number
+  targetSwitchToken: number
+  projectRefreshToken: number
+  projectSwitchToken: number
+  targetMetadataFresh: boolean
   boundSessionId: string | null
   ownerType: 'session' | 'manual'
   ownerSessionId: string | null
-  /**
-   * Workspace this instance is associated with, or `null` for unbound manual
-   * windows. Renderers in other workspaces filter such entries out of the tab
-   * strip / status badge. Stamped at create-time (or first bind) — once non-null,
-   * subsequent rebinds may overwrite it with the new binder's workspace.
-   */
+  /** Project scope stamped when the independent Browser window is created. */
   workspaceId: string | null
+  projectId: string | null
+  projectTitle: string | null
+  originWebContentsId: number | null
   isVisible: boolean
   isHiding: boolean
   keepAliveOnWindowClose: boolean
   toolbarReady: boolean
   toolbarMenuOpen: boolean
   toolbarMenu: Menu | null
+  toolbarMenuRequestToken: number
   showOnCreate: boolean
   pendingShowOnReady: boolean
   pendingShowToken: number
@@ -338,10 +342,19 @@ interface BrowserInstance {
   agentControl: AgentControlState | null
   lockState: AgentControlLockState
   nativeOverlayReady: boolean
+  nativeOverlayStateVersion: number
   pendingSelection: {
+    requestId: string
     capture: BrowserSelectionCapturePayload
     source: BrowserSelectionSource
   } | null
+  selectionActionPending: boolean
+  openTargetSessionPending: boolean
+  selectionFeedback: {
+    kind: 'success' | 'error'
+    message: string
+  } | null
+  selectionFeedbackTimer: ReturnType<typeof setTimeout> | null
   themeColor: string | null
   inPageThemeTimer: ReturnType<typeof setTimeout> | null
   themeObserverToken: string | null
@@ -381,6 +394,54 @@ interface CreateBrowserInstanceOptions {
   ownerType?: 'session' | 'manual'
   ownerSessionId?: string
   workspaceId?: string | null
+  projectId?: string | null
+  targetSessionId?: string | null
+  originWebContentsId?: number | null
+}
+
+export interface BrowserChatTarget {
+  id: string
+  title: string
+  noteTargetPath: string | null
+}
+
+export type BrowserProjectTarget = BrowserApplicationProjectTarget
+
+export type BrowserSelectionActionResult =
+  | { cancelled: true }
+  | {
+      cancelled?: false
+      sessionId: string | null
+      targetTitle: string | null
+      noteTargetPath: string | null
+    }
+
+export interface BrowserApplicationService {
+  listProjectTargets(scope: {
+    workspaceId: string
+    originWebContentsId?: number | null
+  }): Promise<BrowserProjectTarget[]>
+  listChatTargets(scope: {
+    workspaceId: string
+    projectId: string
+    originWebContentsId?: number | null
+    includeOwnerSessionId?: string
+  }): Promise<BrowserChatTarget[]>
+  openChat(target: {
+    workspaceId: string
+    projectId: string
+    sessionId: string
+    originWebContentsId?: number | null
+  }): Promise<void>
+  applySelection(input: {
+    requestId: string
+    action: BrowserSelectionAction
+    workspaceId: string
+    projectId: string
+    sessionId: string | null
+    source: BrowserSelectionSource
+    originWebContentsId?: number | null
+  }): Promise<BrowserSelectionActionResult>
 }
 
 export interface BrowserScreenshotOptions {
@@ -519,21 +580,11 @@ interface LastBrowserAction {
 export class BrowserPaneManager implements IBrowserPaneManager {
   private instances: Map<string, BrowserInstance> = new Map()
   private destroyingIds: Set<string> = new Set()
+  private projectDeletionStates = new Map<string, 'deleting' | 'deleted'>()
   private stateChangeCallback: ((info: BrowserInstanceInfo) => void) | null = null
   private removedCallback: ((id: string) => void) | null = null
   private interactedCallback: ((id: string) => void) | null = null
-  private presentRequestCallback: ((
-    request: BrowserPresentRequest,
-    hostWebContentsId: number,
-  ) => void) | null = null
-  private closePanelRequestCallback: ((
-    browserId: string,
-    hostWebContentsId: number,
-  ) => void) | null = null
-  private selectionActionCallback: ((
-    payload: BrowserSelectionActionPayload,
-    hostWebContentsId: number,
-  ) => void) | null = null
+  private applicationService: BrowserApplicationService | null = null
   private partitionPermissionsInitialized = false
   private partitionObserversInitialized = false
   private inFlightRequestsByWebContentsId = new Map<number, number>()
@@ -552,14 +603,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   // getter throws, so cleanup must never read it (OSS #1059).
   private popupWebContentsIdByWindow = new WeakMap<BrowserWindow, number>()
   private windowManager: WindowManager | null = null
+  private capabilityRemoteWorkspaceId: string | null = null
   private sessionPathResolver: ((sessionId: string) => string | null) | null = null
 
   setWindowManager(windowManager: WindowManager): void {
     this.windowManager = windowManager
   }
 
+  setCapabilityRemoteWorkspaceId(workspaceId: string | null): void {
+    this.capabilityRemoteWorkspaceId = workspaceId
+  }
+
   setSessionPathResolver(fn: (sessionId: string) => string | null): void {
     this.sessionPathResolver = fn
+  }
+
+  setApplicationService(service: BrowserApplicationService): void {
+    this.applicationService = service
+    for (const instance of this.instances.values()) {
+      void this.refreshProjectTarget(instance)
+      void this.refreshTargetChat(instance)
+    }
   }
 
   private resolveBookmarkWorkspaceRoot(instance: BrowserInstance): string {
@@ -632,30 +696,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.interactedCallback = callback
   }
 
-  onPresentRequest(
-    callback: (
-      request: BrowserPresentRequest,
-      hostWebContentsId: number,
-    ) => void,
-  ): void {
-    this.presentRequestCallback = callback
-  }
-
-  onClosePanelRequest(
-    callback: (browserId: string, hostWebContentsId: number) => void,
-  ): void {
-    this.closePanelRequestCallback = callback
-  }
-
-  onSelectionAction(
-    callback: (
-      payload: BrowserSelectionActionPayload,
-      hostWebContentsId: number,
-    ) => void,
-  ): void {
-    this.selectionActionCallback = callback
-  }
-
   createInstance(id?: string, options?: CreateBrowserInstanceOptions): string {
     const instanceId = id || randomUUID()
     const shouldShow = options?.show ?? false
@@ -664,10 +704,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       ? (options?.ownerSessionId ?? null)
       : null
     const workspaceId = options?.workspaceId ?? null
+    const projectId = options?.projectId ?? null
+    const targetSessionId = options?.targetSessionId ?? ownerSessionId
+    const originWebContentsId = options?.originWebContentsId ?? null
 
     if (this.instances.has(instanceId)) {
-      mainLog.warn(`[browser-pane] Instance already exists, reusing: ${instanceId}`)
-      return instanceId
+      throw new Error(`Browser instance already exists: ${instanceId}`)
+    }
+    if (workspaceId && projectId) {
+      const deletionState = this.projectDeletionStates.get(`${workspaceId}\0${projectId}`)
+      if (deletionState === 'deleting') {
+        throw new Error('Browser Project is being deleted')
+      }
+      if (deletionState === 'deleted') {
+        throw new Error('Browser Project is unavailable')
+      }
     }
 
     const ses = session.fromPartition(SESSION_PARTITION)
@@ -748,8 +799,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       toolbarView,
       pageView,
       nativeOverlayView,
-      presentation: { mode: 'window' },
-      surfaceHostClosedListener: null,
       cdp,
       currentUrl: 'about:blank',
       title: 'New Tab',
@@ -757,16 +806,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       isLoading: false,
       canGoBack: false,
       canGoForward: false,
+      targetSessionId,
+      targetChat: null,
+      targetRefreshToken: 0,
+      targetSwitchToken: 0,
+      projectRefreshToken: 0,
+      projectSwitchToken: 0,
+      targetMetadataFresh: false,
       boundSessionId: ownerSessionId,
       ownerType,
       ownerSessionId,
       workspaceId,
+      projectId,
+      projectTitle: null,
+      originWebContentsId,
       isVisible: false,
       isHiding: false,
       keepAliveOnWindowClose: true,
       toolbarReady: false,
       toolbarMenuOpen: false,
       toolbarMenu: null,
+      toolbarMenuRequestToken: 0,
       showOnCreate: shouldShow,
       pendingShowOnReady: false,
       pendingShowToken: 0,
@@ -777,7 +837,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         previousResizable: this.getWindowResizable(window),
       },
       nativeOverlayReady: false,
+      nativeOverlayStateVersion: 0,
       pendingSelection: null,
+      selectionActionPending: false,
+      openTargetSessionPending: false,
+      selectionFeedback: null,
+      selectionFeedbackTimer: null,
       themeColor: null,
       inPageThemeTimer: null,
       themeObserverToken: null,
@@ -810,6 +875,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     this.setupWindowListeners(instance)
     this.instances.set(instanceId, instance)
+    void this.refreshProjectTarget(instance)
+    void this.refreshTargetChat(instance)
     this.emitStateChange(instance)
     mainLog.info(`[browser-pane] toolbar version: v4-react-chromeless`)
     mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, ownerType=${ownerType}, ownerSessionId=${ownerSessionId ?? 'none'})`)
@@ -851,6 +918,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       clearTimeout(instance.inPageThemeTimer)
       instance.inPageThemeTimer = null
     }
+    if (instance.selectionFeedbackTimer) {
+      clearTimeout(instance.selectionFeedbackTimer)
+      instance.selectionFeedbackTimer = null
+    }
     instance.themeObserverToken = null
     instance.pendingShowOnReady = false
     instance.pendingShowToken += 1
@@ -864,14 +935,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.runCleanupStep(id, 'forceCloseToolbarMenu', () => this.forceCloseToolbarMenu(instance, 'instance-destroy'))
     this.runCleanupStep(id, 'applyAgentControlLock', () => this.applyAgentControlLock(instance, false))
     this.runCleanupStep(id, 'updateNativeOverlayState', () => this.updateNativeOverlayState(instance))
-    this.runCleanupStep(id, 'removeRootFromCurrentParent', () => {
-      this.removeRootFromCurrentParent(instance)
-      if (!instance.window.isDestroyed()) {
-        instance.window.contentView.addChildView(instance.rootView)
-      }
-      instance.presentation = { mode: 'window' }
-    })
-
     try {
       if (!instance.window.isDestroyed()) {
         this.destroyingIds.add(id)
@@ -959,28 +1022,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.updateNativeOverlayState(instance)
   }
 
-  private getSelectionActionHost(instance: BrowserInstance): BrowserWindow | null {
-    if (!this.windowManager) return null
-
-    if (instance.presentation.mode === 'panel') {
-      return this.windowManager.getWindowByWebContentsId(
-        instance.presentation.hostWebContentsId,
-      )
-    }
-
-    if (instance.workspaceId) {
-      const workspaceWindow = this.windowManager.getWindowByWorkspace(
-        instance.workspaceId,
-      )
-      if (workspaceWindow) return workspaceWindow
-    }
-
-    const focusedWindow = this.windowManager.getFocusedWindow()
-    if (focusedWindow) return focusedWindow
-
-    return this.windowManager.getAllWindows()[0]?.window ?? null
-  }
-
   private handleSelectionCapture(
     instance: BrowserInstance,
     value: unknown,
@@ -988,7 +1029,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const capture = sanitizeBrowserSelectionCapture(value)
     if (
       !capture
-      || instance.presentation.mode !== 'panel'
       || instance.agentControl?.active
       || instance.toolbarMenuOpen
     ) {
@@ -1006,37 +1046,144 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return
     }
 
-    instance.pendingSelection = { capture, source }
+    instance.pendingSelection = { requestId: randomUUID(), capture, source }
     this.updateNativeOverlayState(instance)
+    void this.refreshTargetChat(instance)
   }
 
-  private handleSelectionAction(
+  private async handleSelectionAction(
     instance: BrowserInstance,
     action: unknown,
-  ): void {
+  ): Promise<void> {
     if (!isBrowserSelectionAction(action)) return
 
     const pendingSelection = instance.pendingSelection
-    if (!pendingSelection) return
-
-    const host = this.getSelectionActionHost(instance)
-    this.clearPendingSelection(instance)
-
-    if (host && !host.isDestroyed()) {
-      if (host.isMinimized()) host.restore()
-      host.show()
-      host.focus()
+    if (!pendingSelection || instance.selectionActionPending) return
+    const targetSessionId = this.getPublicSessionId(instance.targetSessionId)
+    if (action === 'add-chat' && !targetSessionId) {
+      await this.showChatTargetMenu(instance, { action, pendingSelection })
+      return
+    }
+    instance.toolbarMenuRequestToken += 1
+    instance.targetSwitchToken += 1
+    this.forceCloseToolbarMenu(instance, 'selection-action')
+    instance.selectionActionPending = true
+    this.updateNativeOverlayState(instance)
+    const isAlive = () => (
+      this.instances.get(instance.id) === instance
+      && !instance.window.isDestroyed()
+    )
+    const isNoteAction = action === 'add-note' || action === 'choose-note-target'
+    let feedback: NonNullable<BrowserInstance['selectionFeedback']>
+    try {
+      const workspaceId = instance.workspaceId
+      const projectId = instance.projectId
+      const sessionId = targetSessionId
+      if (!workspaceId || !projectId || !this.applicationService) {
+        throw new Error('Browser has no valid Project scope')
+      }
+      const deletionState = this.projectDeletionStates.get(`${workspaceId}\0${projectId}`)
+      if (deletionState === 'deleting') {
+        throw new Error('Browser Project is being deleted')
+      }
+      if (deletionState === 'deleted') {
+        throw new Error('Browser Project is unavailable')
+      }
+      const result = await this.applicationService.applySelection({
+        requestId: pendingSelection.requestId,
+        action,
+        workspaceId,
+        projectId,
+        sessionId,
+        source: pendingSelection.source,
+        originWebContentsId: instance.originWebContentsId,
+      })
+      if (!isAlive()) return
+      if (result.cancelled) {
+        instance.selectionActionPending = false
+        this.updateNativeOverlayState(instance)
+        return
+      }
+      if (action === 'new-chat' && instance.ownerType === 'manual') {
+        if (!result.sessionId || !result.targetTitle) {
+          throw new Error('Browser New Chat returned no target Chat')
+        }
+        instance.targetRefreshToken += 1
+        instance.targetSwitchToken += 1
+        instance.targetSessionId = result.sessionId
+        instance.targetChat = {
+          id: result.sessionId,
+          title: result.targetTitle,
+          noteTargetPath: result.noteTargetPath,
+        }
+        instance.targetMetadataFresh = true
+        this.pushToolbarState(instance)
+        this.emitStateChange(instance)
+      }
+      if (isNoteAction && !result.noteTargetPath) {
+        throw new Error('Browser Add Note returned no Project note file')
+      }
+      const noteTargetTitle = result.targetTitle
+        ?? (instance.targetChat?.id === result.sessionId ? instance.targetChat.title : null)
+      if (
+        isNoteAction
+        && result.sessionId
+        && noteTargetTitle
+        && this.getPublicSessionId(instance.targetSessionId) === result.sessionId
+      ) {
+        instance.targetRefreshToken += 1
+        instance.targetChat = {
+          id: result.sessionId,
+          title: noteTargetTitle,
+          noteTargetPath: result.noteTargetPath,
+        }
+        instance.targetMetadataFresh = true
+        this.pushToolbarState(instance)
+        this.emitStateChange(instance)
+      }
+      if (instance.pendingSelection !== pendingSelection) {
+        instance.selectionActionPending = false
+        this.updateNativeOverlayState(instance)
+        return
+      }
+      this.clearPendingSelection(instance)
+      let successMessage = i18n.t('browser.addedToTarget', { target: result.targetTitle })
+      if (isNoteAction) {
+        successMessage = i18n.t('browser.addedToTarget', { target: result.noteTargetPath })
+      } else if (action === 'new-chat') {
+        successMessage = i18n.t('browser.createdTarget', { target: result.targetTitle })
+      }
+      feedback = {
+        kind: 'success',
+        message: successMessage,
+      }
+    } catch (error) {
+      if (!isAlive()) return
+      const message = error instanceof Error ? error.message : String(error)
+      mainLog.warn(`[browser-pane] Selection action failed id=${instance.id}: ${message}`)
+      feedback = {
+        kind: 'error',
+        message: i18n.t(isNoteAction ? 'reference.couldNotAddNote' : 'reference.couldNotAdd'),
+      }
+    } finally {
+      if (isNoteAction && isAlive() && instance.isVisible) {
+        this.focus(instance.id, { preserveTargetMetadata: true })
+      }
     }
 
-    this.selectionActionCallback?.(
-      {
-        eventId: randomUUID(),
-        action,
-        browserId: instance.id,
-        source: pendingSelection.source,
-      },
-      host?.webContents.id ?? 0,
-    )
+    if (!isAlive()) return
+    instance.selectionActionPending = false
+    this.updateNativeOverlayState(instance)
+    if (instance.selectionFeedbackTimer) clearTimeout(instance.selectionFeedbackTimer)
+    instance.selectionFeedback = feedback
+    this.pushToolbarState(instance)
+    instance.selectionFeedbackTimer = setTimeout(() => {
+      if (!isAlive()) return
+      instance.selectionFeedback = null
+      instance.selectionFeedbackTimer = null
+      this.pushToolbarState(instance)
+    }, 4_000)
+    instance.selectionFeedbackTimer.unref?.()
   }
 
   private resolveLaunchWorkspaceId(): string | null {
@@ -1104,27 +1251,411 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return this.listInstances()
   }
 
+  private requireProjectScope(instance: BrowserInstance): {
+    workspaceId: string
+    projectId: string
+    originWebContentsId: number | null
+  } {
+    if (!instance.workspaceId || !instance.projectId) {
+      throw new Error('Browser window is not associated with a Project')
+    }
+    return {
+      workspaceId: instance.workspaceId,
+      projectId: instance.projectId,
+      originWebContentsId: instance.originWebContentsId,
+    }
+  }
+
+  async listChatTargets(id: string): Promise<BrowserChatTarget[]> {
+    const instance = this.requireAliveInstance(id)
+    if (!this.applicationService) return []
+    return this.applicationService.listChatTargets(this.requireProjectScope(instance))
+  }
+
+  async listProjectTargets(id: string): Promise<BrowserProjectTarget[]> {
+    const instance = this.requireAliveInstance(id)
+    if (!this.applicationService || !instance.workspaceId) return []
+    return this.applicationService.listProjectTargets({
+      workspaceId: instance.workspaceId,
+      originWebContentsId: instance.originWebContentsId,
+    })
+  }
+
+  private async showChatTargetMenu(
+    instance: BrowserInstance,
+    resume?: {
+      action: 'add-chat'
+      pendingSelection: NonNullable<BrowserInstance['pendingSelection']>
+    },
+  ): Promise<void> {
+    if (!resume && instance.selectionActionPending) return
+    const menuRequestToken = ++instance.toolbarMenuRequestToken
+    const workspaceId = instance.workspaceId
+    const projectId = instance.projectId
+    if (!resume) this.clearPendingSelection(instance)
+    const pendingSelection = instance.pendingSelection
+    let template: MenuItemConstructorOptions[]
+    try {
+      const targets = await this.listChatTargets(instance.id)
+      const currentTarget = this.getPublicSessionId(instance.targetSessionId)
+      if (instance.ownerType === 'session') {
+        template = [{
+          label: targets.find(target => target.id === currentTarget)?.title
+            ?? currentTarget
+            ?? i18n.t('browser.noTargetChat'),
+          type: 'radio',
+          checked: true,
+          enabled: false,
+        }]
+      } else {
+        const selectTarget = (sessionId: string | null) => {
+          const shouldResume = !!(
+            sessionId
+            && resume
+            && this.instances.get(instance.id) === instance
+            && instance.pendingSelection === resume.pendingSelection
+            && !instance.selectionActionPending
+          )
+          if (resume && !shouldResume) return
+          const targetChange = this.setTargetSession(instance.id, sessionId)
+          if (shouldResume) {
+            instance.selectionActionPending = true
+            this.updateNativeOverlayState(instance)
+          }
+          void targetChange
+            .then(() => {
+              if (!shouldResume || !resume || this.instances.get(instance.id) !== instance) return
+              instance.selectionActionPending = false
+              if (instance.pendingSelection === resume.pendingSelection) {
+                void this.handleSelectionAction(instance, resume.action)
+              } else {
+                this.updateNativeOverlayState(instance)
+              }
+            })
+            .catch((error) => {
+              const message = error instanceof Error ? error.message : String(error)
+              mainLog.warn(`[browser-pane] failed to change target Chat id=${instance.id}: ${message}`)
+              if (!shouldResume || !resume || this.instances.get(instance.id) !== instance) return
+              instance.selectionActionPending = false
+              this.updateNativeOverlayState(instance)
+              if (message === 'Target Chat selection was superseded') return
+              if (instance.selectionFeedbackTimer) clearTimeout(instance.selectionFeedbackTimer)
+              instance.selectionFeedback = {
+                kind: 'error',
+                message: i18n.t('reference.couldNotAdd'),
+              }
+              this.pushToolbarState(instance)
+              instance.selectionFeedbackTimer = setTimeout(() => {
+                if (this.instances.get(instance.id) !== instance) return
+                instance.selectionFeedback = null
+                instance.selectionFeedbackTimer = null
+                this.pushToolbarState(instance)
+              }, 4_000)
+              instance.selectionFeedbackTimer.unref?.()
+            })
+        }
+        template = [
+          {
+            label: i18n.t('browser.noTargetChat'),
+            type: 'radio',
+            checked: currentTarget === null,
+            enabled: !resume,
+            click: () => selectTarget(null),
+          },
+          { type: 'separator' },
+          ...targets.map(target => ({
+            label: target.title,
+            type: 'radio' as const,
+            checked: target.id === currentTarget,
+            click: () => selectTarget(target.id),
+          })),
+        ]
+      }
+    } catch (error) {
+      mainLog.warn(`[browser-pane] Chat target menu unavailable id=${instance.id} error=${error instanceof Error ? error.message : String(error)}`)
+      template = [{ label: i18n.t('browser.chatTargetsUnavailable'), enabled: false }]
+    }
+
+    if (
+      this.instances.get(instance.id) !== instance
+      || instance.window.isDestroyed()
+      || instance.toolbarView.webContents.isDestroyed()
+      || instance.toolbarMenuRequestToken !== menuRequestToken
+      || instance.workspaceId !== workspaceId
+      || instance.projectId !== projectId
+      || (resume && instance.pendingSelection !== resume.pendingSelection)
+      || (!resume && instance.pendingSelection !== pendingSelection)
+    ) return
+
+    this.forceCloseToolbarMenu(instance, 'replace')
+    const menu = Menu.buildFromTemplate(template)
+    instance.toolbarMenuOpen = true
+    instance.toolbarMenu = menu
+    menu.popup({
+      ...(!instance.window.isDestroyed() ? { window: instance.window } : {}),
+      callback: () => {
+        if (instance.toolbarMenu !== menu) return
+        instance.toolbarMenuOpen = false
+        instance.toolbarMenu = null
+      },
+    })
+  }
+
+  private async refreshProjectTarget(instance: BrowserInstance): Promise<void> {
+    const refreshToken = ++instance.projectRefreshToken
+    const projectId = instance.projectId
+    if (!this.applicationService || !instance.workspaceId || !projectId) {
+      instance.projectTitle = null
+      this.pushToolbarState(instance)
+      return
+    }
+
+    try {
+      const targets = await this.applicationService.listProjectTargets({
+        workspaceId: instance.workspaceId,
+        originWebContentsId: instance.originWebContentsId,
+      })
+      if (
+        this.instances.get(instance.id) !== instance
+        || instance.projectId !== projectId
+        || instance.projectRefreshToken !== refreshToken
+      ) return
+      instance.projectTitle = targets.find(target => target.id === projectId)?.title ?? null
+      this.pushToolbarState(instance)
+    } catch (error) {
+      if (
+        this.instances.get(instance.id) !== instance
+        || instance.projectRefreshToken !== refreshToken
+      ) return
+      mainLog.warn(`[browser-pane] Project metadata unavailable id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  async setProject(id: string, projectId: string): Promise<void> {
+    const instance = this.requireAliveInstance(id)
+    if (instance.ownerType !== 'manual') {
+      throw new Error('Session-created Browser is fixed to its owning Project')
+    }
+    if (instance.selectionActionPending) {
+      throw new Error('Cannot change Project while a selection action is pending')
+    }
+    if (instance.openTargetSessionPending) {
+      throw new Error('Cannot change Project while opening target Chat')
+    }
+    if (!instance.workspaceId) {
+      throw new Error('Browser window is not associated with a Workspace')
+    }
+    const workspaceId = instance.workspaceId
+    const previousProjectId = instance.projectId
+    const switchToken = ++instance.projectSwitchToken
+
+    const targets = await this.listProjectTargets(id)
+
+    const current = this.requireAliveInstance(id)
+    if (current !== instance) {
+      throw new Error('Browser window scope changed while choosing a Project')
+    }
+    if (current.projectSwitchToken !== switchToken) {
+      throw new Error('Project selection was superseded')
+    }
+    if (
+      current.ownerType !== 'manual'
+      || current.workspaceId !== workspaceId
+      || current.projectId !== previousProjectId
+    ) {
+      throw new Error('Browser window scope changed while choosing a Project')
+    }
+    if (instance.selectionActionPending) {
+      throw new Error('Cannot change Project while a selection action is pending')
+    }
+    if (instance.openTargetSessionPending) {
+      throw new Error('Cannot change Project while opening target Chat')
+    }
+    if (
+      previousProjectId
+      && this.projectDeletionStates.has(`${workspaceId}\0${previousProjectId}`)
+    ) {
+      throw new Error('Current Project is unavailable')
+    }
+    if (
+      previousProjectId
+      && !targets.some(target => target.id === previousProjectId)
+    ) {
+      this.destroyInstance(instance.id)
+      throw new Error('Current Project is unavailable')
+    }
+    const project = targets.find(target => target.id === projectId)
+    if (!project) throw new Error('Target Project is not available in this Workspace')
+    if (instance.projectId === project.id) {
+      instance.projectRefreshToken += 1
+      instance.projectTitle = project.title
+      this.pushToolbarState(instance)
+      return
+    }
+    const deletionState = this.projectDeletionStates.get(`${workspaceId}\0${project.id}`)
+    if (deletionState) throw new Error('Target Project is unavailable')
+
+    instance.targetRefreshToken += 1
+    instance.targetSwitchToken += 1
+    instance.projectRefreshToken += 1
+    instance.projectId = project.id
+    instance.projectTitle = project.title
+    instance.targetSessionId = null
+    instance.targetChat = null
+    instance.targetMetadataFresh = true
+    if (instance.selectionFeedbackTimer) clearTimeout(instance.selectionFeedbackTimer)
+    instance.selectionFeedback = null
+    instance.selectionFeedbackTimer = null
+    this.clearPendingSelection(instance)
+    this.pushToolbarState(instance)
+    this.updateNativeOverlayState(instance)
+    this.emitStateChange(instance)
+  }
+
+  private async refreshTargetChat(instance: BrowserInstance): Promise<void> {
+    const refreshToken = ++instance.targetRefreshToken
+    const sessionId = this.getPublicSessionId(instance.targetSessionId)
+    instance.targetMetadataFresh = false
+    if (!this.applicationService || !instance.workspaceId || !instance.projectId) {
+      this.pushToolbarState(instance)
+      return
+    }
+
+    try {
+      const targets = await this.applicationService.listChatTargets({
+        workspaceId: instance.workspaceId,
+        projectId: instance.projectId,
+        originWebContentsId: instance.originWebContentsId,
+        // An owning Session can be alive without being a selectable Chat.
+        ...(instance.ownerType === 'session' && sessionId
+          ? { includeOwnerSessionId: sessionId }
+          : {}),
+      })
+      if (
+        !this.instances.has(instance.id)
+        || instance.targetRefreshToken !== refreshToken
+        || this.getPublicSessionId(instance.targetSessionId) !== sessionId
+      ) return
+      if (!sessionId) {
+        instance.targetChat = null
+        instance.targetMetadataFresh = true
+        this.pushToolbarState(instance)
+        return
+      }
+      const targetChat = targets.find(target => target.id === sessionId) ?? null
+      if (!targetChat) {
+        if (instance.ownerType === 'session') {
+          this.destroyInstance(instance.id)
+          return
+        }
+        instance.targetSessionId = null
+        instance.targetChat = null
+        instance.targetMetadataFresh = true
+        this.pushToolbarState(instance)
+        this.updateNativeOverlayState(instance)
+        this.emitStateChange(instance)
+        return
+      }
+      instance.targetChat = targetChat
+      instance.targetMetadataFresh = true
+      this.pushToolbarState(instance)
+      this.updateNativeOverlayState(instance)
+    } catch (error) {
+      if (
+        !this.instances.has(instance.id)
+        || instance.targetRefreshToken !== refreshToken
+        || this.getPublicSessionId(instance.targetSessionId) !== sessionId
+      ) return
+      if (error instanceof Error && error.message === 'Browser Project is unavailable') {
+        this.destroyInstance(instance.id)
+        return
+      }
+      mainLog.warn(`[browser-pane] Target Chat metadata unavailable id=${instance.id}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  async setTargetSession(id: string, sessionId: string | null): Promise<void> {
+    const instance = this.requireAliveInstance(id)
+    if (instance.ownerType !== 'manual') {
+      throw new Error('Session-created Browser target is fixed to its owning Chat')
+    }
+    if (instance.selectionActionPending) {
+      throw new Error('Cannot change target Chat while a selection action is pending')
+    }
+    const targetChangeToken = ++instance.targetSwitchToken
+    let targetChat: BrowserChatTarget | null = null
+    if (sessionId !== null) {
+      const workspaceId = instance.workspaceId
+      const projectId = instance.projectId
+      const targets = await this.listChatTargets(id)
+      targetChat = targets.find(target => target.id === sessionId) ?? null
+      if (!targetChat) {
+        throw new Error('Target Chat is not available in this Project')
+      }
+      const current = this.requireAliveInstance(id)
+      if (
+        current !== instance
+        || current.ownerType !== 'manual'
+        || current.workspaceId !== workspaceId
+        || current.projectId !== projectId
+      ) {
+        throw new Error('Browser window scope changed while choosing a target Chat')
+      }
+      if (current.targetSwitchToken !== targetChangeToken) {
+        throw new Error('Target Chat selection was superseded')
+      }
+    }
+    instance.targetRefreshToken += 1
+    instance.targetSessionId = sessionId
+    instance.targetChat = targetChat
+    instance.targetMetadataFresh = true
+    this.pushToolbarState(instance)
+    this.emitStateChange(instance)
+  }
+
+  async openTargetSession(id: string): Promise<void> {
+    const instance = this.requireAliveInstance(id)
+    if (instance.openTargetSessionPending) {
+      throw new Error('Target Chat is already opening')
+    }
+    const sessionId = this.getPublicSessionId(instance.targetSessionId)
+    if (!sessionId || !this.applicationService) {
+      throw new Error('Browser window has no target Chat')
+    }
+    instance.openTargetSessionPending = true
+    try {
+      await this.applicationService.openChat({
+        ...this.requireProjectScope(instance),
+        sessionId,
+      })
+    } finally {
+      if (this.instances.get(instance.id) === instance) {
+        instance.openTargetSessionPending = false
+      }
+    }
+  }
+
   async getInstanceAsync(id: string): Promise<BrowserInstanceSnapshot | undefined> {
     return this.getInstance(id)
   }
 
   async createForSessionAsync(
     sessionId: string,
-    options?: { show?: boolean; workspaceId?: string | null },
+    options?: { show?: boolean; workspaceId?: string | null; projectId?: string | null },
   ): Promise<string> {
     return this.createForSession(sessionId, options)
   }
 
   async getOrCreateForSessionAsync(
     sessionId: string,
-    options?: { workspaceId?: string | null },
+    options?: { workspaceId?: string | null; projectId?: string | null },
   ): Promise<string> {
     return this.getOrCreateForSession(sessionId, options)
   }
 
   async focusBoundForSessionAsync(
     sessionId: string,
-    options?: { workspaceId?: string | null },
+    options?: { workspaceId?: string | null; projectId?: string | null },
   ): Promise<string> {
     return this.focusBoundForSession(sessionId, options)
   }
@@ -1137,149 +1668,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return Array.from(this.instances.values())
       .map((instance) => instance.window)
       .filter((win) => !win.isDestroyed())
-  }
-
-  attachSurface(
-    id: string,
-    hostWebContentsId: number,
-    state: BrowserSurfaceState,
-  ): string {
-    const instance = this.requireAliveInstance(id)
-    const host = this.requireSurfaceHost(instance, hostWebContentsId)
-    const normalizedState = this.normalizeSurfaceState(state, host)
-    const leaseId = randomUUID()
-
-    this.forceCloseToolbarMenu(instance, 'surface-attach')
-    this.removeRootFromCurrentParent(instance)
-    instance.presentation = {
-      mode: 'panel',
-      hostWebContentsId,
-      leaseId,
-      state: normalizedState,
-    }
-    instance.window.hide()
-    host.contentView.addChildView(instance.rootView)
-    const hostClosedListener = () => {
-      if (
-        instance.presentation.mode === 'panel'
-        && instance.presentation.hostWebContentsId === hostWebContentsId
-        && instance.presentation.leaseId === leaseId
-      ) {
-        this.parkInstance(instance)
-      }
-    }
-    instance.surfaceHostClosedListener = hostClosedListener
-    host.once('closed', hostClosedListener)
-    this.layoutAllViews(instance)
-    this.reorderPanelSurfaces(hostWebContentsId)
-    instance.isVisible = normalizedState.visible
-    this.pushToolbarState(instance)
-    this.emitStateChange(instance)
-    mainLog.info(
-      `[browser-pane] surface attached id=${id} host=${hostWebContentsId} visible=${normalizedState.visible} bounds=${JSON.stringify(normalizedState.bounds)}`,
-    )
-    return leaseId
-  }
-
-  updateSurface(
-    id: string,
-    hostWebContentsId: number,
-    leaseId: string,
-    state: BrowserSurfaceState,
-  ): void {
-    const instance = this.requireAliveInstance(id)
-    if (
-      instance.presentation.mode !== 'panel'
-      || instance.presentation.hostWebContentsId !== hostWebContentsId
-      || instance.presentation.leaseId !== leaseId
-    ) {
-      return
-    }
-
-    const host = this.requireSurfaceHost(instance, hostWebContentsId)
-    const previousState = instance.presentation.state
-    const nextState = this.normalizeSurfaceState(state, host)
-    if (
-      previousState.visible === nextState.visible
-      && previousState.order === nextState.order
-      && previousState.bounds.x === nextState.bounds.x
-      && previousState.bounds.y === nextState.bounds.y
-      && previousState.bounds.width === nextState.bounds.width
-      && previousState.bounds.height === nextState.bounds.height
-      && previousState.contentBounds.x === nextState.contentBounds.x
-      && previousState.contentBounds.y === nextState.contentBounds.y
-      && previousState.contentBounds.width === nextState.contentBounds.width
-      && previousState.contentBounds.height === nextState.contentBounds.height
-    ) return
-    instance.presentation.state = nextState
-    this.layoutAllViews(instance)
-    this.reorderPanelSurfaces(hostWebContentsId)
-    instance.isVisible = instance.presentation.state.visible
-    this.emitStateChange(instance)
-    if (previousState.visible !== instance.presentation.state.visible) {
-      mainLog.info(
-        `[browser-pane] surface visibility id=${id} visible=${instance.presentation.state.visible}`,
-      )
-    }
-  }
-
-  detachSurface(
-    id: string,
-    hostWebContentsId: number,
-    leaseId: string,
-  ): void {
-    const instance = this.instances.get(id)
-    if (
-      !instance
-      || instance.presentation.mode !== 'panel'
-      || instance.presentation.hostWebContentsId !== hostWebContentsId
-      || instance.presentation.leaseId !== leaseId
-    ) {
-      return
-    }
-    this.parkInstance(instance)
-  }
-
-  parkSurfaces(
-    ids: string[],
-    requester: { hostWebContentsId: number; workspaceId?: string | null },
-  ): void {
-    const instances = [...new Set(ids)].map(id => this.requireAliveInstance(id))
-    for (const instance of instances) {
-      if (
-        instance.workspaceId
-        && requester.workspaceId
-        && instance.workspaceId !== requester.workspaceId
-      ) {
-        throw new Error('Browser instance belongs to a different workspace')
-      }
-      if (
-        instance.presentation.mode === 'panel'
-        && instance.presentation.hostWebContentsId !== requester.hostWebContentsId
-      ) {
-        throw new Error('Browser surface belongs to a different renderer host')
-      }
-    }
-    for (const instance of instances) this.parkInstance(instance)
-  }
-
-  /**
-   * Detach every native Browser surface owned by one renderer window while
-   * keeping the Browser instances and their sessions alive.
-   */
-  parkSurfacesForHost(hostWebContentsId: number): void {
-    const attached = Array.from(this.instances.values()).filter(instance => (
-      instance.presentation.mode === 'panel'
-      && instance.presentation.hostWebContentsId === hostWebContentsId
-    ))
-    for (const instance of attached) {
-      this.parkInstance(instance)
-    }
-    if (attached.length > 0) {
-      mainLog.info(
-        `[browser-pane] parked ${attached.length} surface(s) for renderer host=${hostWebContentsId}`,
-      )
-    }
   }
 
   async navigate(id: string, url: string): Promise<{ url: string; title: string }> {
@@ -1321,6 +1709,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     value: WebSelectionReferenceV1,
     options?: { workspaceId?: string | null; browserId?: string },
   ): Promise<BrowserSelectionRevealResult> {
+    if (!options?.workspaceId) {
+      throw new Error('Browser selection reveal requires an owning Workspace')
+    }
     const reference = sanitizeWebSelectionReference(value)
     if (!reference) {
       return { ok: false, reason: 'invalid_reference' }
@@ -1336,13 +1727,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     ) {
       throw new Error('Browser instance belongs to a different workspace')
     }
+    if (instance?.projectId && instance.projectId !== reference.projectId) {
+      throw new Error('Browser instance belongs to a different project')
+    }
 
     const created = instance === undefined
     if (!instance) {
       const browserId = this.createInstance(undefined, {
         show: false,
         ownerType: 'manual',
-        workspaceId: options?.workspaceId ?? null,
+        workspaceId: options.workspaceId,
+        projectId: reference.projectId,
       })
       instance = this.requireAliveInstance(browserId)
     }
@@ -1375,6 +1770,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     if (!found) {
+      this.focus(instance.id)
       return {
         ok: true,
         browserId: instance.id,
@@ -1383,6 +1779,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         reason: 'selection_not_found',
       }
     }
+    this.focus(instance.id)
     return {
       ok: true,
       browserId: instance.id,
@@ -1420,38 +1817,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.pageView.webContents.stop()
   }
 
-  focus(id: string): void {
+  focus(id: string, options?: { preserveTargetMetadata?: boolean }): void {
     const instance = this.instances.get(id)
     if (!instance) return
 
-    const attachedHostId = instance.presentation.mode === 'window'
-      ? null
-      : instance.presentation.hostWebContentsId
-    const host = attachedHostId
-      ? this.windowManager?.getWindowByWebContentsId(attachedHostId)
-      : instance.workspaceId
-        ? this.windowManager?.getWindowByWorkspace(instance.workspaceId)
-        : null
-    if (host && !host.isDestroyed()) {
-      if (instance.presentation.mode === 'panel') {
-        if (host.isMinimized()) host.restore()
-        host.show()
-        host.focus()
-      }
-      this.presentRequestCallback?.(
-        {
-          browserId: instance.id,
-          sessionId: this.getPublicSessionId(instance.boundSessionId),
-          workspaceId: instance.workspaceId,
-        },
-        host.webContents.id,
-      )
-      return
-    }
-    if (instance.presentation.mode === 'parked') return
-
     const win = instance.window
     if (win.isDestroyed()) return
+    if (!options?.preserveTargetMetadata) {
+      void this.refreshProjectTarget(instance)
+      void this.refreshTargetChat(instance)
+    }
 
     // If toolbar hasn't painted yet, defer showing until markToolbarReady runs.
     // Token guard prevents stale deferred focus from showing after hide/destroy.
@@ -1481,20 +1856,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // Chromium's compositor when the native page view is mid-load.
     if (instance.isHiding) return
 
-    if (instance.presentation.mode === 'panel') {
-      this.forceCloseToolbarMenu(instance, 'panel-close-request')
-      this.closePanelRequestCallback?.(
-        instance.id,
-        instance.presentation.hostWebContentsId,
-      )
-      return
-    }
-    if (instance.presentation.mode === 'parked') return
-
     const win = instance.window
     if (win.isDestroyed()) return
 
     instance.isHiding = true
+    instance.targetRefreshToken += 1
+    instance.targetMetadataFresh = false
+    instance.toolbarMenuRequestToken += 1
 
     // Cancel any deferred show request queued before toolbar was ready.
     if (instance.pendingShowOnReady) {
@@ -2415,17 +2783,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const requestedViewportWidth = Math.max(320, Math.floor(width))
     const requestedViewportHeight = Math.max(240, Math.floor(height))
-    if (instance.presentation.mode === 'panel') {
-      instance.cdp.setViewportSize(
-        requestedViewportWidth,
-        requestedViewportHeight,
-      )
-      return {
-        width: requestedViewportWidth,
-        height: requestedViewportHeight,
-      }
-    }
-
     instance.cdp.clearViewportSize()
     instance.window.setContentSize(requestedViewportWidth, requestedViewportHeight + TOOLBAR_HEIGHT)
 
@@ -2510,49 +2867,59 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     await instance.pageView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`)
   }
 
-  bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null }): void {
+  bindSession(
+    id: string,
+    sessionId: string,
+    options?: { workspaceId?: string | null; projectId?: string | null },
+  ): void {
     const instance = this.instances.get(id)
-    if (instance) {
-      instance.boundSessionId = sessionId
-      instance.ownerType = 'session'
-      instance.ownerSessionId = sessionId
-      // Adopt the new binder's workspace. Manual windows being reused for a
-      // session start carrying that session's workspace so the receiving
-      // workspace's UI sees them and others don't.
-      if (options?.workspaceId !== undefined) {
-        instance.workspaceId = options.workspaceId
-      }
-      this.emitStateChange(instance)
+    if (!instance) return
+
+    instance.boundSessionId = sessionId
+    instance.ownerType = 'session'
+    instance.ownerSessionId = sessionId
+    if (options?.workspaceId !== undefined) {
+      instance.workspaceId = options.workspaceId
     }
+    if (options?.projectId !== undefined) {
+      instance.projectId = options.projectId
+    }
+    instance.targetRefreshToken += 1
+    instance.targetSessionId = sessionId
+    this.emitStateChange(instance)
   }
 
   unbindSession(id: string): void {
     const instance = this.instances.get(id)
-    if (instance) {
-      instance.boundSessionId = null
-      instance.ownerType = 'manual'
-      // Preserve ownerSessionId as last-known owner for lifecycle targeting.
-      this.emitStateChange(instance)
-    }
+    if (!instance) return
+    instance.boundSessionId = null
+    this.emitStateChange(instance)
   }
 
-  /** Unbind all instances bound to the given session (non-destructive — window stays alive and reusable). */
+  /** Release active agent control without changing the window's Chat owner. */
   unbindAllForSession(sessionId: string): void {
     for (const instance of this.instances.values()) {
       if (instance.boundSessionId === sessionId) {
         instance.boundSessionId = null
-        instance.ownerType = 'manual'
-        // Keep ownerSessionId for post-turn lifecycle commands like `close` and `hide`.
-        instance.ownerSessionId = instance.ownerSessionId ?? sessionId
         this.emitStateChange(instance)
-        mainLog.info(`[browser-pane] Unbound instance ${instance.id} from session ${sessionId} (owner retained: ${instance.ownerSessionId ?? 'none'})`)
+        mainLog.info(`[browser-pane] Released active control for instance ${instance.id} session=${sessionId}`)
       }
     }
   }
 
-  getBoundForSession(sessionId: string): string | null {
+  getBoundForSession(
+    sessionId: string,
+    scope?: { workspaceId: string | null; projectId: string | null },
+  ): string | null {
     for (const instance of this.instances.values()) {
-      if (instance.ownerType === 'session' && instance.ownerSessionId === sessionId) {
+      if (
+        instance.ownerType === 'session'
+        && instance.ownerSessionId === sessionId
+        && (!scope || (
+          instance.workspaceId === scope.workspaceId
+          && instance.projectId === scope.projectId
+        ))
+      ) {
         if (instance.window.isDestroyed()) {
           this.cleanupDestroyedInstance(instance, `getBoundForSession(${sessionId})`)
           continue
@@ -2563,47 +2930,46 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return null
   }
 
-  /**
-   * Pick an unbound window that the caller's workspace is allowed to adopt.
-   *
-   * Why workspace filtering matters: when a session ends, its window stays
-   * alive and becomes `ownerType='manual'` so the next turn of the **same**
-   * session can re-bind it. But the window keeps its original `workspaceId`.
-   * Without filtering, a session in workspace B would grab a window left
-   * behind by workspace A — moving the window across workspaces, which is
-   * exactly the leak this whole workspace-isolation work is fixing.
-   *
-   * Rule: adoption is allowed if the unbound window has `workspaceId === null`
-   * (truly user-opened, no workspace context) OR matches the caller's
-   * `workspaceId`. Same-workspace reuse covers the legitimate "turn ended,
-   * next turn re-binds" case as well as any future turn of any session in
-   * that workspace.
-   */
-  private findReusableUnboundInstance(workspaceId: string | null): BrowserInstance | null {
-    const candidates = Array.from(this.instances.values()).filter(
-      (i) =>
-        i.boundSessionId === null &&
-        i.ownerType === 'manual' &&
-        (i.workspaceId === null || i.workspaceId === workspaceId),
-    )
-    if (candidates.length === 0) return null
-
-    // Prefer visible windows first, then fall back to first available.
-    return candidates.find((i) => i.isVisible) ?? candidates[0]
-  }
-
   createForSession(
     sessionId: string,
-    options?: { show?: boolean; allowReuseManual?: boolean; workspaceId?: string | null },
+    options?: {
+      show?: boolean
+      workspaceId?: string | null
+      projectId?: string | null
+      originWebContentsId?: number | null
+    },
   ): string {
     const workspaceId = options?.workspaceId ?? null
-    const existing = this.getBoundForSession(sessionId)
+    const projectId = options?.projectId ?? null
+    const existing = this.getBoundForSession(sessionId, { workspaceId, projectId })
     if (existing) {
-      // Already bound — adopt the workspace if the caller provided one and the
-      // existing instance was bound before we knew about its workspace.
-      if (options?.workspaceId !== undefined) {
-        const instance = this.instances.get(existing)
-        if (instance) instance.workspaceId = options.workspaceId
+      const instance = this.instances.get(existing)
+      if (instance) {
+        if (
+          options?.workspaceId !== undefined
+          && instance.workspaceId !== null
+          && instance.workspaceId !== options.workspaceId
+        ) {
+          throw new Error('Browser window belongs to another Workspace')
+        }
+        if (
+          options?.projectId !== undefined
+          && instance.projectId !== null
+          && instance.projectId !== options.projectId
+        ) {
+          throw new Error('Browser window belongs to another Project')
+        }
+        if (options?.workspaceId !== undefined) instance.workspaceId = options.workspaceId
+        if (options?.projectId !== undefined) instance.projectId = options.projectId
+        if (options?.originWebContentsId !== undefined) {
+          instance.originWebContentsId = options.originWebContentsId
+        }
+        instance.boundSessionId = sessionId
+        instance.ownerType = 'session'
+        instance.targetRefreshToken += 1
+        instance.targetSessionId = sessionId
+        instance.targetMetadataFresh = false
+        this.emitStateChange(instance)
       }
       if (options?.show) {
         this.focus(existing)
@@ -2611,58 +2977,143 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return existing
     }
 
-    // Reuse an unbound/manual window before creating a new one — local
-    // sessions only. Remote agents must always get a fresh window so they
-    // can never hijack a window the user opened manually.
-    const allowReuseManual = options?.allowReuseManual ?? true
-    if (allowReuseManual) {
-      const reusable = this.findReusableUnboundInstance(workspaceId)
-      if (reusable) {
-        this.bindSession(reusable.id, sessionId, { workspaceId })
-        if (options?.show) {
-          this.focus(reusable.id)
-        }
-        mainLog.info(`[browser-pane] Reused unbound instance ${reusable.id} for session ${sessionId} (workspace=${workspaceId ?? 'none'})`)
-        return reusable.id
-      }
-    }
-
     return this.createInstance(undefined, {
       show: options?.show ?? false,
       ownerType: 'session',
       ownerSessionId: sessionId,
       workspaceId,
+      projectId,
+      targetSessionId: sessionId,
+      originWebContentsId: options?.originWebContentsId,
     })
   }
 
-  focusBoundForSession(sessionId: string, options?: { workspaceId?: string | null }): string {
-    const id = this.createForSession(sessionId, { show: true, workspaceId: options?.workspaceId })
+  focusBoundForSession(
+    sessionId: string,
+    options?: { workspaceId?: string | null; projectId?: string | null },
+  ): string {
+    const id = this.createForSession(sessionId, {
+      show: true,
+      workspaceId: options?.workspaceId,
+      projectId: options?.projectId,
+    })
     this.focus(id)
     return id
   }
 
-  getOrCreateForSession(sessionId: string, options?: { workspaceId?: string | null }): string {
-    return this.createForSession(sessionId, { show: false, workspaceId: options?.workspaceId })
+  getOrCreateForSession(
+    sessionId: string,
+    options?: { workspaceId?: string | null; projectId?: string | null },
+  ): string {
+    return this.createForSession(sessionId, {
+      show: false,
+      workspaceId: options?.workspaceId,
+      projectId: options?.projectId,
+    })
   }
 
-  getBoundInstanceId(sessionId: string): string | null {
+  destroyForSession(sessionId: string, workspaceId?: string): void {
+    const remoteOwner = this.parseOwnerKey(sessionId)
+    const targetWorkspaceId = workspaceId ?? remoteOwner?.workspaceId
+    const publicSessionId = this.getPublicSessionId(sessionId)
     for (const [id, instance] of this.instances) {
-      if (instance.boundSessionId === sessionId) {
-        if (instance.window.isDestroyed()) {
-          this.cleanupDestroyedInstance(instance, `getBoundInstanceId(${sessionId})`)
-          continue
-        }
-        return id
+      if (
+        (!targetWorkspaceId || instance.workspaceId === targetWorkspaceId)
+        && (
+          instance.boundSessionId === sessionId
+          || instance.ownerSessionId === sessionId
+        )
+      ) {
+        this.destroyInstance(id)
+        continue
+      }
+      if (
+        (!targetWorkspaceId || instance.workspaceId === targetWorkspaceId)
+        && this.getPublicSessionId(instance.targetSessionId) === publicSessionId
+      ) {
+        instance.targetRefreshToken += 1
+        instance.targetSessionId = null
+        instance.targetChat = null
+        instance.targetMetadataFresh = true
+        this.pushToolbarState(instance)
+        this.emitStateChange(instance)
       }
     }
-    return null
   }
 
-  destroyForSession(sessionId: string): void {
+  destroyForProject(workspaceId: string, projectId: string): void {
     for (const [id, instance] of this.instances) {
-      if (instance.boundSessionId === sessionId) {
+      if (instance.workspaceId === workspaceId && instance.projectId === projectId) {
         this.destroyInstance(id)
       }
+    }
+  }
+
+  beginProjectDeletion(workspaceId: string, projectId: string): void {
+    this.projectDeletionStates.set(`${workspaceId}\0${projectId}`, 'deleting')
+  }
+
+  finishProjectDeletion(workspaceId: string, projectId: string, deleted: boolean): void {
+    const key = `${workspaceId}\0${projectId}`
+    if (deleted) {
+      this.destroyForProject(workspaceId, projectId)
+      this.projectDeletionStates.set(key, 'deleted')
+    } else {
+      this.projectDeletionStates.delete(key)
+    }
+  }
+
+  reconcileWorkspace(
+    workspaceId: string,
+    input: Omit<BrowserPaneReconcileInput, 'workspaceId'>,
+  ): void {
+    const projectIds = input.projectIds ? new Set(input.projectIds) : null
+    const sessions = input.sessions
+      ? new Map(input.sessions.map(session => [session.id, session]))
+      : null
+
+    if (projectIds) {
+      const keyPrefix = `${workspaceId}\0`
+      for (const [key, state] of this.projectDeletionStates) {
+        if (!key.startsWith(keyPrefix) || state !== 'deleting') continue
+        const projectId = key.slice(keyPrefix.length)
+        if (projectIds.has(projectId)) {
+          this.projectDeletionStates.delete(key)
+        } else {
+          this.projectDeletionStates.set(key, 'deleted')
+        }
+      }
+    }
+
+    for (const [id, instance] of this.instances) {
+      if (instance.workspaceId !== workspaceId) continue
+
+      if (projectIds && (!instance.projectId || !projectIds.has(instance.projectId))) {
+        this.destroyInstance(id)
+        continue
+      }
+
+      if (!sessions) continue
+      if (instance.ownerType === 'session') {
+        const ownerSessionId = this.getPublicSessionId(instance.ownerSessionId)
+        const ownerSession = ownerSessionId ? sessions.get(ownerSessionId) : null
+        if (!ownerSession || ownerSession.projectId !== instance.projectId) {
+          this.destroyInstance(id)
+        }
+        continue
+      }
+
+      const targetSessionId = this.getPublicSessionId(instance.targetSessionId)
+      if (!targetSessionId) continue
+      const targetSession = sessions.get(targetSessionId)
+      if (targetSession && targetSession.projectId === instance.projectId) continue
+
+      instance.targetRefreshToken += 1
+      instance.targetSessionId = null
+      instance.targetChat = null
+      instance.targetMetadataFresh = true
+      this.pushToolbarState(instance)
+      this.emitStateChange(instance)
     }
   }
 
@@ -2707,6 +3158,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         ? process.platform
         : 'other'
     const cornerRadii = getBrowserLiveFxCornerRadii(liveFxPlatform)
+    const selectionLabels = {
+      addChat: i18n.t('reference.addChat'),
+      addNote: i18n.t('reference.addNote'),
+      chooseNote: i18n.t('projectNoteTarget.chooseFile'),
+      newChat: i18n.t('reference.newChat'),
+    }
 
     const html = `<!doctype html>
 <html>
@@ -2757,7 +3214,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
       #selection-actions {
         display: none;
-        align-items: stretch;
+        align-items: center;
         gap: 2px;
         width: 100%;
         height: 100%;
@@ -2776,30 +3233,25 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
       #selection-actions button {
         display: flex;
-        flex: 1 0 58px;
-        flex-direction: column;
+        flex: 0 0 auto;
+        flex-direction: row;
         align-items: center;
         justify-content: center;
-        gap: 2px;
-        min-width: 58px;
-        height: 48px;
+        gap: 6px;
+        min-width: 0;
+        height: 32px;
         border: 0;
         border-radius: 8px;
-        padding: 0 8px;
+        padding: 0 10px;
         background: transparent;
         color: inherit;
         font: inherit;
-        font-size: 10px;
+        font-size: 12px;
         font-weight: 500;
         line-height: 1;
         cursor: pointer;
         white-space: nowrap;
         transition: background-color 150ms ease;
-      }
-      #selection-actions button[data-browser-selection-action="add-note-to"] {
-        flex: 0 0 28px;
-        min-width: 28px;
-        padding: 0;
       }
       #selection-actions button svg {
         width: 16px;
@@ -2814,9 +3266,35 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       #selection-actions button:hover {
         background: rgba(38, 36, 42, 0.03);
       }
+      #selection-actions button:disabled {
+        cursor: not-allowed;
+        opacity: 0.38;
+      }
       #selection-actions button:focus-visible {
         outline: 1px solid rgba(38, 36, 42, 0.25);
         outline-offset: -1px;
+      }
+      #selection-actions .note-action-group {
+        display: flex;
+        flex: 0 0 auto;
+        height: 32px;
+      }
+      #selection-actions .note-action {
+        flex: 0 0 auto;
+        min-width: 0;
+        border-radius: 8px 0 0 8px;
+        padding: 0 8px;
+      }
+      #selection-actions .note-target-action {
+        flex: 0 0 28px;
+        min-width: 28px;
+        border-left: 1px solid rgba(38, 36, 42, 0.1);
+        border-radius: 0 8px 8px 0;
+        padding: 0;
+      }
+      #selection-actions .note-target-action svg {
+        width: 12px;
+        height: 12px;
       }
       @media (prefers-color-scheme: dark) {
         #selection-actions {
@@ -2843,52 +3321,56 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       <div id="chip">Agent is working…</div>
     </div>
     <div id="selection-actions">
+      <div class="note-action-group">
+        <button
+          type="button"
+          class="note-action"
+          title="${escapeHtml(selectionLabels.addNote)}"
+          data-browser-selection-action="add-note"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M13.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8.5z" />
+            <path d="M13 2v7h7" />
+            <path d="M12 18v-6" />
+            <path d="M9 15h6" />
+          </svg>
+          <span data-browser-selection-label>${escapeHtml(selectionLabels.addNote)}</span>
+        </button>
+        <button
+          type="button"
+          class="note-target-action"
+          title="${escapeHtml(selectionLabels.chooseNote)}"
+          aria-label="${escapeHtml(selectionLabels.chooseNote)}"
+          data-browser-selection-action="choose-note-target"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+        </button>
+      </div>
       <button
         type="button"
-        title="Append this selection to the current Session's note file"
-        data-browser-selection-action="add-note"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M13.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8.5z" />
-          <path d="M13 2v7h7" />
-          <path d="M12 18v-6" />
-          <path d="M9 15h6" />
-        </svg>
-        <span>Add Note</span>
-      </button>
-      <button
-        type="button"
-        title="Choose a note file for this selection"
-        aria-label="Add Note to another file"
-        data-browser-selection-action="add-note-to"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="m9 18 6-6-6-6" />
-        </svg>
-      </button>
-      <button
-        type="button"
-        title="Add this selection to a chat draft"
+        title="${escapeHtml(selectionLabels.addChat)}"
         data-browser-selection-action="add-chat"
       >
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M14 14a2 2 0 0 0 2-2V8h-2" />
-          <path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z" />
-          <path d="M8 14a2 2 0 0 0 2-2V8H8" />
+          <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
+          <path d="M12 7v6" />
+          <path d="M9 10h6" />
         </svg>
-        <span>Add Chat</span>
+        <span data-browser-selection-label>${escapeHtml(selectionLabels.addChat)}</span>
       </button>
       <button
         type="button"
-        title="Start a new chat with this selection"
+        title="${escapeHtml(selectionLabels.newChat)}"
         data-browser-selection-action="new-chat"
       >
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z" />
-          <path d="M12 8v6" />
-          <path d="M9 11h6" />
+          <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h6" />
+          <path d="M18 2v6" />
+          <path d="M15 5h6" />
         </svg>
-        <span>New Chat</span>
+        <span data-browser-selection-label>${escapeHtml(selectionLabels.newChat)}</span>
       </button>
     </div>
   </body>
@@ -2912,130 +3394,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       : sessionId
   }
 
-  private requireSurfaceHost(
-    instance: BrowserInstance,
-    hostWebContentsId: number,
-  ): BrowserWindow {
-    const host = this.windowManager?.getWindowByWebContentsId(hostWebContentsId)
-    if (!host || host.isDestroyed()) {
-      throw new Error('Browser surface host is not a live application window')
-    }
-
-    const hostWorkspaceId = this.windowManager?.getWorkspaceForWindow(
-      hostWebContentsId,
-    )
-    if (
-      instance.workspaceId
-      && hostWorkspaceId
-      && instance.workspaceId !== hostWorkspaceId
-    ) {
-      throw new Error('Browser instance belongs to a different workspace')
-    }
-    return host
-  }
-
-  private getPresentationWindow(instance: BrowserInstance): BrowserWindow {
-    if (instance.presentation.mode === 'panel') {
-      const host = this.windowManager?.getWindowByWebContentsId(
-        instance.presentation.hostWebContentsId,
-      )
-      if (host && !host.isDestroyed()) return host
-    }
-    return instance.window
-  }
-
-  private normalizeSurfaceState(
-    state: BrowserSurfaceState,
-    host: BrowserWindow,
-  ): BrowserSurfaceState {
-    const zoomFactor = host.webContents.getZoomFactor()
-    function scaleToPixels(value: number): number {
-      return Number.isFinite(value) ? Math.round(value * zoomFactor) : 0
-    }
-    function normalizeBounds(bounds: BrowserSurfaceState['bounds']) {
-      return {
-        x: scaleToPixels(bounds.x),
-        y: scaleToPixels(bounds.y),
-        width: Math.max(0, scaleToPixels(bounds.width)),
-        height: Math.max(0, scaleToPixels(bounds.height)),
-      }
-    }
-    return {
-      bounds: normalizeBounds(state.bounds),
-      contentBounds: normalizeBounds(state.contentBounds),
-      visible: !!state.visible,
-      order: Number.isFinite(state.order) ? Math.round(state.order) : 0,
-    }
-  }
-
-  private removeRootFromCurrentParent(instance: BrowserInstance): void {
-    if (instance.presentation.mode === 'panel') {
-      const host = this.windowManager?.getWindowByWebContentsId(
-        instance.presentation.hostWebContentsId,
-      )
-      if (host && !host.isDestroyed()) {
-        if (instance.surfaceHostClosedListener) {
-          host.removeListener('closed', instance.surfaceHostClosedListener)
-        }
-        host.contentView.removeChildView(instance.rootView)
-      }
-      instance.surfaceHostClosedListener = null
-      return
-    }
-    if (!instance.window.isDestroyed()) {
-      instance.window.contentView.removeChildView(instance.rootView)
-    }
-  }
-
-  private parkInstance(instance: BrowserInstance): void {
-    const hostWebContentsId = instance.presentation.mode === 'window'
-      ? null
-      : instance.presentation.hostWebContentsId
-    this.clearPendingSelection(instance)
-    this.forceCloseToolbarMenu(instance, 'surface-detach')
-    this.removeRootFromCurrentParent(instance)
-    instance.pendingShowOnReady = false
-    instance.pendingShowToken += 1
-    if (!instance.window.isDestroyed()) {
-      instance.window.contentView.addChildView(instance.rootView)
-      instance.window.hide()
-    }
-    instance.presentation = { mode: 'parked', hostWebContentsId }
-    instance.isVisible = false
-    this.layoutAllViews(instance)
-    this.pushToolbarState(instance)
-    this.emitStateChange(instance)
-  }
-
-  private reorderPanelSurfaces(hostWebContentsId: number): void {
-    const host = this.windowManager?.getWindowByWebContentsId(hostWebContentsId)
-    if (!host || host.isDestroyed()) return
-
-    const ordered = Array.from(this.instances.values())
-      .filter((instance) => (
-        instance.presentation.mode === 'panel'
-        && instance.presentation.hostWebContentsId === hostWebContentsId
-      ))
-      .sort((left, right) => {
-        const leftOrder = left.presentation.mode === 'panel'
-          ? left.presentation.state.order
-          : 0
-        const rightOrder = right.presentation.mode === 'panel'
-          ? right.presentation.state.order
-          : 0
-        return leftOrder - rightOrder
-      })
-    for (const instance of ordered) {
-      host.contentView.addChildView(instance.rootView)
-    }
-  }
-
   private getContentBounds(
     instance: BrowserInstance,
-  ): BrowserSurfaceState['contentBounds'] {
-    if (instance.presentation.mode === 'panel') {
-      return instance.presentation.state.contentBounds
-    }
+  ): { x: number; y: number; width: number; height: number } {
     const [width, height] = instance.window.getContentSize()
     return { x: 0, y: 0, width, height }
   }
@@ -3046,11 +3407,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private updateNativeOverlayState(instance: BrowserInstance): void {
+    if (instance.window.isDestroyed()) return
+    const stateVersion = ++instance.nativeOverlayStateVersion
     const control = instance.agentControl
     const agentActive = !!control?.active
     const shouldShow = agentActive || !!instance.pendingSelection
 
-    if (!shouldShow || !instance.nativeOverlayReady || instance.window.isDestroyed()) {
+    if (!shouldShow || !instance.nativeOverlayReady) {
       instance.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
       instance.rootView.addChildView(instance.toolbarView)
       return
@@ -3058,8 +3421,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const { x, y, width, height } = this.getContentBounds(instance)
     const pageHeight = Math.max(100, height - TOOLBAR_HEIGHT)
+    let overlayStateUpdate: Promise<unknown>
 
     if (!agentActive && instance.pendingSelection) {
+      const targetChatTitle = instance.targetChat?.title ?? null
+      const targetNotePath = instance.targetChat?.noteTargetPath ?? null
+      const selectionActionPending = instance.selectionActionPending
+      const addChatTitle = targetChatTitle
+        ? `${i18n.t('reference.addChat')}: ${targetChatTitle}`
+        : i18n.t('reference.chooseChatTarget')
+      const addNoteTitle = targetNotePath
+        ? `${i18n.t('reference.addNote')}: ${targetNotePath}`
+        : i18n.t('projectNoteTarget.chooseFile')
+      const chooseNoteTitle = targetNotePath
+        ? `${i18n.t('projectNoteTarget.chooseFile')}: ${targetNotePath}`
+        : i18n.t('projectNoteTarget.chooseFile')
       const zoomFactor = instance.pageView.webContents.getZoomFactor()
       const overlayBounds = calculateBrowserSelectionOverlayBounds(
         instance.pendingSelection.capture.rect,
@@ -3076,34 +3452,60 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       instance.rootView.addChildView(instance.nativeOverlayView)
       instance.rootView.addChildView(instance.toolbarView)
 
-      void instance.nativeOverlayView.webContents.executeJavaScript(`(() => {
+      overlayStateUpdate = instance.nativeOverlayView.webContents.executeJavaScript(`(() => {
         const overlay = document.getElementById('overlay');
         const selectionActions = document.getElementById('selection-actions');
+        const addChat = document.querySelector('[data-browser-selection-action="add-chat"]');
+        const newChat = document.querySelector('[data-browser-selection-action="new-chat"]');
+        const addNote = document.querySelector('[data-browser-selection-action="add-note"]');
+        const chooseNoteTarget = document.querySelector('[data-browser-selection-action="choose-note-target"]');
+        const targetChatTitle = ${JSON.stringify(targetChatTitle)};
+        const targetNotePath = ${JSON.stringify(targetNotePath)};
+        const selectionActionPending = ${JSON.stringify(selectionActionPending)};
+        const stateVersion = ${JSON.stringify(stateVersion)};
+        const appliedStateVersion = Number(selectionActions?.dataset.browserOverlayStateVersion ?? -1);
+        if (stateVersion < appliedStateVersion) return;
+        if (selectionActions) selectionActions.dataset.browserOverlayStateVersion = String(stateVersion);
         if (overlay) overlay.style.display = 'none';
         if (selectionActions) selectionActions.style.display = 'flex';
-      })()`).catch(() => {})
-      return
-    }
+        if (addChat instanceof HTMLButtonElement) {
+          addChat.disabled = selectionActionPending;
+          addChat.title = ${JSON.stringify(addChatTitle)};
+        }
+        if (newChat instanceof HTMLButtonElement) newChat.disabled = selectionActionPending;
+        if (addNote instanceof HTMLButtonElement) {
+          addNote.disabled = selectionActionPending;
+          addNote.title = ${JSON.stringify(addNoteTitle)};
+        }
+        if (chooseNoteTarget instanceof HTMLButtonElement) {
+          chooseNoteTarget.disabled = selectionActionPending;
+          chooseNoteTarget.title = ${JSON.stringify(chooseNoteTitle)};
+        }
+      })()`)
+    } else {
+      instance.nativeOverlayView.setBounds({
+        x,
+        y: y + TOOLBAR_HEIGHT,
+        width,
+        height: pageHeight,
+      })
+      instance.rootView.addChildView(instance.nativeOverlayView)
+      instance.rootView.addChildView(instance.toolbarView)
 
-    instance.nativeOverlayView.setBounds({
-      x,
-      y: y + TOOLBAR_HEIGHT,
-      width,
-      height: pageHeight,
-    })
-    instance.rootView.addChildView(instance.nativeOverlayView)
-    instance.rootView.addChildView(instance.toolbarView)
-
-    if (agentActive) {
       const label = this.getAgentControlLabel(control)
       const accent = this.getResolvedAccentColor()
 
-      void instance.nativeOverlayView.webContents.executeJavaScript(`(() => {
+      overlayStateUpdate = instance.nativeOverlayView.webContents.executeJavaScript(`(() => {
         const overlay = document.getElementById('overlay');
         const chip = document.getElementById('chip');
         const shield = document.getElementById('shield');
         const selectionActions = document.getElementById('selection-actions');
         if (!overlay || !chip || !shield || !selectionActions) return;
+
+        const stateVersion = ${JSON.stringify(stateVersion)};
+        const appliedStateVersion = Number(selectionActions.dataset.browserOverlayStateVersion ?? -1);
+        if (stateVersion < appliedStateVersion) return;
+        selectionActions.dataset.browserOverlayStateVersion = String(stateVersion);
 
         overlay.style.display = 'block';
         selectionActions.style.display = 'none';
@@ -3114,8 +3516,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         shield.style.pointerEvents = 'auto';
         shield.style.cursor = 'not-allowed';
         shield.style.background = 'rgba(2, 6, 23, 0.03)';
-      })()`).catch(() => {})
+      })()`)
     }
+
+    void overlayStateUpdate.catch(() => {})
   }
 
   private getWindowResizable(window: BrowserWindow): boolean {
@@ -3193,19 +3597,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private layoutAllViews(instance: BrowserInstance): void {
-    if (instance.presentation.mode === 'panel') {
-      const { bounds, visible } = instance.presentation.state
-      instance.rootView.setBounds(bounds)
-      instance.rootView.setBorderRadius(8)
-      instance.rootView.setVisible(
-        visible && bounds.width > 0 && bounds.height > 0,
-      )
-    } else {
-      const [width, height] = instance.window.getContentSize()
-      instance.rootView.setBounds({ x: 0, y: 0, width, height })
-      instance.rootView.setBorderRadius(0)
-      instance.rootView.setVisible(true)
-    }
+    const [width, height] = instance.window.getContentSize()
+    instance.rootView.setBounds({ x: 0, y: 0, width, height })
+    instance.rootView.setBorderRadius(0)
+    instance.rootView.setVisible(true)
     this.layoutToolbarView(instance)
     this.layoutPageView(instance)
     instance.rootView.addChildView(instance.toolbarView)
@@ -3218,10 +3613,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.toolbarMenuOpen = false
     instance.toolbarMenu = null
 
-    const host = instance.presentation.mode === 'panel'
-      ? this.windowManager?.getWindowByWebContentsId(instance.presentation.hostWebContentsId)
-      : instance.window
-    menu.closePopup(host && !host.isDestroyed() ? host : undefined)
+    menu.closePopup(instance.window.isDestroyed() ? undefined : instance.window)
 
     mainLog.info(`[browser-pane] toolbar menu closed id=${instance.id} reason=${reason}`)
   }
@@ -3393,7 +3785,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       canGoBack: instance.canGoBack,
       canGoForward: instance.canGoForward,
       themeColor: instance.themeColor,
-      isPanel: instance.presentation.mode === 'panel',
+      targetSessionId: this.getPublicSessionId(instance.targetSessionId),
+      targetChatTitle: instance.targetChat?.title ?? null,
+      targetNotePath: instance.targetChat?.noteTargetPath ?? null,
+      selectionFeedback: instance.selectionFeedback,
+      canChooseTargetChat: instance.ownerType === 'manual',
+      projectId: instance.projectId,
+      projectTitle: instance.projectTitle,
+      canChooseProject: instance.ownerType === 'manual',
     }
     instance.toolbarView.webContents.send(TOOLBAR_CHANNELS.STATE_UPDATE, state)
   }
@@ -3411,7 +3810,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     ipcMain.on(BROWSER_OVERLAY_ACTION_CHANNEL, (event, action: unknown) => {
       const instance = this.findInstanceByOverlayWebContentsId(event.sender.id)
-      if (instance) this.handleSelectionAction(instance, action)
+      if (instance) void this.handleSelectionAction(instance, action)
     })
 
     ipcMain.handle(TOOLBAR_CHANNELS.NAVIGATE, async (_event, instanceId: string, url: string) => {
@@ -3437,6 +3836,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     ipcMain.handle(TOOLBAR_CHANNELS.STOP, async (_event, instanceId: string) => {
       const inst = findInstance(instanceId)
       if (inst) this.stop(inst.id)
+    })
+
+    ipcMain.handle(TOOLBAR_CHANNELS.OPEN_TARGET_CHAT, async (event, instanceId: string) => {
+      const inst = findInstance(instanceId)
+      if (!inst || event.sender.id !== inst.toolbarView.webContents.id) return
+      await this.openTargetSession(instanceId)
     })
 
     ipcMain.on(TOOLBAR_CHANNELS.REQUEST_STATE, (event, instanceId: string) => {
@@ -3467,15 +3872,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     ipcMain.handle(TOOLBAR_CHANNELS.SHOW_MENU, async (
       event,
       instanceId: string,
-      kind: 'bookmarks' | 'window',
+      kind: 'bookmarks' | 'projects' | 'chats' | 'window',
     ) => {
       const inst = findInstance(instanceId)
       if (
         !inst
-        || inst.presentation.mode === 'parked'
         || event.sender.id !== inst.toolbarView.webContents.id
       ) return
-      if (kind !== 'bookmarks' && kind !== 'window') return
+      if (
+        kind !== 'bookmarks'
+        && kind !== 'projects'
+        && kind !== 'chats'
+        && kind !== 'window'
+      ) return
+      if (kind === 'chats') {
+        await this.showChatTargetMenu(inst)
+        return
+      }
+      const menuRequestToken = ++inst.toolbarMenuRequestToken
 
       let template: MenuItemConstructorOptions[]
       if (kind === 'bookmarks') {
@@ -3509,27 +3923,55 @@ export class BrowserPaneManager implements IBrowserPaneManager {
             enabled: false,
           }]
         }
+      } else if (kind === 'projects') {
+        try {
+          const targets = await this.listProjectTargets(inst.id)
+          const currentProject = targets.find(target => target.id === inst.projectId)
+          if (inst.ownerType === 'session') {
+            template = [{
+              label: currentProject?.title ?? inst.projectTitle ?? inst.projectId ?? i18n.t('reference.projectUnavailable'),
+              type: 'radio',
+              checked: true,
+              enabled: false,
+            }]
+          } else if (targets.length === 0) {
+            template = [{ label: i18n.t('projectsList.empty'), enabled: false }]
+          } else {
+            template = targets.map(target => ({
+              label: target.title,
+              type: 'radio' as const,
+              checked: target.id === inst.projectId,
+              click: () => {
+                void this.setProject(inst.id, target.id).catch((error) => {
+                  mainLog.warn(`[browser-pane] failed to change Project id=${inst.id}: ${error instanceof Error ? error.message : String(error)}`)
+                })
+              },
+            }))
+          }
+        } catch (error) {
+          mainLog.warn(`[browser-pane] Project target menu unavailable id=${inst.id} error=${error instanceof Error ? error.message : String(error)}`)
+          template = [{ label: i18n.t('reference.projectUnavailable'), enabled: false }]
+        }
       } else {
         template = [
           {
-            label: i18n.t(
-              inst.presentation.mode === 'panel'
-                ? 'browser.closePanel'
-                : 'browser.hideWindow',
-            ),
+            label: i18n.t('browser.hideWindow'),
             click: () => this.hide(inst.id),
           },
           { type: 'separator' },
           {
-            label: i18n.t(
-              inst.presentation.mode === 'panel'
-                ? 'browser.terminateBrowser'
-                : 'browser.closeWindowEntirely',
-            ),
+            label: i18n.t('browser.closeWindowEntirely'),
             click: () => this.destroyInstance(inst.id),
           },
         ]
       }
+
+      if (
+        this.instances.get(inst.id) !== inst
+        || inst.window.isDestroyed()
+        || inst.toolbarView.webContents.isDestroyed()
+        || inst.toolbarMenuRequestToken !== menuRequestToken
+      ) return
 
       this.forceCloseToolbarMenu(inst, 'replace')
       this.clearPendingSelection(inst)
@@ -3537,11 +3979,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       inst.toolbarMenuOpen = true
       inst.toolbarMenu = menu
 
-      const host = inst.presentation.mode === 'panel'
-        ? this.windowManager?.getWindowByWebContentsId(inst.presentation.hostWebContentsId)
-        : inst.window
       menu.popup({
-        ...(host && !host.isDestroyed() ? { window: host } : {}),
+        ...(!inst.window.isDestroyed() ? { window: inst.window } : {}),
         callback: () => {
           if (inst.toolbarMenu !== menu) return
           inst.toolbarMenuOpen = false
@@ -3565,8 +4004,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   /** Register the `__browser:invoke` IPC handler. Call once at app startup. */
   registerCapabilityIpc(): void {
-    ipcMain.handle('__browser:invoke', async (_event, req: BrowserCapabilityRequest) => {
-      return await this.dispatchCapability(req)
+    ipcMain.handle('__browser:invoke', async (event, req: BrowserCapabilityRequest) => {
+      return await this.dispatchCapability(req, event.sender.id)
     })
     mainLog.info('[browser-pane] Capability IPC handler registered')
   }
@@ -3586,17 +4025,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const colon = rest.indexOf(':')
     if (colon === -1) return null
     return { workspaceId: rest.slice(0, colon), sessionId: rest.slice(colon + 1) }
-  }
-
-  /** Replace `remote:${ws}:${sid}` owner-keys with raw `sid` on outbound payloads. */
-  private stripOwnerKeysInPlace<T extends Partial<BrowserInstanceInfo>>(info: T): T {
-    if (this.isRemoteOwnerKey(info.boundSessionId)) {
-      info.boundSessionId = this.parseOwnerKey(info.boundSessionId)!.sessionId
-    }
-    if (this.isRemoteOwnerKey(info.ownerSessionId)) {
-      info.ownerSessionId = this.parseOwnerKey(info.ownerSessionId)!.sessionId
-    }
-    return info
   }
 
   /**
@@ -3625,7 +4053,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       }
       const owned = instance.boundSessionId === ownerKey || instance.ownerSessionId === ownerKey
       if (!owned) continue
-      infos.push(this.stripOwnerKeysInPlace(this.toInfo(instance)))
+      infos.push(this.toInfo(instance))
     }
     return infos
   }
@@ -3644,7 +4072,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private toSnapshot(instance: BrowserInstance): BrowserInstanceSnapshot {
     return {
       ownerType: instance.ownerType,
-      ownerSessionId: instance.ownerSessionId,
+      ownerSessionId: this.getPublicSessionId(instance.ownerSessionId),
       isVisible: instance.isVisible,
       title: instance.title,
       currentUrl: instance.currentUrl,
@@ -3661,48 +4089,109 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /** Main dispatcher. Strongly-typed `switch` over `IBrowserPaneManager` methods. */
-  private async dispatchCapability(req: BrowserCapabilityRequest): Promise<unknown> {
+  private async dispatchCapability(
+    req: BrowserCapabilityRequest,
+    originWebContentsId?: number,
+  ): Promise<unknown> {
     if (!req || req.v !== 1) {
       throw new CodedError('HANDLER_ERROR',
         `Unsupported browser capability request shape (v=${(req as { v?: unknown })?.v}).`)
     }
-    const ownerKey = this.toOwnerKey(req.workspaceId, req.sessionId)
+    const workspaces = getWorkspaces()
+    const senderWorkspaceId = originWebContentsId == null
+      ? null
+      : this.windowManager?.getWorkspaceForWindow(originWebContentsId) ?? null
+    const senderWorkspace = senderWorkspaceId
+      ? workspaces.find(candidate => candidate.id === senderWorkspaceId)
+      : null
+    const senderMatchesRequest = !!senderWorkspaceId && (
+      this.capabilityRemoteWorkspaceId === req.workspaceId
+      || senderWorkspace?.id === req.workspaceId
+      || senderWorkspace?.remoteServer?.remoteWorkspaceId === req.workspaceId
+    )
+    if (senderWorkspaceId && !senderMatchesRequest) {
+      throw new CodedError(
+        'BROWSER_INSTANCE_NOT_OWNED',
+        `Browser Workspace "${req.workspaceId}" does not belong to the sender window.`,
+      )
+    }
+    const matchingWorkspaces = senderWorkspaceId
+      ? []
+      : workspaces.filter(candidate => (
+          candidate.id === req.workspaceId
+          || candidate.remoteServer?.remoteWorkspaceId === req.workspaceId
+        ))
+    if (!senderWorkspaceId && matchingWorkspaces.length !== 1) {
+      throw new CodedError(
+        'BROWSER_INSTANCE_NOT_OWNED',
+        matchingWorkspaces.length === 0
+          ? `Browser Workspace "${req.workspaceId}" is not hosted by this client.`
+          : `Browser Workspace "${req.workspaceId}" is not uniquely hosted by this client.`,
+      )
+    }
+    const localWorkspaceId = senderWorkspaceId ?? matchingWorkspaces[0].id
+    const ownerKey = this.toOwnerKey(localWorkspaceId, req.sessionId)
     const args = req.args ?? []
 
     switch (req.method) {
       // -- Session-scoped (no instanceId arg, takes a sessionId) ----------------
       case 'createForSession': {
-        const [, options] = args as [string, { show?: boolean } | undefined]
+        const [, options] = args as [
+          string,
+          { show?: boolean; projectId?: string | null } | undefined,
+        ]
         return this.createForSession(ownerKey, {
           show: options?.show ?? false,
-          allowReuseManual: false,
-          workspaceId: req.workspaceId,
+          workspaceId: localWorkspaceId,
+          projectId: options?.projectId,
+          originWebContentsId,
         })
       }
-      // Remote agents must NEVER reuse an existing manual / unbound window —
-      // even one that was previously bound to a local session. The
-      // workspaceId-aware reuse filter is best-effort (it can still match
-      // legacy windows stamped with workspaceId=null), so we belt-and-brace
-      // by disabling manual reuse on every remote lifecycle path. Each remote
-      // session-id namespace gets a fresh window unless it already owns one.
-      case 'getOrCreateForSession':
+      case 'getOrCreateForSession': {
+        const [, options] = args as [
+          string,
+          { projectId?: string | null } | undefined,
+        ]
         return this.createForSession(ownerKey, {
           show: false,
-          allowReuseManual: false,
-          workspaceId: req.workspaceId,
+          workspaceId: localWorkspaceId,
+          projectId: options?.projectId,
+          originWebContentsId,
         })
+      }
       case 'focusBoundForSession': {
+        const [, options] = args as [
+          string,
+          { projectId?: string | null } | undefined,
+        ]
         const id = this.createForSession(ownerKey, {
           show: true,
-          allowReuseManual: false,
-          workspaceId: req.workspaceId,
+          workspaceId: localWorkspaceId,
+          projectId: options?.projectId,
+          originWebContentsId,
         })
         this.focus(id)
         return id
       }
       case 'destroyForSession':
-        this.destroyForSession(ownerKey)
+        this.destroyForSession(ownerKey, localWorkspaceId)
         return undefined
+      case 'beginProjectDeletion': {
+        const [workspaceId, projectId] = args as [string, string]
+        if (workspaceId !== req.workspaceId) {
+          throw new Error('Cannot delete a Browser Project outside the owning Workspace')
+        }
+        this.beginProjectDeletion(localWorkspaceId, projectId)
+        return undefined
+      }
+      case 'finishProjectDeletion': {
+        const [workspaceId, projectId, deleted] = args as [string, string, boolean]
+        if (workspaceId !== req.workspaceId) {
+          throw new Error('Cannot finish Browser Project deletion outside the owning Workspace')
+        }
+        this.finishProjectDeletion(localWorkspaceId, projectId, deleted)
+        return undefined
+      }
       case 'clearVisualsForSession':
         await this.clearVisualsForSession(ownerKey)
         return undefined
@@ -3711,7 +4200,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         return undefined
       case 'setAgentControl': {
         const [, meta] = args as [string, { displayName?: string; intent?: string }]
-        this.setAgentControl(ownerKey, meta, { workspaceId: req.workspaceId })
+        this.setAgentControl(ownerKey, meta)
         return undefined
       }
       case 'clearAgentControl':
@@ -3737,14 +4226,21 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         // `getInstance` returns the live BrowserInstance (which embeds non-
         // cloneable Electron native objects). Project to a plain snapshot
         // before crossing the IPC boundary.
-        return this.stripOwnerKeysInPlace(this.toSnapshot(live))
+        return this.toSnapshot(live)
       }
       case 'listInstances':
         return this.listInstancesForOwner(ownerKey)
       case 'bindSession': {
-        const [instanceId] = args as [string, string]
+        const [instanceId, , options] = args as [
+          string,
+          string,
+          { projectId?: string | null } | undefined,
+        ]
         this.requireOwnedInstance(instanceId, ownerKey)
-        this.bindSession(instanceId, ownerKey, { workspaceId: req.workspaceId })
+        this.bindSession(instanceId, ownerKey, {
+          workspaceId: localWorkspaceId,
+          projectId: options?.projectId,
+        })
         return undefined
       }
       case 'focus': {
@@ -3918,15 +4414,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const shouldShowNow = instance.showOnCreate || instance.pendingShowOnReady
     if (!shouldShowNow) return
-    if (instance.presentation.mode === 'panel') {
-      instance.pendingShowOnReady = false
-      this.pushToolbarState(instance)
-      return
-    }
-    if (instance.presentation.mode === 'parked') {
-      instance.pendingShowOnReady = false
-      return
-    }
 
     const tokenAtReady = instance.pendingShowToken
     instance.pendingShowOnReady = false
@@ -3952,7 +4439,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   setAgentControl(
     sessionId: string,
     meta: { displayName?: string; intent?: string },
-    options?: { workspaceId?: string | null },
   ): void {
     for (const instance of this.instances.values()) {
       if (instance.boundSessionId === sessionId) {
@@ -3962,12 +4448,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           sessionId,
           displayName: meta.displayName,
           intent: meta.intent,
-        }
-
-        // Backfill workspaceId for instances that were created before the
-        // workspace was known (legacy callers / pre-workspaceId code paths).
-        if (options?.workspaceId !== undefined && instance.workspaceId === null) {
-          instance.workspaceId = options.workspaceId
         }
 
         const label = this.getAgentControlLabel(instance.agentControl)
@@ -4825,7 +5305,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           minHeight: 520,
           show: true,
           autoHideMenuBar: true,
-          parent: this.getPresentationWindow(instance),
+          parent: instance.window,
           modal: false,
           webPreferences: {
             partition: SESSION_PARTITION,
@@ -4844,23 +5324,34 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     instance.window.on('focus', () => {
       this.interactedCallback?.(instance.id)
+      if (!instance.targetMetadataFresh) {
+        void this.refreshProjectTarget(instance)
+        void this.refreshTargetChat(instance)
+      }
+    })
+
+    instance.window.on('blur', () => {
+      instance.targetMetadataFresh = false
     })
 
     instance.window.on('show', () => {
-      if (instance.presentation.mode === 'panel') return
       instance.isVisible = true
       this.emitStateChange(instance)
       this.reapplyAgentControlVisual(instance)
       this.pushToolbarState(instance)
       this.updateNativeOverlayState(instance)
+      void this.refreshProjectTarget(instance)
+      void this.refreshTargetChat(instance)
       if (!instance.themeColor) {
         void this.extractThemeColor(instance)
       }
     })
 
     instance.window.on('hide', () => {
-      if (instance.presentation.mode === 'panel') return
+      instance.toolbarMenuRequestToken += 1
+      this.forceCloseToolbarMenu(instance, 'window-hide-event')
       instance.isVisible = false
+      instance.targetMetadataFresh = false
       this.emitStateChange(instance)
       this.updateNativeOverlayState(instance)
     })
@@ -4879,13 +5370,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       isLoading: instance.isLoading,
       canGoBack: instance.canGoBack,
       canGoForward: instance.canGoForward,
-      boundSessionId: instance.boundSessionId,
+      targetSessionId: this.getPublicSessionId(instance.targetSessionId),
+      boundSessionId: this.getPublicSessionId(instance.boundSessionId),
       ownerType: instance.ownerType,
-      ownerSessionId: instance.ownerSessionId,
+      ownerSessionId: this.getPublicSessionId(instance.ownerSessionId),
       isVisible: instance.isVisible,
       agentControlActive: !!instance.agentControl?.active,
       themeColor: instance.themeColor,
       workspaceId: instance.workspaceId,
+      projectId: instance.projectId,
     }
   }
 

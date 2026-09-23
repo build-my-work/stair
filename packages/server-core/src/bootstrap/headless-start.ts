@@ -378,7 +378,19 @@ export async function bootstrapServer<TSessionManager, THandlerDeps>(
     serverVersion: options.serverVersion,
     tls: options.tls,
     httpHandler: options.httpHandler,
-    onClientConnected: options.onClientConnected,
+    onClientConnected: (info) => {
+      options.onClientConnected?.(info)
+      const smWithConnect = sessionManager as unknown as {
+        onClientConnected?: (clientId: string, workspaceId: string | null) => void
+      }
+      if (typeof smWithConnect.onClientConnected === 'function') {
+        try {
+          smWithConnect.onClientConnected(info.clientId, info.workspaceId)
+        } catch {
+          // Recovery hook failures must not break the transport.
+        }
+      }
+    },
     onClientDisconnected: (clientId) => {
       options.cleanupClientResources?.(clientId)
       // Best-effort: notify SM so it can drop browser-host pins for this client.

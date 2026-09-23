@@ -14,11 +14,12 @@ import { extractWorkspaceSlugFromPath } from '../utils/workspace-slug.ts';
 import { initializeDocs } from '../docs/index.ts';
 import { expandPath, toPortablePath, getBundledAssetsDir } from '../utils/paths.ts';
 import { debug } from '../utils/debug.ts';
-import { readJsonFileSync } from '../utils/files.ts';
+import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
 import { CONFIG_DIR } from './paths.ts';
 import {
   isReference,
   MAX_REFERENCES_PER_MESSAGE,
+  referenceKey,
   referencesFitSerializedLimits,
   type Reference,
   type StoredAttachment,
@@ -1220,6 +1221,11 @@ export interface SessionDraft {
 
 interface DraftsData {
   drafts: Record<string, SessionDraft>;
+  appliedRestoreIds: Record<string, string[]>;
+  appliedReferenceRequests: Record<string, Array<{
+    requestId: string;
+    referenceKey: string;
+  }>>;
   updatedAt: number;
 }
 
@@ -1289,25 +1295,52 @@ function isEmptyDraft(draft: SessionDraft): boolean {
 function loadDraftsData(): DraftsData {
   try {
     if (!existsSync(DRAFTS_FILE)) {
-      return { drafts: {}, updatedAt: 0 };
+      return { drafts: {}, appliedRestoreIds: {}, appliedReferenceRequests: {}, updatedAt: 0 };
     }
-    const raw = readJsonFileSync<{ drafts?: Record<string, unknown>; updatedAt?: number }>(DRAFTS_FILE);
+    const raw = readJsonFileSync<{
+      drafts?: Record<string, unknown>;
+      appliedRestoreIds?: Record<string, unknown>;
+      appliedReferenceRequests?: Record<string, unknown>;
+      updatedAt?: number;
+    }>(DRAFTS_FILE);
     const drafts: Record<string, SessionDraft> = {};
     for (const [sessionId, value] of Object.entries(raw.drafts ?? {})) {
       if (isSessionDraft(value)) {
         drafts[sessionId] = value;
       }
     }
-    return { drafts, updatedAt: raw.updatedAt ?? 0 };
+    const appliedRestoreIds: Record<string, string[]> = {};
+    for (const [sessionId, value] of Object.entries(raw.appliedRestoreIds ?? {})) {
+      if (Array.isArray(value) && value.every(id => typeof id === 'string')) {
+        appliedRestoreIds[sessionId] = value.slice(-64);
+      }
+    }
+    const appliedReferenceRequests: DraftsData['appliedReferenceRequests'] = {};
+    for (const [sessionId, value] of Object.entries(raw.appliedReferenceRequests ?? {})) {
+      if (!Array.isArray(value)) continue;
+      const requests = value.filter((entry): entry is { requestId: string; referenceKey: string } => (
+        !!entry
+        && typeof entry === 'object'
+        && typeof (entry as { requestId?: unknown }).requestId === 'string'
+        && typeof (entry as { referenceKey?: unknown }).referenceKey === 'string'
+      ));
+      if (requests.length > 0) appliedReferenceRequests[sessionId] = requests.slice(-64);
+    }
+    return {
+      drafts,
+      appliedRestoreIds,
+      appliedReferenceRequests,
+      updatedAt: raw.updatedAt ?? 0,
+    };
   } catch {
-    return { drafts: {}, updatedAt: 0 };
+    return { drafts: {}, appliedRestoreIds: {}, appliedReferenceRequests: {}, updatedAt: 0 };
   }
 }
 
 function saveDraftsData(data: DraftsData): void {
   ensureConfigDir();
   data.updatedAt = Date.now();
-  writeFileSync(DRAFTS_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  atomicWriteFileSync(DRAFTS_FILE, JSON.stringify(data, null, 2));
 }
 
 /**
@@ -1325,20 +1358,31 @@ export function getSessionDraft(sessionId: string): SessionDraft | null {
 export function setSessionDraft(sessionId: string, draft: SessionDraft): void {
   if (!isSessionDraft(draft)) throw new Error('Invalid session draft');
   const data = loadDraftsData();
+  persistSessionDraft(data, sessionId, draft);
+  saveDraftsData(data);
+}
+
+function persistSessionDraft(
+  data: DraftsData,
+  sessionId: string,
+  draft: SessionDraft,
+): SessionDraft | null {
+  if (!isSessionDraft(draft)) throw new Error('Invalid session draft');
   if (isEmptyDraft(draft)) {
     delete data.drafts[sessionId];
-  } else {
-    data.drafts[sessionId] = {
-      text: draft.text,
-      ...(draft.attachments && draft.attachments.length > 0
-        ? { attachments: draft.attachments.map(normalizeDraftAttachment) }
-        : {}),
-      ...(draft.references && draft.references.length > 0
-        ? { references: draft.references }
-        : {}),
-    };
+    return null;
   }
-  saveDraftsData(data);
+  const normalized: SessionDraft = {
+    text: draft.text,
+    ...(draft.attachments && draft.attachments.length > 0
+      ? { attachments: draft.attachments.map(normalizeDraftAttachment) }
+      : {}),
+    ...(draft.references && draft.references.length > 0
+      ? { references: draft.references }
+      : {}),
+  };
+  data.drafts[sessionId] = normalized;
+  return normalized;
 }
 
 function normalizeDraftAttachment(ref: DraftAttachmentRef): DraftAttachmentRef {
@@ -1357,9 +1401,192 @@ function normalizeDraftAttachment(ref: DraftAttachmentRef): DraftAttachmentRef {
   return base;
 }
 
+export function setSessionDraftContent(
+  sessionId: string,
+  content: Pick<SessionDraft, 'text' | 'attachments'>,
+): SessionDraft | null {
+  const data = loadDraftsData();
+  const current = data.drafts[sessionId];
+  const result = persistSessionDraft(data, sessionId, {
+    text: content.text,
+    ...(content.attachments?.length ? { attachments: content.attachments } : {}),
+    ...(current?.references?.length ? { references: current.references } : {}),
+  });
+  saveDraftsData(data);
+  return result;
+}
+
+export function addSessionDraftReferenceAtomic(
+  sessionId: string,
+  projectId: string,
+  reference: Reference,
+  requestId?: string,
+): SessionDraft | null {
+  if (reference.projectId !== projectId) return null;
+  if (requestId !== undefined && (!requestId || requestId.length > 200)) {
+    throw new Error('Invalid draft reference request id');
+  }
+  const data = loadDraftsData();
+  const current = data.drafts[sessionId] ?? { text: '' };
+  const references = current.references ?? [];
+  if (references.some(candidate => candidate.projectId !== projectId)) return null;
+  const key = referenceKey(reference);
+  if (requestId) {
+    const applied = (data.appliedReferenceRequests[sessionId] ?? []).find(
+      request => request.requestId === requestId,
+    );
+    if (applied) {
+      if (applied.referenceKey !== key) {
+        throw new Error('DRAFT_REQUEST_CONFLICT: request id was reused for another reference');
+      }
+      return current;
+    }
+  }
+  if (references.some(candidate => referenceKey(candidate) === key)) {
+    if (requestId) {
+      data.appliedReferenceRequests[sessionId] = [
+        ...(data.appliedReferenceRequests[sessionId] ?? []),
+        { requestId, referenceKey: key },
+      ].slice(-64);
+      saveDraftsData(data);
+    }
+    return current;
+  }
+  const nextReferences = [...references, reference];
+  if (
+    nextReferences.length > MAX_REFERENCES_PER_MESSAGE
+    || !referencesFitSerializedLimits(nextReferences)
+  ) return null;
+  const result = persistSessionDraft(data, sessionId, {
+    ...current,
+    references: nextReferences,
+  });
+  if (requestId) {
+    data.appliedReferenceRequests[sessionId] = [
+      ...(data.appliedReferenceRequests[sessionId] ?? []),
+      { requestId, referenceKey: key },
+    ].slice(-64);
+  }
+  saveDraftsData(data);
+  return result;
+}
+
+export function reconcileSessionDraftReferences(
+  sessionId: string,
+  projectId: string,
+  baseReferences: Reference[],
+  nextReferences: Reference[],
+): SessionDraft | null {
+  if (
+    baseReferences.some(reference => reference.projectId !== projectId)
+    || nextReferences.some(reference => reference.projectId !== projectId)
+  ) return null;
+
+  const data = loadDraftsData();
+  const current = data.drafts[sessionId] ?? { text: '' };
+  if (current.references?.some(reference => reference.projectId !== projectId)) return null;
+  const baseKeys = new Set(baseReferences.map(referenceKey));
+  const nextKeys = new Set(nextReferences.map(referenceKey));
+  const removedKeys = new Set([...baseKeys].filter(key => !nextKeys.has(key)));
+  const merged = (current.references ?? []).filter(reference => (
+    !removedKeys.has(referenceKey(reference))
+  ));
+  const mergedKeys = new Set(merged.map(referenceKey));
+  for (const reference of nextReferences) {
+    const key = referenceKey(reference);
+    if (!baseKeys.has(key) && !mergedKeys.has(key)) {
+      merged.push(reference);
+      mergedKeys.add(key);
+    }
+  }
+  if (
+    merged.length > MAX_REFERENCES_PER_MESSAGE
+    || !referencesFitSerializedLimits(merged)
+  ) return null;
+
+  const result = persistSessionDraft(data, sessionId, {
+    ...current,
+    ...(merged.length ? { references: merged } : { references: undefined }),
+  });
+  saveDraftsData(data);
+  return result;
+}
+
+export interface SessionDraftRestoreResult {
+  draft: SessionDraft | null;
+  applied: boolean;
+}
+
+export interface SessionDraftHydrationState {
+  drafts: Record<string, SessionDraft>;
+  appliedRestoreIds: Record<string, string[]>;
+}
+
+export function restoreSessionDraftAtomic(
+  sessionId: string,
+  projectId: string,
+  restoreId: string,
+  input: SessionDraft,
+): SessionDraftRestoreResult {
+  if (!restoreId || restoreId.length > 200) throw new Error('Invalid draft restore id');
+  if (!isSessionDraft(input)) throw new Error('Invalid session draft');
+  if (input.references?.some(reference => reference.projectId !== projectId)) {
+    throw new Error('DRAFT_REFERENCE_REJECTED: Restore references belong to another Project');
+  }
+
+  const data = loadDraftsData();
+  const appliedIds = data.appliedRestoreIds[sessionId] ?? [];
+  if (appliedIds.includes(restoreId)) {
+    return { draft: data.drafts[sessionId] ?? null, applied: false };
+  }
+
+  const current = data.drafts[sessionId] ?? { text: '' };
+  if (current.references?.some(reference => reference.projectId !== projectId)) {
+    throw new Error('DRAFT_REFERENCE_REJECTED: Existing references belong to another Project');
+  }
+  const references = [...(current.references ?? [])];
+  const referenceKeys = new Set(references.map(referenceKey));
+  for (const reference of input.references ?? []) {
+    const key = referenceKey(reference);
+    if (!referenceKeys.has(key)) {
+      references.push(reference);
+      referenceKeys.add(key);
+    }
+  }
+  if (
+    references.length > MAX_REFERENCES_PER_MESSAGE
+    || !referencesFitSerializedLimits(references)
+  ) {
+    throw new Error('DRAFT_REFERENCE_REJECTED: Restored references exceed draft limits');
+  }
+
+  const result = persistSessionDraft(data, sessionId, {
+    text: input.text
+      ? (current.text ? `${current.text}\n\n${input.text}` : input.text)
+      : current.text,
+    ...((current.attachments?.length || input.attachments?.length)
+      ? { attachments: [...(current.attachments ?? []), ...(input.attachments ?? [])] }
+      : {}),
+    ...(references.length ? { references } : {}),
+  });
+  data.appliedRestoreIds[sessionId] = [...appliedIds, restoreId].slice(-64);
+  saveDraftsData(data);
+  return { draft: result, applied: true };
+}
+
 export function deleteSessionDraft(sessionId: string): void {
   const data = loadDraftsData();
   delete data.drafts[sessionId];
+  delete data.appliedRestoreIds[sessionId];
+  saveDraftsData(data);
+}
+
+/** Remove all persisted draft state when the owning Chat is permanently deleted. */
+export function purgeSessionDraft(sessionId: string): void {
+  const data = loadDraftsData();
+  delete data.drafts[sessionId];
+  delete data.appliedRestoreIds[sessionId];
+  delete data.appliedReferenceRequests[sessionId];
   saveDraftsData(data);
 }
 
@@ -1369,6 +1596,14 @@ export function deleteSessionDraft(sessionId: string): void {
 export function getAllSessionDrafts(): Record<string, SessionDraft> {
   const data = loadDraftsData();
   return data.drafts;
+}
+
+export function getSessionDraftHydrationState(): SessionDraftHydrationState {
+  const data = loadDraftsData();
+  return {
+    drafts: data.drafts,
+    appliedRestoreIds: data.appliedRestoreIds,
+  };
 }
 
 // ============================================

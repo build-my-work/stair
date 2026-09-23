@@ -13,9 +13,9 @@ describe('session-scoped tool callback merge', () => {
     unregisterSessionScopedToolCallbacks(sessionId);
   });
 
-  it('preserves existing browserPaneFns when merging turn-level callbacks', () => {
-    const browserPaneFns = {
-      openPanel: async () => ({ instanceId: 'browser-1' }),
+  it('preserves existing browserWindowFns when merging turn-level callbacks', () => {
+    const browserWindowFns = {
+      openWindow: async () => ({ instanceId: 'browser-1' }),
       navigate: async () => ({ url: 'https://example.com', title: 'Example' }),
       snapshot: async () => ({ url: 'https://example.com', title: 'Example', nodes: [] }),
       click: async () => {},
@@ -48,7 +48,7 @@ describe('session-scoped tool callback merge', () => {
     };
 
     registerSessionScopedToolCallbacks(sessionId, {
-      browserPaneFns,
+      browserWindowFns,
     });
 
     const queryFn = async () => ({ text: 'ok', model: 'test' });
@@ -56,7 +56,7 @@ describe('session-scoped tool callback merge', () => {
 
     const merged = getSessionScopedToolCallbacks(sessionId);
     expect(merged).toBeTruthy();
-    expect(merged?.browserPaneFns).toBe(browserPaneFns);
+    expect(merged?.browserWindowFns).toBe(browserWindowFns);
     expect(merged?.queryFn).toBe(queryFn);
   });
 });

@@ -116,4 +116,122 @@ describe('Workbench layout RPC', () => {
       lookup.mockRestore()
     }
   })
+
+  it('merges independent Project changes from two windows that read the same baseline', async () => {
+    const workspace = { ...createWorkspaceAtPath(rootPath, 'Workspace'), rootPath }
+    const projectA = createProject(rootPath, { name: 'Project A' })
+    const projectB = createProject(rootPath, { name: 'Project B' })
+    const lookup = spyOn(config, 'getWorkspaceByNameOrId').mockReturnValue(workspace as never)
+
+    try {
+      const handlers = register()
+      const read = handlers.get(RPC_CHANNELS.workbenchLayout.READ)!
+      const write = handlers.get(RPC_CHANNELS.workbenchLayout.WRITE)!
+      const windowA = { clientId: 'renderer-a', workspaceId: workspace.id, webContentsId: 1 }
+      const windowB = { clientId: 'renderer-b', workspaceId: workspace.id, webContentsId: 2 }
+      const baseline = {
+        version: 1,
+        layoutsByProject: {
+          [projectA.id]: {
+            primary: null,
+            auxiliary: [],
+            previewPanelId: null,
+            focusedPanelId: null,
+          },
+          [projectB.id]: {
+            primary: null,
+            auxiliary: [],
+            previewPanelId: null,
+            focusedPanelId: null,
+          },
+        },
+      }
+      await write(windowA, baseline)
+      await read(windowA)
+      await read(windowB)
+
+      await write(windowA, {
+        ...baseline,
+        layoutsByProject: {
+          ...baseline.layoutsByProject,
+          [projectA.id]: {
+            primary: null,
+            auxiliary: [{
+              id: 'file-a',
+              kind: 'project-file',
+              relativePath: 'a.md',
+              presentation: 'explicit',
+              chatTargetSessionId: null,
+              widthRatio: 1,
+            }],
+            previewPanelId: null,
+            focusedPanelId: 'file-a',
+          },
+        },
+      })
+      await write(windowB, {
+        ...baseline,
+        layoutsByProject: {
+          ...baseline.layoutsByProject,
+          [projectB.id]: {
+            primary: null,
+            auxiliary: [{
+              id: 'file-b',
+              kind: 'project-file',
+              relativePath: 'b.md',
+              presentation: 'explicit',
+              chatTargetSessionId: null,
+              widthRatio: 1,
+            }],
+            previewPanelId: null,
+            focusedPanelId: 'file-b',
+          },
+        },
+      })
+      await write(windowA, {
+        ...baseline,
+        layoutsByProject: {
+          ...baseline.layoutsByProject,
+          [projectA.id]: {
+            primary: null,
+            auxiliary: [{
+              id: 'file-a-2',
+              kind: 'project-file',
+              relativePath: 'a-2.md',
+              presentation: 'explicit',
+              chatTargetSessionId: null,
+              widthRatio: 1,
+            }],
+            previewPanelId: null,
+            focusedPanelId: 'file-a-2',
+          },
+        },
+      })
+      await write(windowA, {
+        ...baseline,
+        layoutsByProject: {
+          ...baseline.layoutsByProject,
+          [projectA.id]: {
+            primary: null,
+            auxiliary: [{
+              id: 'file-a-3',
+              kind: 'project-file',
+              relativePath: 'a-3.md',
+              presentation: 'explicit',
+              chatTargetSessionId: null,
+              widthRatio: 1,
+            }],
+            previewPanelId: null,
+            focusedPanelId: 'file-a-3',
+          },
+        },
+      })
+
+      const merged = await read(windowA)
+      expect(merged.layoutsByProject[projectA.id].auxiliary[0]?.id).toBe('file-a-3')
+      expect(merged.layoutsByProject[projectB.id].auxiliary[0]?.id).toBe('file-b')
+    } finally {
+      lookup.mockRestore()
+    }
+  })
 })

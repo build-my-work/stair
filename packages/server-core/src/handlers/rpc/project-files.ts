@@ -2,16 +2,13 @@ import { createHash, randomUUID } from 'node:crypto'
 import { constants, type Stats } from 'node:fs'
 import {
   lstat,
-  mkdir,
   open,
   readdir,
   realpath,
-  rename,
   stat,
-  unlink,
   type FileHandle,
 } from 'node:fs/promises'
-import { dirname, extname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
+import { extname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import {
   isCanonicalProjectRelativePath,
@@ -46,6 +43,13 @@ import {
   EpubArchiveValidationError,
   validateEpubArchive,
 } from '../../project-files/epub-archive-validator'
+
+import {
+  createProjectEntrySafelyWithinRoot,
+  replaceProjectFileSafelyWithinRoot,
+  SecureProjectNoteOpenError,
+  type SecureProjectNoteFileStat,
+} from './secure-project-note-file'
 
 const MAX_DIRECTORY_ENTRIES = 500
 const MAX_PROJECT_FILE_SEARCH_RESULTS = 50
@@ -343,9 +347,19 @@ async function resolveProjectPath(
   relativePath: string,
   expectedType: 'file' | 'directory',
 ): Promise<{ rootPath: string; targetPath: string; entryStat: Stats }> {
-  const root = await canonicalRoot(rootPath)
+  // WithinRoot APIs receive the authorized canonical root from the RPC resolver.
+  // Re-running realpath here would authorize a symlink substituted during the operation.
+  const root = resolve(rootPath)
   let targetPath = root
-  let entryStat: Stats = await lstat(root)
+  let entryStat: Stats
+  try {
+    entryStat = await lstat(root)
+  } catch {
+    throw projectFileError('PROJECT_FILE_NOT_FOUND', 'Project working directory is unavailable')
+  }
+  if (entryStat.isSymbolicLink()) {
+    throw projectFileError('PROJECT_FILE_ACCESS_DENIED', 'Symbolic links are not accessible')
+  }
   const segments = relativePath ? relativePath.split('/') : []
 
   for (let index = 0; index < segments.length; index += 1) {
@@ -418,6 +432,15 @@ export async function listProjectDirectoryEntriesWithinRoot(
     })
   }
 
+  try {
+    const after = await lstat(directory.targetPath)
+    const finalPath = await realpath(directory.targetPath)
+    if (!after.isDirectory() || !statSnapshotsMatch(directory.entryStat, after)
+      || !isPathWithinRoot(directory.rootPath, finalPath)) throw new Error('directory changed')
+  } catch {
+    throw projectFileError('PROJECT_FILE_CHANGED', 'Project directory changed while being read')
+  }
+
   entries.sort((left, right) => {
     if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
     return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })
@@ -432,7 +455,7 @@ export async function searchProjectFilesWithinRoot(
   query: string,
   extensions?: readonly string[],
 ): Promise<ProjectFileSearchResult[]> {
-  const root = await canonicalRoot(rootPath)
+  const { rootPath: root } = await resolveProjectPath(rootPath, '', 'directory')
   const normalizedQuery = query.trim().toLowerCase()
   if (!normalizedQuery) return []
   const allowedExtensions = extensions
@@ -446,10 +469,12 @@ export async function searchProjectFilesWithinRoot(
     for (const relativeDirectory of queue) {
       let entries
       try {
-        entries = await readdir(
-          relativeDirectory ? join(root, relativeDirectory) : root,
-          { withFileTypes: true },
-        )
+        const directory = await resolveProjectPath(root, relativeDirectory, 'directory')
+        entries = await readdir(directory.targetPath, { withFileTypes: true })
+        const after = await lstat(directory.targetPath)
+        const finalPath = await realpath(directory.targetPath)
+        if (!after.isDirectory() || !statSnapshotsMatch(directory.entryStat, after)
+          || !isPathWithinRoot(directory.rootPath, finalPath)) continue
       } catch {
         continue
       }
@@ -514,24 +539,12 @@ export async function createProjectEntryWithinRoot(
     throw projectFileError('PROJECT_FILE_ACCESS_DENIED', 'Project entry is outside the working directory')
   }
 
-  let createdFile = false
   try {
-    if (type === 'directory') {
-      await mkdir(targetPath)
-    } else {
-      const handle = await open(targetPath, 'wx')
-      createdFile = true
-      try {
-        if (initialContent) await handle.writeFile(initialContent, 'utf8')
-      } finally {
-        await handle.close()
-      }
-    }
+    await createProjectEntrySafelyWithinRoot(parent.rootPath, relativePath, type, initialContent)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+    if (error instanceof SecureProjectNoteOpenError && error.reason === 'already-exists') {
       throw projectFileError('PROJECT_FILE_ALREADY_EXISTS', 'A file or directory with this name already exists')
     }
-    if (createdFile) await unlink(targetPath).catch(() => undefined)
     throw projectFileError('PROJECT_FILE_ACCESS_DENIED', 'Project entry could not be created')
   }
   return { name: validated.name, relativePath, type }
@@ -628,7 +641,7 @@ function projectFileMimeType(relativePath: string): string {
 function metadata(
   projectId: string,
   relativePath: string,
-  fileStat: Stats,
+  fileStat: Pick<Stats, 'size' | 'mtimeMs'>,
 ): ProjectFileMetadata {
   return {
     projectId,
@@ -747,12 +760,14 @@ export function requestClientProjectFilesFlush(
   })
 }
 
-async function withProjectFileWriteQueue<T>(
+export async function withProjectFileWriteQueue<T>(
   rootPath: string,
   relativePath: string,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const key = `${await canonicalRoot(rootPath)}\0${relativePath}`
+  // realpath also folds aliases on case-insensitive filesystems (notes.md / NOTES.md).
+  const targetPath = join(resolve(rootPath), relativePath)
+  const key = await realpath(targetPath).catch(() => targetPath)
   const previous = projectFileWriteQueues.get(key) ?? Promise.resolve()
   const result = previous.catch(() => {}).then(operation)
   const settled = result.then(() => {}, () => {})
@@ -773,31 +788,18 @@ function encodeWithExistingStyle(content: string, existingBytes: Buffer): Buffer
   return hadBom ? Buffer.concat([UTF8_BOM, contentBytes]) : contentBytes
 }
 
-async function atomicReplace(targetPath: string, bytes: Buffer, mode: number): Promise<void> {
-  const tempPath = join(dirname(targetPath), `.${posix.basename(targetPath)}.${randomUUID()}.tmp`)
-  let handle: FileHandle | null = null
+export async function atomicReplace(
+  rootPath: string,
+  relativePath: string,
+  bytes: Buffer,
+  mode: number,
+): Promise<SecureProjectNoteFileStat> {
   try {
-    handle = await open(tempPath, 'wx', mode)
-    await handle.writeFile(bytes)
-    await handle.chmod(mode)
-    await handle.sync()
-    await handle.close()
-    handle = null
-    await rename(tempPath, targetPath)
-
-    try {
-      const directory = await open(dirname(targetPath), 'r')
-      try {
-        await directory.sync()
-      } finally {
-        await directory.close()
-      }
-    } catch {
-      // Some platforms do not permit syncing directories; the atomic rename still succeeded.
-    }
+    return await replaceProjectFileSafelyWithinRoot(rootPath, relativePath, bytes, mode)
   } catch (error) {
-    if (handle) await handle.close().catch(() => undefined)
-    await unlink(tempPath).catch(() => undefined)
+    if (error instanceof SecureProjectNoteOpenError) {
+      throw projectFileError('PROJECT_FILE_ACCESS_DENIED', 'Project File could not be replaced safely')
+    }
     throw error
   }
 }
@@ -825,7 +827,8 @@ export async function saveProjectTextFileWithinRoot(
       )
     }
 
-    // Re-read immediately before replace so an external writer cannot be silently overwritten.
+    // Re-read before replace to detect external changes since the editor loaded the file.
+    // App-owned writers share the queue; an external process is not covered by that lock.
     const latest = await readStableProjectFile(
       rootPath,
       validated.relativePath,
@@ -834,8 +837,7 @@ export async function saveProjectTextFileWithinRoot(
     if (fingerprint(latest.bytes) !== validated.expectedFingerprint) {
       throw projectFileError('PROJECT_FILE_CHANGED', 'Project File changed on disk')
     }
-    await atomicReplace(latest.targetPath, nextBytes, latest.stat.mode)
-    const savedStat = await stat(latest.targetPath)
+    const savedStat = await atomicReplace(rootPath, validated.relativePath, nextBytes, latest.stat.mode)
     return {
       metadata: metadata(validated.projectId, validated.relativePath, savedStat),
       sourceFingerprint: fingerprint(nextBytes),
@@ -867,8 +869,7 @@ export async function saveDrawnixProjectFileWithinRoot(
     if (fingerprint(latest.bytes) !== validated.expectedFingerprint) {
       throw projectFileError('PROJECT_FILE_CHANGED', 'Project File changed on disk')
     }
-    await atomicReplace(latest.targetPath, nextBytes, latest.stat.mode)
-    const savedStat = await stat(latest.targetPath)
+    const savedStat = await atomicReplace(rootPath, validated.relativePath, nextBytes, latest.stat.mode)
     return {
       metadata: metadata(validated.projectId, validated.relativePath, savedStat),
       sourceFingerprint: fingerprint(nextBytes),

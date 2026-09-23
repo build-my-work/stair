@@ -26,7 +26,7 @@ import type { StoredAttachment, MessageRole, ToolStatus, AuthRequestType, AuthSt
  */
 export const SESSION_PERSISTENT_FIELDS = [
   // Identity
-  'id', 'workspaceRootPath', 'sdkSessionId', 'sdkCwd',
+  'id', 'workspaceRootPath', 'sdkSessionId', 'sdkCwd', 'creationRequestId',
   // Timestamps
   'createdAt', 'lastUsedAt', 'lastMessageAt',
   // Display
@@ -64,7 +64,6 @@ export const SESSION_PERSISTENT_FIELDS = [
   'projectId',
   // Session-scoped Add Note target
   'projectNoteTargetPath',
-  'projectNoteTargetRootFingerprint',
   'projectNoteRecentTargetPaths',
   // Kanban: task/subtask hierarchy + board column
   'parentSessionId',
@@ -124,6 +123,8 @@ export type { StoredMessage } from '@craft-agent/core/types';
  */
 export interface SessionConfig {
   id: string;
+  /** Stable idempotency key for a retried create request. */
+  creationRequestId?: string;
   /** SDK session ID (captured after first message) */
   sdkSessionId?: string;
   /** Workspace root path this session belongs to */
@@ -243,8 +244,6 @@ export interface SessionConfig {
   projectId: string;
   /** Current Project-relative Add Note destination. */
   projectNoteTargetPath?: string;
-  /** Fingerprint of the Project root used when the destination was selected. */
-  projectNoteTargetRootFingerprint?: string;
   /** Most recently selected Add Note destinations, newest first. */
   projectNoteRecentTargetPaths?: string[];
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
@@ -371,7 +370,6 @@ export interface SessionHeader {
   /** Immutable workspace-scoped Project id this Session belongs to. */
   projectId: string;
   projectNoteTargetPath?: string;
-  projectNoteTargetRootFingerprint?: string;
   projectNoteRecentTargetPaths?: string[];
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
@@ -476,7 +474,6 @@ export interface SessionMetadata {
   /** Immutable workspace-scoped Project id this Session belongs to. */
   projectId: string;
   projectNoteTargetPath?: string;
-  projectNoteTargetRootFingerprint?: string;
   projectNoteRecentTargetPaths?: string[];
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;

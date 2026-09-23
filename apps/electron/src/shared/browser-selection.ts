@@ -20,14 +20,11 @@ export const BROWSER_SELECTION_LIMITS = {
   context: MAX_REFERENCE_CONTEXT_CHARS,
 } as const
 
-const BROWSER_SELECTION_ACTIONS = [
-  'add-note',
-  'add-note-to',
-  'add-chat',
-  'new-chat',
-] as const
-
-export type BrowserSelectionAction = typeof BROWSER_SELECTION_ACTIONS[number]
+export type BrowserSelectionAction =
+  | 'add-chat'
+  | 'new-chat'
+  | 'add-note'
+  | 'choose-note-target'
 
 export interface BrowserSelectionRect {
   x: number
@@ -44,7 +41,10 @@ export interface BrowserSelectionCapturePayload {
 }
 
 export function isBrowserSelectionAction(value: unknown): value is BrowserSelectionAction {
-  return BROWSER_SELECTION_ACTIONS.some(action => action === value)
+  return value === 'add-chat'
+    || value === 'new-chat'
+    || value === 'add-note'
+    || value === 'choose-note-target'
 }
 
 export function normalizeBrowserSelectionText(value: unknown): string {
@@ -147,8 +147,8 @@ export function calculateBrowserSelectionOverlayBounds(
   toolbarHeight: number,
   zoomFactor = 1,
 ): BrowserSelectionRect {
-  const width = 280
-  const height = 56
+  const width = 340
+  const height = 40
   const gap = 10
   const margin = 8
   const zoom = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1

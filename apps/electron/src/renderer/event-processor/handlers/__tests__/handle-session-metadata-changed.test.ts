@@ -9,7 +9,6 @@ describe('handleSessionMetadataChanged', () => {
       session: {
         id: 'session-1',
         projectNoteTargetPath: 'notes/research.md',
-        projectNoteTargetRootFingerprint: 'root-fingerprint',
         messages: [],
       },
       streaming: null,
@@ -19,13 +18,11 @@ describe('handleSessionMetadataChanged', () => {
       sessionId: 'session-1',
       changes: {
         projectNoteTargetPath: null,
-        projectNoteTargetRootFingerprint: null,
       },
     }
 
     const next = handleSessionMetadataChanged(state, event)
 
     expect(next.state.session.projectNoteTargetPath).toBeUndefined()
-    expect(next.state.session.projectNoteTargetRootFingerprint).toBeUndefined()
   })
 })

@@ -5,22 +5,35 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs'
+import * as fs from 'node:fs/promises'
+import * as nativeFs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createServer } from 'node:net'
 import { createHash } from 'node:crypto'
 import * as config from '@craft-agent/shared/config'
 import { createProject } from '@craft-agent/shared/projects'
+import {
+  MAX_EDITABLE_PROJECT_FILE_BYTES,
+  MAX_PROJECT_FILE_BINARY_BYTES,
+  MAX_PROJECT_FILE_TEXT_BYTES,
+} from '@craft-agent/shared/project-files'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { createWorkspaceAtPath } from '@craft-agent/shared/workspaces'
 import type { HandlerFn, RpcServer } from '../../transport'
 import type { HandlerDeps } from '../handler-deps'
 import {
   EMPTY_DRAWNIX_DOCUMENT,
+  atomicReplace,
   createDrawnixProjectFileWithinRoot,
   createProjectEntryWithinRoot,
   listProjectDirectoryEntriesWithinRoot,
@@ -33,16 +46,129 @@ import {
   saveProjectTextFileWithinRoot,
 } from './project-files'
 import { registerWorkspaceCoreHandlers } from './workspace'
+import { createProjectEntrySafelyWithinRoot } from './secure-project-note-file'
+import * as secureFiles from './secure-project-note-file'
 
 describe('Project Files RPC', () => {
   let sandbox = ''
 
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), 'stair-project-files-'))
+    sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'stair-project-files-')))
   })
 
   afterEach(() => {
     rmSync(sandbox, { recursive: true, force: true })
+  })
+
+  it.each(['list', 'search'] as const)('父目录替换后 %s 不返回 Project 外条目', async (operation) => {
+    const root = join(sandbox, 'project')
+    const docs = join(root, 'docs')
+    const outside = join(sandbox, 'outside')
+    mkdirSync(docs, { recursive: true })
+    mkdirSync(outside)
+    writeFileSync(join(root, 'inside-match.md'), 'inside')
+    writeFileSync(join(outside, 'outside-match.md'), 'outside')
+    const original = fs.readdir
+    let swapped = false
+    const barrier = spyOn(fs, 'readdir').mockImplementation((async (path, ...args) => {
+      if (!swapped && path === docs) {
+        swapped = true
+        renameSync(docs, join(root, 'docs-pinned'))
+        symlinkSync(outside, docs, process.platform === 'win32' ? 'junction' : 'dir')
+      }
+      return Reflect.apply(original, fs, [path, ...args])
+    }) as typeof fs.readdir)
+    try {
+      if (operation === 'list') {
+        await expect(listProjectDirectoryEntriesWithinRoot(root, 'docs')).rejects.toThrow('PROJECT_FILE_CHANGED')
+      } else {
+        expect(await searchProjectFilesWithinRoot(root, 'match')).toEqual([
+          { name: 'inside-match.md', relativePath: 'inside-match.md' },
+        ])
+      }
+      expect(swapped).toBe(true)
+    } finally {
+      barrier.mockRestore()
+    }
+  })
+
+  it('目录枚举尊重文件系统的大小写规则，不把同一 inode 的别名当越界', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(join(root, 'docs', 'note.md'), 'inside')
+    if (!existsSync(join(root, 'DOCS'))) {
+      await expect(listProjectDirectoryEntriesWithinRoot(root, 'DOCS')).rejects.toThrow('PROJECT_FILE_NOT_FOUND')
+      return
+    }
+    const result = await listProjectDirectoryEntriesWithinRoot(root, 'DOCS')
+    expect(result.entries).toHaveLength(1)
+    expect(result.entries[0]?.name).toBe('note.md')
+  })
+
+  it.each(['file', 'directory'] as const)('已授权根目录被替换后创建 %s 不会重新跟随软链接', async (type) => {
+    const root = join(sandbox, 'project')
+    const outside = join(sandbox, 'outside')
+    mkdirSync(root)
+    mkdirSync(outside)
+    const original = fs.lstat
+    let swapped = false
+    const barrier = spyOn(fs, 'lstat').mockImplementation((async (path, ...args) => {
+      const result = await original(path, ...args)
+      if (!swapped && path === root) {
+        swapped = true
+        renameSync(root, join(sandbox, 'project-pinned'))
+        symlinkSync(outside, root, process.platform === 'win32' ? 'junction' : 'dir')
+      }
+      return result
+    }) as typeof fs.lstat)
+    try {
+      await expect(createProjectEntryWithinRoot(root, { projectId: 'p', name: 'new-entry' }, type))
+        .rejects.toThrow('PROJECT_FILE_ACCESS_DENIED')
+      expect(swapped).toBe(true)
+      expect(readdirSync(outside)).toEqual([])
+    } finally {
+      barrier.mockRestore()
+    }
+  })
+
+  it.each(['text', 'drawnix'] as const)('保存 %s 始终替换固定父目录中的文件并返回该文件元数据', async (type) => {
+    const root = join(sandbox, 'project')
+    const docs = join(root, 'docs')
+    const pinned = join(root, 'docs-pinned')
+    const outside = join(sandbox, 'outside')
+    const name = type === 'text' ? 'notes.md' : 'board.drawnix'
+    const originalContent = type === 'text' ? 'original' : EMPTY_DRAWNIX_DOCUMENT
+    const content = type === 'text' ? 'USER EDIT' : EMPTY_DRAWNIX_DOCUMENT.replace('"zoom": 1', '"zoom": 2')
+    mkdirSync(docs, { recursive: true })
+    mkdirSync(outside)
+    writeFileSync(join(docs, name), originalContent)
+    writeFileSync(join(outside, name), 'outside must remain unchanged')
+    const request = { projectId: 'p', relativePath: `docs/${name}` }
+    const loaded = await readProjectTextFileWithinRoot(root, request)
+    const original = secureFiles.replaceProjectFileSafelyWithinRoot
+    let swapped = false
+    const barrier = spyOn(secureFiles, 'replaceProjectFileSafelyWithinRoot').mockImplementation(
+      (rootPath, relativePath, bytes, mode) => original(rootPath, relativePath, bytes, mode, {
+        beforeFinalOpen: async () => {
+          swapped = true
+          renameSync(docs, pinned)
+          symlinkSync(outside, docs, process.platform === 'win32' ? 'junction' : 'dir')
+        },
+      }),
+    )
+    try {
+      const save = type === 'text' ? saveProjectTextFileWithinRoot : saveDrawnixProjectFileWithinRoot
+      const result = await save(root, { ...request, expectedFingerprint: loaded.sourceFingerprint, content })
+      expect(swapped).toBe(true)
+      expect(readFileSync(join(outside, name), 'utf8')).toBe('outside must remain unchanged')
+      expect(readFileSync(join(pinned, name), 'utf8')).toBe(content)
+      expect(result.metadata.byteLength).toBe(Buffer.byteLength(content))
+      expect(result.metadata.lastModifiedMs).toBeCloseTo(statSync(join(pinned, name)).mtimeMs, 0)
+      expect(readdirSync(pinned)).toEqual([name])
+      expect(readdirSync(outside)).toEqual([name])
+    } finally {
+      barrier.mockRestore()
+    }
   })
 
   it('懒加载单层目录，并隐藏符号链接', async () => {
@@ -63,6 +189,57 @@ describe('Project Files RPC', () => {
       expect.objectContaining({ name: 'docs', relativePath: 'docs', type: 'directory' }),
       expect.objectContaining({ name: 'README.md', relativePath: 'README.md', type: 'file' }),
     ])
+  })
+
+  it('拒绝绝对路径和越界路径', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+
+    for (const relativePath of ['/absolute.md', '../outside.md']) {
+      await expect(readProjectTextFileWithinRoot(root, {
+        projectId: 'project-a',
+        relativePath,
+      })).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
+    }
+  })
+
+  it('拒绝符号链接或 Windows junction 路径', async () => {
+    const root = join(sandbox, 'project')
+    const outside = join(sandbox, 'outside')
+    mkdirSync(root)
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'secret.md'), 'outside')
+    symlinkSync(
+      outside,
+      join(root, 'linked'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    )
+
+    await expect(readProjectTextFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'linked/secret.md',
+    })).rejects.toThrow('PROJECT_FILE_ACCESS_DENIED')
+  })
+
+  it.skipIf(process.platform === 'win32')('拒绝 POSIX socket 特殊文件', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+    const socketPath = join(root, 's') // Stay below macOS sockaddr_un.sun_path after canonicalizing /var.
+    const server = createServer()
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(socketPath, resolve)
+    })
+    try {
+      await expect(readProjectTextFileWithinRoot(root, {
+        projectId: 'project-a',
+        relativePath: 's',
+      })).rejects.toThrow('PROJECT_FILE_NOT_REGULAR')
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve())
+      })
+    }
   })
 
   it('搜索 Project 文件时跳过依赖目录和符号链接', async () => {
@@ -131,6 +308,82 @@ describe('Project Files RPC', () => {
       name: 'broken.drawnix',
     }, 'file')).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
     expect(existsSync(join(root, 'broken.drawnix'))).toBe(false)
+  })
+
+  it.each(['file', 'directory'] as const)('创建 %s 时父目录被替换为软链接不会写入 Project 外', async type => {
+    const root = join(sandbox, 'project')
+    const docs = join(root, 'docs')
+    const outside = join(sandbox, 'outside')
+    mkdirSync(docs, { recursive: true })
+    mkdirSync(outside)
+    const originalLstat = fs.lstat
+    let swapped = false
+    const barrier = spyOn(fs, 'lstat').mockImplementation((async (path, ...options) => {
+      const result = await originalLstat(path, ...options)
+      if (!swapped && String(path).endsWith('/docs')) {
+        swapped = true
+        await fs.rename(docs, join(root, 'docs-pinned'))
+        await fs.symlink(outside, docs, process.platform === 'win32' ? 'junction' : 'dir')
+      }
+      return result
+    }) as typeof fs.lstat)
+    try {
+      await createProjectEntryWithinRoot(root, {
+        projectId: 'project-a', parentRelativePath: 'docs', name: 'new-entry',
+      }, type).catch(error => {
+        expect(error.message).toContain('PROJECT_FILE_ACCESS_DENIED')
+      })
+      expect(swapped).toBe(true)
+      expect(readdirSync(outside)).toEqual([])
+    } finally {
+      barrier.mockRestore()
+    }
+  })
+
+  it.each(['file', 'directory'] as const)('父句柄固定后创建 %s 不跟随随后替换的目录', async type => {
+    const root = join(sandbox, 'project')
+    const docs = join(root, 'docs')
+    const pinned = join(root, 'docs-pinned')
+    const outside = join(sandbox, 'outside')
+    mkdirSync(docs, { recursive: true })
+    mkdirSync(outside)
+    await createProjectEntrySafelyWithinRoot(root, 'docs/new-entry', type, 'original parent', {
+      beforeFinalOpen: async () => {
+        await fs.rename(docs, pinned)
+        await fs.symlink(outside, docs, process.platform === 'win32' ? 'junction' : 'dir')
+      },
+    })
+    expect(readdirSync(outside)).toEqual([])
+    if (type === 'file') {
+      expect(readFileSync(join(pinned, 'new-entry'), 'utf8')).toBe('original parent')
+    } else {
+      expect(statSync(join(pinned, 'new-entry')).isDirectory()).toBe(true)
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('创建写入失败时通过原父句柄清理，不删除替换目录内容', async () => {
+    const root = join(sandbox, 'project')
+    const docs = join(root, 'docs')
+    const pinned = join(root, 'docs-pinned')
+    const outside = join(sandbox, 'outside')
+    mkdirSync(docs, { recursive: true })
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'new.md'), 'outside content')
+    const failedSync = spyOn(nativeFs, 'fsync').mockImplementation(((_fd, callback) => {
+      callback(new Error('disk sync failed'))
+    }) as typeof nativeFs.fsync)
+    try {
+      await expect(createProjectEntrySafelyWithinRoot(root, 'docs/new.md', 'file', 'draft', {
+        beforeFinalOpen: async () => {
+          await fs.rename(docs, pinned)
+          await fs.symlink(outside, docs, 'dir')
+        },
+      })).rejects.toThrow('disk sync failed')
+      expect(readdirSync(pinned)).toEqual([])
+      expect(readFileSync(join(outside, 'new.md'), 'utf8')).toBe('outside content')
+    } finally {
+      failedSync.mockRestore()
+    }
   })
 
   it('创建初始文档失败时不残留无法重试的部分文件', async () => {
@@ -220,7 +473,7 @@ describe('Project Files RPC', () => {
     })).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
   })
 
-  it('允许保存超过普通文本编辑上限但仍在 Project File 文本上限内的 Drawnix 文档', async () => {
+  it('允许保存达到 8 MiB 上限的 Drawnix 文档并拒绝超限内容', async () => {
     const root = join(sandbox, 'project')
     mkdirSync(root)
     writeFileSync(join(root, 'large.drawnix'), EMPTY_DRAWNIX_DOCUMENT)
@@ -228,10 +481,16 @@ describe('Project Files RPC', () => {
       projectId: 'project-a',
       relativePath: 'large.drawnix',
     })
-    const changed = JSON.stringify({
+    const document = {
       ...JSON.parse(EMPTY_DRAWNIX_DOCUMENT),
-      padding: 'x'.repeat(1024 * 1024),
+      padding: '',
+    }
+    const emptyContent = JSON.stringify(document)
+    const changed = JSON.stringify({
+      ...document,
+      padding: 'x'.repeat(MAX_PROJECT_FILE_TEXT_BYTES - Buffer.byteLength(emptyContent)),
     })
+    expect(Buffer.byteLength(changed)).toBe(MAX_PROJECT_FILE_TEXT_BYTES)
 
     const saved = await saveDrawnixProjectFileWithinRoot(root, {
       projectId: 'project-a',
@@ -244,15 +503,12 @@ describe('Project Files RPC', () => {
     }))
     expect(readFileSync(join(root, 'large.drawnix'), 'utf8')).toBe(changed)
 
-    const changedAgain = changed.replace('"padding":"x', '"padding":"y')
     await expect(saveDrawnixProjectFileWithinRoot(root, {
       projectId: 'project-a',
       relativePath: 'large.drawnix',
       expectedFingerprint: saved.sourceFingerprint,
-      content: changedAgain,
-    })).resolves.toEqual(expect.objectContaining({
-      sourceFingerprint: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-    }))
+      content: changed.replace(/"}$/, 'x"}'),
+    })).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
   })
 
   it('以 SHA-256 指纹比较并原子保存可编辑文本', async () => {
@@ -284,6 +540,68 @@ describe('Project Files RPC', () => {
       expectedFingerprint: loaded.sourceFingerprint,
       content: 'stale writer',
     })).rejects.toThrow('PROJECT_FILE_CHANGED')
+  })
+
+  it('普通文本保存仍限制为 1 MiB', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+    writeFileSync(join(root, 'limit.md'), 'initial')
+    const loaded = await readProjectTextFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'limit.md',
+    })
+    const atLimit = 'a'.repeat(MAX_EDITABLE_PROJECT_FILE_BYTES)
+
+    const saved = await saveProjectTextFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'limit.md',
+      expectedFingerprint: loaded.sourceFingerprint,
+      content: atLimit,
+    })
+    await expect(saveProjectTextFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'limit.md',
+      expectedFingerprint: saved.sourceFingerprint,
+      content: `${atLimit}a`,
+    })).rejects.toThrow('PROJECT_FILE_TOO_LARGE')
+    expect(readFileSync(join(root, 'limit.md'), 'utf8')).toBe(atLimit)
+  })
+
+  it('串行化同一 fingerprint 的并发保存且不残留临时文件', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+    writeFileSync(join(root, 'notes.md'), 'original')
+    const loaded = await readProjectTextFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'notes.md',
+    })
+    const request = (content: string) => saveProjectTextFileWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'notes.md',
+      expectedFingerprint: loaded.sourceFingerprint,
+      content,
+    })
+
+    const results = await Promise.allSettled([request('first'), request('second')])
+
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter(result => (
+      result.status === 'rejected'
+      && String(result.reason).includes('PROJECT_FILE_CHANGED')
+    ))).toHaveLength(1)
+    expect(['first', 'second']).toContain(readFileSync(join(root, 'notes.md'), 'utf8'))
+    expect(readdirSync(root).filter(name => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('原子替换失败时清理临时文件且不改变目标', async () => {
+    const root = join(sandbox, 'project')
+    const target = join(root, 'notes.md')
+    mkdirSync(target, { recursive: true })
+
+    await expect(atomicReplace(root, 'notes.md', Buffer.from('replacement'), 0o600))
+      .rejects.toBeDefined()
+    expect(statSync(target).isDirectory()).toBe(true)
+    expect(readdirSync(root)).toEqual(['notes.md'])
   })
 
   it('逐字保留末尾空行，并允许把文件清空', async () => {
@@ -356,6 +674,19 @@ describe('Project Files RPC', () => {
       relativePath: 'cover.avif',
     })
     expect(loadedAvif.metadata.mimeType).toBe('image/avif')
+  })
+
+  it('拒绝读取超过 32 MiB 上限的 Reader 二进制', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+    const path = join(root, 'too-large.pdf')
+    writeFileSync(path, '')
+    truncateSync(path, MAX_PROJECT_FILE_BINARY_BYTES + 1)
+
+    await expect(readProjectFileBinaryWithinRoot(root, {
+      projectId: 'project-a',
+      relativePath: 'too-large.pdf',
+    })).rejects.toThrow('PROJECT_FILE_TOO_LARGE')
   })
 
   it('只允许 RPC 上下文所属 Workspace 中的 Project', async () => {

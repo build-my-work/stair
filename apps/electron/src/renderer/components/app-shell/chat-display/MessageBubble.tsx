@@ -76,7 +76,7 @@ export function MessageBubble({
   if (message.role === 'user') {
     return (
       <UserMessageBubble
-        messageId={message.id}
+        messageId={message.serverMessageId ?? message.id}
         content={message.content}
         attachments={message.attachments}
         badges={message.badges}
@@ -214,6 +214,7 @@ export const MemoizedMessageBubble = React.memo(MessageBubble, (prev, next) => {
   // Skip re-render if key props unchanged
   return (
     prev.message.id === next.message.id &&
+    prev.message.serverMessageId === next.message.serverMessageId &&
     prev.message.content === next.message.content &&
     prev.message.role === next.message.role &&
     prev.message.references === next.message.references &&

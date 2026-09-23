@@ -22,7 +22,7 @@ let projectFilesTreeSearchExtensions: readonly string[] | undefined
 mock.module('@/components/project-files/ProjectFilesTree', () => ({
   ProjectFilesTree: ({ searchExtensions }: { searchExtensions?: readonly string[] }) => {
     projectFilesTreeSearchExtensions = searchExtensions
-    return null
+    return <div data-project-files-tree="true" />
   },
 }))
 
@@ -70,5 +70,21 @@ describe('ProjectNoteTargetDialog chat selection boundary', () => {
     )
 
     expect(projectFilesTreeSearchExtensions).toEqual(['md', 'markdown', 'txt'])
+  })
+
+  it('constrains the file tree to the dialog space above the footer', () => {
+    const html = renderToStaticMarkup(
+      <ProjectNoteTargetDialog
+        open
+        recentPaths={[]}
+        busy={false}
+        onCancel={() => {}}
+        onConfirm={() => {}}
+      />,
+    )
+
+    expect(html).toContain(
+      '<div class="flex min-h-0 flex-1"><div data-project-files-tree="true"></div></div>',
+    )
   })
 })

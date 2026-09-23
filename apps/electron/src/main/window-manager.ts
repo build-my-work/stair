@@ -62,7 +62,6 @@ export class WindowManager {
   private pendingCloseTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Fallback timeouts for window close
   private eventSink: ((channel: string, target: import('@craft-agent/shared/protocol').PushTarget, ...args: any[]) => void) | null = null
   private clientResolver: ((wcId: number) => string | undefined) | null = null
-  private rendererSurfaceParkingHandler: ((webContentsId: number) => void) | null = null
   private keyboardCloseIntents: Set<number> = new Set()  // webContents.id flagged by Cmd/Ctrl+W before close
   private keyboardCloseIntentTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Auto-clear stale keyboard-close intents
   private isAppQuitting = false  // Skip layered close interception during app quit
@@ -79,23 +78,6 @@ export class WindowManager {
     this.clientResolver = resolver
   }
 
-  setRendererSurfaceParkingHandler(
-    handler: (webContentsId: number) => void,
-  ): void {
-    this.rendererSurfaceParkingHandler = handler
-  }
-
-  private parkRendererSurfaces(webContentsId: number, reason: string): void {
-    try {
-      this.rendererSurfaceParkingHandler?.(webContentsId)
-    } catch (error) {
-      windowLog.warn(
-        `Failed to park Browser surfaces for renderer ${webContentsId} (${reason}):`,
-        error,
-      )
-    }
-  }
-
   /** Return current RPC event sink, if transport has been initialized. */
   getRpcEventSink(): ((channel: string, target: import('@craft-agent/shared/protocol').PushTarget, ...args: any[]) => void) | null {
     return this.eventSink
@@ -104,6 +86,22 @@ export class WindowManager {
   /** Resolve a window's current clientId from transport handshake state. */
   getClientIdForWindow(webContentsId: number): string | undefined {
     return this.clientResolver?.(webContentsId)
+  }
+
+  /** Show and focus the exact renderer window associated with an RPC client. */
+  focusWindowForClient(clientId: string): boolean {
+    for (const { window } of this.windows.values()) {
+      if (
+        !window.isDestroyed()
+        && this.clientResolver?.(window.webContents.id) === clientId
+      ) {
+        if (window.isMinimized()) window.restore()
+        window.show()
+        window.focus()
+        return true
+      }
+    }
+    return false
   }
 
   /** Push an event to a specific window via the RPC event sink. Falls back to webContents.send. */
@@ -358,12 +356,11 @@ export class WindowManager {
     if (restoreUrl) {
       // Restore from saved URL - need to adapt for dev vs prod
       if (VITE_DEV_SERVER_URL) {
-        // In dev mode, replace the base URL but keep the path and query
+        // Restore semantic route state onto the current dev entry. A saved pathname
+        // may point to a packaged renderer (or an old Vite-served packaged renderer).
         try {
           const savedUrl = new URL(restoreUrl)
           const devUrl = new URL(VITE_DEV_SERVER_URL)
-          // Preserve pathname and search from saved URL, use dev server host
-          devUrl.pathname = savedUrl.pathname
           devUrl.search = savedUrl.search
           devUrl.hash = savedUrl.hash
           window.loadURL(devUrl.toString())
@@ -416,23 +413,12 @@ export class WindowManager {
       if (this.isRendererAppUrl(url)) lastSuccessfulRendererUrl = url
     }
 
-    window.webContents.on('did-start-navigation', details => {
-      if (
-        details.isMainFrame
-        && !details.isSameDocument
-        && this.isRendererAppUrl(details.url)
-      ) this.parkRendererSurfaces(webContentsId, 'main-frame-navigation')
-    })
-    window.webContents.on('render-process-gone', (_event, details) => {
-      this.parkRendererSurfaces(webContentsId, `render-process-gone:${details.reason}`)
-    })
-    window.webContents.once('destroyed', () => {
-      this.parkRendererSurfaces(webContentsId, 'web-contents-destroyed')
-    })
     window.webContents.on('did-finish-load', () => {
+      const loadedUrl = window.webContents.getURL()
+      if (!this.isRendererAppUrl(loadedUrl)) return
       failLoadRetries = 0
       clearFailLoadRetry()
-      rememberRendererUrl(window.webContents.getURL())
+      rememberRendererUrl(loadedUrl)
     })
     window.webContents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
       if (isMainFrame) rememberRendererUrl(url)
@@ -443,7 +429,6 @@ export class WindowManager {
         if (!isMainFrame || errorCode === CHROMIUM_ERR_ABORTED) return
 
         windowLog.warn('Failed to load renderer:', errorCode, errorDescription, validatedURL)
-        this.parkRendererSurfaces(webContentsId, 'main-frame-load-failed')
         if (failLoadRetries >= 5) {
           windowLog.error('Renderer recovery stopped after 5 failed attempts')
           return

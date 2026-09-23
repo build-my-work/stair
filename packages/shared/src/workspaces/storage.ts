@@ -27,7 +27,7 @@ import { getDefaultLabelConfig, saveLabelConfig } from '../labels/storage.ts';
 import { loadConfigDefaults } from '../config/storage.ts';
 import { parsePermissionMode, DEFAULT_PERMISSION_MODES } from '../agent/mode-types.ts';
 import { normalizeThinkingLevel } from '../agent/thinking-levels.ts';
-import { createProject } from '../projects/storage.ts';
+import { createProject, loadWorkspaceProjects } from '../projects/storage.ts';
 import type {
   WorkspaceConfig,
   CreateWorkspaceInput,
@@ -120,7 +120,11 @@ export function loadWorkspaceConfig(rootPath: string): WorkspaceConfig | null {
     const config = readJsonFileSync<WorkspaceConfig>(configPath);
 
     if (typeof config.defaultProjectId !== 'string' || !config.defaultProjectId.trim()) {
-      return null;
+      const generalProject = loadWorkspaceProjects(rootPath)
+        .find(project => project.config.slug === 'general')?.config
+        ?? createProject(rootPath, { name: 'General' });
+      config.defaultProjectId = generalProject.id;
+      saveWorkspaceConfig(rootPath, config);
     }
 
     // Expand path variables in defaults for portability

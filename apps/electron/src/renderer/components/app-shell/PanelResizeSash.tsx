@@ -130,9 +130,9 @@ export function PanelResizeSash({
     resizePanel({
       projectId,
       panelId: panel.id,
-      widthRatio: getDefaultWorkbenchPanelRatio(panelLayoutWidth),
+      widthRatio: getDefaultWorkbenchPanelRatio(panelLayoutWidth, panel.kind),
     })
-  }, [panel.id, panelLayoutWidth, projectId, resizePanel])
+  }, [panel.id, panel.kind, panelLayoutWidth, projectId, resizePanel])
 
   return (
     <div

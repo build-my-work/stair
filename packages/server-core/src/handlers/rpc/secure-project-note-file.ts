@@ -7,7 +7,7 @@ import {
   write,
   type Stats,
 } from 'node:fs'
-import { realpath } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { resolve, sep, win32 } from 'node:path'
 
 import koffi from 'koffi'
@@ -16,6 +16,7 @@ export type SecureProjectNoteFileStat = {
   identity: string
   isFile: boolean
   size: number
+  mtimeMs: number
 }
 
 export type SecureProjectNoteFile = {
@@ -32,12 +33,15 @@ export type SecureProjectNoteOpenHooks = {
 
 export class SecureProjectNoteOpenError extends Error {
   constructor(
-    readonly reason: 'access-denied' | 'not-found',
+    readonly reason: 'access-denied' | 'not-found' | 'already-exists',
   ) {
     super(reason)
     this.name = 'SecureProjectNoteOpenError'
   }
 }
+
+type ProjectEntryCreation = { type: 'file' | 'directory'; bytes: Buffer }
+  | { type: 'replace'; bytes: Buffer; mode: number }
 
 function pathSegments(relativePath: string): string[] {
   const segments = relativePath.split('/')
@@ -127,6 +131,7 @@ class PosixProjectNoteFile implements SecureProjectNoteFile {
       identity: `${stats.dev}:${stats.ino}`,
       isFile: stats.isFile(),
       size: stats.size,
+      mtimeMs: stats.mtimeMs,
     }
   }
 
@@ -140,13 +145,18 @@ function posixBindings() {
   return {
     close: libc.func('close', 'int', ['int']),
     fcntl: libc.func('fcntl', 'int', ['int', 'int', 'int']),
+    fchmod: libc.func('fchmod', 'int', ['int', 'uint32_t']),
     open: libc.func('open', 'int', ['str', 'int']),
-    openat: libc.func('openat', 'int', ['int', 'str', 'int']),
+    openat: libc.func('openat', 'int', ['int', 'str', 'int', '...']),
+    mkdirat: libc.func('mkdirat', 'int', ['int', 'str', 'uint32_t']),
+    unlinkat: libc.func('unlinkat', 'int', ['int', 'str', 'int']),
+    renameat: libc.func('renameat', 'int', ['int', 'str', 'int', 'str']),
   }
 }
 
 function posixOpenError(): SecureProjectNoteOpenError {
   const errno = koffi.errno()
+  if (errno === koffi.os.errno.EEXIST) return new SecureProjectNoteOpenError('already-exists')
   return new SecureProjectNoteOpenError(
     errno === koffi.os.errno.ENOENT || errno === koffi.os.errno.ENOTDIR
       ? 'not-found'
@@ -154,14 +164,16 @@ function posixOpenError(): SecureProjectNoteOpenError {
   )
 }
 
-async function openPosixProjectNoteFile(
+async function accessPosixProjectFile(
   rootPath: string,
   relativePath: string,
   hooks: SecureProjectNoteOpenHooks,
-): Promise<SecureProjectNoteFile> {
+  creation?: ProjectEntryCreation,
+): Promise<SecureProjectNoteFile | null> {
   const bindings = posixBindings()
   const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
-  const canonicalRoot = await realpath(resolve(rootPath))
+  // The caller already authorized this canonical root. Never follow a replacement symlink.
+  const canonicalRoot = resolve(rootPath)
   const rootSegments = canonicalRoot.split(sep).filter(Boolean)
   const targetSegments = pathSegments(relativePath)
   const parentSegments = targetSegments.slice(0, -1)
@@ -193,14 +205,61 @@ async function openPosixProjectNoteFile(
     }
 
     await hooks.beforeFinalOpen?.()
-    const fileFd = bindings.openat(
-      directoryFd,
-      targetSegments.at(-1)!,
-      constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW,
-    )
+    const name = targetSegments.at(-1)!
+    if (creation?.type === 'directory') {
+      if (bindings.mkdirat(directoryFd, name, 0o777) === -1) throw posixOpenError()
+      return null
+    }
+    if (creation?.type === 'replace') {
+      const tempName = `.${name}.${randomUUID()}.tmp`
+      const fileFd = bindings.openat(directoryFd, tempName,
+        constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        'uint32_t', creation.mode)
+      if (fileFd === -1) throw posixOpenError()
+      try {
+        setCloseOnExec(fileFd)
+      } catch (error) {
+        bindings.unlinkat(directoryFd, tempName, 0)
+        throw error
+      }
+      const file = new PosixProjectNoteFile(fileFd)
+      try {
+        await file.append(creation.bytes)
+        if (bindings.fchmod(fileFd, creation.mode) === -1) throw posixOpenError()
+        await file.sync()
+        if (bindings.renameat(directoryFd, tempName, directoryFd, name) === -1) throw posixOpenError()
+        // Directory fsync is unsupported on some filesystems; rename has already committed.
+        await descriptorSync(directoryFd).catch(() => undefined)
+        return file
+      } catch (error) {
+        bindings.unlinkat(directoryFd, tempName, 0)
+        await file.close().catch(() => undefined)
+        throw error
+      }
+    }
+    const flags = constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW
+    const fileFd = creation
+      ? bindings.openat(directoryFd, name, flags | constants.O_CREAT | constants.O_EXCL, 'uint32_t', 0o666)
+      : bindings.openat(directoryFd, name, flags)
     if (fileFd === -1) throw posixOpenError()
-    setCloseOnExec(fileFd)
-    return new PosixProjectNoteFile(fileFd)
+    try {
+      setCloseOnExec(fileFd)
+    } catch (error) {
+      if (creation) bindings.unlinkat(directoryFd, name, 0)
+      throw error
+    }
+    const file = new PosixProjectNoteFile(fileFd)
+    if (!creation) return file
+    try {
+      await file.append(creation.bytes)
+      await file.sync()
+    } catch (error) {
+      bindings.unlinkat(directoryFd, name, 0)
+      throw error
+    } finally {
+      await file.close()
+    }
+    return null
   } finally {
     bindings.close(directoryFd)
   }
@@ -242,8 +301,21 @@ function createWindowsTypes() {
     FileAttributes: 'uint32_t',
     ReparseTag: 'uint32_t',
   })
+  const BasicInfo = koffi.struct('StairProjectNoteBasicInfo', {
+    CreationTime: 'int64_t',
+    LastAccessTime: 'int64_t',
+    LastWriteTime: 'int64_t',
+    ChangeTime: 'int64_t',
+    FileAttributes: 'uint32_t',
+  })
+  const RenameInfo = koffi.struct('StairProjectNoteRenameInfo', {
+    ReplaceIfExists: 'uint8_t',
+    RootDirectory: Handle,
+    FileNameLength: 'uint32_t',
+    FileName: koffi.array('uint16_t', 1),
+  })
 
-  return { AttributeTagInfo, Handle, IoStatusBlock, ObjectAttributes, StandardInfo }
+  return { AttributeTagInfo, BasicInfo, Handle, IoStatusBlock, ObjectAttributes, RenameInfo, StandardInfo }
 }
 
 type WindowsTypes = ReturnType<typeof createWindowsTypes>
@@ -259,9 +331,12 @@ export function projectNoteWindowsNativeLayoutForTests(): Record<string, number>
   const types = getWindowsTypes()
   return {
     attributeTagInfo: koffi.sizeof(types.AttributeTagInfo),
+    basicInfo: koffi.sizeof(types.BasicInfo),
     handle: koffi.sizeof(types.Handle),
     ioStatusBlock: koffi.sizeof(types.IoStatusBlock),
     objectAttributes: koffi.sizeof(types.ObjectAttributes),
+    renameInfo: koffi.sizeof(types.RenameInfo),
+    renameFileNameOffset: koffi.offsetof(types.RenameInfo, 'FileName'),
     standardInfo: koffi.sizeof(types.StandardInfo),
   }
 }
@@ -269,10 +344,11 @@ export function projectNoteWindowsNativeLayoutForTests(): Record<string, number>
 function windowsBindings() {
   const kernel32 = koffi.load('kernel32.dll')
   const ntdll = koffi.load('ntdll.dll')
-  const { AttributeTagInfo, Handle, IoStatusBlock, ObjectAttributes, StandardInfo } = getWindowsTypes()
+  const { AttributeTagInfo, BasicInfo, Handle, IoStatusBlock, ObjectAttributes, RenameInfo, StandardInfo } = getWindowsTypes()
 
   return {
     AttributeTagInfo,
+    BasicInfo,
     CloseHandle: kernel32.func('CloseHandle', 'bool', [Handle]),
     CreateFileW: kernel32.func('CreateFileW', Handle, [
       'str16', 'uint32_t', 'uint32_t', 'void *', 'uint32_t', 'uint32_t', Handle,
@@ -283,6 +359,9 @@ function windowsBindings() {
     ]),
     GetStandardInfo: kernel32.func('GetFileInformationByHandleEx', 'bool', [
       Handle, 'int', koffi.out(koffi.pointer(StandardInfo)), 'uint32_t',
+    ]),
+    GetBasicInfo: kernel32.func('GetFileInformationByHandleEx', 'bool', [
+      Handle, 'int', koffi.out(koffi.pointer(BasicInfo)), 'uint32_t',
     ]),
     NtCreateFile: ntdll.func('NtCreateFile', 'int32_t', [
       koffi.out(koffi.pointer(Handle)),
@@ -298,10 +377,17 @@ function windowsBindings() {
       'uint32_t',
     ]),
     ObjectAttributes,
+    RenameInfo,
+    NtSetInformationFile: ntdll.func('NtSetInformationFile', 'int32_t', [
+      Handle, koffi.out(koffi.pointer(IoStatusBlock)), 'void *', 'uint32_t', 'int',
+    ]),
     ReadFile: kernel32.func('ReadFile', 'bool', [
       Handle, 'void *', 'uint32_t', koffi.out(koffi.pointer('uint32_t')), 'void *',
     ]),
     StandardInfo,
+    SetFileDisposition: kernel32.func('SetFileInformationByHandle', 'bool', [
+      Handle, 'int', 'void *', 'uint32_t',
+    ]),
     WriteFile: kernel32.func('WriteFile', 'bool', [
       Handle, 'void *', 'uint32_t', koffi.out(koffi.pointer('uint32_t')), 'void *',
     ]),
@@ -328,7 +414,14 @@ function windowsStat(bindings: WindowsBindings, handle: NativeHandle): SecurePro
     throw new SecureProjectNoteOpenError('access-denied')
   }
   const size = Number(standard.EndOfFile)
-  return { identity: 'windows-handle', isFile: standard.Directory === 0, size }
+  const basic = { CreationTime: 0, LastAccessTime: 0, LastWriteTime: 0, ChangeTime: 0, FileAttributes: 0 }
+  if (!bindings.GetBasicInfo(handle, 0, basic, koffi.sizeof(bindings.BasicInfo))) {
+    throw new SecureProjectNoteOpenError('access-denied')
+  }
+  return {
+    identity: 'windows-handle', isFile: standard.Directory === 0, size,
+    mtimeMs: Number(BigInt(basic.LastWriteTime) / 10000n) - 11644473600000,
+  }
 }
 
 function assertWindowsNotReparse(bindings: WindowsBindings, handle: NativeHandle): void {
@@ -408,6 +501,7 @@ function openWindowsChild(
   parent: NativeHandle,
   segment: string,
   directory: boolean,
+  create = false,
 ): NativeHandle {
   const encodedName = Buffer.from(`${segment}\0`, 'utf16le')
   const unicodeName = {
@@ -425,9 +519,12 @@ function openWindowsChild(
   }
   const output = [null]
   const ioStatus = { Value: { Status: 0 }, Information: 0 }
-  const desiredAccess = directory
+  const desiredAccess = (directory
     ? 0x20 | 0x80 | 0x100000
-    : 0x1 | 0x4 | 0x80 | 0x100000
+    : 0x1 | 0x4 | 0x80 | 0x100000)
+    | (create ? 0x10000 : 0)
+    // FlushFileBuffers requires GENERIC_WRITE on newly created files.
+    | (create && !directory ? 0x40000000 : 0)
   const createOptions = 0x00200000 | 0x20 | (directory ? 0x1 : 0x40)
   const status = bindings.NtCreateFile(
     output,
@@ -437,13 +534,14 @@ function openWindowsChild(
     null,
     0,
     0x7,
-    0x1,
+    create ? 0x2 : 0x1, // FILE_CREATE fails if the final name already exists.
     createOptions,
     null,
     0,
   )
   if (status < 0 || output[0] == null) {
     const unsigned = status >>> 0
+    if (unsigned === 0xc0000035) throw new SecureProjectNoteOpenError('already-exists')
     const missing = unsigned === 0xc0000034 || unsigned === 0xc000003a
     throw new SecureProjectNoteOpenError(missing ? 'not-found' : 'access-denied')
   }
@@ -461,13 +559,14 @@ function openWindowsChild(
   }
 }
 
-async function openWindowsProjectNoteFile(
+async function accessWindowsProjectFile(
   rootPath: string,
   relativePath: string,
   hooks: SecureProjectNoteOpenHooks,
-): Promise<SecureProjectNoteFile> {
+  creation?: ProjectEntryCreation,
+): Promise<SecureProjectNoteFile | null> {
   const bindings = getWindowsBindings()
-  const canonicalRoot = await realpath(resolve(rootPath))
+  const canonicalRoot = resolve(rootPath)
   const parsedRoot = win32.parse(canonicalRoot)
   const rootSegments = canonicalRoot.slice(parsedRoot.root.length).split(win32.sep).filter(Boolean)
   const targetSegments = pathSegments(relativePath)
@@ -495,8 +594,50 @@ async function openWindowsProjectNoteFile(
     }
 
     await hooks.beforeFinalOpen?.()
-    const fileHandle = openWindowsChild(bindings, directoryHandle, targetSegments.at(-1)!, false)
-    return new WindowsProjectNoteFile(bindings, fileHandle)
+    if (creation?.type === 'replace') {
+      const name = targetSegments.at(-1)!
+      const fileHandle = openWindowsChild(bindings, directoryHandle, `.${name}.${randomUUID()}.tmp`, false, true)
+      const file = new WindowsProjectNoteFile(bindings, fileHandle)
+      try {
+        await file.append(creation.bytes)
+        await file.sync()
+        const encodedName = Buffer.from(name, 'utf16le')
+        const nameOffset = koffi.offsetof(bindings.RenameInfo, 'FileName')
+        const info = Buffer.alloc(Math.max(koffi.sizeof(bindings.RenameInfo), nameOffset + encodedName.length))
+        koffi.encode(info, bindings.RenameInfo, {
+          ReplaceIfExists: 1, RootDirectory: directoryHandle,
+          FileNameLength: encodedName.length, FileName: [0],
+        })
+        encodedName.copy(info, nameOffset)
+        const ioStatus = { Value: { Status: 0 }, Information: 0 }
+        if (bindings.NtSetInformationFile(fileHandle, ioStatus, info, info.length, 10) < 0) {
+          throw new SecureProjectNoteOpenError('access-denied')
+        }
+        return file
+      } catch (error) {
+        bindings.SetFileDisposition(fileHandle, 4, Buffer.from([1]), 1)
+        await file.close().catch(() => undefined)
+        throw error
+      }
+    }
+    const fileHandle = openWindowsChild(
+      bindings, directoryHandle, targetSegments.at(-1)!, creation?.type === 'directory', !!creation,
+    )
+    const file = new WindowsProjectNoteFile(bindings, fileHandle)
+    if (!creation) return file
+    try {
+      if (creation.type === 'file') {
+        await file.append(creation.bytes)
+        await file.sync()
+      }
+    } catch (error) {
+      // Delete the handle we created, even if its parent path has since been replaced.
+      bindings.SetFileDisposition(fileHandle, 4, Buffer.from([1]), 1)
+      throw error
+    } finally {
+      await file.close()
+    }
+    return null
   } finally {
     bindings.CloseHandle(directoryHandle)
   }
@@ -507,7 +648,43 @@ export async function openProjectNoteFileWithinRoot(
   relativePath: string,
   hooks: SecureProjectNoteOpenHooks = {},
 ): Promise<SecureProjectNoteFile> {
-  return process.platform === 'win32'
-    ? openWindowsProjectNoteFile(rootPath, relativePath, hooks)
-    : openPosixProjectNoteFile(rootPath, relativePath, hooks)
+  const file = process.platform === 'win32'
+    ? await accessWindowsProjectFile(rootPath, relativePath, hooks)
+    : await accessPosixProjectFile(rootPath, relativePath, hooks)
+  return file!
+}
+
+/** Create through a pinned parent handle, never by resolving the parent pathname again. */
+export async function createProjectEntrySafelyWithinRoot(
+  rootPath: string,
+  relativePath: string,
+  type: 'file' | 'directory',
+  initialContent = '',
+  hooks: SecureProjectNoteOpenHooks = {},
+): Promise<void> {
+  const creation = { type, bytes: Buffer.from(initialContent, 'utf8') }
+  if (process.platform === 'win32') {
+    await accessWindowsProjectFile(rootPath, relativePath, hooks, creation)
+  } else {
+    await accessPosixProjectFile(rootPath, relativePath, hooks, creation)
+  }
+}
+
+/** Replace relative to the pinned parent, and read metadata from the committed file handle. */
+export async function replaceProjectFileSafelyWithinRoot(
+  rootPath: string,
+  relativePath: string,
+  bytes: Buffer,
+  mode: number,
+  hooks: SecureProjectNoteOpenHooks = {},
+): Promise<SecureProjectNoteFileStat> {
+  const creation = { type: 'replace' as const, bytes, mode }
+  const file = process.platform === 'win32'
+    ? await accessWindowsProjectFile(rootPath, relativePath, hooks, creation)
+    : await accessPosixProjectFile(rootPath, relativePath, hooks, creation)
+  try {
+    return await file!.stat()
+  } finally {
+    await file!.close()
+  }
 }

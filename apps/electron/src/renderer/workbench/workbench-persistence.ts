@@ -45,15 +45,6 @@ function serializePanel(panel: WorkbenchPanel): PersistedWorkbenchPanel {
         chatTargetSessionId: panel.chatTargetSessionId,
         widthRatio: panel.widthRatio,
       }
-    case 'browser':
-      return {
-        id: panel.id,
-        kind: panel.kind,
-        url: panel.url,
-        title: panel.title,
-        chatTargetSessionId: panel.chatTargetSessionId,
-        widthRatio: panel.widthRatio,
-      }
   }
 }
 
@@ -67,13 +58,6 @@ function hydratePanel(projectId: string, panel: PersistedWorkbenchPanel): Workbe
         projectId,
         openIntent: undefined,
         openIntentRevision: 0,
-      }
-    case 'browser':
-      return {
-        ...panel,
-        projectId,
-        runtimeId: null,
-        restoreOnActivation: true,
       }
   }
 }

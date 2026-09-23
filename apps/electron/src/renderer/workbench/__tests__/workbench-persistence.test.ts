@@ -214,7 +214,7 @@ describe('Renderer Workbench persistence codec', () => {
     expect(store.get(workbenchPersistenceReadyAtom)).toBe(true)
   })
 
-  it('persists semantic layout only and reconstructs transient Browser state', () => {
+  it('persists semantic layout without transient Project File reveal state', () => {
     const state: WindowWorkbench = {
       workspaceId: 'workspace-a',
       activeProjectId: 'project-a',
@@ -228,16 +228,6 @@ describe('Renderer Workbench persistence codec', () => {
             widthRatio: 2,
           },
           auxiliary: [{
-            id: 'browser-panel-a',
-            kind: 'browser',
-            projectId: 'project-a',
-            runtimeId: 'runtime-must-not-persist',
-            url: 'https://example.com/',
-            title: 'Example',
-            chatTargetSessionId: 'session-a',
-            widthRatio: 1,
-            restoreOnActivation: false,
-          }, {
             id: 'file-panel-a',
             kind: 'project-file',
             projectId: 'project-a',
@@ -252,29 +242,18 @@ describe('Renderer Workbench persistence codec', () => {
             widthRatio: 1,
           }],
           previewPanelId: null,
-          focusedPanelId: 'browser-panel-a',
+          focusedPanelId: 'file-panel-a',
         },
       },
     }
 
     const serialized = serializeWorkbenchLayouts(state)
-    expect(JSON.stringify(serialized)).not.toContain('runtime-must-not-persist')
     expect(JSON.stringify(serialized)).not.toContain('openIntent')
 
     expect(hydrateWorkbenchLayouts(serialized)).toEqual({
       'project-a': {
         primary: state.layoutsByProject['project-a']!.primary,
         auxiliary: [{
-          id: 'browser-panel-a',
-          kind: 'browser',
-          projectId: 'project-a',
-          runtimeId: null,
-          url: 'https://example.com/',
-          title: 'Example',
-          chatTargetSessionId: 'session-a',
-          widthRatio: 1,
-          restoreOnActivation: true,
-        }, {
           id: 'file-panel-a',
           kind: 'project-file',
           projectId: 'project-a',
@@ -286,7 +265,7 @@ describe('Renderer Workbench persistence codec', () => {
           widthRatio: 1,
         }],
         previewPanelId: null,
-        focusedPanelId: 'browser-panel-a',
+        focusedPanelId: 'file-panel-a',
       },
     })
   })

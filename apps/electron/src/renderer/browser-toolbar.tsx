@@ -21,6 +21,10 @@ import type {
 } from '@craft-agent/shared/browser-bookmarks'
 import {
   Bookmark,
+  FolderKanban,
+  MessageSquareMore,
+  NotebookPen,
+  PanelLeftOpen,
   Star,
   X,
 } from 'lucide-react'
@@ -44,7 +48,17 @@ interface ToolbarState {
   canGoBack: boolean
   canGoForward: boolean
   themeColor?: string | null
-  isPanel?: boolean
+  targetSessionId?: string | null
+  targetChatTitle?: string | null
+  targetNotePath?: string | null
+  selectionFeedback?: {
+    kind: 'success' | 'error'
+    message: string
+  } | null
+  canChooseTargetChat?: boolean
+  projectId?: string | null
+  projectTitle?: string | null
+  canChooseProject?: boolean
 }
 
 declare global {
@@ -58,7 +72,8 @@ declare global {
       stop: () => Promise<void>
       listBookmarks: () => Promise<BrowserBookmark[]>
       toggleBookmark: () => Promise<ToggleBrowserBookmarkResult>
-      showMenu: (kind: 'bookmarks' | 'window') => Promise<void>
+      showMenu: (kind: 'bookmarks' | 'projects' | 'chats' | 'window') => Promise<void>
+      openTargetChat: () => Promise<void>
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
       onThemeColor: (callback: (color: string | null) => void) => () => void
       onBookmarksChanged: (callback: (bookmarks: BrowserBookmark[]) => void) => () => void
@@ -99,6 +114,15 @@ function BrowserToolbarApp() {
       : 'browser.bookmarkCurrentPage',
   )
   const bookmarksLabel = t('browser.bookmarks')
+  const chooseTargetChatLabel = t('browser.chooseTargetChat')
+  const openTargetChatLabel = t('browser.openTargetChat')
+  const windowOptionsLabel = t('browser.windowOptions')
+  const targetChatLabel = state.targetChatTitle ?? chooseTargetChatLabel
+  const projectLabel = state.projectTitle ?? state.projectId ?? t('tasks.project')
+  const projectActionLabel = `${t('tasks.project')}: ${projectLabel}`
+  const targetNoteLabel = state.projectId
+    ? (state.targetNotePath ?? t('projectNoteTarget.chooseFile'))
+    : null
 
   useEffect(() => {
     if (!api) return
@@ -187,6 +211,20 @@ function BrowserToolbarApp() {
         onStop={handleStop}
         trailingContent={(
           <div className="ml-2 flex items-center gap-1.5 titlebar-no-drag">
+            {state.selectionFeedback && (
+              <span
+                role="status"
+                title={state.selectionFeedback.message}
+                className={`max-w-[260px] truncate rounded-[4px] px-2 py-1 text-[11px] ${
+                  state.selectionFeedback.kind === 'error'
+                    ? 'bg-destructive/10 text-destructive'
+                    : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                }`}
+              >
+                {state.selectionFeedback.message}
+              </span>
+            )}
+
             <HeaderIconButton
               icon={(
                 <Star
@@ -211,9 +249,57 @@ function BrowserToolbarApp() {
               onClick={() => { void api?.showMenu('bookmarks') }}
             />
 
+            <button
+              type="button"
+              aria-label={projectActionLabel}
+              title={projectActionLabel}
+              disabled={!state.projectId || state.canChooseProject === false}
+              className={`inline-flex h-7 max-w-[140px] items-center gap-1.5 rounded-[4px] px-2 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/3 hover:text-foreground disabled:opacity-70 ${toolbarButtonClassName}`}
+              style={toolbarButtonStyle}
+              onClick={() => { void api?.showMenu('projects') }}
+            >
+              <FolderKanban className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{projectLabel}</span>
+            </button>
+
+            <button
+              type="button"
+              aria-label={targetChatLabel}
+              title={targetChatLabel}
+              disabled={state.canChooseTargetChat === false}
+              className={`inline-flex h-7 max-w-[140px] items-center gap-1.5 rounded-[4px] px-2 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/3 hover:text-foreground disabled:opacity-70 ${toolbarButtonClassName}`}
+              style={toolbarButtonStyle}
+              onClick={() => { void api?.showMenu('chats') }}
+            >
+              <MessageSquareMore className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{targetChatLabel}</span>
+            </button>
+
+            {targetNoteLabel && (
+              <span
+                aria-label={targetNoteLabel}
+                title={targetNoteLabel}
+                className="inline-flex h-7 max-w-[140px] items-center gap-1.5 rounded-[4px] px-2 text-[11px] text-muted-foreground"
+                style={toolbarButtonStyle}
+              >
+                <NotebookPen className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{targetNoteLabel}</span>
+              </span>
+            )}
+
+            <HeaderIconButton
+              icon={<PanelLeftOpen className="h-3.5 w-3.5" />}
+              aria-label={openTargetChatLabel}
+              title={openTargetChatLabel}
+              disabled={!state.targetSessionId}
+              className={toolbarButtonClassName}
+              style={toolbarButtonStyle}
+              onClick={() => { void api?.openTargetChat() }}
+            />
+
             <HeaderIconButton
               icon={<X className="h-3.5 w-3.5" />}
-              aria-label={t('browser.windowOptions')}
+              aria-label={windowOptionsLabel}
               className={toolbarButtonClassName}
               style={toolbarButtonStyle}
               onClick={() => { void api?.showMenu('window') }}

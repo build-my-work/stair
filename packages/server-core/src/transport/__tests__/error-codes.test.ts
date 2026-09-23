@@ -13,8 +13,10 @@ import { describe, it, expect, afterEach } from 'bun:test'
 import { WsRpcServer } from '../server'
 import { WsRpcClient } from '../client'
 import {
+  CLIENT_BROWSER_APPLICATION_INVOKE,
   CLIENT_BROWSER_INVOKE,
   CLIENT_DRAWNIX_BOARD_INVOKE,
+  requestClientBrowserApplicationInvoke,
 } from '../capabilities'
 import { CodedError } from '@craft-agent/shared/protocol'
 
@@ -135,6 +137,69 @@ describe('Transport — error code preservation', () => {
 })
 
 describe('Transport — capability introspection', () => {
+  it('keeps Browser action semantics out of the generic client transport', async () => {
+    const { server, client } = await startPair({
+      clientCapabilities: [CLIENT_BROWSER_APPLICATION_INVOKE],
+    })
+    client.handleCapability(
+      CLIENT_BROWSER_APPLICATION_INVOKE,
+      () => new Promise(() => {}),
+    )
+    const [clientId] = server.findClientsWithCapability(CLIENT_BROWSER_APPLICATION_INVOKE)
+
+    const request = server.invokeClient(clientId!, CLIENT_BROWSER_APPLICATION_INVOKE, {
+      v: 1,
+      action: 'add-selection-note',
+    })
+    void request.catch(() => {})
+    await Promise.resolve()
+
+    const [pending] = (server as unknown as {
+      pendingInvokes: Map<string, { timeout: ReturnType<typeof setTimeout> | null }>
+    }).pendingInvokes.values()
+    expect(pending?.timeout).not.toBeNull()
+  })
+
+  it('lets the Browser application capability opt out for its interactive Note picker', async () => {
+    const { server, client } = await startPair({
+      clientCapabilities: [CLIENT_BROWSER_APPLICATION_INVOKE],
+    })
+    let markReceived: ((args: unknown[]) => void) | null = null
+    const received = new Promise<unknown[]>(resolve => { markReceived = resolve })
+    client.handleCapability(
+      CLIENT_BROWSER_APPLICATION_INVOKE,
+      (...args) => {
+        markReceived!(args)
+        return new Promise(() => {})
+      },
+    )
+    const [clientId] = server.findClientsWithCapability(CLIENT_BROWSER_APPLICATION_INVOKE)
+
+    const request = requestClientBrowserApplicationInvoke(server, clientId!, {
+      v: 1,
+      action: 'add-selection-note',
+      requestId: 'request-1',
+      mode: 'choose-target',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      source: {
+        url: 'https://example.com',
+        title: 'Example',
+        quote: 'selected text',
+        locator: { type: 'web-text-quote', exact: 'selected text' },
+      },
+    })
+    void request.catch(() => {})
+    await Promise.resolve()
+
+    const [pending] = (server as unknown as {
+      pendingInvokes: Map<string, { timeout: ReturnType<typeof setTimeout> | null }>
+    }).pendingInvokes.values()
+    expect(pending?.timeout).toBeNull()
+    expect(await received).toHaveLength(1)
+  })
+
   it('hasClientCapability returns true only for advertised capabilities', async () => {
     const { server } = await startPair({ clientCapabilities: [CLIENT_BROWSER_INVOKE] })
     const ids = server.findClientsWithCapability(CLIENT_BROWSER_INVOKE)

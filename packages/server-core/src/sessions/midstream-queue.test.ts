@@ -13,6 +13,7 @@ import { getPendingPlanExecution, saveSession } from '../../../shared/src/sessio
 import * as backendFactory from '../../../shared/src/agent/backend/factory.ts'
 import { ClaudeAgent } from '../../../shared/src/agent/claude-agent.ts'
 import { PendingSteers } from '../../../shared/src/agent/backend/claude/pending-steers.ts'
+import { createWorkspaceAtPath } from '@craft-agent/shared/workspaces'
 import {
   SessionManager,
   createManagedSession,
@@ -25,9 +26,14 @@ import { formatReferencesForModel } from './message-references'
 describe('mid-stream queue runtime invariants', () => {
   let tmpRoot: string
   let sm: SessionManager
+  let workspaceId: string
+  let defaultProjectId: string
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'sm-midstream-'))
+    const workspace = createWorkspaceAtPath(tmpRoot, 'Test Workspace')
+    workspaceId = workspace.id
+    defaultProjectId = workspace.defaultProjectId
     sm = new SessionManager()
   })
 
@@ -38,13 +44,13 @@ describe('mid-stream queue runtime invariants', () => {
 
   function buildSession(id: string) {
     const workspace = {
-      id: 'ws-test',
+      id: workspaceId,
       name: 'Test Workspace',
       rootPath: tmpRoot,
       createdAt: Date.now(),
     }
     const managed = createManagedSession(
-      { id, name: 'mid-stream test', projectId: 'project-general' },
+      { id, name: 'mid-stream test', projectId: defaultProjectId },
       workspace as never,
       { messagesLoaded: true },
     )
@@ -381,7 +387,7 @@ describe('mid-stream queue runtime invariants', () => {
     const reference = {
       version: 1,
       kind: 'chat-message',
-      projectId: 'project-general',
+      projectId: defaultProjectId,
       sessionId: 'source-session',
       messageId: 'source-message',
       role: 'assistant',
@@ -401,10 +407,19 @@ describe('mid-stream queue runtime invariants', () => {
       timestamp: Date.now(),
       isQueued: true,
       references: [reference],
+      attachments: [{
+        id: 'attachment-1',
+        type: 'text',
+        name: 'notes.txt',
+        mimeType: 'text/plain',
+        size: 12,
+        storedPath: '/tmp/session/attachments/notes.txt',
+      }],
     }]
     managed.messageQueue.push({
       message: 'queued with reference',
       messageId: 'queued-user',
+      storedAttachments: managed.messages[0]!.attachments,
       options: { references: [reference] },
     })
     managed.agent = { forceAbort: () => {} } as never
@@ -417,6 +432,7 @@ describe('mid-stream queue runtime invariants', () => {
     const interrupted = events.find(event => event.type === 'interrupted')
     expect(interrupted?.queuedMessages).toEqual(['queued with reference'])
     expect(interrupted?.queuedReferences).toEqual([reference])
+    expect(interrupted?.queuedAttachments).toEqual(managed.messages[0]!.attachments)
     expect(interrupted?.queuedRestoreId).toBeString()
     expect(interrupted?.queuedMessageIds).toEqual(['queued-user'])
     expect(managed.messages.find(message => message.id === 'queued-user')).toEqual(expect.objectContaining({
@@ -494,13 +510,13 @@ describe('mid-stream queue runtime invariants', () => {
       .toEqual(['queued-two', expect.any(String)])
   })
 
-  it('does not auto-replay a pending queued restore after a cold load', async () => {
+  it('re-emits a pending queued restore after a cold load without auto-replaying it', async () => {
     const sessionId = 'pending-restore-cold-load'
     const filePath = getSessionFilePath(tmpRoot, sessionId)
     mkdirSync(dirname(filePath), { recursive: true })
     writeSessionJsonl(filePath, {
       id: sessionId,
-      projectId: 'project-general',
+      projectId: defaultProjectId,
       workspaceRootPath: tmpRoot,
       name: 'pending restore',
       createdAt: Date.now(),
@@ -512,19 +528,33 @@ describe('mid-stream queue runtime invariants', () => {
         timestamp: Date.now(),
         isQueued: true,
         queuedRestoreId: 'restore-after-restart',
+        attachments: [{
+          id: 'attachment-after-restart',
+          type: 'text',
+          name: 'restart.txt',
+          mimeType: 'text/plain',
+          size: 7,
+          storedPath: '/tmp/session/attachments/restart.txt',
+        }],
       } as StoredMessage],
     } as StoredSession)
 
     const managed = createManagedSession(
-      { id: sessionId, name: 'pending restore', projectId: 'project-general' },
+      { id: sessionId, name: 'pending restore', projectId: defaultProjectId },
       {
-        id: 'ws-test',
+        id: workspaceId,
         name: 'Test Workspace',
         rootPath: tmpRoot,
         createdAt: Date.now(),
       } as never,
     )
     ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, managed)
+    const events: any[] = []
+    const targets: any[] = []
+    sm.setEventSink((_channel, target, event) => {
+      targets.push(target)
+      events.push(event)
+    })
 
     await sm.getSession(sessionId)
 
@@ -534,6 +564,48 @@ describe('mid-stream queue runtime invariants', () => {
       isQueued: true,
       queuedRestoreId: 'restore-after-restart',
     }))
+    expect(events).toContainEqual({
+      type: 'interrupted',
+      sessionId,
+      queuedMessages: ['do not replay me'],
+      queuedAttachments: [expect.objectContaining({
+        name: 'restart.txt',
+        storedPath: '/tmp/session/attachments/restart.txt',
+      })],
+      queuedRestoreId: 'restore-after-restart',
+      queuedMessageIds: ['pending-queued-user'],
+    })
+
+    sm.onClientDisconnected('client-that-received-the-first-restore')
+    ;(sm as unknown as {
+      onClientConnected: (clientId: string, workspaceId: string | null) => void
+    }).onClientConnected('reconnected-client', workspaceId)
+    expect(events.filter(event => (
+      event.type === 'interrupted'
+      && event.queuedRestoreId === 'restore-after-restart'
+    ))).toHaveLength(2)
+    expect(targets.at(-1)).toEqual({ to: 'client', clientId: 'reconnected-client' })
+  })
+
+  it('continues authoritative Chat deletion when agent disposal throws', async () => {
+    const managed = buildSession('delete-dispose-failure')
+    managed.agent = {
+      dispose: () => {
+        throw new Error('dispose failed')
+      },
+    } as never
+    const destroyBrowserWindowsForSession = mock(async () => {})
+    ;(sm as unknown as {
+      destroyBrowserWindowsForSession: typeof destroyBrowserWindowsForSession
+    }).destroyBrowserWindowsForSession = destroyBrowserWindowsForSession
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    await expect(sm.deleteSession(managed.id)).resolves.toBeUndefined()
+
+    expect((sm as unknown as { sessions: Map<string, unknown> }).sessions.has(managed.id)).toBe(false)
+    expect(events).toContainEqual({ type: 'session_deleted', sessionId: managed.id })
+    expect(destroyBrowserWindowsForSession).toHaveBeenCalledWith(workspaceId, managed.id)
   })
 
   it('把未送达 steer 的结构化引用按原始消息重新入队', async () => {

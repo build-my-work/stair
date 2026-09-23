@@ -143,10 +143,10 @@ export interface AppShellContextType {
   onReferencesChange: (sessionId: string, references: Reference[]) => boolean
   onAddDraftReference: (sessionId: string, reference: Reference) => boolean
   onAddSelectionNote?: (
-    sessionId: string,
     reference: Reference,
+    sessionId?: string | null,
     mode?: 'current' | 'choose-target',
-  ) => Promise<boolean>
+  ) => Promise<string | null>
   onRevealReference?: (reference: Reference) => Promise<boolean>
 
   // Source selection callback (per-session) - provided by AppShell component

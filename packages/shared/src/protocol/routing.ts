@@ -169,8 +169,9 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.tools.GET_WEB_LINK_OPEN_TARGET,
   RPC_CHANNELS.tools.SET_WEB_LINK_OPEN_TARGET,
 
-  // browserPane — Electron BrowserView
+  // browserPane — independent Electron BrowserWindow
   RPC_CHANNELS.browserPane.CREATE,
+  RPC_CHANNELS.browserPane.RECONCILE,
   RPC_CHANNELS.browserPane.DESTROY,
   RPC_CHANNELS.browserPane.LIST,
   RPC_CHANNELS.browserPane.NAVIGATE,
@@ -179,10 +180,8 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.browserPane.RELOAD,
   RPC_CHANNELS.browserPane.STOP,
   RPC_CHANNELS.browserPane.FOCUS,
-  RPC_CHANNELS.browserPane.ATTACH_SURFACE,
-  RPC_CHANNELS.browserPane.UPDATE_SURFACE,
-  RPC_CHANNELS.browserPane.DETACH_SURFACE,
-  RPC_CHANNELS.browserPane.PARK,
+  RPC_CHANNELS.browserPane.HIDE,
+  RPC_CHANNELS.browserPane.OPEN_TARGET_CHAT,
   RPC_CHANNELS.browserPane.REVEAL_SELECTION,
   RPC_CHANNELS.browserPane.SNAPSHOT,
   RPC_CHANNELS.browserPane.CLICK,
@@ -195,9 +194,6 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.browserPane.STATE_CHANGED,
   RPC_CHANNELS.browserPane.REMOVED,
   RPC_CHANNELS.browserPane.INTERACTED,
-  RPC_CHANNELS.browserPane.PRESENT_REQUESTED,
-  RPC_CHANNELS.browserPane.CLOSE_PANEL_REQUESTED,
-  RPC_CHANNELS.browserPane.SELECTION_ACTION,
 
   // gitbash — Windows-specific local
   RPC_CHANNELS.gitbash.CHECK,
@@ -247,6 +243,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.sessions.UNREAD_SUMMARY_CHANGED,
   RPC_CHANNELS.sessions.CREATE,
   RPC_CHANNELS.sessions.DELETE,
+  RPC_CHANNELS.sessions.GET_EXISTING_IDS,
   RPC_CHANNELS.sessions.GET_MESSAGES,
   RPC_CHANNELS.sessions.SEND_MESSAGE,
   RPC_CHANNELS.sessions.CANCEL,
@@ -379,7 +376,11 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
 
   // drafts — workspace content
   RPC_CHANNELS.drafts.GET,
-  RPC_CHANNELS.drafts.SET,
+  RPC_CHANNELS.drafts.SET_CONTENT,
+  RPC_CHANNELS.drafts.UPDATE_REFERENCES,
+  RPC_CHANNELS.drafts.ADD_REFERENCE,
+  RPC_CHANNELS.drafts.RESTORE_INPUT,
+  RPC_CHANNELS.drafts.REFERENCES_CHANGED,
   RPC_CHANNELS.drafts.DELETE,
   RPC_CHANNELS.drafts.GET_ALL,
 

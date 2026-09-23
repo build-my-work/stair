@@ -46,7 +46,9 @@ export interface ISessionManager {
   // ---------------------------------------------------------------------------
 
   getSessions(workspaceId?: string): Session[]
+  hasSession(sessionId: string, workspaceId?: string): boolean
   getSession(sessionId: string): Promise<Session | null>
+  withSessionLifecycleLock<T>(sessionId: string, operation: () => Promise<T>): Promise<T>
   /** Creates a session and (unless `internal.emitCreatedEvent === false`) announces it to the
    *  renderer so it hydrates full metadata instead of fabricating a "New Chat" placeholder. */
   createSession(
@@ -61,6 +63,12 @@ export interface ISessionManager {
    *  (The PR watcher refetches then: a turn is when pushes and `gh pr create` happen.) */
   onTurnComplete?(listener: (sessionId: string) => void): () => void
   deleteSession(sessionId: string): Promise<void>
+  beginBrowserProjectDeletion(workspaceId: string, projectId: string): Promise<void>
+  finishBrowserProjectDeletion(
+    workspaceId: string,
+    projectId: string,
+    deleted: boolean,
+  ): Promise<void>
 
   // ---------------------------------------------------------------------------
   // Session state
@@ -108,15 +116,8 @@ export interface ISessionManager {
   setSessionProjectNoteTarget(
     sessionId: string,
     projectId: string,
-    relativePath: string | null,
-    rootFingerprint: string | null,
-  ): Promise<{ relativePath: string | null; recentPaths: string[] } | null>
-  clearSessionProjectNoteTargetIfMatches(
-    sessionId: string,
-    projectId: string,
     relativePath: string,
-    rootFingerprint: string,
-  ): Promise<void>
+  ): Promise<{ relativePath: string; recentPaths: string[] } | null>
   /** Apply the reserved Task labeling (mint / inherit the per-task item label under the Task
    *  root). Returns the resolved ITEM label id, or undefined if the session is unknown.
    *  See SessionManager.applyTaskLabel. */

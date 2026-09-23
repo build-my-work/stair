@@ -264,6 +264,17 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     return () => { cancelled = true }
   }, [sessionId, hydrateDraftAttachments])
 
+  React.useEffect(() => {
+    const handler = async (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail
+      if (detail?.sessionId === sessionId) {
+        setAttachmentsValue(await hydrateDraftAttachments(sessionId))
+      }
+    }
+    window.addEventListener('stair:draft-attachments-changed', handler)
+    return () => window.removeEventListener('stair:draft-attachments-changed', handler)
+  }, [sessionId, hydrateDraftAttachments])
+
   const handleAttachmentsChange = React.useCallback((attachments: import('../../shared/types').FileAttachment[]) => {
     setAttachmentsValue(attachments)
     onAttachmentsChange(sessionId, attachments)

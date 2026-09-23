@@ -1,11 +1,19 @@
 import {
   PANEL_DEFAULT_WIDTH,
   PANEL_MIN_WIDTH,
+  PANEL_WIDE_DEFAULT_WIDTH,
 } from '@/components/app-shell/panel-constants'
+import type { WorkbenchPanel } from './workbench-state'
 
-export function getDefaultWorkbenchPanelRatio(panelLayoutWidth: number): number {
+export function getDefaultWorkbenchPanelRatio(
+  panelLayoutWidth: number,
+  panelKind: WorkbenchPanel['kind'],
+): number {
+  const defaultWidth = panelKind === 'session'
+    ? PANEL_DEFAULT_WIDTH
+    : PANEL_WIDE_DEFAULT_WIDTH
   return Number.isFinite(panelLayoutWidth) && panelLayoutWidth > 0
-    ? PANEL_DEFAULT_WIDTH / panelLayoutWidth
+    ? defaultWidth / panelLayoutWidth
     : 1
 }
 

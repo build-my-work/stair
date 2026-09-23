@@ -42,6 +42,9 @@ export const KEYS = {
   // Working directory
   recentWorkingDirs: 'recent-working-dirs',
 
+  // Add Note preferences (Workspace, Project and working-directory scoped)
+  projectNoteRecentTargets: 'project-note-recent-targets',
+
   // TurnCard expansion state (persisted across session switches)
   turnCardExpansion: 'turncard-expansion',
 

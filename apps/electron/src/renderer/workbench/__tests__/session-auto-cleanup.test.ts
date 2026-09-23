@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { createStore } from 'jotai'
 import type { SessionMeta } from '@/atoms/sessions'
 import {
   findEmptySessionsLeavingWorkbench,
   sessionDraftHasContent,
 } from '../session-auto-cleanup'
+import {
+  retainedWorkbenchSessionIdsAtom,
+  workbenchAtom,
+} from '../workbench-state'
 
 function meta(id: string, overrides: Partial<SessionMeta> = {}): SessionMeta {
   return {
@@ -101,21 +105,41 @@ describe('Workbench 空 Session 自动清理', () => {
     )).toEqual([])
   })
 
-  it('删除前复核持久草稿和当前可见性，并清除待执行的草稿写入', () => {
-    const appSource = readFileSync(
-      new URL('../../App.tsx', import.meta.url),
-      'utf8',
-    )
+  it('切换 Project 时 parked layout 中的空 Session 仍被 Workbench 持有', () => {
+    const store = createStore()
+    store.set(workbenchAtom, {
+      workspaceId: 'workspace-a',
+      activeProjectId: 'project-b',
+      layoutsByProject: {
+        'project-a': {
+          primary: {
+            id: 'panel-a',
+            kind: 'session',
+            sessionId: 'empty',
+            projectId: 'project-a',
+            widthRatio: 1,
+          },
+          auxiliary: [],
+          previewPanelId: null,
+          focusedPanelId: 'panel-a',
+        },
+        'project-b': {
+          primary: null,
+          auxiliary: [],
+          previewPanelId: null,
+          focusedPanelId: null,
+        },
+      },
+    })
 
-    expect(appSource).toContain(
-      'const persistedDraft = await window.electronAPI.getDraft(sessionId)',
-    )
-    expect(appSource).toContain('sessionDraftHasContent(persistedDraft)')
-    expect(appSource).toMatch(
-      /handleAutoDeleteEmptySession[\s\S]*?findEmptySessionsLeavingWorkbench\(/,
-    )
-    expect(appSource).toMatch(
-      /handleDeleteSession[\s\S]*?draftSaveTimeoutRef\.current\.get\(sessionId\)[\s\S]*?clearTimeout/,
-    )
+    const retained = store.get(retainedWorkbenchSessionIdsAtom)
+    expect(retained).toEqual(new Set(['empty']))
+    expect(findEmptySessionsLeavingWorkbench(
+      new Set(['empty']),
+      retained,
+      new Map([['empty', meta('empty')]]),
+      () => false,
+      'workspace-a',
+    )).toEqual([])
   })
 })

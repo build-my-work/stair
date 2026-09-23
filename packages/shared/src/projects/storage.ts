@@ -35,7 +35,7 @@ import type {
 
 const projectMutationLocks = new Map<string, Promise<void>>();
 
-/** Serialize Project existence checks with Session ownership writes in this process. */
+/** Serialize Project-scoped mutations with Project deletion in this process. */
 export function withProjectMutationLock<T>(
   workspaceRootPath: string,
   projectId: string,

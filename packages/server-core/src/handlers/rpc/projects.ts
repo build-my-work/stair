@@ -23,6 +23,23 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     pushTyped(server, RPC_CHANNELS.projects.CHANGED, { to: 'workspace', workspaceId }, workspaceId, projects)
   }
 
+  async function withExistingProjectMutation<T>(
+    workspaceRootPath: string,
+    projectSlug: string,
+    operation: () => T | Promise<T>,
+  ): Promise<T> {
+    const { loadProject, withProjectMutationLock } = await import('@craft-agent/shared/projects')
+    const project = loadProject(workspaceRootPath, projectSlug)
+    if (!project) throw new Error(`Project not found: ${projectSlug}`)
+    return withProjectMutationLock(workspaceRootPath, project.config.id, async () => {
+      const current = loadProject(workspaceRootPath, projectSlug)
+      if (!current || current.config.id !== project.config.id) {
+        throw new Error(`Project not found: ${projectSlug}`)
+      }
+      return operation()
+    })
+  }
+
   // List all projects for a workspace
   server.handle(RPC_CHANNELS.projects.GET, async (_ctx, workspaceId: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
@@ -70,7 +87,11 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { updateProject } = await import('@craft-agent/shared/projects')
-    const updated = updateProject(workspace.rootPath, projectSlug, patch)
+    const updated = await withExistingProjectMutation(
+      workspace.rootPath,
+      projectSlug,
+      () => updateProject(workspace.rootPath, projectSlug, patch),
+    )
     await broadcastChanged(workspaceId, workspace.rootPath)
     return updated
   })
@@ -80,19 +101,51 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
 
-    const { loadProject, deleteProject } = await import('@craft-agent/shared/projects')
-    const project = loadProject(workspace.rootPath, projectSlug)
-    if (!project) {
+    const { deleteProject } = await import('@craft-agent/shared/projects')
+    let deletingProjectId: string | null = null
+    let touchedPages = 0
+    let deleted = false
+    try {
+      deleted = await deleteProject(
+        workspace.rootPath,
+        projectSlug,
+        async project => {
+          deletingProjectId = project.id
+          // Pages may reference the Project without belonging to it; unbind them
+          // instead of leaving dangling links. Sessions keep immutable Project
+          // ownership — deleteProject enforces PROJECT_NOT_EMPTY.
+          const { unbindProjectFromPages } = await import('@craft-agent/shared/pages')
+          touchedPages = unbindProjectFromPages(workspace.rootPath, project.id)
+          await deps.sessionManager.beginBrowserProjectDeletion(workspaceId, project.id)
+        },
+      )
+    } catch (error) {
+      if (deletingProjectId) {
+        await deps.sessionManager.finishBrowserProjectDeletion(
+          workspaceId,
+          deletingProjectId,
+          false,
+        ).catch(releaseError => log.error(
+          `PROJECTS_DELETE: failed to release Browser deletion gate for ${deletingProjectId}`,
+          releaseError,
+        ))
+      }
+      throw error
+    }
+    if (!deleted) {
       log.warn(`PROJECTS_DELETE: project ${projectSlug} not found`)
       return
     }
-
-    // Sessions keep immutable Project ownership — deleteProject enforces
-    // PROJECT_NOT_EMPTY. Pages may reference the Project without belonging to
-    // it, so unbind them instead of leaving dangling links.
-    const { unbindProjectFromPages } = await import('@craft-agent/shared/pages')
-    const touchedPages = unbindProjectFromPages(workspace.rootPath, project.config.id)
-    await deleteProject(workspace.rootPath, projectSlug)
+    if (deletingProjectId) {
+      await deps.sessionManager.finishBrowserProjectDeletion(
+        workspaceId,
+        deletingProjectId,
+        true,
+      ).catch(error => log.warn(
+        `PROJECTS_DELETE: failed to finalize Browser deletion gate for ${deletingProjectId}`,
+        error,
+      ))
+    }
     await broadcastChanged(workspaceId, workspace.rootPath)
     log.info(`Deleted empty project ${projectSlug} (unbound ${touchedPages} pages)`)
   })
@@ -115,7 +168,11 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { uploadProjectAsset } = await import('@craft-agent/shared/projects')
-    const asset = uploadProjectAsset(workspace.rootPath, projectSlug, input)
+    const asset = await withExistingProjectMutation(
+      workspace.rootPath,
+      projectSlug,
+      () => uploadProjectAsset(workspace.rootPath, projectSlug, input),
+    )
     await broadcastChanged(workspaceId, workspace.rootPath)
     log.info(`Uploaded asset ${asset.filename} to project ${projectSlug}`)
     return asset
@@ -131,7 +188,11 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { deleteProjectAsset } = await import('@craft-agent/shared/projects')
-    deleteProjectAsset(workspace.rootPath, projectSlug, filename)
+    await withExistingProjectMutation(
+      workspace.rootPath,
+      projectSlug,
+      () => deleteProjectAsset(workspace.rootPath, projectSlug, filename),
+    )
     await broadcastChanged(workspaceId, workspace.rootPath)
   })
 }

@@ -184,4 +184,24 @@ describe('RemoteBrowserPaneManager — sync stubs', () => {
     expect(calls).toHaveLength(1)
     expect((calls[0]!.args[0] as BrowserCapabilityRequest).method).toBe('listInstances')
   })
+
+  it('translates local host Workspace ids back to the remote Workspace boundary', async () => {
+    const { server } = createFakeServer({
+      invokeImpl: () => [{
+        id: 'browser-1',
+        workspaceId: 'local-mirror-id',
+        projectId: 'project-a',
+      }],
+    })
+    const bridge = new RemoteBrowserPaneManager({
+      sessionId: 'sess-1',
+      workspaceId: 'remote-workspace-id',
+      rpcServer: server,
+      getHostClient: () => 'client-A',
+    })
+
+    const windows = await bridge.listInstancesAsync()
+
+    expect(windows[0]?.workspaceId).toBe('remote-workspace-id')
+  })
 })

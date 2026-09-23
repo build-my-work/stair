@@ -14,6 +14,7 @@ import type {
   AnnotationV1,
   ContextUsageSnapshot,
   Reference,
+  StoredAttachment,
   WebTextQuoteLocatorV1,
   PermissionRequest as BasePermissionRequest,
 } from '@craft-agent/core/types'
@@ -98,22 +99,23 @@ export interface SaveTextFileResponse {
 }
 
 export interface ConfigureProjectNoteTargetRequest {
-  sessionId: string
+  sessionId: string | null
   projectId: string
-  relativePath: string | null
+  relativePath: string
 }
 
 export interface ConfigureProjectNoteTargetResponse {
   projectId: string
-  relativePath: string | null
+  relativePath: string
   recentPaths: string[]
+  projectRootFingerprint: string
 }
 
 export interface AppendProjectNoteRequest {
   requestId: string
-  sessionId: string
   projectId: string
-  expectedTargetPath: string
+  relativePath: string
+  expectedProjectRootFingerprint: string
   selection: Reference
 }
 
@@ -208,7 +210,6 @@ export interface Session {
   /** Immutable workspace-scoped Project id this Session belongs to. */
   projectId: string
   projectNoteTargetPath?: string
-  projectNoteTargetRootFingerprint?: string
   projectNoteRecentTargetPaths?: string[]
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
@@ -227,6 +228,8 @@ export interface Session {
 }
 
 export interface CreateSessionOptions {
+  /** Stable idempotency key for retried creation workflows such as Browser New Chat. */
+  creationRequestId?: string
   name?: string
   permissionMode?: PermissionMode
   /**
@@ -538,7 +541,7 @@ export type SessionEvent =
   | { type: 'error'; sessionId: string; error: string; timestamp?: number }
   | { type: 'typed_error'; sessionId: string; error: TypedError; timestamp?: number }
   | { type: 'complete'; sessionId: string; tokenUsage?: Session['tokenUsage']; hasUnread?: boolean; backgroundTasksAlive?: boolean }
-  | { type: 'interrupted'; sessionId: string; message?: Message; queuedMessages?: string[]; queuedReferences?: Reference[]; queuedRestoreId?: string; queuedMessageIds?: string[] }
+  | { type: 'interrupted'; sessionId: string; message?: Message; queuedMessages?: string[]; queuedReferences?: Reference[]; queuedAttachments?: StoredAttachment[]; queuedRestoreId?: string; queuedMessageIds?: string[] }
   | { type: 'queued_input_restored'; sessionId: string; queuedRestoreId: string; messageIds: string[] }
   | { type: 'status'; sessionId: string; message: string; statusType?: 'compacting' }
   | { type: 'info'; sessionId: string; message: string; statusType?: 'compaction_complete'; level?: 'info' | 'warning' | 'error' | 'success'; timestamp?: number }
@@ -574,7 +577,6 @@ export type SessionEvent =
       sessionId: string
       changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectNoteRecentTargetPaths'>> & {
         projectNoteTargetPath?: string | null
-        projectNoteTargetRootFingerprint?: string | null
       }
     }
   | { type: 'session_deleted'; sessionId: string }
@@ -1004,20 +1006,18 @@ export interface BrowserInstanceInfo {
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
+  /** Chat selected for Browser actions such as Add note and Open Chat. */
+  targetSessionId: string | null
   boundSessionId: string | null
   ownerType: 'session' | 'manual'
   ownerSessionId: string | null
   isVisible: boolean
   agentControlActive: boolean
   themeColor: string | null
-  /**
-   * Workspace that owns this browser instance, or `null` for unbound manual
-   * windows. Renderers filter the tab strip / status badge by `activeWorkspaceId`
-   * so a session in workspace A doesn't see windows opened by workspace B.
-   * Missing/null entries always pass the filter — this keeps older renderers
-   * and main processes that pre-date the field working unchanged.
-   */
-  workspaceId?: string | null
+  /** Workspace that owns this independent Browser window. */
+  workspaceId: string | null
+  /** Project that owns this independent Browser window. */
+  projectId: string | null
 }
 
 /**
@@ -1035,33 +1035,11 @@ export interface BrowserSecurityChallenge {
   suspected?: boolean
 }
 
-export interface BrowserSurfaceState {
-  /** Visible native surface in host-window coordinates. */
-  bounds: { x: number; y: number; width: number; height: number }
-  /** Full page viewport relative to `bounds`; stable while the Workbench scrolls. */
-  contentBounds: { x: number; y: number; width: number; height: number }
-  visible: boolean
-  order: number
-}
-
-export interface BrowserPresentRequest {
-  browserId: string
-  sessionId?: string | null
-  workspaceId?: string | null
-}
-
 export interface BrowserSelectionSource {
   url: string
   title: string
   quote: string
   locator: WebTextQuoteLocatorV1
-}
-
-export interface BrowserSelectionActionPayload {
-  eventId: string
-  action: 'add-note' | 'add-note-to' | 'add-chat' | 'new-chat'
-  browserId: string
-  source: BrowserSelectionSource
 }
 
 export interface BrowserSelectionRevealResult {

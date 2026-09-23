@@ -5,8 +5,9 @@
  * All agent events flow through a single pure function for consistent state transitions.
  */
 
-import type { Session, SessionEvent, Message, PermissionRequest, CredentialRequest, TypedError, PermissionMode, SessionStatus, AuthRequest, ToolDisplayMeta } from '../../shared/types'
+import type { Session, SessionEvent, Message, PermissionRequest, CredentialRequest, TypedError, PermissionMode, SessionStatus, AuthRequest, ToolDisplayMeta, StoredAttachment } from '../../shared/types'
 import type { Reference } from '@craft-agent/core'
+import type { DraftAttachmentRef } from '@craft-agent/shared/config'
 
 /** Explicit SDK retry boundaries; keep their transport shape authoritative. */
 export type TextDiscardEvent = Extract<SessionEvent, { type: 'text_discard' }>
@@ -189,7 +190,6 @@ export interface SessionMetadataChangedEvent {
     | 'projectNoteRecentTargetPaths'
   >> & {
     projectNoteTargetPath?: string | null
-    projectNoteTargetRootFingerprint?: string | null
   }
 }
 
@@ -284,6 +284,8 @@ export interface InterruptedEvent {
   queuedMessages?: string[]
   /** Structured references attached to those queued messages. */
   queuedReferences?: Reference[]
+  /** Persisted attachments attached to those queued messages. */
+  queuedAttachments?: StoredAttachment[]
   /** Correlates the persisted queued bubbles with the renderer draft acknowledgement. */
   queuedRestoreId?: string
   /** Exact queued bubbles retained by the server until acknowledgement. */
@@ -616,7 +618,7 @@ export type Effect =
   | { type: 'generate_title'; sessionId: string; userMessage: string }
   | { type: 'permission_mode_changed'; sessionId: string; permissionMode: PermissionMode; previousPermissionMode?: PermissionMode; transitionDisplay?: string; modeVersion?: number; changedAt?: string; changedBy?: 'user' | 'system' | 'restore' | 'automation' | 'unknown' }
   | { type: 'coding_mode_changed'; sessionId: string; codingMode: boolean }
-  | { type: 'restore_input'; text: string; references?: Reference[]; queuedRestoreId?: string; messageIds?: string[] }
+  | { type: 'restore_input'; text: string; references?: Reference[]; attachments?: DraftAttachmentRef[]; queuedRestoreId?: string; messageIds?: string[] }
   | { type: 'toast_error'; message: string }
 
 /**

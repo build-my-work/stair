@@ -23,6 +23,13 @@ import { useAppShellContext } from '@/context/AppShellContext'
 import { useTheme } from '@/context/ThemeContext'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { PanelHeaderCenterButton } from '@/components/ui/PanelHeaderCenterButton'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { ShikiCodeEditor } from '@/components/shiki/ShikiCodeEditor'
 import {
   registerOpenProjectFileDocument,
@@ -57,6 +64,7 @@ interface ProjectFilePageProps {
 }
 
 const CLEAN_STATE: ProjectTextDocumentState = { status: 'clean', error: null }
+const NO_CHAT_TARGET_VALUE = '__no-chat-target__'
 
 function saveStatusKey(state: ProjectTextDocumentState): string | null {
   switch (state.status) {
@@ -311,8 +319,8 @@ export default function ProjectFilePage({
       }
     }
 
-    if (!validTargetSessionId) throw new Error(t('reference.chooseChatTarget'))
     if (action === 'add-chat') {
+      if (!validTargetSessionId) throw new Error(t('reference.chooseChatTarget'))
       if (!onAddDraftReference(validTargetSessionId, reference)) {
         throw new Error(t('reference.couldNotAdd'))
       }
@@ -321,11 +329,11 @@ export default function ProjectFilePage({
     }
 
     if (!onAddSelectionNote) throw new Error(t('reference.addNoteUnavailable'))
-    return onAddSelectionNote(
-      validTargetSessionId,
+    return Boolean(await onAddSelectionNote(
       reference,
+      validTargetSessionId,
       action === 'choose-note-target' ? 'choose-target' : 'current',
-    )
+    ))
   }, [
     activeWorkspaceId,
     onAddDraftReference,
@@ -352,12 +360,10 @@ export default function ProjectFilePage({
     <div className="flex items-center gap-1.5">
       <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
         <span className="hidden @xl/panel:inline">{t('reference.chatTarget')}</span>
-        <select
-          value={validTargetSessionId ?? ''}
-          aria-label={t('reference.chatTarget')}
-          className="h-7 max-w-40 rounded border border-border/55 bg-background px-2 text-xs text-foreground outline-none"
-          onChange={event => {
-            const sessionId = event.target.value || null
+        <Select
+          value={validTargetSessionId ?? NO_CHAT_TARGET_VALUE}
+          onValueChange={value => {
+            const sessionId = value === NO_CHAT_TARGET_VALUE ? null : value
             const session = sessionId ? sessionMetaMap.get(sessionId) : undefined
             setProjectFileChatTarget({
               panelId,
@@ -367,13 +373,21 @@ export default function ProjectFilePage({
             })
           }}
         >
-          <option value="">{t('reference.chooseChat')}</option>
-          {projectSessions.map(session => (
-            <option key={session.id} value={session.id}>
-              {session.name || session.preview || t('chat.titlePlaceholder')}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger
+            aria-label={t('reference.chatTarget')}
+            className="h-7 w-40 border-border/55 bg-background px-2 text-xs"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent position="popper" side="bottom" align="end" sideOffset={4}>
+            <SelectItem value={NO_CHAT_TARGET_VALUE}>{t('reference.chooseChat')}</SelectItem>
+            {projectSessions.map(session => (
+              <SelectItem key={session.id} value={session.id}>
+                {session.name || session.preview || t('chat.titlePlaceholder')}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </label>
       {editButton}
     </div>

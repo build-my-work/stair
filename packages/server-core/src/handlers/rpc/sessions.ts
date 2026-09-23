@@ -108,6 +108,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.sessions.MARK_ALL_READ,
   RPC_CHANNELS.sessions.CREATE,
   RPC_CHANNELS.sessions.DELETE,
+  RPC_CHANNELS.sessions.GET_EXISTING_IDS,
   RPC_CHANNELS.sessions.GET_MESSAGES,
   RPC_CHANNELS.sessions.SEND_MESSAGE,
   RPC_CHANNELS.sessions.CANCEL,
@@ -179,6 +180,19 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
     return sessionManager.markAllSessionsRead(workspaceId)
   })
 
+  server.handle(RPC_CHANNELS.sessions.GET_EXISTING_IDS, async (ctx, sessionIds: string[]) => {
+    await sessionManager.waitForInit()
+    const windowWorkspaceId = ctx.webContentsId != null
+      ? deps.windowManager?.getWorkspaceForWindow(ctx.webContentsId)
+      : undefined
+    const workspaceId = ctx.workspaceId ?? windowWorkspaceId
+    if (!workspaceId || !Array.isArray(sessionIds)) return []
+    return sessionIds.filter(sessionId => (
+      typeof sessionId === 'string'
+      && sessionManager.hasSession(sessionId, workspaceId)
+    ))
+  })
+
   // Get a single session with messages (for lazy loading)
   server.handle(RPC_CHANNELS.sessions.GET_MESSAGES, async (_ctx, sessionId: string) => {
     const end = perf.start('rpc.getSessionMessages')
@@ -188,11 +202,22 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
   })
 
   // Create a new session
-  server.handle(RPC_CHANNELS.sessions.CREATE, async (_ctx, workspaceId: string, options?: import('@craft-agent/shared/protocol').CreateSessionOptions) => {
+  server.handle(RPC_CHANNELS.sessions.CREATE, async (ctx, workspaceId: string, options?: import('@craft-agent/shared/protocol').CreateSessionOptions) => {
     const end = perf.start('rpc.createSession', { workspaceId })
-    // The renderer adds the session synchronously from this return value (App.tsx handleCreateSession),
-    // so suppress the broadcast to avoid a redundant hydrate round-trip.
-    const session = await sessionManager.createSession(workspaceId, options, { emitCreatedEvent: false })
+    const session = await sessionManager.createSession(
+      workspaceId,
+      options,
+      { emitCreatedEvent: false },
+    )
+    // The requester adds the returned Session synchronously. Only peers need the
+    // lifecycle event; excluding the requester also prevents event-before-response
+    // ordering from inserting the same Session id twice.
+    pushTyped(
+      server,
+      RPC_CHANNELS.sessions.EVENT,
+      { to: 'workspace', workspaceId, exclude: ctx.clientId },
+      { type: 'session_created', sessionId: session.id, projectId: session.projectId },
+    )
     end()
     return session
   })

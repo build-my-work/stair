@@ -560,17 +560,21 @@ export function FreeFormInput({
 
   // Sync from parent when inputValue changes externally (e.g., switching sessions)
   const prevInputValueRef = React.useRef(coerceInputText(inputValue))
+  const syncTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
   React.useEffect(() => {
     if (inputValue === undefined) return
     const nextInputValue = coerceInputText(inputValue)
     if (nextInputValue !== prevInputValueRef.current) {
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current)
+        syncTimeoutRef.current = null
+      }
       setInput(nextInputValue)
       prevInputValueRef.current = nextInputValue
     }
   }, [inputValue])
 
   // Debounced sync to parent (saves draft without blocking typing)
-  const syncTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
   const syncToParent = React.useCallback((value: string) => {
     if (!onInputChange) return
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)

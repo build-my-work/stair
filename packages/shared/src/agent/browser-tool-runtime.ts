@@ -3,7 +3,7 @@ import type {
   BrowserDownloadsArgs,
   BrowserLifecycleActionResult,
   BrowserNetworkArgs,
-  BrowserPaneFns,
+  BrowserWindowFns,
   BrowserScreenshotRegionArgs,
   BrowserWaitArgs,
 } from './browser-tools.ts';
@@ -182,7 +182,7 @@ function statusBucket(status: number): '2xx' | '3xx' | '4xx' | '5xx' | 'other' {
   return 'other';
 }
 
-async function safeEvaluate<T>(fns: BrowserPaneFns, expression: string): Promise<T | null> {
+async function safeEvaluate<T>(fns: BrowserWindowFns, expression: string): Promise<T | null> {
   try {
     const value = await fns.evaluate(expression);
     return value as T;
@@ -191,7 +191,7 @@ async function safeEvaluate<T>(fns: BrowserPaneFns, expression: string): Promise
   }
 }
 
-async function getPageMetrics(fns: BrowserPaneFns): Promise<BrowserPageMetrics | null> {
+async function getPageMetrics(fns: BrowserWindowFns): Promise<BrowserPageMetrics | null> {
   return safeEvaluate<BrowserPageMetrics>(
     fns,
     `(() => {
@@ -268,7 +268,7 @@ function countActionableNodes(nodes: Array<{ role: string; disabled?: boolean }>
  * Hands a blocking security challenge to the user, the only one who can solve it: drops
  * the agent overlay and brings the window up. Returns the line saying what happened.
  */
-async function handChallengeToUser(fns: BrowserPaneFns): Promise<string> {
+async function handChallengeToUser(fns: BrowserWindowFns): Promise<string> {
   await fns.releaseControl();
   try {
     await fns.focusWindow();
@@ -279,11 +279,11 @@ async function handChallengeToUser(fns: BrowserPaneFns): Promise<string> {
 }
 
 /** Evidence too weak to hand the page over (e.g. a visible Turnstile widget) only earns a note. */
-function suspectedChallengeNote(challenge: Awaited<ReturnType<BrowserPaneFns['detectChallenge']>>): string | undefined {
+function suspectedChallengeNote(challenge: Awaited<ReturnType<BrowserWindowFns['detectChallenge']>>): string | undefined {
   return challenge.suspected ? `Note: the page may show a verification widget (${challenge.provider}).` : undefined;
 }
 
-function summarizeWindows(windows: Awaited<ReturnType<BrowserPaneFns['listWindows']>>): string {
+function summarizeWindows(windows: Awaited<ReturnType<BrowserWindowFns['listWindows']>>): string {
   const visible = windows.filter((w) => w.isVisible).length;
   const locked = windows.filter((w) => !!w.boundSessionId).length;
   const withOverlay = windows.filter((w) => !!w.agentControlActive).length;
@@ -313,13 +313,13 @@ function getOpenVisibilitySettlePollMs(override?: number): number {
 }
 
 async function waitForForegroundOpenVisibility(args: {
-  fns: BrowserPaneFns;
+  fns: BrowserWindowFns;
   instanceId: string;
   timeoutMs?: number;
   pollMs?: number;
 }): Promise<{
-  windows: Awaited<ReturnType<BrowserPaneFns['listWindows']>>;
-  win: Awaited<ReturnType<BrowserPaneFns['listWindows']>>[number] | undefined;
+  windows: Awaited<ReturnType<BrowserWindowFns['listWindows']>>;
+  win: Awaited<ReturnType<BrowserWindowFns['listWindows']>>[number] | undefined;
   settledByWait: boolean;
   usedFocusFallback: boolean;
 }> {
@@ -662,7 +662,7 @@ function includesNormalized(haystack: string | undefined, needle: string): boole
 }
 
 async function verifySelectResult(args: {
-  fns: BrowserPaneFns;
+  fns: BrowserWindowFns;
   ref: string;
   selectedValue: string;
   assertText?: string;
@@ -741,7 +741,7 @@ async function verifySelectResult(args: {
 
 export async function executeBrowserToolCommand(args: {
   command: string | string[];
-  fns: BrowserPaneFns;
+  fns: BrowserWindowFns;
   sessionId: string;
   platform?: NodeJS.Platform;
 }): Promise<BrowserCommandResult> {
@@ -773,7 +773,7 @@ export async function executeBrowserToolCommand(args: {
 
 async function executeBatchCommands(args: {
   commands: string[];
-  fns: BrowserPaneFns;
+  fns: BrowserWindowFns;
   sessionId: string;
   platform?: NodeJS.Platform;
 }): Promise<BrowserCommandResult> {
@@ -815,7 +815,7 @@ async function executeBatchCommands(args: {
 
 async function executeSingleCommand(args: {
   command: string | string[];
-  fns: BrowserPaneFns;
+  fns: BrowserWindowFns;
   sessionId: string;
   platform?: NodeJS.Platform;
 }): Promise<BrowserCommandResult> {
@@ -834,7 +834,7 @@ async function executeSingleCommand(args: {
   if (cmd === 'open') {
     const foreground = parts.includes('--foreground') || parts.includes('-f');
     const windowsBefore = await fns.listWindows();
-    const result = await fns.openPanel({ background: !foreground });
+    const result = await fns.openWindow({ background: !foreground });
 
     let windowsAfter = await fns.listWindows();
     let win = windowsAfter.find((w) => w.id === result.instanceId);

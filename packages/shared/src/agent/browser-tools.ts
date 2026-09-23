@@ -1,10 +1,10 @@
 /**
  * Browser Tools (`browser_tool`)
  *
- * Session-scoped tooling that enables the agent to interact with built-in
- * in-app browser windows via a single CLI-like command wrapper.
- * Commands delegate to BrowserPaneFns callbacks wired by Electron's
- * SessionManager to BrowserPaneManager.
+ * Session-scoped tooling that enables the agent to interact with independent
+ * Browser windows via a single CLI-like command wrapper.
+ * Commands delegate to BrowserWindowFns callbacks wired by Electron's
+ * SessionManager to the Browser window manager.
  *
  * The session → browser instance mapping is handled by the callback provider
  * (getOrCreateForSession pattern), so commands don't need instance IDs.
@@ -40,11 +40,11 @@ function successResponse(text: string): ToolResult {
 const BROWSER_RELEASE_HINT = '\n\nWhen you are done using the browser, call browser_tool with command "close" to close the window entirely, or "release" to dismiss the overlay and let the user continue browsing.';
 
 // ============================================================================
-// Browser Pane Function Interface
+// Browser Window Function Interface
 // ============================================================================
 
 /**
- * Abstraction over BrowserPaneManager for use in session-scoped tools.
+ * Abstraction over the Browser window manager for use in session-scoped tools.
  * The Electron session manager creates this by binding to a specific session's
  * browser instance via getOrCreateForSession(sessionId).
  */
@@ -129,8 +129,8 @@ export interface BrowserLifecycleActionResult {
   reason?: string
 }
 
-export interface BrowserPaneFns {
-  openPanel: (options?: { background?: boolean }) => Promise<{ instanceId: string }>;
+export interface BrowserWindowFns {
+  openWindow: (options?: { background?: boolean }) => Promise<{ instanceId: string }>;
   navigate: (url: string) => Promise<{ url: string; title: string }>;
   snapshot: () => Promise<{ url: string; title: string; nodes: Array<{ ref: string; role: string; name: string; value?: string; description?: string; focused?: boolean; checked?: boolean; disabled?: boolean }> }>;
   click: (ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }) => Promise<BrowserClickResult | void>;
@@ -178,10 +178,10 @@ export interface BrowserPaneFns {
 export interface BrowserToolsOptions {
   sessionId: string;
   /**
-   * Lazy resolver for browser pane functions.
+   * Lazy resolver for browser window functions.
    * Called at execution time to get the current callback from the session registry.
    */
-  getBrowserPaneFns: () => BrowserPaneFns | undefined;
+  getBrowserWindowFns: () => BrowserWindowFns | undefined;
 }
 
 // ============================================================================
@@ -240,8 +240,8 @@ Examples:
 // ============================================================================
 
 export function createBrowserTools(options: BrowserToolsOptions) {
-  function getBrowserFns(): BrowserPaneFns {
-    const fns = options.getBrowserPaneFns();
+  function getBrowserFns(): BrowserWindowFns {
+    const fns = options.getBrowserWindowFns();
     if (!fns) {
       throw new Error('Browser window controls are not available. This tool requires the desktop app.');
     }

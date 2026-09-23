@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { motion, useReducedMotion } from 'motion/react'
+import { motion } from 'motion/react'
 import {
   DndContext,
   KeyboardSensor,
@@ -34,7 +34,6 @@ import { useIsMultiSelectActive } from '@/hooks/useSession'
 import { isDetailNavState } from '@/lib/nav-helpers'
 import { SessionPanelSlot } from './SessionPanelSlot'
 import { ProjectFilePanelSlot } from './ProjectFilePanelSlot'
-import { BrowserPanelSlot } from './BrowserPanelSlot'
 import { MainContentPanel } from './MainContentPanel'
 import { PanelResizeSash } from './PanelResizeSash'
 import {
@@ -85,21 +84,8 @@ function PanelContentSlot({
       />
     )
   }
-  if (panel.kind === 'project-file') {
-    return (
-      <ProjectFilePanelSlot
-        panel={panel}
-        isOnly={panelCount === 1}
-        isFocusedPanel={isFocusedPanel}
-        isAtLeftEdge={isAtLeftEdge}
-        isAtRightEdge={isAtRightEdge}
-        isCompact={isCompact}
-        reorderHandle={reorderHandle}
-      />
-    )
-  }
   return (
-    <BrowserPanelSlot
+    <ProjectFilePanelSlot
       panel={panel}
       isOnly={panelCount === 1}
       isFocusedPanel={isFocusedPanel}
@@ -170,7 +156,6 @@ export function WorkbenchContainer({
   const setPanelLayoutWidth = useSetAtom(workbenchPanelLayoutWidthAtom)
   const reorderPanel = useSetAtom(reorderAuxiliaryPanelAtom)
   const [activeDragId, setActiveDragId] = useState<string | null>(null)
-  const reduceMotion = useReducedMotion()
   const navigationState = useNavigationState()
   const isMultiSelectActive = useIsMultiSelectActive()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -192,29 +177,26 @@ export function WorkbenchContainer({
     if (!focusedPanelId) return
     const shouldMoveDomFocus = handledKeyboardFocusRevision.current !== keyboardFocusRevision
     handledKeyboardFocusRevision.current = keyboardFocusRevision
-    const frame = requestAnimationFrame(() => {
-      const container = scrollRef.current
-      if (!container) return
-      const focusedPanelElement = Array.from(
-        container.querySelectorAll<HTMLElement>(
-          isCompact ? '[data-panel-id]' : '[data-panel-frame]',
-        ),
-      ).find(panel => panel.dataset.panelId === focusedPanelId)
-      if (!focusedPanelElement) return
-      if (shouldMoveDomFocus) focusedPanelElement.focus({ preventScroll: true })
-      if (isCompact) return
-
-      const containerRect = container.getBoundingClientRect()
-      const panelRect = focusedPanelElement.getBoundingClientRect()
-      let nextScrollLeft = container.scrollLeft
-      if (panelRect.left < containerRect.left) {
-        nextScrollLeft -= containerRect.left - panelRect.left
-      } else if (panelRect.right > containerRect.right) {
-        nextScrollLeft += panelRect.right - containerRect.right
-      }
-      container.scrollTo({ left: nextScrollLeft, behavior: 'smooth' })
-    })
-    return () => cancelAnimationFrame(frame)
+    const container = scrollRef.current
+    if (!container) return
+    const focusedPanelElement = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        isCompact ? '[data-panel-id]' : '[data-panel-frame]',
+      ),
+    ).find(panel => panel.getAttribute('data-panel-id') === focusedPanelId)
+    if (!focusedPanelElement) return
+    if (shouldMoveDomFocus) focusedPanelElement.focus({ preventScroll: true })
+    if (isCompact) {
+      container.scrollLeft = 0
+      return
+    }
+    const containerRect = container.getBoundingClientRect()
+    const panelRect = focusedPanelElement.getBoundingClientRect()
+    if (panelRect.left < containerRect.left) {
+      container.scrollLeft -= containerRect.left - panelRect.left
+    } else if (panelRect.right > containerRect.right) {
+      container.scrollLeft += panelRect.right - containerRect.right
+    }
   }, [focusedPanelId, isCompact, keyboardFocusRevision, panelRevealRevision])
 
   const sensors = useSensors(
@@ -235,91 +217,31 @@ export function WorkbenchContainer({
     })
   }, [activeLayout, reorderPanel])
 
-  if (isCompact) {
-    const showNavigator = !isDetailNavState(navigationState)
-      || (isWorkbenchVisible && !focusedPanel)
-    const compactKey = showNavigator
-      ? 'navigator'
-      : focusedPanel ? `panel-${focusedPanel.id}` : 'shell'
-    const isDetail = !showNavigator && Boolean(focusedPanel)
-    return (
-      <div
-        ref={scrollRef}
-        data-mobile-menu-root="true"
-        className="flex-1 min-w-0 relative overflow-hidden panel-scroll @container/shell"
-        style={{
-          paddingBlock: PANEL_STACK_VERTICAL_OVERFLOW,
-          marginBlock: -PANEL_STACK_VERTICAL_OVERFLOW,
-          marginBottom: -6,
-          paddingBottom: 6,
-        }}
-      >
-        <motion.div
-          key={compactKey}
-          className="absolute inset-0"
-          initial={reduceMotion
-            ? { opacity: 0 }
-            : { x: isDetail ? '100%' : '-20%', opacity: 0.92 }}
-          animate={{ x: 0, opacity: 1 }}
-          transition={reduceMotion
-            ? { duration: 0.12 }
-            : { type: 'spring', stiffness: 400, damping: 36, mass: 0.8 }}
-        >
-          {showNavigator && hasNavigator ? (
-            <div
-              data-panel-role="navigator"
-              className="h-full w-full overflow-hidden relative bg-background shadow-middle"
-              style={{ borderTopLeftRadius: RADIUS_INNER, borderTopRightRadius: RADIUS_INNER }}
-            >
-              {navigatorSlot}
-            </div>
-          ) : isWorkbenchVisible && focusedPanel ? (
-            <PanelContentSlot
-              panel={focusedPanel}
-              panelCount={1}
-              isFocusedPanel
-              isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
-              isAtLeftEdge
-              isAtRightEdge={!isRightSidebarVisible}
-              isCompact
-            />
-          ) : (
-            <ShellContentSlot
-              isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
-              isAtLeftEdge
-              isAtRightEdge={!isRightSidebarVisible}
-              isCompact
-            />
-          )}
-        </motion.div>
-      </div>
-    )
-  }
+  const showCompactNavigator = isCompact && (
+    isWorkbenchVisible
+      ? !focusedPanel || (focusedPanel.kind === 'session' && !isDetailNavState(navigationState))
+      : !isDetailNavState(navigationState)
+  )
 
   const transition = isResizing ? { duration: 0 } : PANEL_SPRING
   return (
     <div
-      ref={scrollRef}
       data-mobile-menu-root="true"
-      className="flex-1 min-w-0 flex relative z-panel panel-scroll @container/shell"
+      className="flex-1 min-w-0 relative z-panel @container/shell"
       style={{
-        overflowX: 'auto',
-        overflowY: 'hidden',
+        overflow: 'hidden',
         paddingBlock: PANEL_STACK_VERTICAL_OVERFLOW,
         marginBlock: -PANEL_STACK_VERTICAL_OVERFLOW,
         marginBottom: -6,
         paddingBottom: 6,
-        paddingRight: 8,
-        marginRight: -8,
       }}
     >
       <motion.div
-        data-workbench-panels="true"
         className="flex h-full"
         initial={false}
-        animate={{ paddingLeft: !hasSidebar ? PANEL_EDGE_INSET : 0 }}
+        animate={{ paddingLeft: !isCompact && !hasSidebar ? PANEL_EDGE_INSET : 0 }}
         transition={transition}
-        style={{ gap: PANEL_GAP, flexGrow: 1, minWidth: 0 }}
+        style={{ gap: isCompact ? 0 : PANEL_GAP, flexGrow: 1, minWidth: 0 }}
       >
         <motion.div
           data-panel-role="sidebar"
@@ -331,35 +253,54 @@ export function WorkbenchContainer({
           }}
           transition={transition}
           className="h-full relative shrink-0"
-          style={{ overflowX: 'clip', overflowY: 'visible' }}
+          style={{ display: isCompact ? 'none' : undefined, overflowX: 'clip', overflowY: 'visible' }}
         >
-          <div className="h-full" style={{ width: sidebarWidth }}>{sidebarSlot}</div>
+          <div className="h-full" style={{ width: sidebarWidth }}>{!isCompact && sidebarSlot}</div>
         </motion.div>
 
         <motion.div
           data-panel-role="navigator"
           initial={false}
           animate={{
-            width: hasNavigator ? navigatorWidth : 0,
-            marginRight: hasNavigator ? 0 : -PANEL_GAP,
-            opacity: hasNavigator ? 1 : 0,
+            width: isCompact ? '100%' : hasNavigator ? navigatorWidth : 0,
+            marginRight: isCompact || hasNavigator ? 0 : -PANEL_GAP,
+            opacity: isCompact || hasNavigator ? 1 : 0,
           }}
           transition={transition}
           className={cn('h-full overflow-hidden relative shrink-0 z-[2]', 'bg-background shadow-middle')}
           style={{
+            display: isCompact && (!showCompactNavigator || !hasNavigator) ? 'none' : undefined,
             borderTopLeftRadius: RADIUS_INNER,
             borderBottomLeftRadius: !hasSidebar ? RADIUS_EDGE : RADIUS_INNER,
             borderTopRightRadius: RADIUS_INNER,
             borderBottomRightRadius: RADIUS_INNER,
           }}
         >
-          <div className="h-full" style={{ width: navigatorWidth }}>{navigatorSlot}</div>
+          <div className="h-full" style={{ width: isCompact ? '100%' : navigatorWidth }}>
+            {(!isCompact || showCompactNavigator) && navigatorSlot}
+          </div>
         </motion.div>
 
-        {isWorkbenchVisible ? (
-          panels.length === 0 ? (
-            <div data-panel-role="empty-primary" className="flex-1" />
-          ) : (
+        <div
+          ref={scrollRef}
+          data-panel-scroll-viewport="true"
+          className="h-full min-w-0 flex-1 overflow-x-auto overflow-y-hidden panel-scroll"
+          style={{
+            display: showCompactNavigator && hasNavigator ? 'none' : undefined,
+            overflowX: isCompact ? 'hidden' : undefined,
+            paddingRight: isCompact ? 0 : 8,
+            marginRight: isCompact ? 0 : -8,
+          }}
+        >
+          <div
+            data-workbench-panels="true"
+            className="flex h-full"
+            style={{ gap: isCompact ? 0 : PANEL_GAP, flexGrow: 1, minWidth: 0 }}
+          >
+            {isWorkbenchVisible && panels.length === 0 && (
+              <div data-panel-role="empty-primary" className="flex-1" />
+            )}
+            {/* Panel identity follows the Workbench lifetime, including while hidden in Compact. */}
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}
@@ -374,20 +315,25 @@ export function WorkbenchContainer({
                 {panels.map((panel, index) => {
                   const slotProps = {
                     panel,
-                    panelCount: panels.length,
-                    isFocusedPanel: panels.length === 1 || panel.id === focusedPanelId,
+                    panelCount: isCompact ? 1 : panels.length,
+                    isFocusedPanel: isWorkbenchVisible && !(showCompactNavigator && hasNavigator)
+                      && (isCompact ? panel.id === focusedPanelId : panels.length === 1 || panel.id === focusedPanelId),
                     isSidebarAndNavigatorHidden,
-                    isAtLeftEdge: index === 0 && isAtLeftEdge,
-                    isAtRightEdge: index === panels.length - 1 && !isRightSidebarVisible,
+                    isAtLeftEdge: isCompact || (index === 0 && isAtLeftEdge),
+                    isAtRightEdge: (isCompact || index === panels.length - 1) && !isRightSidebarVisible,
+                    isCompact,
                   }
                   const frameProps = {
                     panel,
-                    position: index + 1,
-                    panelCount: panels.length,
-                    isOnly: panels.length === 1,
+                    position: isCompact ? 1 : index + 1,
+                    panelCount: isCompact ? 1 : panels.length,
+                    isOnly: isCompact || panels.length === 1,
                     isFocused: slotProps.isFocusedPanel,
                     panelLayoutWidth,
-                    fillRemainingSpace: index === panels.length - 1,
+                    fillRemainingSpace: isCompact || index === panels.length - 1,
+                    style: {
+                      display: !isWorkbenchVisible || (isCompact && panel.id !== focusedPanelId) ? 'none' : undefined,
+                    },
                   }
                   const isPrimary = panel.id === activeLayout?.primary?.id
                   return (
@@ -399,7 +345,7 @@ export function WorkbenchContainer({
                       ) : (
                         <SortableWorkbenchPanelFrame
                           {...frameProps}
-                          canReorder={(activeLayout?.auxiliary.length ?? 0) > 1}
+                          canReorder={!isCompact && (activeLayout?.auxiliary.length ?? 0) > 1}
                         >
                           {reorderHandle => (
                             <PanelContentSlot
@@ -409,7 +355,7 @@ export function WorkbenchContainer({
                           )}
                         </SortableWorkbenchPanelFrame>
                       )}
-                      {panels.length > 1 && activeLayout && (
+                      {!isCompact && isWorkbenchVisible && panels.length > 1 && activeLayout && (
                         <PanelResizeSash
                           projectId={panel.projectId}
                           panel={panel}
@@ -422,15 +368,16 @@ export function WorkbenchContainer({
                 })}
               </SortableContext>
             </DndContext>
-          )
-        ) : (
-          <ShellContentSlot
-            isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
-            isAtLeftEdge={isAtLeftEdge}
-            isAtRightEdge={!isRightSidebarVisible}
-            isCompact={false}
-          />
-        )}
+            {!isWorkbenchVisible && (
+              <ShellContentSlot
+                isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
+                isAtLeftEdge={isCompact || isAtLeftEdge}
+                isAtRightEdge={!isRightSidebarVisible}
+                isCompact={isCompact}
+              />
+            )}
+          </div>
+        </div>
       </motion.div>
     </div>
   )

@@ -1,5 +1,4 @@
 import { isCanonicalProjectRelativePath } from '../project-files/index.ts'
-import { isSafeExternalUrl } from '../utils/url-safety.ts'
 
 export const WORKBENCH_LAYOUT_VERSION = 1 as const
 export const DEFAULT_WORKBENCH_PANEL_RATIO = 1
@@ -20,19 +19,9 @@ export interface PersistedProjectFileWorkbenchPanel {
   widthRatio: number
 }
 
-export interface PersistedBrowserWorkbenchPanel {
-  id: string
-  kind: 'browser'
-  url: string
-  title: string
-  chatTargetSessionId: string | null
-  widthRatio: number
-}
-
 export type PersistedWorkbenchPanel =
   | PersistedSessionWorkbenchPanel
   | PersistedProjectFileWorkbenchPanel
-  | PersistedBrowserWorkbenchPanel
 
 export interface PersistedProjectWorkbench {
   primary: PersistedSessionWorkbenchPanel | null
@@ -128,28 +117,6 @@ function normalizeAuxiliaryPanel(
       kind: 'project-file',
       relativePath: panel.relativePath,
       presentation: panel.presentation,
-      chatTargetSessionId: normalizedChatTarget(
-        panel.chatTargetSessionId,
-        projectId,
-        validation,
-      ),
-      widthRatio: normalizedRatio(panel.widthRatio),
-    }
-  }
-
-  if (panel.kind === 'browser') {
-    if (
-      typeof panel.url !== 'string'
-      || panel.url.length > 8192
-      || !isSafeExternalUrl(panel.url)
-      || typeof panel.title !== 'string'
-      || panel.title.length > 512
-    ) return null
-    return {
-      id: panel.id,
-      kind: 'browser',
-      url: panel.url,
-      title: panel.title,
       chatTargetSessionId: normalizedChatTarget(
         panel.chatTargetSessionId,
         projectId,

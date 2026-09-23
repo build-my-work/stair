@@ -125,6 +125,20 @@ describe('WindowManager renderer lifecycle', () => {
     globalThis.setTimeout = originalSetTimeout
   })
 
+  it.each([
+    'file:///old/Stair.app/Contents/Resources/app/dist/renderer/index.html',
+    'http://localhost:5193/old/Stair.app/Contents/Resources/app/dist/renderer/index.html',
+  ])('restores the current dev entry instead of a stale packaged pathname: %s', (entry) => {
+    const manager = new WindowManager()
+    manager.createWindow({
+      workspaceId: 'workspace-1',
+      restoreUrl: `${entry}?workspaceId=workspace-1&route=allSessions%2Fsession%2Ftest#reference`,
+    })
+    expect(createdWindows[0].loadURL).toHaveBeenCalledWith(
+      'http://localhost:5173/?workspaceId=workspace-1&route=allSessions%2Fsession%2Ftest#reference',
+    )
+  })
+
   it('ignores child-frame failures and Chromium ERR_ABORTED', () => {
     const manager = new WindowManager()
     manager.createWindow({ workspaceId: 'workspace-1' })
@@ -175,6 +189,30 @@ describe('WindowManager renderer lifecycle', () => {
     expect(window.loadFile).not.toHaveBeenCalled()
   })
 
+  it('does not treat the Chromium error page as a successful renderer load', () => {
+    const manager = new WindowManager()
+    manager.createWindow({ workspaceId: 'workspace-1' })
+    const window = createdWindows[0]
+    const recoveryUrl = 'http://localhost:5173/?workspaceId=workspace-1&sidebar=files'
+    window.loadURL.mockClear()
+
+    for (let attempt = 0; attempt < 6; attempt++) {
+      window.webContents._emit(
+        'did-fail-load',
+        {},
+        -102,
+        'ERR_CONNECTION_REFUSED',
+        recoveryUrl,
+        true,
+      )
+      window.webContents._setURL('chrome-error://chromewebdata/')
+      window.webContents._emit('did-finish-load')
+    }
+
+    expect(window.loadURL).toHaveBeenCalledTimes(5)
+    expect(window.loadURL).toHaveBeenCalledWith(recoveryUrl)
+  })
+
   it('resets recovery after a successful load and retains the latest in-page URL', () => {
     const manager = new WindowManager()
     manager.createWindow({ workspaceId: 'workspace-1' })
@@ -212,43 +250,4 @@ describe('WindowManager renderer lifecycle', () => {
     expect(window.loadFile).not.toHaveBeenCalled()
   })
 
-  it('parks native Browser surfaces before renderer replacement and teardown', () => {
-    const manager = new WindowManager()
-    const parkSurfaces = mock((_webContentsId: number) => {})
-    manager.setRendererSurfaceParkingHandler(parkSurfaces)
-    manager.createWindow({ workspaceId: 'workspace-1' })
-    const window = createdWindows[0]
-    const webContentsId = window.webContents.id
-
-    window.webContents._emit('did-start-navigation', {
-      isMainFrame: false,
-      isSameDocument: false,
-      url: 'http://localhost:5173/child',
-    })
-    window.webContents._emit('did-start-navigation', {
-      isMainFrame: true,
-      isSameDocument: true,
-      url: 'http://localhost:5173/#section',
-    })
-    window.webContents._emit('did-start-navigation', {
-      isMainFrame: true,
-      isSameDocument: false,
-      url: 'http://localhost:5173/',
-    })
-    window.webContents._emit(
-      'did-fail-load',
-      {},
-      -105,
-      'ERR_NAME_NOT_RESOLVED',
-      'http://localhost:5173/',
-      true,
-    )
-    window.webContents._emit('render-process-gone', {}, { reason: 'crashed' })
-    window.webContents._emit('destroyed')
-
-    expect(parkSurfaces).toHaveBeenCalledTimes(4)
-    for (const call of parkSurfaces.mock.calls) {
-      expect(call[0]).toBe(webContentsId)
-    }
-  })
 })

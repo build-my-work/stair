@@ -8,6 +8,7 @@ import {
   getOrCreateLatestSession,
   getOrCreateSessionById,
   getSessionFilePath,
+  loadSession,
   listSessions,
 } from '../../sessions/storage.ts';
 import {
@@ -79,18 +80,51 @@ describe('workspace default Project', () => {
     expect(listSessions(rootPath)).toHaveLength(0);
   });
 
-  it('does not treat the old Workspace shape as valid data', () => {
+  it('isolates persisted Sessions with nonexistent or cross-Workspace Project ownership', async () => {
+    const { rootPath } = createWorkspace('stair-invalid-persisted-project-');
+    const otherWorkspace = createWorkspace('stair-other-project-');
+    const otherProject = createProject(otherWorkspace.rootPath, { name: 'Other' });
+    const invalidProjectIds = ['proj_missing', otherProject.id];
+
+    for (const projectId of invalidProjectIds) {
+      const session = await createSession(rootPath);
+      const sessionPath = getSessionFilePath(rootPath, session.id);
+      const lines = readFileSync(sessionPath, 'utf8').trimEnd().split('\n');
+      const header = JSON.parse(lines[0]!) as Record<string, unknown>;
+      header.projectId = projectId;
+      lines[0] = JSON.stringify(header);
+      writeFileSync(sessionPath, `${lines.join('\n')}\n`);
+
+      expect(loadSession(rootPath, session.id)).toBeNull();
+    }
+
+    expect(listSessions(rootPath)).toEqual([]);
+  });
+
+  it('backfills a real General Project for the old Workspace shape', () => {
     const { rootPath } = createWorkspace('stair-old-workspace-');
     const configPath = join(rootPath, 'config.json');
     const config = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
     delete config.defaultProjectId;
     writeFileSync(configPath, JSON.stringify(config));
+    rmSync(join(rootPath, 'projects'), { recursive: true, force: true });
 
-    expect(loadWorkspaceConfig(rootPath)).toBeNull();
-    expect(isValidWorkspace(rootPath)).toBe(false);
+    const loaded = loadWorkspaceConfig(rootPath);
+    const projects = loadWorkspaceProjects(rootPath);
+
+    expect(loaded?.defaultProjectId).toMatch(/^proj_/);
+    expect(isValidWorkspace(rootPath)).toBe(true);
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.config).toMatchObject({
+      id: loaded?.defaultProjectId,
+      name: 'General',
+      slug: 'general',
+    });
+    expect(JSON.parse(readFileSync(configPath, 'utf8')).defaultProjectId)
+      .toBe(loaded?.defaultProjectId);
   });
 
-  it('ignores old Sessions without Project ownership and creates a fresh default-Project Session', async () => {
+  it('loads old Sessions under the default Project instead of hiding or replacing them', async () => {
     const { rootPath, defaultProjectId } = createWorkspace('stair-old-session-');
     const oldSession = await createSession(rootPath);
     const sessionPath = getSessionFilePath(rootPath, oldSession.id);
@@ -100,10 +134,14 @@ describe('workspace default Project', () => {
     lines[0] = JSON.stringify(header);
     writeFileSync(sessionPath, `${lines.join('\n')}\n`);
 
-    expect(listSessions(rootPath)).toEqual([]);
+    expect(listSessions(rootPath)).toEqual([
+      expect.objectContaining({ id: oldSession.id, projectId: defaultProjectId }),
+    ]);
+    expect(loadSession(rootPath, oldSession.id)?.projectId).toBe(defaultProjectId);
 
-    const freshSession = await getOrCreateLatestSession(rootPath);
-    expect(freshSession.id).not.toBe(oldSession.id);
-    expect(freshSession.projectId).toBe(defaultProjectId);
+    const latestSession = await getOrCreateLatestSession(rootPath);
+    expect(latestSession.id).toBe(oldSession.id);
+    expect(latestSession.projectId).toBe(defaultProjectId);
+    expect(listSessions(rootPath)).toHaveLength(1);
   });
 });

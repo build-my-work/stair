@@ -27,22 +27,9 @@ export interface ProjectFileWorkbenchPanel extends WorkbenchPanelLayout {
   openIntentRevision: number
 }
 
-export interface BrowserWorkbenchPanel extends WorkbenchPanelLayout {
-  id: string
-  kind: 'browser'
-  projectId: string
-  runtimeId: string | null
-  url: string
-  title: string
-  chatTargetSessionId: string | null
-  /** Transient marker set only when a persisted Browser descriptor needs a new runtime. */
-  restoreOnActivation: boolean
-}
-
 export type WorkbenchPanel =
   | SessionWorkbenchPanel
   | ProjectFileWorkbenchPanel
-  | BrowserWorkbenchPanel
 
 export interface ProjectWorkbench {
   primary: SessionWorkbenchPanel | null
@@ -104,6 +91,14 @@ export const focusedWorkbenchSessionIdAtom = atom((get) => {
   const panel = getWorkbenchPanels(layout).find(candidate => candidate.id === layout.focusedPanelId)
   return panel?.kind === 'session' ? panel.sessionId : null
 })
+
+export const retainedWorkbenchSessionIdsAtom = atom((get) => (
+  new Set(Object.values(get(workbenchAtom).layoutsByProject).flatMap(layout => (
+    getWorkbenchPanels(layout).flatMap(panel => (
+      panel.kind === 'session' ? [panel.sessionId] : []
+    ))
+  )))
+))
 
 export const visibleWorkbenchSessionIdsAtom = atom((get) => (
   new Set(get(workbenchPanelsAtom).flatMap(panel => (

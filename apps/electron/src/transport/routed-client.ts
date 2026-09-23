@@ -21,6 +21,7 @@ import { isLocalOnly, RPC_CHANNELS } from '@craft-agent/shared/protocol'
 
 interface ListenerEntry {
   callback: (...args: any[]) => void
+  transportCallback: (...args: any[]) => void
   unsub: () => void
 }
 
@@ -127,15 +128,29 @@ export class RoutedClient implements RpcClient {
       return this.localClient.on(channel, callback)
     }
 
-    // REMOTE_ELIGIBLE — subscribe on workspaceClient and track for re-subscription
-    const unsub = this.workspaceClient.on(channel, callback)
+    // REMOTE_ELIGIBLE — translate the remote Workspace identity back to the
+    // local window identity before renderer listeners compare or store it.
+    const transportCallback = (...args: any[]) => {
+      const mapping = this.workspaceIdMapping
+      const translatedArgs = mapping
+        ? args.map(arg => {
+            if (arg === mapping.remoteId) return mapping.localId
+            if (arg && typeof arg === 'object' && 'workspaceId' in arg && arg.workspaceId === mapping.remoteId) {
+              return { ...arg, workspaceId: mapping.localId }
+            }
+            return arg
+          })
+        : args
+      callback(...translatedArgs)
+    }
+    const unsub = this.workspaceClient.on(channel, transportCallback)
 
     let set = this.remoteListeners.get(channel)
     if (!set) {
       set = new Set()
       this.remoteListeners.set(channel, set)
     }
-    const entry: ListenerEntry = { callback, unsub }
+    const entry: ListenerEntry = { callback, transportCallback, unsub }
     set.add(entry)
 
     return () => {
@@ -211,7 +226,7 @@ export class RoutedClient implements RpcClient {
     for (const [channel, entries] of this.remoteListeners) {
       for (const entry of entries) {
         const oldUnsub = entry.unsub
-        entry.unsub = newClient.on(channel, entry.callback)
+        entry.unsub = newClient.on(channel, entry.transportCallback)
         oldUnsub()
       }
     }

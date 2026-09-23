@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { realpath } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { existsSync, mkdirSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 
 import {
   isReference,
@@ -12,6 +12,12 @@ import {
 } from '@craft-agent/core/types'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { classifyProjectFile, MAX_PROJECT_FILE_TEXT_BYTES } from '@craft-agent/shared/project-files'
+import {
+  getProjectPath,
+  loadProjectById,
+  withProjectMutationLock,
+} from '@craft-agent/shared/projects'
+import { atomicWriteFileSync, readJsonFileSync } from '@craft-agent/shared/utils'
 import {
   CodedError,
   isProjectNoteTargetPath,
@@ -30,12 +36,12 @@ import {
   readProjectFileBinaryWithinRoot,
   readProjectTextFileWithinRoot,
   resolveProjectWorkingDirectory,
+  withProjectFileWriteQueue,
 } from './project-files'
 import {
   openProjectNoteFileWithinRoot,
   SecureProjectNoteOpenError,
   type SecureProjectNoteFile,
-  type SecureProjectNoteOpenHooks,
 } from './secure-project-note-file'
 
 export const HANDLED_CHANNELS = [
@@ -78,10 +84,17 @@ function configureRequest(value: unknown): ConfigureProjectNoteTargetRequest {
   }
   const request = value as Partial<ConfigureProjectNoteTargetRequest>
   return {
-    sessionId: boundedId(request.sessionId, 'Session id'),
+    sessionId: request.sessionId === null ? null : boundedId(request.sessionId, 'Session id'),
     projectId: boundedId(request.projectId, 'Project id'),
-    relativePath: request.relativePath === null ? null : noteTargetPath(request.relativePath),
+    relativePath: noteTargetPath(request.relativePath),
   }
+}
+
+function projectRootFingerprint(value: unknown): string {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) {
+    throw projectNoteError('PROJECT_NOTE_INVALID_REQUEST', 'Invalid Project root fingerprint')
+  }
+  return value
 }
 
 function appendRequest(value: unknown): AppendProjectNoteRequest {
@@ -97,9 +110,11 @@ function appendRequest(value: unknown): AppendProjectNoteRequest {
   }
   return {
     requestId: boundedId(request.requestId, 'request id'),
-    sessionId: boundedId(request.sessionId, 'Session id'),
     projectId: boundedId(request.projectId, 'Project id'),
-    expectedTargetPath: noteTargetPath(request.expectedTargetPath),
+    relativePath: noteTargetPath(request.relativePath),
+    expectedProjectRootFingerprint: projectRootFingerprint(
+      request.expectedProjectRootFingerprint,
+    ),
     selection: request.selection,
   }
 }
@@ -119,25 +134,6 @@ function authorizedWorkspace(context: RequestContext, deps: HandlerDeps): Worksp
   return workspace
 }
 
-async function authorizedSession(
-  context: RequestContext,
-  deps: HandlerDeps,
-  sessionId: string,
-): Promise<{ session: Session; workspace: Workspace }> {
-  const workspace = authorizedWorkspace(context, deps)
-  const session = await deps.sessionManager.getSession(sessionId)
-  if (!session) {
-    throw projectNoteError('PROJECT_NOTE_SESSION_NOT_FOUND', 'Session was not found')
-  }
-  if (session.workspaceId !== workspace.id) {
-    throw projectNoteError(
-      'PROJECT_NOTE_SESSION_WORKSPACE_MISMATCH',
-      'Session does not belong to the active Workspace',
-    )
-  }
-  return { session, workspace }
-}
-
 function assertUtf8(bytes: Uint8Array): void {
   try {
     new TextDecoder('utf-8', { fatal: true }).decode(bytes)
@@ -149,12 +145,11 @@ function assertUtf8(bytes: Uint8Array): void {
 async function openTarget(
   rootPath: string,
   relativePath: string,
-  hooks: SecureProjectNoteOpenHooks = {},
 ): Promise<{ handle: SecureProjectNoteFile; bytes: Buffer }> {
   const canonicalPath = noteTargetPath(relativePath)
   let handle: SecureProjectNoteFile
   try {
-    handle = await openProjectNoteFileWithinRoot(rootPath, canonicalPath, hooks)
+    handle = await openProjectNoteFileWithinRoot(rootPath, canonicalPath)
   } catch (error) {
     if (error instanceof SecureProjectNoteOpenError && error.reason === 'not-found') {
       throw projectNoteError('PROJECT_NOTE_TARGET_NOT_FOUND', 'Note target was not found')
@@ -196,37 +191,185 @@ function separatorBeforeAppend(bytes: Buffer): string {
   return bytes.at(-1) === 0x0a ? '\n' : '\n\n'
 }
 
-const targetWriteQueues = new Map<string, Promise<void>>()
+interface PendingProjectNoteAppendReceipt {
+  signature: string
+  status: 'pending'
+  targetPath: string
+  rootFingerprint: string
+  initialSize: number
+  initialHash: string
+  payloadBase64: string
+  response: AppendProjectNoteResponse
+}
 
-export async function appendProjectNoteWithinRoot(
+interface CompleteProjectNoteAppendReceipt {
+  signature: string
+  status: 'complete'
+  response: AppendProjectNoteResponse
+}
+
+type ProjectNoteAppendReceipt =
+  | PendingProjectNoteAppendReceipt
+  | CompleteProjectNoteAppendReceipt
+
+interface ProjectNoteAppendReceipts {
+  version: 1
+  requests: Record<string, ProjectNoteAppendReceipt>
+}
+
+const MAX_COMPLETED_PROJECT_NOTE_RECEIPTS = 128
+
+function loadProjectNoteAppendReceipts(filePath: string): ProjectNoteAppendReceipts {
+  if (!existsSync(filePath)) return { version: 1, requests: {} }
+  try {
+    const value = readJsonFileSync<ProjectNoteAppendReceipts>(filePath)
+    if (value.version !== 1 || !value.requests || typeof value.requests !== 'object') {
+      throw new Error('invalid receipt document')
+    }
+    return value
+  } catch {
+    throw projectNoteError(
+      'PROJECT_NOTE_REQUEST_RECOVERY_REQUIRED',
+      'The durable Add Note request record could not be read safely',
+    )
+  }
+}
+
+function saveProjectNoteAppendReceipts(
+  filePath: string,
+  receipts: ProjectNoteAppendReceipts,
+): void {
+  const completedRequestIds = Object.entries(receipts.requests)
+    .filter(([, receipt]) => receipt.status === 'complete')
+    .map(([requestId]) => requestId)
+  const retainedCompletedRequestIds = new Set(
+    completedRequestIds.slice(-MAX_COMPLETED_PROJECT_NOTE_RECEIPTS),
+  )
+  const requests: Record<string, ProjectNoteAppendReceipt> = {}
+  for (const [requestId, receipt] of Object.entries(receipts.requests)) {
+    if (receipt.status === 'complete') {
+      if (!retainedCompletedRequestIds.has(requestId)) continue
+      requests[requestId] = {
+        signature: receipt.signature,
+        status: 'complete',
+        response: receipt.response,
+      }
+    } else {
+      requests[requestId] = receipt
+    }
+  }
+  receipts.requests = requests
+  mkdirSync(dirname(filePath), { recursive: true })
+  atomicWriteFileSync(filePath, JSON.stringify(receipts, null, 2))
+}
+
+async function appendProjectNoteWithinRootOnce(
   rootPath: string,
   relativePath: string,
   entry: string,
-  hooks: SecureProjectNoteOpenHooks = {},
-): Promise<void> {
-  const root = await realpath(resolve(rootPath))
+  receiptFile: string,
+  requestId: string,
+  signature: string,
+  response: AppendProjectNoteResponse,
+): Promise<AppendProjectNoteResponse> {
+  // rootPath was authorized by resolveProjectWorkingDirectory; do not follow a substituted root.
+  const root = resolve(rootPath)
   const path = noteTargetPath(relativePath)
-  const key = `${root}\0${path}`
-  const previous = targetWriteQueues.get(key) ?? Promise.resolve()
-  const operation = previous.catch(() => {}).then(async () => {
-    const { handle, bytes } = await openTarget(root, path, hooks)
+  // The Project lifecycle lock is held by APPEND; file writers never acquire it in reverse.
+  return withProjectFileWriteQueue(root, path, async () => {
+    const receipts = loadProjectNoteAppendReceipts(receiptFile)
+    const existing = receipts.requests[requestId]
+    if (existing?.signature !== undefined && existing.signature !== signature) {
+      throw projectNoteError(
+        'PROJECT_NOTE_REQUEST_CONFLICT',
+        'Request id was reused for a different note',
+      )
+    }
+    if (existing?.status === 'complete') return existing.response
+    if (existing && (
+      existing.targetPath !== path
+      || existing.rootFingerprint !== rootFingerprint(root)
+    )) {
+      throw projectNoteError(
+        'PROJECT_NOTE_REQUEST_RECOVERY_REQUIRED',
+        'The Project or Note target changed during Add Note recovery',
+      )
+    }
+
+    const { handle, bytes } = await openTarget(root, path)
     try {
-      const payload = Buffer.from(`${separatorBeforeAppend(bytes)}${entry}`, 'utf8')
-      if (bytes.length + payload.length > MAX_PROJECT_FILE_TEXT_BYTES) {
-        throw projectNoteError('PROJECT_NOTE_TARGET_TOO_LARGE', 'Appending would exceed the Project text limit')
+      let receipt = existing
+      let payload: Buffer
+      if (receipt) {
+        payload = Buffer.from(receipt.payloadBase64, 'base64')
+        const prefix = bytes.subarray(0, receipt.initialSize)
+        if (
+          bytes.length < receipt.initialSize
+          || createHash('sha256').update(prefix).digest('hex') !== receipt.initialHash
+        ) {
+          throw projectNoteError(
+            'PROJECT_NOTE_REQUEST_RECOVERY_REQUIRED',
+            'The Note changed before the pending Add Note request could be recovered',
+          )
+        }
+        const appendedEnd = receipt.initialSize + payload.length
+        if (
+          bytes.length >= appendedEnd
+          && bytes.subarray(receipt.initialSize, appendedEnd).equals(payload)
+        ) {
+          const completedReceipt: CompleteProjectNoteAppendReceipt = {
+            signature: receipt.signature,
+            status: 'complete',
+            response: receipt.response,
+          }
+          delete receipts.requests[requestId]
+          receipts.requests[requestId] = completedReceipt
+          saveProjectNoteAppendReceipts(receiptFile, receipts)
+          return completedReceipt.response
+        }
+        if (bytes.length !== receipt.initialSize) {
+          throw projectNoteError(
+            'PROJECT_NOTE_REQUEST_RECOVERY_REQUIRED',
+            'The Note changed while the pending Add Note request was incomplete',
+          )
+        }
+      } else {
+        payload = Buffer.from(`${separatorBeforeAppend(bytes)}${entry}`, 'utf8')
+        if (bytes.length + payload.length > MAX_PROJECT_FILE_TEXT_BYTES) {
+          throw projectNoteError(
+            'PROJECT_NOTE_TARGET_TOO_LARGE',
+            'Appending would exceed the Project text limit',
+          )
+        }
+        receipt = {
+          signature,
+          status: 'pending',
+          targetPath: path,
+          rootFingerprint: rootFingerprint(root),
+          initialSize: bytes.length,
+          initialHash: createHash('sha256').update(bytes).digest('hex'),
+          payloadBase64: payload.toString('base64'),
+          response,
+        }
+        receipts.requests[requestId] = receipt
+        saveProjectNoteAppendReceipts(receiptFile, receipts)
       }
+
       await handle.append(payload)
       await handle.sync()
+      const completedReceipt: CompleteProjectNoteAppendReceipt = {
+        signature: receipt.signature,
+        status: 'complete',
+        response: receipt.response,
+      }
+      delete receipts.requests[requestId]
+      receipts.requests[requestId] = completedReceipt
+      saveProjectNoteAppendReceipts(receiptFile, receipts)
+      return completedReceipt.response
     } finally {
       await handle.close()
     }
   })
-  const settled = operation.then(() => {}, () => {})
-  targetWriteQueues.set(key, settled)
-  void settled.finally(() => {
-    if (targetWriteQueues.get(key) === settled) targetWriteQueues.delete(key)
-  })
-  return operation
 }
 
 function escapeQuoteLine(value: string): string {
@@ -246,14 +389,20 @@ function inlineCode(value: string): string {
   return `${fence}${normalized.startsWith('`') || normalized.endsWith('`') ? ` ${normalized} ` : normalized}${fence}`
 }
 
-function sourceLabel(reference: Reference, session: Pick<Session, 'id' | 'name'>): string {
+function sourceLabel(
+  reference: Reference,
+  sourceSession?: Pick<Session, 'id' | 'name'>,
+): string {
   if (reference.kind === 'chat-message') {
+    if (!sourceSession) {
+      throw projectNoteError('PROJECT_NOTE_SOURCE_INVALID', 'Chat reference source is unavailable')
+    }
     const role = {
       assistant: 'Assistant',
       plan: 'Plan',
       user: 'User',
     }[reference.role]
-    return `Chat · ${role} · ${inlineCode(session.name ?? session.id)}`
+    return `Chat · ${role} · ${inlineCode(sourceSession.name ?? sourceSession.id)}`
   }
   if (reference.kind === 'web-selection') {
     return `Web · ${escapeQuoteLine(reference.title.replace(/\s+/g, ' ').trim())} · ${inlineCode(reference.url)}`
@@ -272,26 +421,27 @@ function sourceLabel(reference: Reference, session: Pick<Session, 'id' | 'name'>
 
 export function serializeProjectNote(
   reference: Reference,
-  session: Pick<Session, 'id' | 'name'>,
+  sourceSession?: Pick<Session, 'id' | 'name'>,
 ): string {
   const quote = reference.quote
     .trim()
     .replace(/\r\n?/g, '\n')
     .split('\n')
     .map(line => `> ${escapeQuoteLine(line)}`)
-  return [...quote, '>', `> — ${sourceLabel(reference, session)}`].join('\n') + '\n'
+  return [...quote, '>', `> — ${sourceLabel(reference, sourceSession)}`].join('\n') + '\n'
 }
 
 async function validateChatSource(
   reference: ChatMessageReferenceV1,
-  targetSession: Session,
+  projectId: string,
+  workspace: Workspace,
   deps: HandlerDeps,
-): Promise<void> {
+): Promise<Session> {
   const source = await deps.sessionManager.getSession(reference.sessionId)
   if (
     !source
-    || source.workspaceId !== targetSession.workspaceId
-    || source.projectId !== targetSession.projectId
+    || source.workspaceId !== workspace.id
+    || source.projectId !== projectId
   ) {
     throw projectNoteError('PROJECT_NOTE_SOURCE_INVALID', 'Chat reference is outside the target Project')
   }
@@ -299,14 +449,15 @@ async function validateChatSource(
   if (!message || message.role !== reference.role) {
     throw projectNoteError('PROJECT_NOTE_SOURCE_INVALID', 'Chat reference source is unavailable')
   }
+  return source
 }
 
 async function validateProjectFileSource(
   reference: ProjectFileReferenceV1,
-  targetSession: Session,
+  projectId: string,
   workspace: Workspace,
 ): Promise<void> {
-  if (reference.projectId !== targetSession.projectId) {
+  if (reference.projectId !== projectId) {
     throw projectNoteError('PROJECT_NOTE_SOURCE_INVALID', 'Project File reference is outside the target Project')
   }
   try {
@@ -326,117 +477,67 @@ async function validateProjectFileSource(
 
 async function validateSource(
   reference: Reference,
-  targetSession: Session,
+  projectId: string,
   workspace: Workspace,
   deps: HandlerDeps,
-): Promise<void> {
-  if (reference.projectId !== targetSession.projectId) {
+): Promise<Session | undefined> {
+  if (reference.projectId !== projectId) {
     throw projectNoteError('PROJECT_NOTE_SOURCE_INVALID', 'Reference is outside the target Project')
   }
   if (reference.kind === 'chat-message') {
-    await validateChatSource(reference, targetSession, deps)
+    return validateChatSource(reference, projectId, workspace, deps)
   } else if (reference.kind === 'project-file') {
-    await validateProjectFileSource(reference, targetSession, workspace)
+    await validateProjectFileSource(reference, projectId, workspace)
   }
+  return undefined
 }
 
 function rootFingerprint(rootPath: string): string {
   return createHash('sha256').update(rootPath).digest('hex')
 }
 
-function expectedTarget(
-  session: Session,
-  projectId: string,
-  expectedPath: string,
-  expectedRootFingerprint: string,
-): string {
-  if (session.projectId !== projectId) {
-    throw projectNoteError('PROJECT_NOTE_SESSION_PROJECT_CHANGED', 'Session Project changed')
-  }
-  if (!session.projectNoteTargetPath) {
-    throw projectNoteError('PROJECT_NOTE_TARGET_REQUIRED', 'Choose a note target for this Session')
-  }
-  if (
-    session.projectNoteTargetPath !== expectedPath
-    || session.projectNoteTargetRootFingerprint !== expectedRootFingerprint
-  ) {
-    throw projectNoteError('PROJECT_NOTE_TARGET_CHANGED', 'Note target changed before writing')
-  }
-  return expectedPath
-}
-
-const sessionQueues = new Map<string, Promise<void>>()
-
-async function withSessionQueue<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
-  const previous = sessionQueues.get(sessionId) ?? Promise.resolve()
-  const result = previous.catch(() => {}).then(operation)
-  const settled = result.then(() => {}, () => {})
-  sessionQueues.set(sessionId, settled)
-  void settled.finally(() => {
-    if (sessionQueues.get(sessionId) === settled) sessionQueues.delete(sessionId)
-  })
-  return result
-}
-
 function appendSignature(request: AppendProjectNoteRequest): string {
   return createHash('sha256').update(JSON.stringify({
-    sessionId: request.sessionId,
     projectId: request.projectId,
-    expectedTargetPath: request.expectedTargetPath,
+    relativePath: request.relativePath,
+    expectedProjectRootFingerprint: request.expectedProjectRootFingerprint,
     selection: request.selection,
   })).digest('hex')
 }
 
 export function registerProjectNoteHandlers(server: RpcServer, deps: HandlerDeps): void {
-  const idempotency = new Map<string, {
-    signature: string
-    promise: Promise<AppendProjectNoteResponse>
-    settled: boolean
-  }>()
-
   server.handle(
     RPC_CHANNELS.projectNotes.CONFIGURE_TARGET,
     async (context, rawRequest: unknown): Promise<ConfigureProjectNoteTargetResponse> => {
       const request = configureRequest(rawRequest)
-      return withSessionQueue(request.sessionId, async () => {
-        const { session, workspace } = await authorizedSession(context, deps, request.sessionId)
-        if (session.projectId !== request.projectId) {
-          throw projectNoteError('PROJECT_NOTE_SESSION_PROJECT_CHANGED', 'Session belongs to a different Project')
-        }
-
-        let fingerprint: string | null = null
-        if (request.relativePath) {
-          const rootPath = await resolveProjectWorkingDirectory(workspace.rootPath, request.projectId)
-          await ensureProjectNoteTarget(rootPath, request.relativePath)
-          fingerprint = rootFingerprint(rootPath)
-        }
-        const configured = await deps.sessionManager.setSessionProjectNoteTarget(
-          session.id,
-          request.projectId,
-          request.relativePath,
-          fingerprint,
-        )
-        if (!configured) {
-          throw projectNoteError('PROJECT_NOTE_TARGET_CHANGED', 'Note target changed while configuring')
-        }
-        if (request.relativePath && fingerprint) {
-          try {
-            const latestRoot = await resolveProjectWorkingDirectory(workspace.rootPath, request.projectId)
-            if (rootFingerprint(latestRoot) !== fingerprint) {
-              throw projectNoteError('PROJECT_NOTE_TARGET_CHANGED', 'Project root changed while configuring')
-            }
-          } catch (error) {
-            await deps.sessionManager.clearSessionProjectNoteTargetIfMatches(
-              session.id,
-              request.projectId,
-              request.relativePath,
-              fingerprint,
-            )
-            throw error
-          }
-        }
-        return { projectId: request.projectId, ...configured }
-      })
+      const workspace = authorizedWorkspace(context, deps)
+      const rootPath = await resolveProjectWorkingDirectory(workspace.rootPath, request.projectId)
+      await ensureProjectNoteTarget(rootPath, request.relativePath)
+      const fingerprint = rootFingerprint(rootPath)
+      let recentPaths: string[] = []
+      const sessionId = request.sessionId
+      if (sessionId) {
+        await deps.sessionManager.withSessionLifecycleLock(sessionId, async () => {
+          const session = await deps.sessionManager.getSession(sessionId)
+          if (
+            !session
+            || session.workspaceId !== workspace.id
+            || session.projectId !== request.projectId
+          ) return
+          const configured = await deps.sessionManager.setSessionProjectNoteTarget(
+            session.id,
+            request.projectId,
+            request.relativePath,
+          )
+          if (configured) recentPaths = configured.recentPaths
+        })
+      }
+      return {
+        projectId: request.projectId,
+        relativePath: request.relativePath,
+        recentPaths,
+        projectRootFingerprint: fingerprint,
+      }
     },
   )
 
@@ -444,61 +545,65 @@ export function registerProjectNoteHandlers(server: RpcServer, deps: HandlerDeps
     RPC_CHANNELS.projectNotes.APPEND,
     async (context, rawRequest: unknown): Promise<AppendProjectNoteResponse> => {
       const request = appendRequest(rawRequest)
-      const { workspace: requestWorkspace } = await authorizedSession(
-        context,
-        deps,
-        request.sessionId,
-      )
-      const idempotencyKey = `${requestWorkspace.id}\0${request.requestId}`
       const signature = appendSignature(request)
-      const cached = idempotency.get(idempotencyKey)
-      if (cached) {
-        if (cached.signature !== signature) {
-          throw projectNoteError('PROJECT_NOTE_REQUEST_CONFLICT', 'Request id was reused for a different note')
+      const workspace = authorizedWorkspace(context, deps)
+      return withProjectMutationLock(workspace.rootPath, request.projectId, async () => {
+        const project = loadProjectById(workspace.rootPath, request.projectId)
+        if (!project) {
+          throw projectNoteError('PROJECT_NOTE_SOURCE_INVALID', 'Project is unavailable in this Workspace')
         }
-        return cached.promise
-      }
+        const receiptFile = join(
+          getProjectPath(workspace.rootPath, project.config.slug),
+          'data',
+          'project-note-requests.json',
+        )
+        const existing = loadProjectNoteAppendReceipts(receiptFile).requests[request.requestId]
+        if (existing) {
+          if (existing.signature !== signature) {
+            throw projectNoteError(
+              'PROJECT_NOTE_REQUEST_CONFLICT',
+              'Request id was reused for a different note',
+            )
+          }
+          if (existing.status === 'complete') return existing.response
+        }
 
-      const promise = withSessionQueue(request.sessionId, async () => {
-        const { session, workspace } = await authorizedSession(context, deps, request.sessionId)
-        await validateSource(request.selection, session, workspace, deps)
         const rootPath = await resolveProjectWorkingDirectory(workspace.rootPath, request.projectId)
-        const targetPath = expectedTarget(
-          session,
+        if (rootFingerprint(rootPath) !== request.expectedProjectRootFingerprint) {
+          throw projectNoteError('PROJECT_NOTE_TARGET_CHANGED', 'Project root changed after choosing the Note')
+        }
+        if (existing) {
+          return appendProjectNoteWithinRootOnce(
+            rootPath,
+            existing.targetPath,
+            '',
+            receiptFile,
+            request.requestId,
+            signature,
+            existing.response,
+          )
+        }
+
+        const sourceSession = await validateSource(
+          request.selection,
           request.projectId,
-          request.expectedTargetPath,
-          rootFingerprint(rootPath),
+          workspace,
+          deps,
         )
-        await appendProjectNoteWithinRoot(
+        return appendProjectNoteWithinRootOnce(
           rootPath,
-          targetPath,
-          serializeProjectNote(request.selection, session),
+          request.relativePath,
+          serializeProjectNote(request.selection, sourceSession),
+          receiptFile,
+          request.requestId,
+          signature,
+          {
+            projectId: request.projectId,
+            relativePath: request.relativePath,
+            appendedAt: new Date().toISOString(),
+          },
         )
-        return {
-          projectId: request.projectId,
-          relativePath: targetPath,
-          appendedAt: new Date().toISOString(),
-        }
       })
-      const entry = { signature, promise, settled: false }
-      idempotency.set(idempotencyKey, entry)
-      void promise.finally(() => {
-        entry.settled = true
-        if (idempotency.size <= 512) return
-        for (const [requestId, candidate] of idempotency) {
-          if (!candidate.settled) continue
-          idempotency.delete(requestId)
-          if (idempotency.size <= 512) break
-        }
-      }).catch(() => {})
-      try {
-        return await promise
-      } catch (error) {
-        if (idempotency.get(idempotencyKey)?.promise === promise) {
-          idempotency.delete(idempotencyKey)
-        }
-        throw error
-      }
     },
   )
 }

@@ -2,19 +2,19 @@
  * Tests for the browser tools factory.
  *
  * Verifies that createBrowserTools produces a single browser_tool
- * and that it delegates correctly to BrowserPaneFns callbacks via CLI commands.
+ * and that it delegates correctly to BrowserWindowFns callbacks via CLI commands.
  */
 
 import { describe, it, expect, beforeEach } from 'bun:test'
-import { createBrowserTools, type BrowserPaneFns } from '../browser-tools'
+import { createBrowserTools, type BrowserWindowFns } from '../browser-tools'
 
 // ============================================================================
-// Mock BrowserPaneFns
+// Mock BrowserWindowFns
 // ============================================================================
 
-function createMockFns(): BrowserPaneFns {
+function createMockFns(): BrowserWindowFns {
   return {
-    openPanel: async () => ({ instanceId: 'browser-test-1' }),
+    openWindow: async () => ({ instanceId: 'browser-test-1' }),
     navigate: async (url: string) => ({ url: `https://${url}`, title: 'Test Page' }),
     snapshot: async () => ({
       url: 'https://example.com',
@@ -113,14 +113,14 @@ async function executeTool(tools: ReturnType<typeof createBrowserTools>, name: s
 // ============================================================================
 
 describe('createBrowserTools', () => {
-  let mockFns: BrowserPaneFns
+  let mockFns: BrowserWindowFns
   let tools: ReturnType<typeof createBrowserTools>
 
   beforeEach(() => {
     mockFns = createMockFns()
     tools = createBrowserTools({
       sessionId: 'test-session',
-      getBrowserPaneFns: () => mockFns,
+      getBrowserWindowFns: () => mockFns,
     })
   })
 
@@ -178,7 +178,7 @@ describe('createBrowserTools', () => {
 
     it('routes open command in background by default', async () => {
       let openOptions: { background?: boolean } | undefined
-      mockFns.openPanel = async (options) => {
+      mockFns.openWindow = async (options) => {
         openOptions = options
         return { instanceId: 'browser-test-1' }
       }
@@ -192,7 +192,7 @@ describe('createBrowserTools', () => {
     it('routes open command with --foreground flag and reports settled visibility', async () => {
       let openOptions: { background?: boolean } | undefined
       let listCalls = 0
-      mockFns.openPanel = async (options) => {
+      mockFns.openWindow = async (options) => {
         openOptions = options
         return { instanceId: 'browser-test-1' }
       }
@@ -1363,10 +1363,10 @@ describe('createBrowserTools', () => {
   })
 
   describe('error handling', () => {
-    it('returns isError when getBrowserPaneFns returns undefined', async () => {
+    it('returns isError when getBrowserWindowFns returns undefined', async () => {
       const errorTools = createBrowserTools({
         sessionId: 'test',
-        getBrowserPaneFns: () => undefined,
+        getBrowserWindowFns: () => undefined,
       })
       const result = await executeTool(errorTools, 'browser_tool', { command: 'navigate test.com' })
       expect(result.isError).toBe(true)

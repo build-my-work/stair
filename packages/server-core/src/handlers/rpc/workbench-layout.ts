@@ -94,10 +94,45 @@ function writeWorkbenchLayout(
 }
 
 export function registerWorkbenchLayoutHandlers(server: RpcServer, deps: HandlerDeps): void {
-  server.handle(RPC_CHANNELS.workbenchLayout.READ, context => (
-    readWorkbenchLayout(resolveWorkspaceRoot(context, deps))
-  ))
-  server.handle(RPC_CHANNELS.workbenchLayout.WRITE, (context, value) => (
-    writeWorkbenchLayout(resolveWorkspaceRoot(context, deps), value)
-  ))
+  const baselines = new Map<string, PersistedWorkbenchLayoutDocument>()
+  const baselineKey = (rootPath: string, clientId: string) => `${rootPath}\0${clientId}`
+
+  server.handle(RPC_CHANNELS.workbenchLayout.READ, context => {
+    const rootPath = resolveWorkspaceRoot(context, deps)
+    const document = readWorkbenchLayout(rootPath)
+    baselines.set(baselineKey(rootPath, context.clientId), document)
+    return document
+  })
+  server.handle(RPC_CHANNELS.workbenchLayout.WRITE, (context, value) => {
+    const rootPath = resolveWorkspaceRoot(context, deps)
+    const key = baselineKey(rootPath, context.clientId)
+    const incoming = normalizeWorkbenchLayoutDocument(value, validationForWorkspace(rootPath))
+    const baseline = baselines.get(key)
+    if (!baseline) {
+      const written = writeWorkbenchLayout(rootPath, incoming)
+      baselines.set(key, incoming)
+      return written
+    }
+
+    const current = readWorkbenchLayout(rootPath)
+    const layoutsByProject = { ...current.layoutsByProject }
+    const projectIds = new Set([
+      ...Object.keys(baseline.layoutsByProject),
+      ...Object.keys(incoming.layoutsByProject),
+    ])
+    for (const projectId of projectIds) {
+      const before = baseline.layoutsByProject[projectId]
+      const next = incoming.layoutsByProject[projectId]
+      if (JSON.stringify(before) === JSON.stringify(next)) continue
+      if (next) layoutsByProject[projectId] = next
+      else delete layoutsByProject[projectId]
+    }
+
+    const written = writeWorkbenchLayout(rootPath, {
+      version: WORKBENCH_LAYOUT_VERSION,
+      layoutsByProject,
+    })
+    baselines.set(key, incoming)
+    return written
+  })
 }

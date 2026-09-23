@@ -24,6 +24,7 @@ import { matchesLabelFilter } from '@craft-agent/shared/labels'
 import {
   parseRoute,
   parseRouteToNavigationState,
+  parseRightSidebarParam,
   buildRouteFromNavigationState,
   buildRightSidebarParam,
   type ParsedRoute,
@@ -62,9 +63,8 @@ import {
   selectSessionFromNavigatorAtom,
   showSessionInPrimaryAtom,
   switchWorkbenchProjectAtom,
-  restoreActiveBrowserRuntimesAtom,
 } from '@/workbench/workbench-commands'
-import { visibleWorkbenchSessionIdsAtom, workbenchAtom } from '@/workbench/workbench-state'
+import { retainedWorkbenchSessionIdsAtom, workbenchAtom } from '@/workbench/workbench-state'
 import { findEmptySessionsLeavingWorkbench } from '@/workbench/session-auto-cleanup'
 import { restoreWorkbenchLayoutsAtom } from '@/workbench/workbench-persistence'
 import { WorkbenchPersistenceBridge } from '@/workbench/WorkbenchPersistenceBridge'
@@ -151,7 +151,6 @@ export function NavigationProvider({
   const store = useStore()
   const initializeWorkbench = useSetAtom(initializeWorkbenchAtom)
   const restoreWorkbenchLayouts = useSetAtom(restoreWorkbenchLayoutsAtom)
-  const restoreActiveBrowserRuntimes = useSetAtom(restoreActiveBrowserRuntimesAtom)
   const selectSessionFromNavigator = useSetAtom(selectSessionFromNavigatorAtom)
   const showSessionInPrimary = useSetAtom(showSessionInPrimaryAtom)
   const openSessionFromProjectFile = useSetAtom(openSessionFromProjectFileAtom)
@@ -159,7 +158,7 @@ export function NavigationProvider({
   const switchWorkbenchProject = useSetAtom(switchWorkbenchProjectAtom)
   const guardedModeAvailable = useAtomValue(guardedModeAvailableAtom)
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
-  const visibleSessionIds = useAtomValue(visibleWorkbenchSessionIdsAtom)
+  const retainedSessionIds = useAtomValue(retainedWorkbenchSessionIdsAtom)
   const sessionMetas = useMemo(() => Array.from(sessionMetaMap.values()), [sessionMetaMap])
   const updateSessionMeta = useSetAtom(updateSessionMetaAtom)
   const { labels: labelConfigs } = useLabels(workspaceId)
@@ -168,7 +167,9 @@ export function NavigationProvider({
 
   const [baseNavigationState, setBaseNavigationState] = useState<NavigationState>(DEFAULT_NAVIGATION_STATE)
   const baseNavigationStateRef = useRef<NavigationState>(DEFAULT_NAVIGATION_STATE)
-  const [rightSidebar, setRightSidebar] = useState<RightSidebarPanel | undefined>()
+  const [rightSidebar, setRightSidebar] = useState<RightSidebarPanel | undefined>(() => (
+    parseRightSidebarParam(new URLSearchParams(window.location.search).get('sidebar') ?? undefined)
+  ))
   const rightSidebarRef = useRef<RightSidebarPanel | undefined>(rightSidebar)
   const navigationState = useMemo(
     () => rightSidebar ? { ...baseNavigationState, rightSidebar } : baseNavigationState,
@@ -599,7 +600,7 @@ export function NavigationProvider({
   }, [defaultProjectId, initializeWorkbench, workspaceId])
 
   useEffect(() => {
-    const currentVisibleSessionIds = new Set(visibleSessionIds)
+    const currentVisibleSessionIds = new Set(retainedSessionIds)
     const previousVisibleSessionIds = previousVisibleSessionIdsRef.current
     previousVisibleSessionIdsRef.current = currentVisibleSessionIds
 
@@ -614,7 +615,7 @@ export function NavigationProvider({
     )) {
       onAutoDeleteEmptySession(sessionId)
     }
-  }, [hasSessionDraft, onAutoDeleteEmptySession, sessionMetaMap, visibleSessionIds, workspaceId])
+  }, [hasSessionDraft, onAutoDeleteEmptySession, retainedSessionIds, sessionMetaMap, workspaceId])
 
   useEffect(() => {
     if (!isReady || !isSessionsReady || !workspaceId || !workspaceSlug || !defaultProjectId) return
@@ -645,10 +646,6 @@ export function NavigationProvider({
       if (!await applyViewRoute(route, { pushHistory })) {
         await applyViewRoute(routes.view.allSessions(), { pushHistory })
       }
-      const activeProjectId = store.get(workbenchAtom).activeProjectId
-      if (activeProjectId) {
-        await restoreActiveBrowserRuntimes({ projectId: activeProjectId })
-      }
       if (firstRestore) {
         history.replaceState({ seq: 0 }, '', window.location.href)
         historySeqRef.current = 0
@@ -667,7 +664,6 @@ export function NavigationProvider({
     workspaceId,
     workspaceSlug,
     restoreWorkbenchLayouts,
-    restoreActiveBrowserRuntimes,
     store,
   ])
 

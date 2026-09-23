@@ -114,12 +114,19 @@ export interface ToolIconMapping {
 }
 
 /**
- * Browser pane creation options
+ * Independent Browser window creation options.
  */
 export interface BrowserPaneCreateOptions {
-  id?: string
   show?: boolean
-  bindToSessionId?: string
+  projectId: string
+  targetSessionId?: string
+}
+
+/** Authoritative Workspace state used to clean up Browser windows after reconnect. */
+export interface BrowserPaneReconcileInput {
+  workspaceId: string
+  projectIds?: string[]
+  sessions?: Array<{ id: string; projectId: string }>
 }
 
 /**
@@ -228,9 +235,6 @@ import type {
   WorkspaceSettings,
   PermissionModeState,
   BrowserInstanceInfo,
-  BrowserSurfaceState,
-  BrowserPresentRequest,
-  BrowserSelectionActionPayload,
   BrowserSelectionRevealResult,
   DeepLinkNavigation,
   TestAutomationPayload,
@@ -251,6 +255,7 @@ export interface ElectronAPI {
   getSessions(): Promise<Session[]>
   getUnreadSummary(): Promise<UnreadSummary>
   markAllSessionsRead(workspaceId: string): Promise<void>
+  getExistingSessionIds(sessionIds: string[]): Promise<string[]>
   getSessionMessages(sessionId: string): Promise<Session | null>
   createSession(workspaceId: string, options?: CreateSessionOptions): Promise<Session>
   deleteSession(sessionId: string): Promise<void>
@@ -512,9 +517,34 @@ export interface ElectronAPI {
 
   // Session Drafts (persisted composer state — text + attachment refs)
   getDraft(sessionId: string): Promise<import('@craft-agent/shared/config').SessionDraft | null>
-  setDraft(sessionId: string, draft: import('@craft-agent/shared/config').SessionDraft): Promise<void>
+  setDraftContent(
+    sessionId: string,
+    content: Pick<import('@craft-agent/shared/config').SessionDraft, 'text' | 'attachments'>,
+  ): Promise<import('@craft-agent/shared/config').SessionDraft | null>
+  updateDraftReferences(
+    sessionId: string,
+    input: {
+      baseReferences: import('@craft-agent/core').Reference[]
+      nextReferences: import('@craft-agent/core').Reference[]
+    },
+  ): Promise<import('@craft-agent/shared/config').SessionDraft | null>
+  addDraftReference(
+    sessionId: string,
+    reference: import('@craft-agent/core').Reference,
+    requestId?: string,
+  ): Promise<import('@craft-agent/shared/config').SessionDraft | null>
+  restoreDraftInput(
+    sessionId: string,
+    input: {
+      restoreId: string
+      draft: import('@craft-agent/shared/config').SessionDraft
+    },
+  ): Promise<import('@craft-agent/shared/config').SessionDraftRestoreResult>
+  onDraftReferencesChanged(
+    callback: (sessionId: string, references: import('@craft-agent/core').Reference[]) => void,
+  ): () => void
   deleteDraft(sessionId: string): Promise<void>
-  getAllDrafts(): Promise<Record<string, import('@craft-agent/shared/config').SessionDraft>>
+  getAllDrafts(): Promise<import('@craft-agent/shared/config').SessionDraftHydrationState>
 
   // Session Info Panel
   getSessionFiles(sessionId: string): Promise<SessionFile[]>
@@ -716,21 +746,20 @@ export interface ElectronAPI {
   menuPaste(): Promise<void>
   menuSelectAll(): Promise<void>
 
-  // Browser pane management
+  // Independent Browser window management
   browserPane: {
-    create(input?: string | BrowserPaneCreateOptions): Promise<string>
-    destroy(id: string): Promise<void>
-    list(): Promise<BrowserInstanceInfo[]>
-    navigate(id: string, url: string): Promise<{ url: string; title: string }>
-    goBack(id: string): Promise<void>
-    goForward(id: string): Promise<void>
-    reload(id: string): Promise<void>
-    stop(id: string): Promise<void>
-    focus(id: string): Promise<void>
-    attachSurface(id: string, state: BrowserSurfaceState): Promise<string>
-    updateSurface(id: string, leaseId: string, state: BrowserSurfaceState): Promise<void>
-    detachSurface(id: string, leaseId: string): Promise<void>
-    park(ids: string[]): Promise<void>
+    create(input: BrowserPaneCreateOptions): Promise<string>
+    reconcile(input: BrowserPaneReconcileInput): Promise<void>
+    destroy(id: string, projectId: string): Promise<void>
+    list(projectId: string): Promise<BrowserInstanceInfo[]>
+    navigate(id: string, url: string, projectId: string): Promise<{ url: string; title: string }>
+    goBack(id: string, projectId: string): Promise<void>
+    goForward(id: string, projectId: string): Promise<void>
+    reload(id: string, projectId: string): Promise<void>
+    stop(id: string, projectId: string): Promise<void>
+    focus(id: string, projectId: string): Promise<void>
+    hide(id: string, projectId: string): Promise<void>
+    openTargetChat(id: string, projectId: string): Promise<void>
     revealSelection(
       reference: import('@craft-agent/core').WebSelectionReferenceV1,
       browserId?: string,
@@ -739,9 +768,6 @@ export interface ElectronAPI {
     onStateChanged(callback: (info: BrowserInstanceInfo) => void): () => void
     onRemoved(callback: (id: string) => void): () => void
     onInteracted(callback: (id: string) => void): () => void
-    onPresentRequested(callback: (request: BrowserPresentRequest) => void): () => void
-    onClosePanelRequested(callback: (browserId: string) => void): () => void
-    onSelectionAction(callback: (payload: BrowserSelectionActionPayload) => void): () => void
   }
 
   // LLM Connections (provider configurations)
@@ -814,6 +840,12 @@ export interface ElectronAPI {
   saveProjectTextFile(request: import('@craft-agent/shared/project-files').SaveProjectTextFileRequest): Promise<import('@craft-agent/shared/project-files').SaveProjectTextFileResponse>
   saveDrawnixProjectFile(request: import('@craft-agent/shared/project-files').SaveDrawnixProjectFileRequest): Promise<import('@craft-agent/shared/project-files').SaveDrawnixProjectFileResponse>
   setDrawnixBoardCapabilityHandler(handler: ((request: import('@craft-agent/server-core/transport').DrawnixBoardCapabilityRequest) => Promise<import('@craft-agent/server-core/transport').DrawnixBoardCapabilityResponse>) | null): void
+  setBrowserApplicationHandler(workspaceId: string | null, handler: ((request: Extract<import('@craft-agent/server-core/transport').BrowserApplicationCapabilityRequest, { action: 'open-chat' | 'add-selection-note' | 'add-selection-to-chat' | 'create-chat-from-selection' }>) => Promise<
+    | { ok: true }
+    | { ok: true; noteTargetPath: string }
+    | { ok: false; reason: 'cancelled' }
+    | { ok: true; sessionId: string; targetTitle: string }
+  >) | null): void
   getEpubDocumentState(request: import('@craft-agent/shared/protocol').ReaderStateRequest): Promise<import('@craft-agent/shared/protocol').GetEpubStateResponse>
   applyEpubStateMutation(request: import('@craft-agent/shared/protocol').ApplyEpubStateMutationRequest): Promise<import('@craft-agent/shared/protocol').ApplyEpubStateMutationResponse>
   getPdfDocumentState(request: import('@craft-agent/shared/protocol').ReaderStateRequest): Promise<import('@craft-agent/shared/protocol').GetPdfStateResponse>

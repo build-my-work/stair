@@ -345,7 +345,7 @@ export function handleInterrupted(
 ): ProcessResult {
   const { session } = state
   const effects: Effect[] = []
-  const isUserInitiated = !!event.message
+  const shouldRestoreQueuedInput = !!event.message || !!event.queuedRestoreId
   const pendingRestoreMessageIds = event.queuedRestoreId
     ? new Set(event.queuedMessageIds ?? [])
     : undefined
@@ -380,11 +380,19 @@ export function handleInterrupted(
   // Restore queued message text to the input field — only on user-initiated
   // stops. Silent redirects keep the bubble in chat and rely on the backend's
   // auto-replay (#616).
-  if (isUserInitiated && event.queuedMessages && event.queuedMessages.length > 0) {
+  if (shouldRestoreQueuedInput && event.queuedMessages && event.queuedMessages.length > 0) {
     effects.push({
       type: 'restore_input',
       text: event.queuedMessages.join('\n\n'),
       ...(event.queuedReferences?.length ? { references: event.queuedReferences } : {}),
+      ...(event.queuedAttachments?.length
+        ? {
+            attachments: event.queuedAttachments.map(attachment => ({
+              path: attachment.storedPath,
+              name: attachment.name,
+            })),
+          }
+        : {}),
       ...(event.queuedRestoreId && event.queuedMessageIds?.length
         ? {
             queuedRestoreId: event.queuedRestoreId,
@@ -781,11 +789,7 @@ export function handleSessionMetadataChanged(
   event: SessionMetadataChangedEvent
 ): ProcessResult {
   const { session, streaming } = state
-  const {
-    projectNoteTargetPath,
-    projectNoteTargetRootFingerprint,
-    ...changes
-  } = event.changes
+  const { projectNoteTargetPath, ...changes } = event.changes
   return {
     state: {
       session: {
@@ -793,9 +797,6 @@ export function handleSessionMetadataChanged(
         ...changes,
         ...(Object.hasOwn(event.changes, 'projectNoteTargetPath')
           ? { projectNoteTargetPath: projectNoteTargetPath ?? undefined }
-          : {}),
-        ...(Object.hasOwn(event.changes, 'projectNoteTargetRootFingerprint')
-          ? { projectNoteTargetRootFingerprint: projectNoteTargetRootFingerprint ?? undefined }
           : {}),
       },
       streaming,

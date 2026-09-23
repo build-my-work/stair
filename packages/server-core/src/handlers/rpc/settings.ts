@@ -1,14 +1,26 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
-import { getPreferencesPath, getSessionDraft, setSessionDraft, deleteSessionDraft, getAllSessionDrafts, getWorkspaceByNameOrId, getDefaultThinkingLevel, setDefaultThinkingLevel } from '@craft-agent/shared/config'
+import {
+  addSessionDraftReferenceAtomic,
+  deleteSessionDraft,
+  getDefaultThinkingLevel,
+  getPreferencesPath,
+  getSessionDraft,
+  getSessionDraftHydrationState,
+  getWorkspaceByNameOrId,
+  reconcileSessionDraftReferences,
+  restoreSessionDraftAtomic,
+  setDefaultThinkingLevel,
+  setSessionDraftContent,
+} from '@craft-agent/shared/config'
 import { isValidThinkingLevel, normalizeThinkingLevel, THINKING_LEVEL_IDS } from '@craft-agent/shared/agent/thinking-levels'
 
 const VALID_THINKING_LEVELS_LIST = THINKING_LEVEL_IDS.map(id => `'${id}'`).join(', ')
 import { getWorkspaceOrThrow } from '@craft-agent/server-core/handlers'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
-import { requestClientOpenFileDialog } from '@craft-agent/server-core/transport'
+import { pushTyped, requestClientOpenFileDialog } from '@craft-agent/server-core/transport'
 import { isValidWorkingDirectory } from '../../utils/path-validation'
 import { assertDraftSessionAccess, filterDraftsForWorkspace } from './draft-access'
 
@@ -18,7 +30,10 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.preferences.READ,
   RPC_CHANNELS.preferences.WRITE,
   RPC_CHANNELS.drafts.GET,
-  RPC_CHANNELS.drafts.SET,
+  RPC_CHANNELS.drafts.SET_CONTENT,
+  RPC_CHANNELS.drafts.UPDATE_REFERENCES,
+  RPC_CHANNELS.drafts.ADD_REFERENCE,
+  RPC_CHANNELS.drafts.RESTORE_INPUT,
   RPC_CHANNELS.drafts.DELETE,
   RPC_CHANNELS.drafts.GET_ALL,
   RPC_CHANNELS.input.GET_AUTO_CAPITALISATION,
@@ -260,14 +275,87 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     return getSessionDraft(sessionId)
   })
 
-  // Set draft for a session (empty drafts are cleared)
-  server.handle(RPC_CHANNELS.drafts.SET, async (ctx, sessionId: string, draft: import('@craft-agent/shared/config').SessionDraft) => {
+  server.handle(RPC_CHANNELS.drafts.SET_CONTENT, async (
+    ctx,
+    sessionId: string,
+    content: Pick<import('@craft-agent/shared/config').SessionDraft, 'text' | 'attachments'>,
+  ) => {
     assertDraftSessionAccess(
       ctx.workspaceId,
       deps.sessionManager.getSessions(ctx.workspaceId ?? undefined),
       sessionId,
     )
-    setSessionDraft(sessionId, draft)
+    return setSessionDraftContent(sessionId, content)
+  })
+
+  server.handle(RPC_CHANNELS.drafts.UPDATE_REFERENCES, async (
+    ctx,
+    sessionId: string,
+    input: {
+      baseReferences: import('@craft-agent/core').Reference[]
+      nextReferences: import('@craft-agent/core').Reference[]
+    },
+  ) => {
+    const sessions = deps.sessionManager.getSessions(ctx.workspaceId ?? undefined)
+    assertDraftSessionAccess(ctx.workspaceId, sessions, sessionId)
+    const projectId = sessions.find(session => session.id === sessionId)?.projectId
+    if (!projectId) throw new Error('DRAFT_PROJECT_REQUIRED: Session has no Project')
+    const result = reconcileSessionDraftReferences(
+      sessionId,
+      projectId,
+      input.baseReferences,
+      input.nextReferences,
+    )
+    if (!result && input.nextReferences.length > 0) {
+      throw new Error('DRAFT_REFERENCE_REJECTED: Could not update draft references')
+    }
+    if (!ctx.workspaceId) throw new Error('DRAFT_WORKSPACE_REQUIRED: Missing Workspace')
+    pushTyped(
+      server,
+      RPC_CHANNELS.drafts.REFERENCES_CHANGED,
+      { to: 'workspace', workspaceId: ctx.workspaceId, exclude: ctx.clientId },
+      sessionId,
+      result?.references ?? [],
+    )
+    return result
+  })
+
+  server.handle(RPC_CHANNELS.drafts.ADD_REFERENCE, async (
+    ctx,
+    sessionId: string,
+    reference: import('@craft-agent/core').Reference,
+    requestId?: string,
+  ) => {
+    const sessions = deps.sessionManager.getSessions(ctx.workspaceId ?? undefined)
+    assertDraftSessionAccess(ctx.workspaceId, sessions, sessionId)
+    const projectId = sessions.find(session => session.id === sessionId)?.projectId
+    if (!projectId) throw new Error('DRAFT_PROJECT_REQUIRED: Session has no Project')
+    const result = addSessionDraftReferenceAtomic(sessionId, projectId, reference, requestId)
+    if (!result) throw new Error('DRAFT_REFERENCE_REJECTED: Could not add draft reference')
+    if (!ctx.workspaceId) throw new Error('DRAFT_WORKSPACE_REQUIRED: Missing Workspace')
+    pushTyped(
+      server,
+      RPC_CHANNELS.drafts.REFERENCES_CHANGED,
+      { to: 'workspace', workspaceId: ctx.workspaceId, exclude: ctx.clientId },
+      sessionId,
+      result.references ?? [],
+    )
+    return result
+  })
+
+  server.handle(RPC_CHANNELS.drafts.RESTORE_INPUT, async (
+    ctx,
+    sessionId: string,
+    input: {
+      restoreId: string
+      draft: import('@craft-agent/shared/config').SessionDraft
+    },
+  ) => {
+    const sessions = deps.sessionManager.getSessions(ctx.workspaceId ?? undefined)
+    assertDraftSessionAccess(ctx.workspaceId, sessions, sessionId)
+    const projectId = sessions.find(session => session.id === sessionId)?.projectId
+    if (!projectId) throw new Error('DRAFT_PROJECT_REQUIRED: Session has no Project')
+    return restoreSessionDraftAtomic(sessionId, projectId, input.restoreId, input.draft)
   })
 
   // Delete draft for a session
@@ -282,11 +370,21 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
 
   // Get all drafts (for loading on app start)
   server.handle(RPC_CHANNELS.drafts.GET_ALL, async (ctx) => {
-    return filterDraftsForWorkspace(
+    const sessions = deps.sessionManager.getSessions(ctx.workspaceId ?? undefined)
+    const state = getSessionDraftHydrationState()
+    const drafts = filterDraftsForWorkspace(
       ctx.workspaceId,
-      deps.sessionManager.getSessions(ctx.workspaceId ?? undefined),
-      getAllSessionDrafts(),
+      sessions,
+      state.drafts,
     )
+    const sessionIds = new Set(sessions.map(session => session.id))
+    return {
+      drafts,
+      appliedRestoreIds: Object.fromEntries(
+        Object.entries(state.appliedRestoreIds)
+          .filter(([sessionId]) => sessionIds.has(sessionId)),
+      ),
+    }
   })
 
   // ============================================================

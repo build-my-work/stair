@@ -262,6 +262,7 @@ export function ProjectFilesTree({
   const requestGenerationRef = useRef(0)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState('')
+  const [createParentPath, setCreateParentPath] = useState('')
   const [inlineCreate, setInlineCreate] = useState<InlineCreateState | null>(null)
   const [filter, setFilter] = useState('')
   const [searchResults, setSearchResults] = useState<ProjectFileSearchResult[] | null>([])
@@ -311,6 +312,7 @@ export function ProjectFilesTree({
     setDirectoryStates(new Map())
     setExpandedPaths(new Set())
     setSelectedDirectoryPath('')
+    setCreateParentPath('')
     setInlineCreate(null)
     if (projectId && workingDirectory) void loadDirectory('')
   }, [loadDirectory, projectId, revision, workingDirectory])
@@ -365,22 +367,29 @@ export function ProjectFilesTree({
     })
   }, [loadDirectory])
 
+  const handleOpenFile = useCallback((relativePath: string) => {
+    const separatorIndex = relativePath.lastIndexOf('/')
+    setCreateParentPath(separatorIndex < 0 ? '' : relativePath.slice(0, separatorIndex))
+    setSelectedDirectoryPath('')
+    onOpenFile(relativePath)
+  }, [onOpenFile])
+
   const beginCreate = useCallback((kind: InlineCreateState['kind']) => {
     if (!projectId || inlineCreate?.submitting) return
     setFilter('')
     setInlineCreate({
       kind,
-      parentRelativePath: selectedDirectoryPath,
+      parentRelativePath: createParentPath,
       name: '',
       submitting: false,
     })
-    if (selectedDirectoryPath) {
-      setExpandedPaths(previous => new Set(previous).add(selectedDirectoryPath))
-      if (!statesRef.current.has(selectedDirectoryPath)) {
-        void loadDirectory(selectedDirectoryPath)
+    if (createParentPath) {
+      setExpandedPaths(previous => new Set(previous).add(createParentPath))
+      if (!statesRef.current.has(createParentPath)) {
+        void loadDirectory(createParentPath)
       }
     }
-  }, [inlineCreate?.submitting, loadDirectory, projectId, selectedDirectoryPath])
+  }, [createParentPath, inlineCreate?.submitting, loadDirectory, projectId])
 
   const submitCreate = useCallback(async () => {
     if (!inlineCreate || inlineCreate.submitting || !projectId) return
@@ -433,7 +442,7 @@ export function ProjectFilesTree({
       }
       setInlineCreate(null)
       await loadDirectory(pending.parentRelativePath)
-      if (created.type === 'file') onOpenFile(created.relativePath)
+      if (created.type === 'file') handleOpenFile(created.relativePath)
     } catch (createError) {
       setInlineCreate(current => current ? {
         ...current,
@@ -442,7 +451,7 @@ export function ProjectFilesTree({
           .replace(/^PROJECT_FILE_[A-Z_]+:\s*/u, ''),
       } : null)
     }
-  }, [fileFilter, fileFilterError, inlineCreate, loadDirectory, onOpenFile, projectId, t])
+  }, [fileFilter, fileFilterError, handleOpenFile, inlineCreate, loadDirectory, projectId, t])
 
   const handleCreateKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (!inlineCreate || !(event.target instanceof HTMLInputElement)) return
@@ -483,7 +492,14 @@ export function ProjectFilesTree({
       <div className="shrink-0 border-b border-border/45 px-3 py-2.5">
         <div className="flex items-center gap-2">
           <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setSelectedDirectoryPath('')}>
+          <button
+            type="button"
+            className="min-w-0 flex-1 text-left"
+            onClick={() => {
+              setSelectedDirectoryPath('')
+              setCreateParentPath('')
+            }}
+          >
             <div className="truncate text-xs font-medium">{project.config.name}</div>
             <div className="truncate font-mono text-[10px] text-muted-foreground/60" title={workingDirectory}>
               {workingDirectory}
@@ -551,7 +567,7 @@ export function ProjectFilesTree({
               key={result.relativePath}
               type="button"
               className="flex w-full min-w-0 items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-foreground/[0.04]"
-              onClick={() => onOpenFile(result.relativePath)}
+              onClick={() => handleOpenFile(result.relativePath)}
             >
               {fileIcon(result.name)}
               <span className="min-w-0 flex-1">
@@ -585,8 +601,11 @@ export function ProjectFilesTree({
                 selectedDirectoryPath={selectedDirectoryPath}
                 inlineCreate={inlineCreate}
                 onToggleDirectory={handleToggleDirectory}
-                onSelectDirectory={setSelectedDirectoryPath}
-                onOpenFile={onOpenFile}
+                onSelectDirectory={relativePath => {
+                  setSelectedDirectoryPath(relativePath)
+                  setCreateParentPath(relativePath)
+                }}
+                onOpenFile={handleOpenFile}
                 onOpenFileInPanel={onOpenFileInPanel}
                 fileFilter={fileFilter}
               />

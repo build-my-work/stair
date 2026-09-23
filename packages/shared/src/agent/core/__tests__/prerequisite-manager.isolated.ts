@@ -5,20 +5,24 @@
  * until required files (like guide.md) have been read.
  */
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
-import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve, join } from 'node:path';
-import { PrerequisiteManager } from '../prerequisite-manager.ts';
 
 // Mock existsSync to control guide.md existence
-const originalExistsSync = existsSync;
+const actualFsModule = await import('node:fs');
+const actualConfigStorageModule = await import('../../../config/storage.ts');
 let mockExistsPaths: Set<string> = new Set();
 
 mock.module('node:fs', () => ({
+  ...actualFsModule,
   existsSync: (path: string) => mockExistsPaths.has(path),
-  // Re-export anything else the module needs
-  readFileSync: originalExistsSync,
 }));
+mock.module('../../../config/storage.ts', () => ({
+  ...actualConfigStorageModule,
+  getBrowserToolEnabled: () => true,
+}));
+
+const { PrerequisiteManager } = await import('../prerequisite-manager.ts');
 
 // The browser toggle would otherwise come from the user's config (and throw under the fs mock)
 let mockBrowserToolEnabled = true;
@@ -43,7 +47,7 @@ function homeSpelled(path: string, prefix: string): string {
 }
 
 describe('PrerequisiteManager', () => {
-  let manager: PrerequisiteManager;
+  let manager: InstanceType<typeof PrerequisiteManager>;
   let debugMessages: string[];
 
   beforeEach(() => {

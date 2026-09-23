@@ -1,11 +1,30 @@
 import { describe, expect, it } from 'bun:test'
 import {
   buildWebSelectionRevealExpression,
+  calculateBrowserSelectionOverlayBounds,
   createWebSelectionReference,
+  isBrowserSelectionAction,
   sanitizeBrowserSelectionCapture,
 } from '../browser-selection'
 
 describe('browser selection', () => {
+  it('uses the same compact horizontal action-bar footprint as reader selections', () => {
+    expect(calculateBrowserSelectionOverlayBounds(
+      { x: 40, y: 80, width: 120, height: 20 },
+      900,
+      700,
+      48,
+    )).toEqual({ x: 8, y: 78, width: 340, height: 40 })
+  })
+
+  it('exposes the independent-window Chat and Note selection actions', () => {
+    expect(isBrowserSelectionAction('add-chat')).toBe(true)
+    expect(isBrowserSelectionAction('new-chat')).toBe(true)
+    expect(isBrowserSelectionAction('add-note')).toBe(true)
+    expect(isBrowserSelectionAction('choose-note-target')).toBe(true)
+    expect(isBrowserSelectionAction('add-note-to')).toBe(false)
+  })
+
   it('normalizes bounded selection text and creates a Project-scoped reference', () => {
     const capture = sanitizeBrowserSelectionCapture({
       quote: '  selected\u00a0text  ',

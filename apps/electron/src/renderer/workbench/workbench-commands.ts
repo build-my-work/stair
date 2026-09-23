@@ -16,12 +16,10 @@ import {
   workbenchPersistenceReadyAtom,
   workbenchPanelRevealRevisionAtom,
   type ProjectWorkbench,
-  type BrowserWorkbenchPanel,
   type ProjectFileWorkbenchPanel,
   type SessionWorkbenchPanel,
   type WindowWorkbench,
 } from './workbench-state'
-import { browserRuntimeOperationsAtom } from './browser-runtime'
 import { getDefaultWorkbenchPanelRatio } from './panel-sizing'
 
 function createSessionPanel(
@@ -34,7 +32,7 @@ function createSessionPanel(
     kind: 'session',
     sessionId,
     projectId,
-    widthRatio: getDefaultWorkbenchPanelRatio(panelLayoutWidth),
+    widthRatio: getDefaultWorkbenchPanelRatio(panelLayoutWidth, 'session'),
   }
 }
 
@@ -52,29 +50,9 @@ function createProjectFilePanel(
     relativePath,
     presentation,
     chatTargetSessionId: null,
-    widthRatio: getDefaultWorkbenchPanelRatio(panelLayoutWidth),
+    widthRatio: getDefaultWorkbenchPanelRatio(panelLayoutWidth, 'project-file'),
     openIntentRevision: openIntent ? 1 : 0,
     ...(openIntent ? { openIntent } : {}),
-  }
-}
-
-function createBrowserPanel(
-  projectId: string,
-  runtimeId: string,
-  panelLayoutWidth: number,
-  url = 'about:blank',
-  title = 'Browser',
-): BrowserWorkbenchPanel {
-  return {
-    id: `browser-panel-${crypto.randomUUID()}`,
-    kind: 'browser',
-    projectId,
-    runtimeId,
-    url,
-    title,
-    chatTargetSessionId: null,
-    restoreOnActivation: false,
-    widthRatio: getDefaultWorkbenchPanelRatio(panelLayoutWidth),
   }
 }
 
@@ -100,68 +78,6 @@ function withActiveLayout(
     },
   }
 }
-
-const restoringBrowserPanelIds = new Set<string>()
-
-export const restoreActiveBrowserRuntimesAtom = atom(
-  null,
-  async (get, set, input: { projectId: string }): Promise<boolean> => {
-    let succeeded = true
-    const initialLayout = activeLayout(get(workbenchAtom), input.projectId)
-    if (!initialLayout) return false
-    const pendingPanels = initialLayout.auxiliary.filter(
-      (panel): panel is BrowserWorkbenchPanel => (
-        panel.kind === 'browser'
-        && panel.runtimeId === null
-        && panel.restoreOnActivation
-      ),
-    )
-
-    for (const pendingPanel of pendingPanels) {
-      if (restoringBrowserPanelIds.has(pendingPanel.id)) continue
-      restoringBrowserPanelIds.add(pendingPanel.id)
-      let runtimeId: string | null = null
-      try {
-        runtimeId = await get(browserRuntimeOperationsAtom).create({
-          projectId: input.projectId,
-          url: pendingPanel.url,
-        })
-        const latest = get(workbenchAtom)
-        const layout = activeLayout(latest, input.projectId)
-        const panelIndex = layout?.auxiliary.findIndex(panel => (
-          panel.id === pendingPanel.id
-          && panel.kind === 'browser'
-          && panel.runtimeId === null
-          && panel.restoreOnActivation
-          && panel.url === pendingPanel.url
-        )) ?? -1
-        if (!layout || panelIndex < 0) {
-          await get(browserRuntimeOperationsAtom).destroy(runtimeId)
-          succeeded = false
-          continue
-        }
-        const auxiliary = [...layout.auxiliary]
-        auxiliary[panelIndex] = {
-          ...auxiliary[panelIndex] as BrowserWorkbenchPanel,
-          runtimeId,
-          restoreOnActivation: false,
-        }
-        set(workbenchAtom, withActiveLayout(latest, input.projectId, {
-          ...layout,
-          auxiliary,
-        }))
-      } catch {
-        if (runtimeId) {
-          await get(browserRuntimeOperationsAtom).destroy(runtimeId).catch(() => undefined)
-        }
-        succeeded = false
-      } finally {
-        restoringBrowserPanelIds.delete(pendingPanel.id)
-      }
-    }
-    return succeeded
-  },
-)
 
 export const initializeWorkbenchAtom = atom(
   null,
@@ -198,31 +114,27 @@ export const switchWorkbenchProjectAtom = atom(
   null,
   async (get, set, input: { projectId: string }): Promise<boolean> => {
     if (!validId(input.projectId)) return false
-    const current = get(workbenchAtom)
+    let current = get(workbenchAtom)
     if (!current.workspaceId || !current.activeProjectId) return false
     if (current.activeProjectId === input.projectId) return true
+    const sourceProjectId = current.activeProjectId
 
     try {
-      await flushOpenProjectFilesForProject(current.activeProjectId)
+      await flushOpenProjectFilesForProject(sourceProjectId)
     } catch {
       return false
     }
-    if (get(workbenchAtom) !== current) return false
+    const afterFlush = get(workbenchAtom)
+    if (
+      afterFlush.workspaceId !== current.workspaceId
+      || afterFlush.activeProjectId !== sourceProjectId
+    ) return false
+    current = afterFlush
 
-    const runtimeIds = getWorkbenchPanels(
-      current.layoutsByProject[current.activeProjectId] ?? createEmptyProjectWorkbench(),
-    ).flatMap(panel => panel.kind === 'browser' && panel.runtimeId ? [panel.runtimeId] : [])
-    try {
-      if (runtimeIds.length > 0) {
-        await get(browserRuntimeOperationsAtom).park(runtimeIds)
-      }
-    } catch {
-      return false
-    }
     const latest = get(workbenchAtom)
     if (
       latest.workspaceId !== current.workspaceId
-      || latest.activeProjectId !== current.activeProjectId
+      || latest.activeProjectId !== sourceProjectId
     ) return false
 
     set(workbenchAtom, {
@@ -234,143 +146,7 @@ export const switchWorkbenchProjectAtom = atom(
           ?? createEmptyProjectWorkbench(),
       },
     })
-    await set(restoreActiveBrowserRuntimesAtom, { projectId: input.projectId })
     return true
-  },
-)
-
-export const presentBrowserAtom = atom(
-  null,
-  async (get, set, input: {
-    projectId: string
-    runtimeId?: string
-    url?: string
-    title?: string
-    destroyOnFailure?: boolean
-    sourcePanelId?: string | null
-  }): Promise<boolean> => {
-    if (!validId(input.projectId) || (input.runtimeId !== undefined && !validId(input.runtimeId))) {
-      return false
-    }
-    const current = get(workbenchAtom)
-    const layout = activeLayout(current, input.projectId)
-    if (!layout) return false
-
-    if (input.runtimeId) {
-      for (const [projectId, candidateLayout] of Object.entries(current.layoutsByProject)) {
-        const existing = getWorkbenchPanels(candidateLayout).find(panel => (
-          panel.kind === 'browser' && panel.runtimeId === input.runtimeId
-        ))
-        if (!existing) continue
-        if (projectId !== input.projectId) return false
-        set(workbenchAtom, withActiveLayout(current, input.projectId, {
-          ...layout,
-          focusedPanelId: existing.id,
-        }))
-        return true
-      }
-    }
-
-    const sourcePanelId = input.sourcePanelId === undefined
-      ? layout.focusedPanelId
-      : input.sourcePanelId
-    let runtimeId = input.runtimeId
-    const createdByCommand = !runtimeId
-    try {
-      runtimeId ??= await get(browserRuntimeOperationsAtom).create({
-        projectId: input.projectId,
-        ...(input.url ? { url: input.url } : {}),
-      })
-
-      const latest = get(workbenchAtom)
-      const latestLayout = activeLayout(latest, input.projectId)
-      const sourceIndex = sourcePanelId
-        ? latestLayout?.auxiliary.findIndex(panel => panel.id === sourcePanelId) ?? -1
-        : -1
-      const sourceStillExists = !sourcePanelId
-        || latestLayout?.primary?.id === sourcePanelId
-        || sourceIndex >= 0
-      if (!latestLayout || !sourceStillExists) {
-        if (createdByCommand || input.destroyOnFailure) {
-          await get(browserRuntimeOperationsAtom).destroy(runtimeId)
-        }
-        return false
-      }
-
-      const panel = createBrowserPanel(
-        input.projectId,
-        runtimeId,
-        get(workbenchPanelLayoutWidthAtom),
-        input.url,
-        input.title,
-      )
-      const insertAt = latestLayout.primary?.id === sourcePanelId || !sourcePanelId
-        ? 0
-        : sourceIndex + 1
-      const auxiliary = [
-        ...latestLayout.auxiliary.slice(0, insertAt),
-        panel,
-        ...latestLayout.auxiliary.slice(insertAt),
-      ]
-      set(workbenchAtom, withActiveLayout(latest, input.projectId, {
-        ...latestLayout,
-        auxiliary,
-        focusedPanelId: panel.id,
-      }))
-      return true
-    } catch {
-      if (runtimeId && (createdByCommand || input.destroyOnFailure)) {
-        await get(browserRuntimeOperationsAtom).destroy(runtimeId).catch(() => undefined)
-      }
-      return false
-    }
-  },
-)
-
-export const updateBrowserDescriptorAtom = atom(
-  null,
-  (get, set, input: { runtimeId: string; url: string; title: string }): boolean => {
-    if (!validId(input.runtimeId)) return false
-    const current = get(workbenchAtom)
-    let changed = false
-    const layoutsByProject = Object.fromEntries(
-      Object.entries(current.layoutsByProject).map(([projectId, layout]) => {
-        let layoutChanged = false
-        const auxiliary = layout.auxiliary.map(panel => {
-          if (panel.kind !== 'browser' || panel.runtimeId !== input.runtimeId) return panel
-          if (panel.url === input.url && panel.title === input.title) return panel
-          changed = true
-          layoutChanged = true
-          return { ...panel, url: input.url, title: input.title }
-        })
-        return [projectId, layoutChanged ? { ...layout, auxiliary } : layout]
-      }),
-    )
-    if (changed) set(workbenchAtom, { ...current, layoutsByProject })
-    return changed
-  },
-)
-
-export const markBrowserRuntimeUnavailableAtom = atom(
-  null,
-  (get, set, runtimeId: string): boolean => {
-    if (!validId(runtimeId)) return false
-    const current = get(workbenchAtom)
-    let changed = false
-    const layoutsByProject = Object.fromEntries(
-      Object.entries(current.layoutsByProject).map(([projectId, layout]) => {
-        let layoutChanged = false
-        const auxiliary = layout.auxiliary.map(panel => {
-          if (panel.kind !== 'browser' || panel.runtimeId !== runtimeId) return panel
-          changed = true
-          layoutChanged = true
-          return { ...panel, runtimeId: null }
-        })
-        return [projectId, layoutChanged ? { ...layout, auxiliary } : layout]
-      }),
-    )
-    if (changed) set(workbenchAtom, { ...current, layoutsByProject })
-    return changed
   },
 )
 
@@ -559,61 +335,6 @@ export const openSessionFromProjectFileAtom = atom(
   },
 )
 
-export const openSessionFromBrowserAtom = atom(
-  null,
-  (get, set, input: {
-    sessionId: string
-    sessionProjectId: string
-    source: {
-      panelId: string
-      projectId: string
-      runtimeId: string
-    }
-  }): boolean => {
-    if (
-      !validId(input.sessionId)
-      || !validId(input.sessionProjectId)
-      || !validId(input.source.panelId)
-      || !validId(input.source.projectId)
-      || !validId(input.source.runtimeId)
-      || input.sessionProjectId !== input.source.projectId
-    ) return false
-
-    const current = get(workbenchAtom)
-    const layout = activeLayout(current, input.source.projectId)
-    if (!layout || getWorkbenchPanels(layout).some(panel => (
-      panel.kind === 'session' && panel.sessionId === input.sessionId
-    ))) return false
-
-    const sourceIndex = layout.auxiliary.findIndex(panel => (
-      panel.id === input.source.panelId
-      && panel.kind === 'browser'
-      && panel.projectId === input.source.projectId
-      && panel.runtimeId === input.source.runtimeId
-    ))
-    if (sourceIndex < 0) return false
-
-    const source = layout.auxiliary[sourceIndex] as BrowserWorkbenchPanel
-    const panel = createSessionPanel(
-      input.sessionId,
-      input.sessionProjectId,
-      get(workbenchPanelLayoutWidthAtom),
-    )
-    const auxiliary = [
-      ...layout.auxiliary.slice(0, sourceIndex),
-      { ...source, chatTargetSessionId: input.sessionId },
-      panel,
-      ...layout.auxiliary.slice(sourceIndex + 1),
-    ]
-    set(workbenchAtom, withActiveLayout(current, input.source.projectId, {
-      ...layout,
-      auxiliary,
-      focusedPanelId: panel.id,
-    }))
-    return true
-  },
-)
-
 export const focusWorkbenchPanelAtom = atom(
   null,
   (get, set, input: { projectId: string; panelId: string }): boolean => {
@@ -765,20 +486,34 @@ export const openProjectFilePreviewAtom = atom(
       } catch {
         return false
       }
-      if (get(workbenchAtom) !== current) return false
+      const latest = get(workbenchAtom)
+      if (
+        latest.workspaceId !== current.workspaceId
+        || latest.activeProjectId !== input.projectId
+      ) return false
+      const latestLayout = activeLayout(latest, input.projectId)
+      const latestPreviewIndex = latestLayout?.auxiliary.findIndex(panel => panel.id === preview.id) ?? -1
+      const latestPreview = latestPreviewIndex >= 0
+        ? latestLayout?.auxiliary[latestPreviewIndex]
+        : undefined
+      if (
+        latestPreview?.kind !== 'project-file'
+        || latestPreview.relativePath !== preview.relativePath
+        || latestLayout?.previewPanelId !== preview.id
+      ) return false
 
       const replacement: ProjectFileWorkbenchPanel = {
-        ...preview,
+        ...latestPreview,
         relativePath: input.relativePath,
         presentation: 'preview',
         chatTargetSessionId: null,
         openIntent: input.openIntent,
-        openIntentRevision: input.openIntent ? (preview.openIntentRevision ?? 0) + 1 : 0,
+        openIntentRevision: input.openIntent ? (latestPreview.openIntentRevision ?? 0) + 1 : 0,
       }
-      const auxiliary = [...layout.auxiliary]
-      auxiliary[previewIndex] = replacement
-      set(workbenchAtom, withActiveLayout(current, input.projectId, {
-        ...layout,
+      const auxiliary = [...latestLayout.auxiliary]
+      auxiliary[latestPreviewIndex] = replacement
+      set(workbenchAtom, withActiveLayout(latest, input.projectId, {
+        ...latestLayout,
         auxiliary,
         previewPanelId: replacement.id,
         focusedPanelId: replacement.id,
@@ -836,43 +571,6 @@ export const setProjectFileChatTargetAtom = atom(
     const auxiliary = [...layout.auxiliary]
     auxiliary[targetIndex] = {
       ...auxiliary[targetIndex] as ProjectFileWorkbenchPanel,
-      chatTargetSessionId: input.sessionId,
-    }
-    set(workbenchAtom, withActiveLayout(current, input.projectId, {
-      ...layout,
-      auxiliary,
-    }))
-    return true
-  },
-)
-
-export const setBrowserChatTargetAtom = atom(
-  null,
-  (get, set, input: {
-    panelId: string
-    projectId: string
-    sessionId: string | null
-    sessionProjectId: string
-  }): boolean => {
-    if (
-      !validId(input.panelId)
-      || !validId(input.projectId)
-      || !validId(input.sessionProjectId)
-      || (input.sessionId !== null && !validId(input.sessionId))
-      || input.sessionProjectId !== input.projectId
-    ) return false
-
-    const current = get(workbenchAtom)
-    const layout = activeLayout(current, input.projectId)
-    if (!layout) return false
-    const targetIndex = layout.auxiliary.findIndex(panel => (
-      panel.id === input.panelId && panel.kind === 'browser'
-    ))
-    if (targetIndex < 0) return false
-
-    const auxiliary = [...layout.auxiliary]
-    auxiliary[targetIndex] = {
-      ...auxiliary[targetIndex] as BrowserWorkbenchPanel,
       chatTargetSessionId: input.sessionId,
     }
     set(workbenchAtom, withActiveLayout(current, input.projectId, {
@@ -944,15 +642,6 @@ export const closeWorkbenchPanelAtom = atom(
       } catch {
         return false
       }
-      if (get(workbenchAtom) !== current) return false
-    }
-    if (closingPanel.kind === 'browser' && closingPanel.runtimeId) {
-      const runtimeId = closingPanel.runtimeId
-      try {
-        await get(browserRuntimeOperationsAtom).destroy(runtimeId)
-      } catch {
-        return false
-      }
       const latest = get(workbenchAtom)
       if (
         latest.workspaceId !== current.workspaceId
@@ -962,15 +651,13 @@ export const closeWorkbenchPanelAtom = atom(
       const latestPanel = latestLayout
         ? getWorkbenchPanels(latestLayout).find(panel => panel.id === input.panelId)
         : undefined
-      if (!latestPanel) return true
       if (
-        latestPanel.kind !== 'browser'
-        || (latestPanel.runtimeId !== runtimeId && latestPanel.runtimeId !== null)
+        latestPanel?.kind !== 'project-file'
+        || latestPanel.relativePath !== closingPanel.relativePath
       ) return false
       current = latest
       layout = latestLayout!
     }
-
     if (layout.primary?.id === input.panelId) {
       set(workbenchAtom, withActiveLayout(current, input.projectId, {
         ...layout,
@@ -1090,5 +777,30 @@ export const removeSessionFromWorkbenchAtom = atom(
 
     if (changed) set(workbenchAtom, { ...current, layoutsByProject })
     return changed
+  },
+)
+
+/** Remove layouts for Projects no longer present in the authoritative Workspace list. */
+export const reconcileWorkbenchProjectsAtom = atom(
+  null,
+  (get, set, input: { projectIds: string[]; defaultProjectId: string }): boolean => {
+    if (!validId(input.defaultProjectId)) return false
+    const current = get(workbenchAtom)
+    if (!current.workspaceId) return false
+    const available = new Set(input.projectIds)
+    available.add(input.defaultProjectId)
+    const layoutsByProject = Object.fromEntries(
+      Object.entries(current.layoutsByProject).filter(([projectId]) => available.has(projectId)),
+    )
+    layoutsByProject[input.defaultProjectId] ??= createEmptyProjectWorkbench()
+    const activeProjectId = current.activeProjectId && available.has(current.activeProjectId)
+      ? current.activeProjectId
+      : input.defaultProjectId
+    if (
+      activeProjectId === current.activeProjectId
+      && Object.keys(layoutsByProject).length === Object.keys(current.layoutsByProject).length
+    ) return false
+    set(workbenchAtom, { ...current, activeProjectId, layoutsByProject })
+    return true
   },
 )

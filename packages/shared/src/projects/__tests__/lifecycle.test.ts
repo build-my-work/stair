@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,9 +30,11 @@ describe('Project deletion lifecycle', () => {
   it('rejects deleting the default Project without mutating it', async () => {
     const { rootPath, config } = createWorkspace('stair-delete-default-');
     const project = loadProjectById(rootPath, config.defaultProjectId)!;
+    const beforeDelete = mock(async () => {});
 
-    await expect(deleteProject(rootPath, project.config.slug))
+    await expect(deleteProject(rootPath, project.config.slug, beforeDelete))
       .rejects.toThrow('DEFAULT_PROJECT');
+    expect(beforeDelete).not.toHaveBeenCalled();
     expect(loadProject(rootPath, project.config.slug)).not.toBeNull();
   });
 
@@ -40,9 +42,11 @@ describe('Project deletion lifecycle', () => {
     const { rootPath } = createWorkspace('stair-delete-non-empty-');
     const project = createProject(rootPath, { name: 'Busy' });
     const session = await createSession(rootPath, { projectId: project.id });
+    const beforeDelete = mock(async () => {});
 
-    await expect(deleteProject(rootPath, project.slug))
+    await expect(deleteProject(rootPath, project.slug, beforeDelete))
       .rejects.toThrow('PROJECT_NOT_EMPTY');
+    expect(beforeDelete).not.toHaveBeenCalled();
     expect(loadProject(rootPath, project.slug)).not.toBeNull();
     expect(listSessions(rootPath).some(item => item.id === session.id)).toBe(true);
   });

@@ -80,7 +80,6 @@ export interface SessionMeta {
   /** Immutable workspace-scoped Project id this Session belongs to. */
   projectId: string
   projectNoteTargetPath?: string
-  projectNoteTargetRootFingerprint?: string
   projectNoteRecentTargetPaths?: string[]
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
@@ -442,7 +441,7 @@ export const addSessionAtom = atom(
 
     // Add to beginning of IDs list
     const ids = get(sessionIdsAtom)
-    set(sessionIdsAtom, [session.id, ...ids])
+    set(sessionIdsAtom, [session.id, ...ids.filter(id => id !== session.id)])
 
     // Mark as loaded (new sessions are complete - no lazy loading needed)
     const loadedSessions = get(loadedSessionsAtom)

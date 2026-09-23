@@ -70,7 +70,6 @@ import { SessionList, type ChatGroupingMode } from "./SessionList"
 import { MainContentPanel } from "./MainContentPanel"
 import { BoardListToggle } from "./kanban/BoardListToggle"
 import { WorkbenchContainer } from "./WorkbenchContainer"
-import { BrowserPaneController } from "../browser/BrowserPaneController"
 import { CompactSessionListFilter } from "./CompactSessionListFilter"
 import type { ChatDisplayHandle } from "./ChatDisplay"
 import type { SidebarItem as SidebarNavItem } from "./LeftSidebar"
@@ -106,7 +105,7 @@ import {
   focusPreviousWorkbenchPanelAtom,
   openProjectFileInPanelAtom,
   openProjectFilePreviewAtom,
-  presentBrowserAtom,
+  reconcileWorkbenchProjectsAtom,
   switchWorkbenchProjectAtom,
 } from '@/workbench/workbench-commands'
 import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuses } from "@/config/session-status-config"
@@ -163,14 +162,27 @@ import {
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
-import type { Reference } from '@craft-agent/core'
+import { referenceKey, type Reference } from '@craft-agent/core'
+import {
+  deriveBrowserProjectNoteRequestId,
+  handleBrowserSelectionApplicationRequest,
+} from '@/lib/browser-selection-application'
 import { ProjectNoteTargetDialog } from './ProjectNoteTargetDialog'
+import { isProjectNoteTargetPath } from '@craft-agent/shared/protocol'
 import { queueChatReferenceReveal } from './chat-reference-reveal'
 
 interface PendingProjectNote {
-  sessionId: string
+  workspaceId: string
+  sessionId: string | null
   reference: Reference
-  resolve: (added: boolean) => void
+  initialPath?: string
+  recentPaths: string[]
+  requestId?: string
+  signal?: AbortSignal
+  abortListener?: () => void
+  cancelled: boolean
+  busy: boolean
+  resolve: (relativePath: string | null) => void
 }
 
 /**
@@ -187,6 +199,16 @@ interface PendingProjectNote {
 interface AppShellProps {
   /** All data and callbacks - passed directly to AppShellProvider */
   contextValue: AppShellContextType
+  /** Browser application actions are enabled only after Session and draft hydration. */
+  browserSelectionDataReady?: boolean
+  /** Persist a Browser selection into one Chat without overwriting concurrent draft edits. */
+  onAddBrowserDraftReference: (
+    sessionId: string,
+    reference: Reference,
+    requestId: string,
+  ) => Promise<boolean>
+  /** Keep a Browser action in its originating Workspace until it finishes. */
+  onRunBrowserSelectionTask<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T>
   /** UI-specific props */
   defaultLayout?: number[]
   defaultCollapsed?: boolean
@@ -225,6 +247,9 @@ function AppShellContent({
   defaultCollapsed = false,
   menuNewChatTrigger,
   isFocusedMode = false,
+  browserSelectionDataReady = false,
+  onAddBrowserDraftReference,
+  onRunBrowserSelectionTask,
 }: AppShellProps) {
   // Destructure commonly used values from context
   // Note: sessions is NOT destructured here - we use sessionMetaMapAtom instead
@@ -232,7 +257,9 @@ function AppShellContent({
   const {
     workspaces,
     activeWorkspaceId,
+    defaultProjectId,
     sessionOptions,
+    onCreateSession,
     onSelectWorkspace,
     onRefreshWorkspaces,
     onDeleteSession,
@@ -336,7 +363,6 @@ function AppShellContent({
   const switchWorkbenchProject = useSetAtom(switchWorkbenchProjectAtom)
   const openProjectFilePreview = useSetAtom(openProjectFilePreviewAtom)
   const openProjectFileInPanel = useSetAtom(openProjectFileInPanelAtom)
-  const presentBrowser = useSetAtom(presentBrowserAtom)
 
   const sessionsContext = React.useMemo(() => {
     if (isSessionsNavigation(navState)) {
@@ -664,8 +690,16 @@ function AppShellContent({
     getAutomationHistory, handleReplayAutomation,
   } = useAutomations(activeWorkspaceId)
 
-  const { projects } = useProjects(activeWorkspaceId)
+  const { projects, loaded: projectsLoaded } = useProjects(activeWorkspaceId)
   const { pages } = usePages(activeWorkspaceId)
+  const reconcileWorkbenchProjects = useSetAtom(reconcileWorkbenchProjectsAtom)
+  useEffect(() => {
+    if (!projectsLoaded || !defaultProjectId) return
+    reconcileWorkbenchProjects({
+      projectIds: projects.map(project => project.config.id),
+      defaultProjectId,
+    })
+  }, [defaultProjectId, projects, projectsLoaded, reconcileWorkbenchProjects])
   const activeProject = useMemo(
     () => projects.find(project => project.config.id === workbench.activeProjectId),
     [projects, workbench.activeProjectId],
@@ -1198,81 +1232,205 @@ function AppShellContent({
   const [projectNoteBusy, setProjectNoteBusy] = useState(false)
   const [projectNoteError, setProjectNoteError] = useState('')
   const pendingProjectNoteRef = useRef<PendingProjectNote | null>(null)
+  const projectNoteAppendRequestIdsRef = useRef<Map<string, string>>(new Map())
+  const activeWorkspaceIdRef = useRef(activeWorkspaceId)
+  activeWorkspaceIdRef.current = activeWorkspaceId
+
+  const getProjectNotePreference = useCallback((workspaceId: string, projectId: string) => {
+    const project = projects.find(candidate => candidate.config.id === projectId)
+    const scope = JSON.stringify([workspaceId, projectId, project?.config.workingDirectory ?? null])
+    const stored = storage.get<unknown>(storage.KEYS.projectNoteRecentTargets, [], scope)
+    const recentPaths = Array.isArray(stored)
+      ? stored.filter(isProjectNoteTargetPath).slice(0, 8)
+      : []
+    return { scope, recentPaths }
+  }, [projects])
 
   const appendProjectNote = useCallback(async (
-    sessionId: string,
     reference: Reference,
     targetPath: string,
+    projectRootFingerprint: string,
+    workspaceId: string,
+    externalRequestId?: string,
   ) => {
+    const operationKey = `${reference.projectId}\0${projectRootFingerprint}\0${targetPath}\0${referenceKey(reference)}`
+    const localRequestIds = projectNoteAppendRequestIdsRef.current
+    let requestId: string
+    if (externalRequestId) {
+      requestId = await deriveBrowserProjectNoteRequestId(externalRequestId, operationKey)
+    } else {
+      requestId = localRequestIds.get(operationKey) ?? globalThis.crypto.randomUUID()
+      if (!localRequestIds.has(operationKey)) {
+        localRequestIds.set(operationKey, requestId)
+        if (localRequestIds.size > 128) {
+          const oldestKey = localRequestIds.keys().next().value
+          if (oldestKey) localRequestIds.delete(oldestKey)
+        }
+      }
+    }
+    if (activeWorkspaceIdRef.current !== workspaceId) return
     await window.electronAPI.appendProjectNote({
-      requestId: globalThis.crypto.randomUUID(),
-      sessionId,
+      requestId,
       projectId: reference.projectId,
-      expectedTargetPath: targetPath,
+      relativePath: targetPath,
+      expectedProjectRootFingerprint: projectRootFingerprint,
       selection: reference,
     })
+    if (
+      !externalRequestId
+      && localRequestIds.get(operationKey) === requestId
+    ) {
+      localRequestIds.delete(operationKey)
+    }
   }, [])
 
+  const closeProjectNoteTargetDialog = useCallback((
+    relativePath: string | null,
+    expected?: PendingProjectNote,
+  ) => {
+    const pending = expected ?? pendingProjectNoteRef.current
+    if (!pending || pendingProjectNoteRef.current !== pending) return
+    if (pending.signal && pending.abortListener) {
+      pending.signal.removeEventListener('abort', pending.abortListener)
+    }
+    pendingProjectNoteRef.current = null
+    setPendingProjectNote(null)
+    setProjectNoteError('')
+    setProjectNoteBusy(false)
+    pending.resolve(relativePath)
+  }, [])
+
+  const cancelProjectNoteTargetDialog = useCallback(() => {
+    const pending = pendingProjectNoteRef.current
+    if (!pending) return
+    pending.cancelled = true
+    setPendingProjectNote(null)
+    setProjectNoteError('')
+    if (!pending.busy) closeProjectNoteTargetDialog(null, pending)
+  }, [closeProjectNoteTargetDialog])
+
   const openProjectNoteTargetDialog = useCallback((
-    sessionId: string,
     reference: Reference,
-  ): Promise<boolean> => {
+    sessionId: string | null = null,
+    failureMode: 'return' | 'throw' = 'return',
+    requestId?: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> => {
+    if (signal?.aborted) return Promise.resolve(null)
+    if (!activeWorkspaceId) {
+      if (failureMode === 'throw') throw new Error(t('reference.noWorkspace'))
+      return Promise.resolve(null)
+    }
     if (pendingProjectNoteRef.current) {
       toast.error(t('projectNoteTarget.inProgress'))
-      return Promise.resolve(false)
+      if (failureMode === 'throw') {
+        throw new Error(t('projectNoteTarget.inProgress'))
+      }
+      return Promise.resolve(null)
     }
     return new Promise(resolve => {
-      const pending = { sessionId, reference, resolve }
+      const preference = getProjectNotePreference(activeWorkspaceId, reference.projectId)
+      const candidate = sessionId ? sessionMetaMap.get(sessionId) : undefined
+      const session = candidate?.projectId === reference.projectId ? candidate : undefined
+      const recentPaths = [...new Set([
+        ...(session?.projectNoteRecentTargetPaths ?? []),
+        ...preference.recentPaths,
+      ])].filter(isProjectNoteTargetPath).slice(0, 8)
+      const pending: PendingProjectNote = {
+        workspaceId: activeWorkspaceId,
+        sessionId,
+        reference,
+        initialPath: session?.projectNoteTargetPath ?? preference.recentPaths[0],
+        recentPaths,
+        requestId,
+        signal,
+        cancelled: false,
+        busy: false,
+        resolve,
+      }
+      if (signal) {
+        pending.abortListener = cancelProjectNoteTargetDialog
+        signal.addEventListener('abort', pending.abortListener, { once: true })
+      }
       pendingProjectNoteRef.current = pending
       setProjectNoteError('')
       setPendingProjectNote(pending)
     })
-  }, [t])
+  }, [activeWorkspaceId, cancelProjectNoteTargetDialog, getProjectNotePreference, sessionMetaMap, t])
 
   const handleAddSelectionNote = useCallback(async (
-    sessionId: string,
     reference: Reference,
+    sessionId: string | null = null,
     mode: 'current' | 'choose-target' = 'current',
-  ): Promise<boolean> => {
-    const session = sessionMetaMap.get(sessionId)
-    if (!session || session.projectId !== reference.projectId) {
-      toast.error(t('reference.couldNotAddNote'), {
-        description: t('reference.crossProjectBlocked'),
-      })
-      return false
-    }
+    failureMode: 'return' | 'throw' = 'return',
+    requestId?: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> => {
+    if (signal?.aborted) return null
+    const workspaceId = activeWorkspaceId
+    if (!workspaceId) return null
     if (!projects.some(project => project.config.id === reference.projectId)) {
+      const description = t('reference.projectUnavailable')
       toast.error(t('reference.couldNotAddNote'), {
-        description: t('reference.projectUnavailable'),
+        description,
       })
-      return false
+      if (failureMode === 'throw') throw new Error(description)
+      return null
     }
 
-    if (mode === 'current' && session.projectNoteTargetPath) {
+    const candidateSession = sessionId ? sessionMetaMap.get(sessionId) : undefined
+    const session = candidateSession?.projectId === reference.projectId
+      ? candidateSession
+      : undefined
+
+    const preference = getProjectNotePreference(workspaceId, reference.projectId)
+    const targetPath = session?.projectNoteTargetPath ?? preference.recentPaths[0]
+    if (mode === 'current' && targetPath) {
       try {
-        await appendProjectNote(sessionId, reference, session.projectNoteTargetPath)
-        toast.success(t('reference.addedToNote'), {
-          description: session.projectNoteTargetPath,
+        const configured = await window.electronAPI.configureProjectNoteTarget({
+          sessionId: session?.id ?? null,
+          projectId: reference.projectId,
+          relativePath: targetPath,
         })
-        return true
+        if (activeWorkspaceIdRef.current !== workspaceId) return null
+        await appendProjectNote(
+          reference,
+          configured.relativePath,
+          configured.projectRootFingerprint,
+          workspaceId,
+          requestId,
+        )
+        if (signal?.aborted || activeWorkspaceIdRef.current !== workspaceId) return null
+        toast.success(t('reference.addedToNote'), {
+          description: configured.relativePath,
+        })
+        return configured.relativePath
       } catch (error) {
+        if (signal?.aborted) return null
         const code = (error as { code?: string }).code
           ?? (error instanceof Error ? error.message.split(':', 1)[0] : '')
         if (![
-          'PROJECT_NOTE_TARGET_REQUIRED',
-          'PROJECT_NOTE_TARGET_CHANGED',
           'PROJECT_NOTE_TARGET_NOT_FOUND',
           'PROJECT_NOTE_TARGET_ACCESS_DENIED',
         ].includes(code)) {
+          const description = error instanceof Error ? error.message : String(error)
           toast.error(t('reference.couldNotAddNote'), {
-            description: error instanceof Error ? error.message : String(error),
+            description,
           })
-          return false
+          if (failureMode === 'throw') throw new Error(description)
+          return null
         }
       }
     }
-    return openProjectNoteTargetDialog(sessionId, reference)
-  }, [appendProjectNote, openProjectNoteTargetDialog, projects, sessionMetaMap, t])
+    if (signal?.aborted) return null
+    return openProjectNoteTargetDialog(
+      reference,
+      sessionId,
+      failureMode,
+      requestId,
+      signal,
+    )
+  }, [activeWorkspaceId, appendProjectNote, getProjectNotePreference, openProjectNoteTargetDialog, projects, sessionMetaMap, t])
 
   const handleRevealReference = useCallback(async (reference: Reference): Promise<boolean> => {
     if (reference.kind === 'project-file') {
@@ -1288,25 +1446,11 @@ function AppShellContent({
 
     if (reference.kind === 'web-selection') {
       if (workbench.activeProjectId !== reference.projectId) return false
-      const layout = workbench.layoutsByProject[reference.projectId]
-      const existing = layout && getWorkbenchPanels(layout).find(panel => (
-        panel.kind === 'browser'
-        && panel.runtimeId
-        && panel.url === reference.url
-      ))
       const result = await window.electronAPI.browserPane.revealSelection(
         reference,
-        existing?.kind === 'browser' ? existing.runtimeId ?? undefined : undefined,
       )
       if (!result.ok || !result.browserId) return false
-      const presented = await presentBrowser({
-        projectId: reference.projectId,
-        runtimeId: result.browserId,
-        url: reference.url,
-        title: reference.title,
-        destroyOnFailure: result.created,
-      })
-      return presented && result.found === true
+      return result.found === true
     }
 
     const sourceSession = sessionMetaMap.get(reference.sessionId)
@@ -1324,54 +1468,100 @@ function AppShellContent({
       },
     }))
     return true
-  }, [navigateToSession, openProjectFilePreview, presentBrowser, sessionMetaMap, workbench])
+  }, [navigateToSession, openProjectFilePreview, sessionMetaMap, workbench])
 
-  const closeProjectNoteTargetDialog = useCallback((added: boolean) => {
+  useEffect(() => {
     const pending = pendingProjectNoteRef.current
-    pendingProjectNoteRef.current = null
-    setPendingProjectNote(null)
-    setProjectNoteError('')
-    setProjectNoteBusy(false)
-    pending?.resolve(added)
-  }, [])
+    if (!pending) return
+    const browserRequestUnavailable = !!pending.requestId
+      && (!browserSelectionDataReady || !projectsLoaded)
+    const projectUnavailable = projectsLoaded
+      && !projects.some(project => project.config.id === pending.reference.projectId)
+    if (
+      pending.workspaceId === activeWorkspaceId
+      && !browserRequestUnavailable
+      && !projectUnavailable
+    ) return
+    cancelProjectNoteTargetDialog()
+  }, [
+    activeWorkspaceId,
+    browserSelectionDataReady,
+    cancelProjectNoteTargetDialog,
+    projects,
+    projectsLoaded,
+  ])
 
   useEffect(() => () => {
     const pending = pendingProjectNoteRef.current
+    if (!pending) return
+    pending.cancelled = true
+    if (pending.signal && pending.abortListener) {
+      pending.signal.removeEventListener('abort', pending.abortListener)
+    }
     pendingProjectNoteRef.current = null
-    pending?.resolve(false)
+    pending.resolve(null)
   }, [])
 
   const confirmProjectNoteTarget = useCallback(async (relativePath: string) => {
     const pending = pendingProjectNoteRef.current
-    if (!pending || projectNoteBusy) return
+    if (!pending || pending.busy) return
+    pending.busy = true
     setProjectNoteBusy(true)
     setProjectNoteError('')
     try {
+      const sessionId = pending.sessionId
       const configured = await window.electronAPI.configureProjectNoteTarget({
-        sessionId: pending.sessionId,
+        sessionId,
         projectId: pending.reference.projectId,
         relativePath,
       })
-      if (!configured.relativePath) throw new Error(t('projectNoteTarget.chooseFile'))
-      await appendProjectNote(pending.sessionId, pending.reference, configured.relativePath)
-      setSessionMetaMap(previous => {
-        const existing = previous.get(pending.sessionId)
-        if (!existing) return previous
-        const next = new Map(previous)
-        next.set(pending.sessionId, {
-          ...existing,
-          projectNoteTargetPath: configured.relativePath ?? undefined,
-          projectNoteRecentTargetPaths: configured.recentPaths,
+      if (pending.cancelled || activeWorkspaceIdRef.current !== pending.workspaceId) {
+        pending.cancelled = true
+        closeProjectNoteTargetDialog(null, pending)
+        return
+      }
+      await appendProjectNote(
+        pending.reference,
+        configured.relativePath,
+        configured.projectRootFingerprint,
+        pending.workspaceId,
+        pending.requestId,
+      )
+      if (pending.cancelled || activeWorkspaceIdRef.current !== pending.workspaceId) {
+        pending.cancelled = true
+        closeProjectNoteTargetDialog(null, pending)
+        return
+      }
+      const preference = getProjectNotePreference(pending.workspaceId, pending.reference.projectId)
+      storage.set(storage.KEYS.projectNoteRecentTargets, [
+        configured.relativePath,
+        ...preference.recentPaths.filter(path => path !== configured.relativePath),
+      ].slice(0, 8), preference.scope)
+      if (sessionId && configured.recentPaths.length > 0) {
+        setSessionMetaMap(previous => {
+          const existing = previous.get(sessionId)
+          if (!existing) return previous
+          const next = new Map(previous)
+          next.set(sessionId, {
+            ...existing,
+            projectNoteTargetPath: configured.relativePath,
+            projectNoteRecentTargetPaths: configured.recentPaths,
+          })
+          return next
         })
-        return next
-      })
+      }
       toast.success(t('reference.addedToNote'), { description: configured.relativePath })
-      closeProjectNoteTargetDialog(true)
+      closeProjectNoteTargetDialog(configured.relativePath, pending)
     } catch (error) {
+      if (pending.cancelled) {
+        closeProjectNoteTargetDialog(null, pending)
+        return
+      }
+      pending.busy = false
       setProjectNoteError(error instanceof Error ? error.message : String(error))
       setProjectNoteBusy(false)
     }
-  }, [appendProjectNote, closeProjectNoteTargetDialog, projectNoteBusy, setSessionMetaMap, t])
+  }, [appendProjectNote, closeProjectNoteTargetDialog, getProjectNotePreference, setSessionMetaMap, t])
 
   const hasPendingPrompt = React.useCallback((sessionId: string) => {
     return (pendingPermissions.get(sessionId)?.length ?? 0) > 0
@@ -1666,6 +1856,58 @@ function AppShellContent({
     }
     return onDeleteSession(sessionId, skipConfirmation)
   }, [session.selected, setSession, onDeleteSession])
+
+  useEffect(() => {
+    if (!browserSelectionDataReady || !projectsLoaded) {
+      window.electronAPI.setBrowserApplicationHandler(null, null)
+      return
+    }
+    window.electronAPI.setBrowserApplicationHandler(activeWorkspaceId, async request => {
+      if (request.workspaceId !== activeWorkspaceId) {
+        throw new Error('Browser application request belongs to a different Workspace')
+      }
+      if (request.action === 'open-chat') {
+        navigate(routes.view.allSessions(request.sessionId))
+        return { ok: true }
+      }
+      return onRunBrowserSelectionTask(signal => handleBrowserSelectionApplicationRequest(request, {
+        addDraftReference: onAddBrowserDraftReference,
+        addSelectionNote: (reference, sessionId, mode, requestId) => handleAddSelectionNote(
+          reference,
+          sessionId,
+          mode,
+          'throw',
+          requestId,
+          signal,
+        ),
+        createChat: async (workspaceId, projectId, requestId) => {
+          const child = await onCreateSession(workspaceId, {
+            projectId,
+            creationRequestId: requestId,
+          })
+          return {
+            id: child.id,
+            projectId: child.projectId,
+            title: child.name?.trim() || child.preview?.trim() || t('reference.newChat'),
+          }
+        },
+        openChat: sessionId => {
+          navigate(routes.view.allSessions(sessionId))
+        },
+      }))
+    })
+    return () => window.electronAPI.setBrowserApplicationHandler(null, null)
+  }, [
+    activeWorkspaceId,
+    browserSelectionDataReady,
+    handleAddSelectionNote,
+    onAddBrowserDraftReference,
+    onCreateSession,
+    onRunBrowserSelectionTask,
+    projectsLoaded,
+    store,
+    t,
+  ])
 
   // Extend context value with local overrides (wrapped onDeleteSession, sources, skills, labels, enabledModes, rightSidebarOpenButton, effectiveSessionStatuses)
   const appShellContextValue = React.useMemo<AppShellContextType>(() => ({
@@ -2030,18 +2272,31 @@ function AppShellContent({
     setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
   }, [activeWorkspace, createSessionInNewPanel, focusZone, navigate, resolveInheritedNewSessionParams])
 
-  // Explicit Browser action: create one new Auxiliary after the focused Panel.
+  // Browser windows are independent. A Browser opened from a focused Chat is
+  // immediately targeted at that Chat; other entry points start without one.
   const handleNewBrowserWindow = useCallback(async () => {
-    if (!activeProject) return
+    if (!activeProject || !activeWorkspace) return
     try {
-      if (!await presentBrowser({ projectId: activeProject.config.id })) {
-        throw new Error('Browser presentation was rejected')
+      const targetSession = focusedSessionId
+        ? sessionMetaMap.get(focusedSessionId)
+        : undefined
+      let targetSessionId: string | undefined
+      if (
+        targetSession?.workspaceId === activeWorkspace.id
+        && targetSession.projectId === activeProject.config.id
+      ) {
+        targetSessionId = targetSession.id
       }
+      await window.electronAPI.browserPane.create({
+        show: true,
+        projectId: activeProject.config.id,
+        targetSessionId,
+      })
     } catch (error) {
       console.error('[Chat] Failed to create browser window:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
-  }, [activeProject, presentBrowser, t])
+  }, [activeProject, activeWorkspace, focusedSessionId, sessionMetaMap, t])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -2614,7 +2869,6 @@ function AppShellContent({
 
   return (
     <AppShellProvider value={appShellContextValue}>
-      <BrowserPaneController />
       {/* === TOP BAR === */}
       <TopBar
         workspaces={workspaces}
@@ -2624,6 +2878,7 @@ function AppShellContent({
         onWorkspaceCreated={() => onRefreshWorkspaces?.()}
         onWorkspaceRemoved={() => onRefreshWorkspaces?.()}
         activeSessionId={effectiveSessionId}
+        activeProjectId={workbench.activeProjectId}
         onNewChat={() => handleNewChat()}
         onNewWindow={() => window.electronAPI.menuNewWindow()}
         onOpenSettings={onOpenSettings}
@@ -2641,7 +2896,7 @@ function AppShellContent({
         isProjectFilesAvailable={Boolean(activeProject)}
         onToggleFocusMode={handleToggleFocusModeFromPointer}
         onAddSessionPanel={() => handleNewChat(true)}
-        onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
+        onAddBrowserWindow={() => { void handleNewBrowserWindow() }}
         isCompact={isAutoCompact}
       />
 
@@ -2928,34 +3183,25 @@ function AppShellContent({
           animateLayout={animateShellLayout}
         />
 
-        <AnimatePresence initial={false}>
-          {isRightSidebarVisible && !isAutoCompact && (
-            <motion.div
-              key="project-files-sidebar"
-              initial={{ width: 0, opacity: 0, x: 18 }}
-              animate={{ width: 300, opacity: 1, x: 0 }}
-              exit={{ width: 0, opacity: 0, x: 18 }}
-              transition={springTransition}
-              className="h-full shrink-0 overflow-hidden bg-foreground-2 shadow-middle"
-              style={{
-                borderTopLeftRadius: RADIUS_INNER,
-                borderBottomLeftRadius: RADIUS_INNER,
-                borderTopRightRadius: RADIUS_INNER,
-                borderBottomRightRadius: RADIUS_EDGE,
-              }}
-            >
-              <div className="h-full" style={{ width: 300 }}>
-                <WorkspaceFilesSidebar
-                  project={activeProject}
-                  openFilePaths={openProjectFilePaths}
-                  onClose={handleCloseRightSidebar}
-                  onOpenFile={(relativePath) => { void handleOpenProjectFile(relativePath) }}
-                  onOpenFileInPanel={handleOpenProjectFileInPanel}
-                />
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {isRightSidebarVisible && !isAutoCompact && (
+          <div
+            className="h-full w-[300px] shrink-0 overflow-hidden bg-foreground-2 shadow-middle"
+            style={{
+              borderTopLeftRadius: RADIUS_INNER,
+              borderBottomLeftRadius: RADIUS_INNER,
+              borderTopRightRadius: RADIUS_INNER,
+              borderBottomRightRadius: RADIUS_EDGE,
+            }}
+          >
+            <WorkspaceFilesSidebar
+              project={activeProject}
+              openFilePaths={openProjectFilePaths}
+              onClose={handleCloseRightSidebar}
+              onOpenFile={(relativePath) => { void handleOpenProjectFile(relativePath) }}
+              onOpenFileInPanel={handleOpenProjectFileInPanel}
+            />
+          </div>
+        )}
 
         <AnimatePresence>
           {isRightSidebarVisible && isAutoCompact && (
@@ -3245,15 +3491,11 @@ function AppShellContent({
         project={projects.find(project => (
           project.config.id === pendingProjectNote?.reference.projectId
         ))}
-        initialPath={pendingProjectNote
-          ? sessionMetaMap.get(pendingProjectNote.sessionId)?.projectNoteTargetPath
-          : undefined}
-        recentPaths={pendingProjectNote
-          ? sessionMetaMap.get(pendingProjectNote.sessionId)?.projectNoteRecentTargetPaths ?? []
-          : []}
+        initialPath={pendingProjectNote?.initialPath}
+        recentPaths={pendingProjectNote?.recentPaths ?? []}
         busy={projectNoteBusy}
         error={projectNoteError}
-        onCancel={() => closeProjectNoteTargetDialog(false)}
+        onCancel={cancelProjectNoteTargetDialog}
         onConfirm={relativePath => { void confirmProjectNoteTarget(relativePath) }}
       />
 

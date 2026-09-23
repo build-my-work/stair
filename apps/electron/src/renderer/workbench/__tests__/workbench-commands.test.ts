@@ -4,6 +4,7 @@ import {
   activeProjectWorkbenchAtom,
   workbenchAtom,
   workbenchKeyboardFocusRevisionAtom,
+  workbenchPanelLayoutWidthAtom,
   workbenchPanelRevealRevisionAtom,
   workbenchPanelsAtom,
 } from '../workbench-state'
@@ -20,6 +21,7 @@ import {
   openProjectFilePreviewAtom,
   reorderAuxiliaryPanelAtom,
   removeSessionFromWorkbenchAtom,
+  reconcileWorkbenchProjectsAtom,
   resizeWorkbenchPanelAtom,
   setProjectFileChatTargetAtom,
   selectSessionFromNavigatorAtom,
@@ -37,6 +39,12 @@ function initializedStore() {
     defaultProjectId: 'project-a',
   })).toBe(true)
   return store
+}
+
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(resolvePromise => { resolve = resolvePromise })
+  return { promise, resolve }
 }
 
 function sessionIds(store: ReturnType<typeof createStore>) {
@@ -79,6 +87,18 @@ describe('Session-only Workbench commands', () => {
         },
       },
     })
+  })
+
+  it('keeps the default Session Panel width at 560px', () => {
+    const store = initializedStore()
+    store.set(workbenchPanelLayoutWidthAtom, 1400)
+
+    store.set(showSessionInPrimaryAtom, {
+      sessionId: 'session-a',
+      projectId: 'project-a',
+    })
+
+    expect(store.get(activeProjectWorkbenchAtom)?.primary?.widthRatio).toBe(0.4)
   })
 
   it('resizes only one Panel without changing neighboring ratios, order, or Focus', () => {
@@ -362,9 +382,37 @@ describe('Session-only Workbench commands', () => {
     const remaining = store.get(workbenchAtom).layoutsByProject['project-a'].auxiliary[0]
     expect(remaining.kind === 'session' ? remaining.sessionId : null).toBe('session-b')
   })
+
+  it('removes deleted Project layouts and falls back through the Workbench command', async () => {
+    const store = initializedStore()
+    await store.set(switchWorkbenchProjectAtom, { projectId: 'project-b' })
+    store.set(openProjectFileInPanelAtom, {
+      projectId: 'project-b',
+      relativePath: 'deleted.md',
+    })
+
+    expect(store.set(reconcileWorkbenchProjectsAtom, {
+      projectIds: ['project-a'],
+      defaultProjectId: 'project-a',
+    })).toBe(true)
+    expect(store.get(workbenchAtom).activeProjectId).toBe('project-a')
+    expect(store.get(workbenchAtom).layoutsByProject['project-b']).toBeUndefined()
+  })
 })
 
 describe('Project File Workbench commands', () => {
+  it('opens new Project File Panels at the 840px wide default', async () => {
+    const store = initializedStore()
+    store.set(workbenchPanelLayoutWidthAtom, 1400)
+
+    expect(await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'docs/one.md',
+    })).toBe(true)
+
+    expect(projectFilePanel(store, 'docs/one.md').widthRatio).toBe(0.6)
+  })
+
   it('只设置同 Project Chat Target，不修改 Panel 展示、顺序或 Focus', async () => {
     const store = initializedStore()
     await store.set(openProjectFilePreviewAtom, {
@@ -424,9 +472,7 @@ describe('Project File Workbench commands', () => {
     expect(layout.auxiliary.map(panel => (
       panel.kind === 'session'
         ? `session:${panel.sessionId}`
-        : panel.kind === 'project-file'
-          ? `file:${panel.relativePath}`
-          : `browser:${panel.runtimeId}`
+        : `file:${panel.relativePath}`
     ))).toEqual([
       'file:docs/source.md',
       'session:new-session',
@@ -663,6 +709,89 @@ describe('Project File Workbench commands', () => {
       expect(store.get(workbenchAtom)).toEqual(before)
     } finally {
       unregister()
+    }
+  })
+
+  it('异步 flush 期间的无关布局更新不会误 veto Preview 替换', async () => {
+    const store = initializedStore()
+    await store.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'docs/one.md',
+    })
+    const preview = projectFilePanel(store, 'docs/one.md')
+    const flush = deferred()
+    const unregister = registerOpenProjectFileDocument('project-a', 'docs/one.md', {
+      flush: () => flush.promise,
+    })
+
+    try {
+      const replacing = store.set(openProjectFilePreviewAtom, {
+        projectId: 'project-a',
+        relativePath: 'docs/two.md',
+      })
+      store.set(resizeWorkbenchPanelAtom, {
+        projectId: 'project-a',
+        panelId: preview.id,
+        widthRatio: 1.5,
+      })
+      flush.resolve()
+
+      expect(await replacing).toBe(true)
+      expect(projectFilePanel(store, 'docs/two.md').widthRatio).toBe(1.5)
+    } finally {
+      unregister()
+    }
+  })
+
+  it('异步 flush 期间的无关布局更新不会误 veto Panel 关闭或 Project 切换', async () => {
+    const closeStore = initializedStore()
+    await closeStore.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'docs/close.md',
+    })
+    const closingPanel = projectFilePanel(closeStore, 'docs/close.md')
+    const closeFlush = deferred()
+    const unregisterClose = registerOpenProjectFileDocument('project-a', 'docs/close.md', {
+      flush: () => closeFlush.promise,
+    })
+    try {
+      const closing = closeStore.set(closeWorkbenchPanelAtom, {
+        projectId: 'project-a',
+        panelId: closingPanel.id,
+      })
+      closeStore.set(resizeWorkbenchPanelAtom, {
+        projectId: 'project-a',
+        panelId: closingPanel.id,
+        widthRatio: 1.5,
+      })
+      closeFlush.resolve()
+      expect(await closing).toBe(true)
+    } finally {
+      unregisterClose()
+    }
+
+    const switchStore = initializedStore()
+    await switchStore.set(openProjectFilePreviewAtom, {
+      projectId: 'project-a',
+      relativePath: 'docs/switch.md',
+    })
+    const switchingPanel = projectFilePanel(switchStore, 'docs/switch.md')
+    const switchFlush = deferred()
+    const unregisterSwitch = registerOpenProjectFileDocument('project-a', 'docs/switch.md', {
+      flush: () => switchFlush.promise,
+    })
+    try {
+      const switching = switchStore.set(switchWorkbenchProjectAtom, { projectId: 'project-b' })
+      switchStore.set(resizeWorkbenchPanelAtom, {
+        projectId: 'project-a',
+        panelId: switchingPanel.id,
+        widthRatio: 1.5,
+      })
+      switchFlush.resolve()
+      expect(await switching).toBe(true)
+      expect(switchStore.get(workbenchAtom).activeProjectId).toBe('project-b')
+    } finally {
+      unregisterSwitch()
     }
   })
 })

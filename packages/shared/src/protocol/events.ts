@@ -9,14 +9,14 @@ import type { LoadedSkill } from '../skills/types'
 import type { LoadedProject } from '../projects/types'
 import type { LoadedPage } from '../pages/types'
 import type { PrWatchSessionState } from './pr-watch'
+import type { Reference } from '@craft-agent/core'
+
 import { RPC_CHANNELS } from './channels'
 import type {
   SessionEvent,
   UnreadSummary,
   UpdateInfo,
   BrowserInstanceInfo,
-  BrowserPresentRequest,
-  BrowserSelectionActionPayload,
   DeepLinkNavigation,
   TaskGenerateResult,
 } from './dto'
@@ -26,6 +26,7 @@ export interface BroadcastEventMap {
   [RPC_CHANNELS.sessions.EVENT]: [event: SessionEvent]
   [RPC_CHANNELS.sessions.UNREAD_SUMMARY_CHANGED]: [summary: UnreadSummary]
   [RPC_CHANNELS.sessions.FILES_CHANGED]: [sessionId: string]
+  [RPC_CHANNELS.drafts.REFERENCES_CHANGED]: [sessionId: string, references: Reference[]]
 
   // Domain change broadcasts (global via broadcastToAll)
   [RPC_CHANNELS.sources.CHANGED]: [workspaceId: string, sources: LoadedSource[]]
@@ -60,13 +61,10 @@ export interface BroadcastEventMap {
   [RPC_CHANNELS.window.FOCUS_STATE]: [isFocused: boolean]
   [RPC_CHANNELS.window.CLOSE_REQUESTED]: []
 
-  // Browser pane events (global)
+  // Independent Browser window events (global)
   [RPC_CHANNELS.browserPane.STATE_CHANGED]: [info: BrowserInstanceInfo]
   [RPC_CHANNELS.browserPane.REMOVED]: [id: string]
   [RPC_CHANNELS.browserPane.INTERACTED]: [id: string]
-  [RPC_CHANNELS.browserPane.PRESENT_REQUESTED]: [request: BrowserPresentRequest]
-  [RPC_CHANNELS.browserPane.CLOSE_PANEL_REQUESTED]: [browserId: string]
-  [RPC_CHANNELS.browserPane.SELECTION_ACTION]: [payload: BrowserSelectionActionPayload]
 
   // Navigation events (per-window)
   [RPC_CHANNELS.notification.NAVIGATE]: [data: { workspaceId: string; sessionId: string }]

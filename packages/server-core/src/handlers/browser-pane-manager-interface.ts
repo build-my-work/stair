@@ -1,5 +1,5 @@
 /**
- * IBrowserPaneManager — interface for browser pane operations used by SessionManager.
+ * IBrowserPaneManager — interface for independent Browser window operations used by SessionManager.
  *
  * Covers all 40 methods SessionManager calls on BrowserPaneManager.
  * The concrete BrowserPaneManager in apps/electron implements this.
@@ -152,7 +152,7 @@ export interface IBrowserPaneManager {
   setSessionPathResolver(fn: (sessionId: string) => string | null): void
 
   /** Destroy all browser instances bound to a session */
-  destroyForSession(sessionId: string): void
+  destroyForSession(sessionId: string, workspaceId?: string): void
 
   /** Clear agent control overlay and native overlay state for a session */
   clearVisualsForSession(sessionId: string): Promise<void>
@@ -161,30 +161,29 @@ export interface IBrowserPaneManager {
   unbindAllForSession(sessionId: string): void
 
   /** Get or create a browser instance for a session, returning the instance ID */
-  getOrCreateForSession(sessionId: string, options?: { workspaceId?: string | null }): string
+  getOrCreateForSession(sessionId: string, options?: { workspaceId?: string | null; projectId?: string | null }): string
 
   /**
    * Async equivalent of {@link getOrCreateForSession}. Required for the remote
    * bridge — the WS round-trip can't fit into a sync return.
    */
-  getOrCreateForSessionAsync(sessionId: string, options?: { workspaceId?: string | null }): Promise<string>
+  getOrCreateForSessionAsync(sessionId: string, options?: { workspaceId?: string | null; projectId?: string | null }): Promise<string>
 
   /** Activate or update the agent control overlay for a session */
   setAgentControl(
     sessionId: string,
     meta: { displayName?: string; intent?: string },
-    options?: { workspaceId?: string | null },
   ): void
 
   // -- Instance management -------------------------------------------------
 
   /** Create a browser instance for a session (optionally shown) */
-  createForSession(sessionId: string, options?: { show?: boolean; workspaceId?: string | null }): string
+  createForSession(sessionId: string, options?: { show?: boolean; workspaceId?: string | null; projectId?: string | null }): string
 
   /**
    * Async equivalent of {@link createForSession}. Required for the remote bridge.
    */
-  createForSessionAsync(sessionId: string, options?: { show?: boolean; workspaceId?: string | null }): Promise<string>
+  createForSessionAsync(sessionId: string, options?: { show?: boolean; workspaceId?: string | null; projectId?: string | null }): Promise<string>
 
   /** Get instance info by ID (sync; local-only). For remote-aware code use {@link getInstanceAsync}. */
   getInstance(id: string): BrowserInstanceSnapshot | undefined
@@ -205,19 +204,25 @@ export interface IBrowserPaneManager {
   listInstancesAsync(): Promise<BrowserInstanceInfo[]>
 
   /** Focus the bound browser instance for a session, creating if needed */
-  focusBoundForSession(sessionId: string, options?: { workspaceId?: string | null }): string
+  focusBoundForSession(sessionId: string, options?: { workspaceId?: string | null; projectId?: string | null }): string
 
   /** Async equivalent of {@link focusBoundForSession}. */
-  focusBoundForSessionAsync(sessionId: string, options?: { workspaceId?: string | null }): Promise<string>
+  focusBoundForSessionAsync(sessionId: string, options?: { workspaceId?: string | null; projectId?: string | null }): Promise<string>
 
   /** Bind a browser instance to a session */
-  bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null }): void
+  bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null; projectId?: string | null }): void
 
   /** Focus a browser instance window */
   focus(id: string): void
 
   /** Destroy a browser instance */
   destroyInstance(id: string): void
+
+  /** Block new Browser windows and destroy existing windows before Project deletion. */
+  beginProjectDeletion(workspaceId: string, projectId: string): void
+
+  /** Commit or release a Project deletion gate. */
+  finishProjectDeletion(workspaceId: string, projectId: string, deleted: boolean): void
 
   /** Hide a browser instance window */
   hide(id: string): void

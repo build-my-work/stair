@@ -17,6 +17,7 @@ type ApiToChannelMapKeys = Exclude<
   | 'performOAuth'
   | 'getTransportConnectionState'
   | 'getRuntimeEnvironment'
+  | 'setBrowserApplicationHandler'
   | 'setDrawnixBoardCapabilityHandler'
   | 'onTransportConnectionStateChanged'
   | 'reconnectTransport'

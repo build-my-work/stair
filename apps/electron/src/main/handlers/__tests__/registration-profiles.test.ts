@@ -70,6 +70,7 @@ function createMockDeps(): HandlerDeps {
     },
     windowManager: {} as HandlerDeps['windowManager'],
     browserPaneManager: {
+      setApplicationService: () => {},
       onStateChange: () => {},
       onRemoved: () => {},
       onInteracted: () => {},

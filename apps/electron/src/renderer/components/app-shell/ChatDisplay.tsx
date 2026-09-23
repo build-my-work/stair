@@ -1118,7 +1118,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     const resizeObserver = new ResizeObserver(() => {
       // Unfocused panels: always scroll to bottom instantly (user isn't reading them)
       if (!isFocusedPanelRef.current) {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' })
+        viewport.scrollTop = viewport.scrollHeight
         return
       }
 
@@ -1331,18 +1331,18 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     if (!session || !appShellContext.onAddSelectionNote) return false
     const reference = buildSelectedChatReference(selection)
     if (!reference) return false
-    return appShellContext.onAddSelectionNote(session.id, reference)
+    return Boolean(await appShellContext.onAddSelectionNote(reference, session.id))
   }, [appShellContext, buildSelectedChatReference, session])
 
   const handleAddSelectionToNoteTarget = useCallback(async (selection: ChatTextSelection) => {
     if (!session || !appShellContext.onAddSelectionNote) return false
     const reference = buildSelectedChatReference(selection)
     if (!reference) return false
-    return appShellContext.onAddSelectionNote(
-      session.id,
+    return Boolean(await appShellContext.onAddSelectionNote(
       reference,
+      session.id,
       'choose-target',
-    )
+    ))
   }, [appShellContext, buildSelectedChatReference, session])
 
   // Handle stop request from InputContainer

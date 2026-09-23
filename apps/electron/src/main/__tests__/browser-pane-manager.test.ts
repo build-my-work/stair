@@ -5,11 +5,16 @@
  * session binding, and navigation behavior.
  */
 
-import { describe, it, expect, beforeEach, mock } from 'bun:test'
+import { describe, it, expect, beforeEach, mock, spyOn } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { i18n, setupI18n } from '@craft-agent/shared/i18n'
+import * as config from '@craft-agent/shared/config'
+import { RPC_CHANNELS, type Session } from '@craft-agent/shared/protocol'
+import type { RpcClient, RpcServer } from '@craft-agent/server-core/transport'
+import { createBrowserApplicationRouter } from '../browser-application-router'
+import { handleBrowserApplicationCapability } from '../../preload/browser-application-capability'
 
 let toolbarLoadFailuresRemaining = 0
 let emptyStateLoadFailure: (Error & { code?: string }) | null = null
@@ -354,6 +359,9 @@ const {
   classifyWindowOpen,
 } = await import('../browser-pane-manager')
 
+type BrowserChatTarget = import('../browser-pane-manager').BrowserChatTarget
+type BrowserProjectTarget = import('../browser-pane-manager').BrowserProjectTarget
+type BrowserSelectionActionResult = import('../browser-pane-manager').BrowserSelectionActionResult
 type WindowOpenDetails = Parameters<typeof classifyWindowOpen>[0]
 
 function createWindowOpenDetails(
@@ -376,6 +384,7 @@ describe('BrowserPaneManager', () => {
   let manager: InstanceType<typeof BrowserPaneManager>
 
   beforeEach(() => {
+    setupI18n()
     toolbarLoadFailuresRemaining = 0
     emptyStateLoadFailure = null
     webContentsViewOptions = []
@@ -398,6 +407,106 @@ describe('BrowserPaneManager', () => {
     expect(list[0].agentControlActive).toBe(false)
   })
 
+  it('maps thin-client capabilities through each sender window', async () => {
+    manager.setWindowManager({
+      getWorkspaceForWindow: (webContentsId: number) => (
+        ({ 42: 'local-workspace-a', 43: 'local-workspace-b' } as Record<number, string>)[webContentsId] ?? null
+      ),
+    } as any)
+    manager.setCapabilityRemoteWorkspaceId('remote-workspace')
+
+    const firstId = await (manager as any).dispatchCapability({
+      v: 1,
+      method: 'createForSession',
+      args: ['chat-a', { projectId: 'project-a' }],
+      sessionId: 'chat-a',
+      workspaceId: 'remote-workspace',
+    }, 42)
+    const secondId = await (manager as any).dispatchCapability({
+      v: 1,
+      method: 'createForSession',
+      args: ['chat-b', { projectId: 'project-b' }],
+      sessionId: 'chat-b',
+      workspaceId: 'remote-workspace',
+    }, 43)
+
+    expect(manager.listInstances()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: firstId,
+        workspaceId: 'local-workspace-a',
+        projectId: 'project-a',
+        ownerSessionId: 'chat-a',
+      }),
+      expect.objectContaining({
+        id: secondId,
+        workspaceId: 'local-workspace-b',
+        projectId: 'project-b',
+        ownerSessionId: 'chat-b',
+      }),
+    ]))
+  })
+
+  it('maps an ordinary remote Workspace capability through its exact sender window', async () => {
+    const workspaces = spyOn(config, 'getWorkspaces').mockReturnValue([
+      {
+        id: 'local-workspace-a',
+        remoteServer: { remoteWorkspaceId: 'remote-workspace' },
+      },
+      {
+        id: 'local-workspace-b',
+        remoteServer: { remoteWorkspaceId: 'remote-workspace' },
+      },
+    ] as never)
+    manager.setWindowManager({
+      getWorkspaceForWindow: (webContentsId: number) => (
+        webContentsId === 43 ? 'local-workspace-b' : null
+      ),
+    } as any)
+
+    try {
+      const id = await (manager as any).dispatchCapability({
+        v: 1,
+        method: 'createForSession',
+        args: ['chat-b', { projectId: 'project-b' }],
+        sessionId: 'chat-b',
+        workspaceId: 'remote-workspace',
+      }, 43)
+
+      expect(manager.listInstances()).toContainEqual(expect.objectContaining({
+        id,
+        workspaceId: 'local-workspace-b',
+        projectId: 'project-b',
+      }))
+    } finally {
+      workspaces.mockRestore()
+    }
+  })
+
+  it('fails closed when a remote Workspace mapping is ambiguous without a sender window', async () => {
+    const workspaces = spyOn(config, 'getWorkspaces').mockReturnValue([
+      {
+        id: 'local-workspace-a',
+        remoteServer: { remoteWorkspaceId: 'remote-workspace' },
+      },
+      {
+        id: 'local-workspace-b',
+        remoteServer: { remoteWorkspaceId: 'remote-workspace' },
+      },
+    ] as never)
+
+    try {
+      await expect((manager as any).dispatchCapability({
+        v: 1,
+        method: 'createForSession',
+        args: ['chat', { projectId: 'project' }],
+        sessionId: 'chat',
+        workspaceId: 'remote-workspace',
+      })).rejects.toThrow('not uniquely hosted')
+    } finally {
+      workspaces.mockRestore()
+    }
+  })
+
   it('creates the native overlay with a transparent guest page', () => {
     manager.createInstance('transparent-overlay')
 
@@ -411,11 +520,46 @@ describe('BrowserPaneManager', () => {
     expect(overlayView?.setBackgroundColor).toHaveBeenCalledWith('#00000000')
   })
 
-  it('is idempotent when explicit ID already exists', () => {
-    const first = manager.createInstance('same-id')
-    const second = manager.createInstance('same-id')
-    expect(first).toBe('same-id')
-    expect(second).toBe('same-id')
+  it('renders the same split Add Note actions as PDF and EPUB readers', () => {
+    manager.createInstance('selection-actions')
+
+    const overlayView = webContentsViews.find(({ options }) => (
+      options?.webPreferences?.preload?.includes('browser-overlay-preload')
+    ))?.view
+    const loadedUrl = overlayView?.webContents.loadURL.mock.calls[0]?.[0] as string
+    const html = decodeURIComponent(loadedUrl.slice(loadedUrl.indexOf(',') + 1))
+
+    expect(html).toContain('data-browser-selection-action="add-chat"')
+    expect(html).toContain('data-browser-selection-action="new-chat"')
+    expect(html).toContain('data-browser-selection-action="add-note"')
+    expect(html).toContain('data-browser-selection-action="choose-note-target"')
+  })
+
+  it('localizes the native selection actions with the main-process language', async () => {
+    setupI18n()
+    await i18n.changeLanguage('zh-Hans')
+    try {
+      manager.createInstance('localized-selection-actions')
+
+      const overlayView = webContentsViews.find(({ options }) => (
+        options?.webPreferences?.preload?.includes('browser-overlay-preload')
+      ))?.view
+      const loadedUrl = overlayView?.webContents.loadURL.mock.calls[0]?.[0] as string
+      const html = decodeURIComponent(loadedUrl.slice(loadedUrl.indexOf(',') + 1))
+
+      expect(html).toContain('添加到笔记')
+      expect(html).toContain('选择笔记文件')
+      expect(html).toContain('添加到聊天')
+      expect(html).toContain('新聊天')
+      expect(html).not.toContain('>Add Note<')
+    } finally {
+      await i18n.changeLanguage('en')
+    }
+  })
+
+  it('rejects an explicit duplicate ID instead of reusing a different scope', () => {
+    expect(manager.createInstance('same-id')).toBe('same-id')
+    expect(() => manager.createInstance('same-id')).toThrow('Browser instance already exists')
     expect(manager.listInstances()).toHaveLength(1)
   })
 
@@ -578,6 +722,278 @@ describe('BrowserPaneManager', () => {
     expect(manager.listInstances()).toHaveLength(0)
   })
 
+  it('destroys only native runtimes owned by the deleted Project', () => {
+    manager.createInstance('project-a', { workspaceId: 'workspace-1', projectId: 'project-a' })
+    manager.createInstance('project-b', { workspaceId: 'workspace-1', projectId: 'project-b' })
+    manager.createInstance('other-workspace', { workspaceId: 'workspace-2', projectId: 'project-a' })
+
+    manager.destroyForProject('workspace-1', 'project-a')
+
+    expect(manager.listInstances().map(instance => instance.id)).toEqual([
+      'project-b',
+      'other-workspace',
+    ])
+  })
+
+  it('blocks Browser creation from the start of Project deletion until an aborted deletion is released', () => {
+    manager.createInstance('preserved-after-abort', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })
+    manager.beginProjectDeletion('workspace-1', 'project-a')
+
+    expect(manager.listInstances().map(instance => instance.id))
+      .toContain('preserved-after-abort')
+
+    expect(() => manager.createInstance('blocked-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })).toThrow('Browser Project is being deleted')
+
+    manager.finishProjectDeletion('workspace-1', 'project-a', false)
+    expect(manager.listInstances().map(instance => instance.id))
+      .toContain('preserved-after-abort')
+    expect(manager.createInstance('released-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })).toBe('released-project')
+  })
+
+  it('keeps Browser creation blocked after Project deletion commits', () => {
+    manager.createInstance('destroyed-after-commit', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })
+    manager.beginProjectDeletion('workspace-1', 'project-a')
+    expect(manager.listInstances().map(instance => instance.id))
+      .toContain('destroyed-after-commit')
+    manager.finishProjectDeletion('workspace-1', 'project-a', true)
+
+    expect(manager.listInstances().map(instance => instance.id))
+      .not.toContain('destroyed-after-commit')
+
+    expect(() => manager.createInstance('deleted-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })).toThrow('Browser Project is unavailable')
+  })
+
+  it('does not let a Browser leave a Project while that Project is being deleted', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [
+        { id: 'project-a', title: 'Project A' },
+        { id: 'project-b', title: 'Project B' },
+      ]),
+      listChatTargets: mock(async () => []),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'unused',
+        targetTitle: 'Unused',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('deleting-project-switch', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })
+    manager.beginProjectDeletion('workspace-1', 'project-a')
+
+    await expect(manager.setProject('deleting-project-switch', 'project-b'))
+      .rejects.toThrow('Current Project is unavailable')
+    manager.finishProjectDeletion('workspace-1', 'project-a', true)
+
+    expect(manager.listInstances().map(instance => instance.id))
+      .not.toContain('deleting-project-switch')
+  })
+
+  it('destroys a stale Browser instead of moving it after its Project disappeared', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [
+        { id: 'project-b', title: 'Project B' },
+      ]),
+      listChatTargets: mock(async () => []),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'unused',
+        targetTitle: 'Unused',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('stale-project-switch', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })
+
+    const outcome = await manager.setProject('stale-project-switch', 'project-b').then(
+      () => 'moved',
+      error => error instanceof Error ? error.message : String(error),
+    )
+    manager.reconcileWorkspace('workspace-1', { projectIds: ['project-b'] })
+
+    expect(outcome).toBe('Current Project is unavailable')
+    expect(manager.listInstances().map(instance => instance.id))
+      .not.toContain('stale-project-switch')
+  })
+
+  it('settles a disconnected Project deletion gate from the authoritative Project list', () => {
+    manager.beginProjectDeletion('workspace-1', 'project-kept')
+    manager.beginProjectDeletion('workspace-1', 'project-deleted')
+
+    manager.reconcileWorkspace('workspace-1', {
+      projectIds: ['project-kept'],
+    })
+
+    expect(manager.createInstance('restored-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-kept',
+    })).toBe('restored-project')
+    expect(() => manager.createInstance('removed-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-deleted',
+    })).toThrow('Browser Project is unavailable')
+  })
+
+  it('destroys hidden Browser windows whose Project disappeared while disconnected', () => {
+    manager.createInstance('kept-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-kept',
+    })
+    manager.createInstance('deleted-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-deleted',
+    })
+    manager.createInstance('other-workspace-project', {
+      workspaceId: 'workspace-2',
+      projectId: 'project-deleted',
+    })
+
+    manager.reconcileWorkspace('workspace-1', {
+      projectIds: ['project-kept'],
+    })
+
+    expect(manager.listInstances().map(instance => instance.id)).toEqual([
+      'kept-project',
+      'other-workspace-project',
+    ])
+  })
+
+  it('reconciles Chat ownership without destroying an otherwise valid manual Browser', () => {
+    manager.createForSession('kept-chat', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })
+    manager.createForSession('deleted-chat', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })
+    manager.createInstance('manual-deleted-target', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+      targetSessionId: 'deleted-chat',
+    })
+    manager.createInstance('manual-kept-target', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+      targetSessionId: 'kept-chat',
+    })
+
+    manager.reconcileWorkspace('workspace-1', {
+      sessions: [{ id: 'kept-chat', projectId: 'project-a' }],
+    })
+
+    expect(manager.listInstances()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ownerSessionId: 'kept-chat' }),
+      expect.objectContaining({ id: 'manual-deleted-target', targetSessionId: null }),
+      expect.objectContaining({ id: 'manual-kept-target', targetSessionId: 'kept-chat' }),
+    ]))
+    expect(manager.listInstances().some(instance => (
+      instance.ownerSessionId === 'deleted-chat'
+    ))).toBe(false)
+  })
+
+  it('rejects a reconciled Chat target that moved to another Project', () => {
+    manager.createForSession('moved-owner', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })
+    manager.createInstance('manual-moved-target', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+      targetSessionId: 'moved-target',
+    })
+
+    manager.reconcileWorkspace('workspace-1', {
+      sessions: [
+        { id: 'moved-owner', projectId: 'project-b' },
+        { id: 'moved-target', projectId: 'project-b' },
+      ],
+    })
+
+    expect(manager.listInstances()).toEqual([
+      expect.objectContaining({ id: 'manual-moved-target', targetSessionId: null }),
+    ])
+  })
+
+  it('clears a manual Browser target when its Chat is deleted', () => {
+    manager.createInstance('manual-target', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+      targetSessionId: 'session-a',
+    })
+
+    manager.destroyForSession('session-a')
+
+    expect(manager.listInstances()).toEqual([
+      expect.objectContaining({ id: 'manual-target', targetSessionId: null }),
+    ])
+  })
+
+  it('clears a manual Browser target when a remote Chat is deleted', () => {
+    manager.createInstance('remote-manual-target', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+      targetSessionId: 'session-a',
+    })
+
+    manager.destroyForSession('remote:workspace-1:session-a')
+
+    expect(manager.listInstances()).toEqual([
+      expect.objectContaining({ id: 'remote-manual-target', targetSessionId: null }),
+    ])
+  })
+
+  it('does not clear the same Chat id in another Workspace', () => {
+    manager.createInstance('workspace-a-target', {
+      workspaceId: 'workspace-a',
+      projectId: 'project-a',
+      targetSessionId: 'shared-session-id',
+    })
+    manager.createInstance('workspace-b-target', {
+      workspaceId: 'workspace-b',
+      projectId: 'project-b',
+      targetSessionId: 'shared-session-id',
+    })
+
+    manager.destroyForSession('shared-session-id', 'workspace-a')
+
+    expect(manager.listInstances()).toEqual([
+      expect.objectContaining({ id: 'workspace-a-target', targetSessionId: null }),
+      expect.objectContaining({ id: 'workspace-b-target', targetSessionId: 'shared-session-id' }),
+    ])
+  })
+
+  it('destroys an idle Chat-owned Browser when that Chat is deleted', () => {
+    const id = manager.createForSession('session-a', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-a',
+    })
+    manager.unbindAllForSession('session-a')
+
+    manager.destroyForSession('session-a')
+
+    expect(manager.listInstances().some(instance => instance.id === id)).toBe(false)
+  })
+
   it('destroys instance from the native Browser window menu', async () => {
     manager.createInstance('d-ipc-destroy')
     manager.registerToolbarIpc()
@@ -634,7 +1050,14 @@ describe('BrowserPaneManager', () => {
         canGoBack: true,
         canGoForward: false,
         themeColor: null,
-        isPanel: false,
+        targetSessionId: null,
+        targetChatTitle: null,
+        targetNotePath: null,
+        selectionFeedback: null,
+        canChooseTargetChat: true,
+        projectId: null,
+        projectTitle: null,
+        canChooseProject: true,
       },
     ])
   })
@@ -756,6 +1179,187 @@ describe('BrowserPaneManager', () => {
     }
   })
 
+  it('switches a manual Browser Project from the native toolbar menu', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [
+        { id: 'project-1', title: 'Project 1' },
+        { id: 'project-2', title: 'Project 2' },
+      ]),
+      listChatTargets: mock(async () => []),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'unused',
+        targetTitle: 'Unused',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('project-menu', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    manager.registerToolbarIpc()
+
+    const registrations = new Map(
+      mockIpcMainHandle.mock.calls as unknown as Array<[
+        string,
+        (...args: any[]) => Promise<any>,
+      ]>,
+    )
+    const showMenu = registrations.get('browser-toolbar:show-menu')
+    expect(showMenu).toBeTruthy()
+    if (!showMenu) throw new Error('Expected browser toolbar native menu IPC registration')
+
+    const instance = (manager as any).instances.get('project-menu')
+    await showMenu(
+      { sender: instance.toolbarView.webContents },
+      'project-menu',
+      'projects',
+    )
+    const template = mockMenuBuildFromTemplate.mock.calls.at(-1)?.[0] as Array<{
+      label?: string
+      checked?: boolean
+      click?: () => void
+    }>
+    expect(template.map(item => ({ label: item.label, checked: item.checked }))).toEqual([
+      { label: 'Project 1', checked: true },
+      { label: 'Project 2', checked: false },
+    ])
+
+    template[1]?.click?.()
+    await Bun.sleep(0)
+
+    expect(manager.listInstances().find(item => item.id === 'project-menu'))
+      .toMatchObject({ projectId: 'project-2', targetSessionId: null })
+  })
+
+  it('does not show a Project menu after its Browser is hidden or destroyed', async () => {
+    let deferProjectTargets = false
+    let finish: ((targets: BrowserProjectTarget[]) => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(() => deferProjectTargets
+        ? new Promise<BrowserProjectTarget[]>(resolve => { finish = resolve })
+        : Promise.resolve([{ id: 'project-1', title: 'Project 1' }])),
+      listChatTargets: mock(async () => []),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'unused',
+        targetTitle: 'Unused',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('destroyed-project-menu', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    manager.createInstance('hidden-project-menu', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    await Promise.resolve()
+    manager.registerToolbarIpc()
+    const registrations = new Map(
+      mockIpcMainHandle.mock.calls as unknown as Array<[
+        string,
+        (...args: any[]) => Promise<any>,
+      ]>,
+    )
+    const showMenu = registrations.get('browser-toolbar:show-menu')
+    if (!showMenu) throw new Error('Expected browser toolbar native menu IPC registration')
+    const instance = (manager as any).instances.get('destroyed-project-menu')
+    deferProjectTargets = true
+    mockMenuBuildFromTemplate.mockClear()
+    mockMenuPopup.mockClear()
+
+    const pending = showMenu(
+      { sender: instance.toolbarView.webContents },
+      instance.id,
+      'projects',
+    )
+    manager.destroyInstance(instance.id)
+    finish!([{ id: 'project-1', title: 'Project 1' }])
+    await pending
+
+    expect(mockMenuBuildFromTemplate).not.toHaveBeenCalled()
+    expect(mockMenuPopup).not.toHaveBeenCalled()
+
+    const hiddenInstance = (manager as any).instances.get('hidden-project-menu')
+    mockMenuBuildFromTemplate.mockClear()
+    mockMenuPopup.mockClear()
+    const hiddenPending = showMenu(
+      { sender: hiddenInstance.toolbarView.webContents },
+      hiddenInstance.id,
+      'projects',
+    )
+    hiddenInstance.window._emit('hide')
+    finish!([{ id: 'project-1', title: 'Project 1' }])
+    await hiddenPending
+
+    expect(mockMenuBuildFromTemplate).not.toHaveBeenCalled()
+    expect(mockMenuPopup).not.toHaveBeenCalled()
+  })
+
+  it('keeps the newest toolbar menu when an older Chat menu resolves later', async () => {
+    let deferChatTargets = false
+    let finishChats: ((targets: BrowserChatTarget[]) => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [
+        { id: 'project-1', title: 'Project 1' },
+        { id: 'project-2', title: 'Project 2' },
+      ]),
+      listChatTargets: mock(() => deferChatTargets
+        ? new Promise<BrowserChatTarget[]>(resolve => { finishChats = resolve })
+        : Promise.resolve([])),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'unused',
+        targetTitle: 'Unused',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('latest-toolbar-menu', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    await Promise.resolve()
+    manager.registerToolbarIpc()
+    const registrations = new Map(
+      mockIpcMainHandle.mock.calls as unknown as Array<[
+        string,
+        (...args: any[]) => Promise<any>,
+      ]>,
+    )
+    const showMenu = registrations.get('browser-toolbar:show-menu')
+    if (!showMenu) throw new Error('Expected browser toolbar native menu IPC registration')
+    const instance = (manager as any).instances.get('latest-toolbar-menu')
+    deferChatTargets = true
+    mockMenuBuildFromTemplate.mockClear()
+    mockMenuPopup.mockClear()
+
+    const staleMenu = showMenu(
+      { sender: instance.toolbarView.webContents },
+      instance.id,
+      'chats',
+    )
+    await showMenu(
+      { sender: instance.toolbarView.webContents },
+      instance.id,
+      'projects',
+    )
+    finishChats!([{
+      id: 'old-chat',
+      title: 'Old Chat',
+      noteTargetPath: null,
+    }])
+    await staleMenu
+
+    expect(mockMenuBuildFromTemplate).toHaveBeenCalledTimes(1)
+    expect(mockMenuBuildFromTemplate.mock.calls[0]?.[0]).toEqual([
+      expect.objectContaining({ label: 'Project 1', checked: true }),
+      expect.objectContaining({ label: 'Project 2', checked: false }),
+    ])
+    expect(mockMenuPopup).toHaveBeenCalledTimes(1)
+  })
+
   it('localizes native toolbar menus with the main-process language', async () => {
     setupI18n()
     await i18n.changeLanguage('zh-Hans')
@@ -807,32 +1411,6 @@ describe('BrowserPaneManager', () => {
 
     expect(mockMenuBuildFromTemplate).not.toHaveBeenCalled()
     expect(manager.listInstances()).toHaveLength(1)
-  })
-
-  it('rejects delayed native menu requests after the Browser is parked', async () => {
-    manager.createInstance('parked-menu')
-    manager.registerToolbarIpc()
-
-    const registrations = new Map(
-      mockIpcMainHandle.mock.calls as unknown as Array<[
-        string,
-        (...args: any[]) => Promise<any>,
-      ]>,
-    )
-    const showMenu = registrations.get('browser-toolbar:show-menu')
-    expect(showMenu).toBeTruthy()
-    if (!showMenu) throw new Error('Expected browser toolbar native menu IPC registration')
-
-    const instance = (manager as any).instances.get('parked-menu')
-    instance.presentation = { mode: 'parked', hostWebContentsId: 777 }
-    await showMenu(
-      { sender: instance.toolbarView.webContents },
-      'parked-menu',
-      'window',
-    )
-
-    expect(mockMenuBuildFromTemplate).not.toHaveBeenCalled()
-    expect(instance.toolbarMenuOpen).toBe(false)
   })
 
   it('shows a localized unavailable item when bookmark storage is invalid', async () => {
@@ -913,7 +1491,7 @@ describe('BrowserPaneManager', () => {
 
     manager.unbindSession('b1')
     expect(manager.listInstances()[0].boundSessionId).toBeNull()
-    expect(manager.listInstances()[0].ownerType).toBe('manual')
+    expect(manager.listInstances()[0].ownerType).toBe('session')
   })
 
   it('createForSession returns canonical bound instance', () => {
@@ -927,6 +1505,889 @@ describe('BrowserPaneManager', () => {
     expect(manager.listInstances()).toHaveLength(1)
   })
 
+  it('records the owning Project and target Chat for a session-created Browser window', () => {
+    const id = manager.createForSession('sess-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+
+    expect(manager.listInstances().find(instance => instance.id === id)).toMatchObject({
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'sess-project',
+    })
+  })
+
+  it('lets a manual Browser choose only a Chat in its own Project', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [{ id: 'project-1', title: 'Project 1' }]),
+      listChatTargets: mock(async () => [{ id: 'session-1', title: 'Chat 1', noteTargetPath: null }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({ sessionId: 'session-1', targetTitle: 'Chat 1', noteTargetPath: null })),
+    })
+    manager.createInstance('manual-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+
+    await manager.setTargetSession('manual-project', 'session-1')
+    expect(manager.listInstances()[0].targetSessionId).toBe('session-1')
+    await expect(manager.setTargetSession('manual-project', 'session-other'))
+      .rejects.toThrow('not available in this Project')
+  })
+
+  it('moves a manual Browser to another Project without replacing its page and clears the old targets', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [
+        { id: 'project-1', title: 'Project 1' },
+        { id: 'project-2', title: 'Project 2' },
+      ]),
+      listChatTargets: mock(async ({ projectId }) => projectId === 'project-1'
+        ? [{ id: 'session-1', title: 'Chat 1', noteTargetPath: 'notes/research.md' }]
+        : []),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Chat 1',
+        noteTargetPath: 'notes/research.md',
+      })),
+    })
+    manager.createInstance('manual-project-switch', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    await manager.setTargetSession('manual-project-switch', 'session-1')
+
+    const before = (manager as any).instances.get('manual-project-switch')
+    const pageView = before.pageView
+    before.currentUrl = 'https://example.com/article'
+
+    await manager.setProject('manual-project-switch', 'project-2')
+
+    const after = (manager as any).instances.get('manual-project-switch')
+    expect(after.pageView).toBe(pageView)
+    expect(manager.listInstances().find(instance => instance.id === 'manual-project-switch'))
+      .toMatchObject({
+        url: 'https://example.com/article',
+        projectId: 'project-2',
+        targetSessionId: null,
+      })
+    expect(after.targetChat).toBeNull()
+  })
+
+  it('applies only the newest Project choice when lookups resolve out of order', async () => {
+    const pending: Array<(targets: BrowserProjectTarget[]) => void> = []
+    let deferProjectTargets = false
+    manager.setApplicationService({
+      listProjectTargets: mock(() => deferProjectTargets
+        ? new Promise<BrowserProjectTarget[]>(resolve => { pending.push(resolve) })
+        : Promise.resolve([
+            { id: 'project-1', title: 'Project 1' },
+            { id: 'project-2', title: 'Project 2' },
+            { id: 'project-3', title: 'Project 3' },
+          ])),
+      listChatTargets: mock(async () => []),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'unused',
+        targetTitle: 'Unused',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('latest-project-choice', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    await Promise.resolve()
+    deferProjectTargets = true
+
+    const firstOutcome = manager.setProject('latest-project-choice', 'project-2').then(
+      () => 'applied',
+      error => error instanceof Error ? error.message : String(error),
+    )
+    const secondOutcome = manager.setProject('latest-project-choice', 'project-3').then(
+      () => 'applied',
+      error => error instanceof Error ? error.message : String(error),
+    )
+    const targets = [
+      { id: 'project-1', title: 'Project 1' },
+      { id: 'project-2', title: 'Project 2' },
+      { id: 'project-3', title: 'Project 3' },
+    ]
+    pending[0]?.(targets)
+    await Promise.resolve()
+    pending[1]?.(targets)
+
+    expect(await firstOutcome).toBe('Project selection was superseded')
+    expect(await secondOutcome).toBe('applied')
+    expect(manager.listInstances().find(instance => instance.id === 'latest-project-choice'))
+      .toMatchObject({ projectId: 'project-3' })
+  })
+
+  it('ignores a target Chat lookup that finishes after the Browser changes Project', async () => {
+    let deferTargetLookup = false
+    let finish: ((targets: BrowserChatTarget[]) => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [
+        { id: 'project-1', title: 'Project 1' },
+        { id: 'project-2', title: 'Project 2' },
+      ]),
+      listChatTargets: mock(() => deferTargetLookup
+        ? new Promise<BrowserChatTarget[]>(resolve => { finish = resolve })
+        : Promise.resolve([])),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Chat 1',
+        noteTargetPath: 'notes/project-1.md',
+      })),
+    })
+    manager.createInstance('late-target-project-switch', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    await Promise.resolve()
+    deferTargetLookup = true
+
+    const targetChange = manager.setTargetSession(
+      'late-target-project-switch',
+      'session-1',
+    )
+    await manager.setProject('late-target-project-switch', 'project-2')
+    finish!([{
+      id: 'session-1',
+      title: 'Chat 1',
+      noteTargetPath: 'notes/project-1.md',
+    }])
+
+    await expect(targetChange).rejects.toThrow(
+      'scope changed while choosing a target Chat',
+    )
+    expect(manager.listInstances().find(instance => (
+      instance.id === 'late-target-project-switch'
+    ))).toMatchObject({ projectId: 'project-2', targetSessionId: null })
+  })
+
+  it('does not let a stale target Chat lookup override a newly created Chat', async () => {
+    let finishTargetLookup: ((targets: BrowserChatTarget[]) => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(() => new Promise<BrowserChatTarget[]>(resolve => {
+        finishTargetLookup = resolve
+      })),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-new',
+        targetTitle: 'New Chat',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('latest-target-chat', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    const instance = (manager as any).instances.get('latest-target-chat')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    ;(manager as any).handleSelectionCapture(instance, {
+      quote: 'selected text',
+      prefix: 'before',
+      suffix: 'after',
+      rect: { x: 100, y: 100, width: 80, height: 18 },
+    })
+
+    const staleTargetChange = manager.setTargetSession('latest-target-chat', 'session-old')
+    await Promise.resolve()
+    await (manager as any).handleSelectionAction(instance, 'new-chat')
+    finishTargetLookup!([{
+      id: 'session-old',
+      title: 'Old Chat',
+      noteTargetPath: null,
+    }])
+
+    await expect(staleTargetChange).rejects.toThrow('superseded')
+    expect(manager.listInstances().find(candidate => candidate.id === instance.id))
+      .toMatchObject({ targetSessionId: 'session-new' })
+  })
+
+  it('does not let an automatic target refresh supersede the user target choice', async () => {
+    let deferTargetChoice = false
+    let finishTargetChoice: ((targets: BrowserChatTarget[]) => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(() => {
+        if (deferTargetChoice) {
+          deferTargetChoice = false
+          return new Promise<BrowserChatTarget[]>(resolve => { finishTargetChoice = resolve })
+        }
+        return Promise.resolve([{
+          id: 'session-b',
+          title: 'Chat B',
+          noteTargetPath: null,
+        }])
+      }),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-b',
+        targetTitle: 'Chat B',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('target-choice-during-refresh', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-b',
+    })
+    const instance = (manager as any).instances.get('target-choice-during-refresh')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    deferTargetChoice = true
+
+    const targetChoice = manager.setTargetSession(
+      'target-choice-during-refresh',
+      'session-a',
+    )
+    ;(manager as any).handleSelectionCapture(instance, {
+      quote: 'selected text',
+      prefix: 'before',
+      suffix: 'after',
+      rect: { x: 100, y: 100, width: 80, height: 18 },
+    })
+    finishTargetChoice!([{
+      id: 'session-a',
+      title: 'Chat A',
+      noteTargetPath: null,
+    }])
+
+    await expect(targetChoice).resolves.toBeUndefined()
+    expect(manager.listInstances().find(candidate => candidate.id === instance.id))
+      .toMatchObject({ targetSessionId: 'session-a' })
+  })
+
+  it('does not let an unfinished target choice cross a selection action', async () => {
+    let deferTargetChoice = false
+    let finishTargetChoice: ((targets: BrowserChatTarget[]) => void) | null = null
+    let finishSelection: ((value: {
+      sessionId: string
+      targetTitle: string
+      noteTargetPath: string | null
+    }) => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(() => {
+        if (deferTargetChoice) {
+          deferTargetChoice = false
+          return new Promise<BrowserChatTarget[]>(resolve => { finishTargetChoice = resolve })
+        }
+        return Promise.resolve([{
+          id: 'session-a',
+          title: 'Chat A',
+          noteTargetPath: null,
+        }])
+      }),
+      openChat: mock(async () => {}),
+      applySelection: mock(() => new Promise<{
+        sessionId: string
+        targetTitle: string
+        noteTargetPath: string | null
+      }>(resolve => { finishSelection = resolve })),
+    })
+    manager.createInstance('target-choice-before-selection-action', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-a',
+    })
+    const instance = (manager as any).instances.get(
+      'target-choice-before-selection-action',
+    )
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    deferTargetChoice = true
+
+    const targetChoice = manager.setTargetSession(
+      'target-choice-before-selection-action',
+      'session-b',
+    )
+    ;(manager as any).handleSelectionCapture(instance, {
+      quote: 'selected text',
+      prefix: 'before',
+      suffix: 'after',
+      rect: { x: 100, y: 100, width: 80, height: 18 },
+    })
+    const action = (manager as any).handleSelectionAction(instance, 'add-note')
+    finishTargetChoice!([{
+      id: 'session-b',
+      title: 'Chat B',
+      noteTargetPath: null,
+    }])
+
+    await expect(targetChoice).rejects.toThrow('superseded')
+    finishSelection!({
+      sessionId: 'session-a',
+      targetTitle: 'Chat A',
+      noteTargetPath: 'notes/chat-a.md',
+    })
+    await action
+
+    expect(instance.targetSessionId).toBe('session-a')
+    expect(instance.targetChat).toEqual({
+      id: 'session-a',
+      title: 'Chat A',
+      noteTargetPath: 'notes/chat-a.md',
+    })
+  })
+
+  it('does not switch Project while a selection action is writing to the current Project', async () => {
+    let finish: ((value: {
+      sessionId: string
+      targetTitle: string
+      noteTargetPath: string | null
+    }) => void) | null = null
+    const applySelection = mock(() => new Promise<{
+      sessionId: string
+      targetTitle: string
+      noteTargetPath: string | null
+    }>(resolve => { finish = resolve }))
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [
+        { id: 'project-1', title: 'Project 1' },
+        { id: 'project-2', title: 'Project 2' },
+      ]),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Chat 1',
+        noteTargetPath: 'notes/project-1.md',
+      }]),
+      openChat: mock(async () => {}),
+      applySelection,
+    })
+    manager.createInstance('selection-project-switch', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get('selection-project-switch')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+
+    ;(manager as any).handleSelectionCapture(instance, {
+      quote: 'selected text',
+      prefix: 'before',
+      suffix: 'after',
+      rect: { x: 100, y: 100, width: 80, height: 18 },
+    })
+    const action = (manager as any).handleSelectionAction(instance, 'add-note')
+    const projectSwitch = manager.setProject(instance.id, 'project-2')
+    finish!({
+      sessionId: 'session-1',
+      targetTitle: 'Chat 1',
+      noteTargetPath: 'notes/project-1.md',
+    })
+    await action
+
+    await expect(projectSwitch).rejects.toThrow('selection action is pending')
+    expect(applySelection).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+    }))
+    expect(manager.listInstances().find(candidate => candidate.id === instance.id))
+      .toMatchObject({ projectId: 'project-1', targetSessionId: 'session-1' })
+  })
+
+  it('does not switch Project while the target Chat is opening', async () => {
+    let finishOpen: (() => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [
+        { id: 'project-1', title: 'Project 1' },
+        { id: 'project-2', title: 'Project 2' },
+      ]),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Chat 1',
+        noteTargetPath: null,
+      }]),
+      openChat: mock(() => new Promise<void>(resolve => { finishOpen = resolve })),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Chat 1',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('open-chat-project-switch', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+
+    const openChat = manager.openTargetSession('open-chat-project-switch')
+    const switchOutcome = manager.setProject(
+      'open-chat-project-switch',
+      'project-2',
+    ).then(
+      () => 'moved',
+      error => error instanceof Error ? error.message : String(error),
+    )
+    finishOpen!()
+    await openChat
+
+    expect(await switchOutcome).toBe('Cannot change Project while opening target Chat')
+    expect(manager.listInstances().find(instance => (
+      instance.id === 'open-chat-project-switch'
+    ))).toMatchObject({ projectId: 'project-1', targetSessionId: 'session-1' })
+  })
+
+  it('does not let a session-created Browser leave its owning Project', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [
+        { id: 'project-1', title: 'Project 1' },
+        { id: 'project-2', title: 'Project 2' },
+      ]),
+      listChatTargets: mock(async () => [{ id: 'owner-chat', title: 'Owner', noteTargetPath: null }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({ sessionId: 'owner-chat', targetTitle: 'Owner', noteTargetPath: null })),
+    })
+    const id = manager.createForSession('owner-chat', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    await Promise.resolve()
+
+    const instance = (manager as any).instances.get(id)
+    expect(instance.toolbarView.webContents.send).toHaveBeenCalledWith(
+      'browser-toolbar:state-update',
+      expect.objectContaining({
+        projectId: 'project-1',
+        projectTitle: 'Project 1',
+        canChooseProject: false,
+      }),
+    )
+
+    await expect(manager.setProject(id, 'project-2'))
+      .rejects.toThrow('fixed to its owning Project')
+    expect(manager.listInstances().find(instance => instance.id === id)?.projectId)
+      .toBe('project-1')
+  })
+
+  it('keeps a session-created Browser permanently targeted to its owning Chat', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [
+        { id: 'owner-chat', title: 'Owner', noteTargetPath: null },
+        { id: 'other-chat', title: 'Other', noteTargetPath: null },
+      ]),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({ sessionId: 'owner-chat', targetTitle: 'Owner', noteTargetPath: null })),
+    })
+    const id = manager.createForSession('owner-chat', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+
+    await expect(manager.setTargetSession(id, 'other-chat'))
+      .rejects.toThrow('fixed to its owning Chat')
+    expect(manager.listInstances().find(instance => instance.id === id)?.targetSessionId)
+      .toBe('owner-chat')
+  })
+
+  it('opens the target Chat through the Project-scoped application service', async () => {
+    const openChat = mock(async () => {})
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => []),
+      openChat,
+      applySelection: mock(async () => ({ sessionId: 'session-1', targetTitle: 'Chat 1', noteTargetPath: null })),
+    })
+    manager.createInstance('open-target', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+
+    await manager.openTargetSession('open-target')
+
+    expect(openChat).toHaveBeenCalledWith({
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      originWebContentsId: null,
+    })
+  })
+
+  it('exposes the target Chat and Note file in Browser toolbar state', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath: 'notes/research.md',
+      }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Research Chat',
+        noteTargetPath: 'notes/research.md',
+      })),
+    })
+    manager.createInstance('toolbar-target', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+
+    const toolbarView = webContentsViews.find(({ options }) => (
+      options?.webPreferences?.preload?.includes('browser-toolbar-preload')
+    ))?.view
+    expect(toolbarView?.webContents.send).toHaveBeenCalledWith(
+      'browser-toolbar:state-update',
+      expect.objectContaining({
+        targetSessionId: 'session-1',
+        targetChatTitle: 'Research Chat',
+        targetNotePath: 'notes/research.md',
+      }),
+    )
+  })
+
+  it('preserves Project and target Chat while hiding and restoring a window', () => {
+    manager.createInstance('hide-restore-target', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+
+    manager.hide('hide-restore-target')
+    manager.focus('hide-restore-target')
+
+    expect(manager.listInstances()[0]).toMatchObject({
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+  })
+
+  it('refreshes the target Chat and Note when a Browser window is shown again', async () => {
+    let noteTargetPath = 'notes/first.md'
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath,
+      }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Research Chat',
+        noteTargetPath,
+      })),
+    })
+    manager.createInstance('refresh-target-on-show', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get('refresh-target-on-show')
+    expect(instance.targetChat.noteTargetPath).toBe('notes/first.md')
+
+    noteTargetPath = 'notes/second.md'
+    instance.window._emit('hide')
+    instance.window._emit('show')
+    await Promise.resolve()
+
+    expect(instance.targetChat.noteTargetPath).toBe('notes/second.md')
+    expect(instance.toolbarView.webContents.send).toHaveBeenCalledWith(
+      'browser-toolbar:state-update',
+      expect.objectContaining({ targetNotePath: 'notes/second.md' }),
+    )
+  })
+
+  it('keeps the newest Project title when an older refresh finishes later', async () => {
+    let finishOldRefresh: ((targets: BrowserProjectTarget[]) => void) | null = null
+    let refreshCount = 0
+    manager.setApplicationService({
+      listProjectTargets: mock(() => {
+        refreshCount += 1
+        return refreshCount === 1
+          ? new Promise<BrowserProjectTarget[]>(resolve => { finishOldRefresh = resolve })
+          : Promise.resolve([{ id: 'project-1', title: 'Project After Rename' }])
+      }),
+      listChatTargets: mock(async () => []),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'unused',
+        targetTitle: 'Unused',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('refresh-project-on-focus', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    const instance = (manager as any).instances.get('refresh-project-on-focus')
+
+    manager.focus(instance.id)
+    await Promise.resolve()
+    expect(instance.projectTitle).toBe('Project After Rename')
+
+    finishOldRefresh!([{
+      id: 'project-1',
+      title: 'Project Before Rename',
+    }])
+    await Promise.resolve()
+
+    expect(instance.projectTitle).toBe('Project After Rename')
+    expect(instance.toolbarView.webContents.send).toHaveBeenCalledWith(
+      'browser-toolbar:state-update',
+      expect.objectContaining({ projectTitle: 'Project After Rename' }),
+    )
+  })
+
+  it('invalidates an older target refresh when the Browser is hidden', async () => {
+    const pending: Array<(targets: BrowserChatTarget[]) => void> = []
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(() => new Promise<BrowserChatTarget[]>(resolve => {
+        pending.push(resolve)
+      })),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Research Chat',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('hide-invalidates-refresh', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    const instance = (manager as any).instances.get('hide-invalidates-refresh')
+    instance.toolbarReady = true
+    manager.focus('hide-invalidates-refresh')
+    expect(pending).toHaveLength(2)
+
+    manager.hide('hide-invalidates-refresh')
+    pending[1]([{
+      id: 'session-1',
+      title: 'Stale Chat',
+      noteTargetPath: 'notes/stale.md',
+    }])
+    await Promise.resolve()
+    expect(instance.targetChat).toBeNull()
+    expect(instance.targetMetadataFresh).toBe(false)
+
+    manager.focus('hide-invalidates-refresh')
+    const latest = pending.at(-1)!
+    latest([{
+      id: 'session-1',
+      title: 'Current Chat',
+      noteTargetPath: 'notes/current.md',
+    }])
+    await Promise.resolve()
+    expect(instance.targetChat.noteTargetPath).toBe('notes/current.md')
+  })
+
+  it('refreshes the target Chat and Note when an already visible Browser is focused', async () => {
+    let noteTargetPath = 'notes/first.md'
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath,
+      }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Research Chat',
+        noteTargetPath,
+      })),
+    })
+    manager.createInstance('refresh-target-on-focus', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get('refresh-target-on-focus')
+    instance.toolbarReady = true
+    expect(instance.targetChat.noteTargetPath).toBe('notes/first.md')
+
+    noteTargetPath = 'notes/second.md'
+    manager.focus('refresh-target-on-focus')
+    await Promise.resolve()
+
+    expect(instance.targetChat.noteTargetPath).toBe('notes/second.md')
+  })
+
+  it('clears a manual Browser target when refresh finds that the Chat was deleted', async () => {
+    let chatExists = true
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => chatExists
+        ? [{ id: 'session-1', title: 'Research Chat', noteTargetPath: null }]
+        : []),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Research Chat',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('refresh-deleted-manual-chat', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get('refresh-deleted-manual-chat')
+    instance.toolbarReady = true
+
+    chatExists = false
+    manager.focus('refresh-deleted-manual-chat')
+    await Promise.resolve()
+
+    expect(manager.listInstances()[0].targetSessionId).toBeNull()
+  })
+
+  it('destroys an untargeted manual Browser when its Project is unavailable', async () => {
+    let projectExists = true
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => {
+        if (!projectExists) throw new Error('Browser Project is unavailable')
+        return []
+      }),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({ cancelled: true as const })),
+    })
+    manager.createInstance('manual-with-deleted-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    await Promise.resolve()
+
+    projectExists = false
+    manager.focus('manual-with-deleted-project')
+    await Promise.resolve()
+
+    expect(manager.listInstances()).toHaveLength(0)
+  })
+
+  for (const visibility of ['hidden', 'isArchived'] as const) {
+    it(`keeps a ${visibility} Session Browser alive until its owner is deleted`, async () => {
+      let sessions: Session[] = [{
+        id: 'owner-chat', workspaceId: 'workspace-1', projectId: 'project-1',
+        workspaceName: 'Workspace', lastMessageAt: 1, messages: [], isProcessing: false,
+        name: 'Owner', [visibility]: true,
+      }]
+      const client = {
+        invoke: async (channel: string) => {
+          if (channel === RPC_CHANNELS.projects.GET_ONE) return { id: 'project-1' }
+          if (channel === RPC_CHANNELS.projects.GET) return [{ config: { id: 'project-1', name: 'Project' } }]
+          if (channel === RPC_CHANNELS.sessions.GET) return sessions
+          throw new Error(`Unexpected RPC: ${channel}`)
+        },
+      } as RpcClient
+      const server = {
+        hasClientCapability: () => true,
+        findClientsWithCapability: () => ['renderer'],
+        invokeClient: async (_clientId: string, _channel: string, request: any) => (
+          handleBrowserApplicationCapability(client, request)
+        ),
+      } as unknown as RpcServer
+      const { service } = createBrowserApplicationRouter({
+        server,
+        resolveWorkspace: () => ({ id: 'workspace-1' }),
+      })
+      manager.setApplicationService(service)
+      const id = manager.createForSession('owner-chat', {
+        workspaceId: 'workspace-1', projectId: 'project-1',
+      })
+      await Bun.sleep(20)
+
+      expect(manager.listInstances().map(instance => instance.id)).toContain(id)
+      expect(await manager.listChatTargets(id)).toEqual([])
+
+      sessions = []
+      manager.focus(id)
+      await Bun.sleep(20)
+      expect(manager.listInstances()).toHaveLength(0)
+    })
+  }
+
+  it('destroys a Chat-owned Browser when refresh finds that its Chat was deleted', async () => {
+    let chatExists = true
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => chatExists
+        ? [{ id: 'session-1', title: 'Research Chat', noteTargetPath: null }]
+        : []),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Research Chat',
+        noteTargetPath: null,
+      })),
+    })
+    const id = manager.createForSession('session-1', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get(id)
+    instance.toolbarReady = true
+
+    chatExists = false
+    manager.focus(id)
+    await Promise.resolve()
+
+    expect(manager.listInstances()).toHaveLength(0)
+  })
+
+  it('ignores an older target metadata refresh that resolves after a newer one', async () => {
+    const pending: Array<(targets: BrowserChatTarget[]) => void> = []
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(() => new Promise<BrowserChatTarget[]>(resolve => {
+        pending.push(resolve)
+      })),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Research Chat',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('refresh-generation', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    const instance = (manager as any).instances.get('refresh-generation')
+    instance.toolbarReady = true
+    manager.focus('refresh-generation')
+    expect(pending).toHaveLength(2)
+
+    pending[1]([{ id: 'session-1', title: 'New title', noteTargetPath: 'notes/new.md' }])
+    await Promise.resolve()
+    pending[0]([{ id: 'session-1', title: 'Old title', noteTargetPath: 'notes/old.md' }])
+    await Promise.resolve()
+
+    expect(instance.targetChat).toEqual({
+      id: 'session-1',
+      title: 'New title',
+      noteTargetPath: 'notes/new.md',
+    })
+  })
+
   it('getOrCreateForSession reuses existing instance', () => {
     const id1 = manager.getOrCreateForSession('sess-1')
     const id2 = manager.getOrCreateForSession('sess-1')
@@ -934,17 +2395,23 @@ describe('BrowserPaneManager', () => {
     expect(manager.listInstances()).toHaveLength(1)
   })
 
-  it('createForSession reuses an unbound manual window before creating new', () => {
-    manager.createInstance('manual-1')
+  it('createForSession never adopts a manually created Browser window', () => {
+    manager.createInstance('manual-1', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
 
-    const id = manager.createForSession('sess-reuse')
+    const id = manager.createForSession('sess-created', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
 
-    expect(id).toBe('manual-1')
-    const info = manager.listInstances()[0]
+    expect(id).not.toBe('manual-1')
+    const info = manager.listInstances().find(instance => instance.id === id)!
     expect(info.ownerType).toBe('session')
-    expect(info.ownerSessionId).toBe('sess-reuse')
-    expect(info.boundSessionId).toBe('sess-reuse')
-    expect(manager.listInstances()).toHaveLength(1)
+    expect(info.ownerSessionId).toBe('sess-created')
+    expect(info.boundSessionId).toBe('sess-created')
+    expect(manager.listInstances()).toHaveLength(2)
   })
 
   describe('workspaceId stamping', () => {
@@ -954,37 +2421,17 @@ describe('BrowserPaneManager', () => {
       expect(info?.workspaceId).toBe('ws-alpha')
     })
 
-    it('createForSession without workspaceId defaults to null', () => {
-      const id = manager.createForSession('sess-plain')
-      const info = manager.listInstances().find((i) => i.id === id)
-      expect(info?.workspaceId).toBeNull()
-    })
-
-    it('manual createInstance with no options leaves workspaceId null (unbound window)', () => {
-      manager.createInstance('manual-ws')
-      const info = manager.listInstances().find((i) => i.id === 'manual-ws')
-      expect(info?.workspaceId).toBeNull()
-    })
-
     it('manual createInstance accepts workspaceId option (TopBar manual open)', () => {
       // The browser-pane CREATE handler passes ctx.workspaceId so TopBar-
       // opened windows stay scoped to the workspace the user clicked from,
       // rather than being broadcast to every workspace.
-      manager.createInstance('manual-scoped', { workspaceId: 'ws-toolbar' })
+      manager.createInstance('manual-scoped', {
+        workspaceId: 'ws-toolbar',
+        projectId: 'project-toolbar',
+      })
       const info = manager.listInstances().find((i) => i.id === 'manual-scoped')
       expect(info?.workspaceId).toBe('ws-toolbar')
-    })
-
-    it('reusing an unbound manual window adopts the new binder workspace', () => {
-      manager.createInstance('manual-reuse')
-      expect(manager.listInstances().find((i) => i.id === 'manual-reuse')?.workspaceId).toBeNull()
-
-      const id = manager.createForSession('sess-reuse-ws', { workspaceId: 'ws-beta' })
-      expect(id).toBe('manual-reuse')
-
-      const info = manager.listInstances().find((i) => i.id === 'manual-reuse')
-      expect(info?.workspaceId).toBe('ws-beta')
-      expect(info?.ownerSessionId).toBe('sess-reuse-ws')
+      expect(info?.projectId).toBe('project-toolbar')
     })
 
     it('bindSession with workspaceId overwrites the instance workspaceId', () => {
@@ -993,17 +2440,6 @@ describe('BrowserPaneManager', () => {
       const info = manager.listInstances().find((i) => i.id === 'bind-ws')
       expect(info?.workspaceId).toBe('ws-gamma')
       expect(info?.boundSessionId).toBe('sess-bound')
-    })
-
-    it('setAgentControl backfills workspaceId when previously null', () => {
-      // Legacy path: instance was created without a workspace, then the overlay
-      // path supplies it. Backfill should stamp it.
-      manager.createInstance('legacy-overlay')
-      manager.bindSession('legacy-overlay', 'sess-legacy')
-      manager.setAgentControl('sess-legacy', { displayName: 'browser_navigate' }, { workspaceId: 'ws-delta' })
-
-      const info = manager.listInstances().find((i) => i.id === 'legacy-overlay')
-      expect(info?.workspaceId).toBe('ws-delta')
     })
 
     it('toInfo emits workspaceId on the DTO', () => {
@@ -1016,16 +2452,16 @@ describe('BrowserPaneManager', () => {
     describe('cross-workspace reuse', () => {
       it('does NOT reuse an unbound session window from another workspace', () => {
         // Session in workspace A opens a window, then its turn ends — the
-        // unbind path sets ownerType='manual' and clears boundSessionId, but
-        // workspaceId stays = A. A session in workspace B asking for a window
+        // unbind path clears active control but preserves stable Chat ownership.
+        // A session in workspace B asking for a window
         // must NOT pick it up; that would "move" the window across workspaces.
         const wsA = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
         manager.unbindAllForSession('sess-a')
 
-        // Sanity: instance is now unbound + manual but retains workspaceId=A.
+        // Sanity: instance is idle but retains its owner and Workspace.
         const after = manager.listInstances().find((i) => i.id === wsA)
         expect(after?.boundSessionId).toBeNull()
-        expect(after?.ownerType).toBe('manual')
+        expect(after?.ownerType).toBe('session')
         expect(after?.workspaceId).toBe('ws-a')
 
         const wsB = manager.createForSession('sess-b', { workspaceId: 'ws-b' })
@@ -1037,44 +2473,40 @@ describe('BrowserPaneManager', () => {
         expect(stillA?.workspaceId).toBe('ws-a')
       })
 
-      it('DOES reuse an unbound window within the same workspace (next-turn case)', () => {
-        // The legitimate same-workspace reuse: session-A ends a turn, leaves
-        // an unbound window behind; the same workspace's session-A (or any
-        // session in workspace A) should grab it on the next turn.
+      it('creates independent windows for the same Chat id in different Workspaces', () => {
+        const wsA = manager.createForSession('same-chat-id', {
+          workspaceId: 'ws-a',
+          projectId: 'project-a',
+        })
+        const wsB = manager.createForSession('same-chat-id', {
+          workspaceId: 'ws-b',
+          projectId: 'project-b',
+        })
+
+        expect(wsB).not.toBe(wsA)
+        expect(manager.listInstances()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: wsA, workspaceId: 'ws-a', projectId: 'project-a' }),
+          expect.objectContaining({ id: wsB, workspaceId: 'ws-b', projectId: 'project-b' }),
+        ]))
+      })
+
+      it('restores the same Chat-owned window on that Chat\'s next turn', () => {
         const original = manager.createForSession('sess-a1', { workspaceId: 'ws-a' })
         manager.unbindAllForSession('sess-a1')
 
-        const reused = manager.createForSession('sess-a2', { workspaceId: 'ws-a' })
+        const reused = manager.createForSession('sess-a1', { workspaceId: 'ws-a' })
         expect(reused).toBe(original)
+        expect(manager.listInstances()[0].boundSessionId).toBe('sess-a1')
         expect(manager.listInstances()).toHaveLength(1)
       })
 
-      it('lets any workspace adopt a truly unbound (workspaceId=null) manual window', () => {
-        manager.createInstance('manual-anyworkspace')
-        expect(manager.listInstances().find((i) => i.id === 'manual-anyworkspace')?.workspaceId).toBeNull()
+      it('does not let another Chat in the same Workspace take that window', () => {
+        const original = manager.createForSession('sess-a1', { workspaceId: 'ws-a' })
+        manager.unbindAllForSession('sess-a1')
 
-        const adopted = manager.createForSession('sess-c', { workspaceId: 'ws-c' })
-        expect(adopted).toBe('manual-anyworkspace')
-        expect(manager.listInstances().find((i) => i.id === 'manual-anyworkspace')?.workspaceId).toBe('ws-c')
-      })
-
-      it('does NOT reuse a workspaceId=null unbound window when allowReuseManual=false', () => {
-        // Remote-bridge dispatcher path: every lifecycle call passes
-        // allowReuseManual=false so a stale window from before workspace
-        // stamping (workspaceId=null) cannot get hijacked by a remote agent
-        // for an unrelated workspace.
-        manager.createInstance('legacy-unstamped')
-        expect(manager.listInstances().find((i) => i.id === 'legacy-unstamped')?.workspaceId).toBeNull()
-
-        const fresh = manager.createForSession('sess-d', {
-          workspaceId: 'ws-d',
-          allowReuseManual: false,
-        })
-        expect(fresh).not.toBe('legacy-unstamped')
-        // Legacy window is left untouched.
-        expect(manager.listInstances().find((i) => i.id === 'legacy-unstamped')?.workspaceId).toBeNull()
-        // A new instance was created for the remote session.
-        expect(manager.listInstances().find((i) => i.id === fresh)?.ownerSessionId).toBe('sess-d')
+        const other = manager.createForSession('sess-a2', { workspaceId: 'ws-a' })
+        expect(other).not.toBe(original)
+        expect(manager.listInstances()).toHaveLength(2)
       })
     })
   })
@@ -1339,8 +2771,15 @@ describe('BrowserPaneManager', () => {
         isLoading: false,
         canGoBack: true,
         canGoForward: false,
-        themeColor: '#123456',
-        isPanel: false,
+      themeColor: '#123456',
+      targetSessionId: null,
+      targetChatTitle: null,
+      targetNotePath: null,
+      selectionFeedback: null,
+      canChooseTargetChat: true,
+      projectId: null,
+      projectTitle: null,
+      canChooseProject: true,
       },
     ])
   })
@@ -1371,8 +2810,15 @@ describe('BrowserPaneManager', () => {
         isLoading: true,
         canGoBack: true,
         canGoForward: true,
-        themeColor: '#654321',
-        isPanel: false,
+      themeColor: '#654321',
+      targetSessionId: null,
+      targetChatTitle: null,
+      targetNotePath: null,
+      selectionFeedback: null,
+      canChooseTargetChat: true,
+      projectId: null,
+      projectTitle: null,
+      canChooseProject: true,
       },
     ])
   })
@@ -1832,433 +3278,6 @@ describe('BrowserPaneManager', () => {
     })
   })
 
-  it('moves one native root view into a panel host and honors lease-safe detach', () => {
-    const host = createMockWindow()
-    host.webContents.id = 777
-    host.webContents.getZoomFactor = mock(() => 2)
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => id === 777 ? host : null,
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    manager.createInstance('surface-1', { workspaceId: 'workspace-1' })
-    const instance = (manager as any).instances.get('surface-1')
-
-    const lease = manager.attachSurface('surface-1', 777, {
-      bounds: { x: 10, y: 20, width: 300, height: 200 },
-      contentBounds: { x: 0, y: 0, width: 300, height: 200 },
-      visible: true,
-      order: 3,
-    })
-
-    expect(instance.presentation).toMatchObject({
-      mode: 'panel',
-      hostWebContentsId: 777,
-      leaseId: lease,
-    })
-    expect(instance.rootView.setBounds).toHaveBeenLastCalledWith({
-      x: 20,
-      y: 40,
-      width: 600,
-      height: 400,
-    })
-    manager.detachSurface('surface-1', 777, 'stale-lease')
-    expect(instance.presentation.mode).toBe('panel')
-
-    manager.detachSurface('surface-1', 777, lease)
-    expect(instance.presentation.mode).toBe('parked')
-    expect(instance.window.destroy).not.toHaveBeenCalled()
-    expect(manager.listInstances()).toHaveLength(1)
-  })
-
-  it('does not emit duplicate native layout work for an unchanged surface state', () => {
-    const host = createMockWindow()
-    host.webContents.id = 783
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => id === 783 ? host : null,
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    manager.createInstance('surface-stable', { workspaceId: 'workspace-1' })
-    const instance = (manager as any).instances.get('surface-stable')
-    const state = {
-      bounds: { x: 10, y: 20, width: 300, height: 200 },
-      contentBounds: { x: 0, y: 0, width: 300, height: 200 },
-      visible: true,
-      order: 1,
-    }
-    const lease = manager.attachSurface('surface-stable', 783, state)
-    instance.rootView.setBounds.mockClear()
-
-    manager.updateSurface('surface-stable', 783, lease, state)
-
-    expect(instance.rootView.setBounds).not.toHaveBeenCalled()
-  })
-
-  it('rejects a session-owned surface from a different Workspace', () => {
-    const host = createMockWindow()
-    host.webContents.id = 784
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => id === 784 ? host : null,
-      getWorkspaceForWindow: () => 'workspace-a',
-    } as any)
-    manager.createForSession('session-b', { workspaceId: 'workspace-b' })
-    const runtimeId = manager.getBoundInstanceId('session-b')!
-
-    expect(() => manager.attachSurface(runtimeId, 784, {
-      bounds: { x: 0, y: 0, width: 400, height: 600 },
-      contentBounds: { x: 0, y: 0, width: 400, height: 600 },
-      visible: true,
-      order: 0,
-    })).toThrow('different workspace')
-  })
-
-  it('validates an entire park batch before detaching any surface', () => {
-    const host = createMockWindow()
-    host.webContents.id = 785
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => id === 785 ? host : null,
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    for (const id of ['surface-batch-a', 'surface-batch-b']) {
-      manager.createInstance(id, { workspaceId: 'workspace-1' })
-      manager.attachSurface(id, 785, {
-        bounds: { x: 0, y: 0, width: 400, height: 600 },
-        contentBounds: { x: 0, y: 0, width: 400, height: 600 },
-        visible: true,
-        order: 0,
-      })
-    }
-
-    expect(() => manager.parkSurfaces(
-      ['surface-batch-a', 'missing-runtime'],
-      { hostWebContentsId: 785, workspaceId: 'workspace-1' },
-    )).toThrow('not found')
-    expect((manager as any).instances.get('surface-batch-a').presentation.mode).toBe('panel')
-    expect((manager as any).instances.get('surface-batch-b').presentation.mode).toBe('panel')
-  })
-
-  it('does not accumulate host close listeners across reattach cycles', () => {
-    const host = createMockWindow()
-    host.webContents.id = 786
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => id === 786 ? host : null,
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    manager.createInstance('surface-listeners', { workspaceId: 'workspace-1' })
-
-    for (let index = 0; index < 12; index += 1) {
-      const lease = manager.attachSurface('surface-listeners', 786, {
-        bounds: { x: 0, y: 0, width: 400, height: 600 },
-        contentBounds: { x: 0, y: 0, width: 400, height: 600 },
-        visible: true,
-        order: 0,
-      })
-      expect(host._listenerCount('closed')).toBe(1)
-      manager.detachSurface('surface-listeners', 786, lease)
-      expect(host._listenerCount('closed')).toBe(0)
-    }
-  })
-
-  it('closes the native toolbar menu before reparenting a surface', () => {
-    const firstHost = createMockWindow()
-    firstHost.webContents.id = 791
-    const secondHost = createMockWindow()
-    secondHost.webContents.id = 792
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => (
-        id === 791 ? firstHost : id === 792 ? secondHost : null
-      ),
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    manager.createInstance('surface-menu-reparent', { workspaceId: 'workspace-1' })
-    manager.attachSurface('surface-menu-reparent', 791, {
-      bounds: { x: 0, y: 0, width: 400, height: 600 },
-      contentBounds: { x: 0, y: 0, width: 400, height: 600 },
-      visible: true,
-      order: 0,
-    })
-    const instance = (manager as any).instances.get('surface-menu-reparent')
-    instance.toolbarMenuOpen = true
-    instance.toolbarMenu = {
-      closePopup: mockMenuClosePopup,
-    }
-
-    manager.attachSurface('surface-menu-reparent', 792, {
-      bounds: { x: 0, y: 0, width: 400, height: 600 },
-      contentBounds: { x: 0, y: 0, width: 400, height: 600 },
-      visible: true,
-      order: 0,
-    })
-
-    expect(mockMenuClosePopup).toHaveBeenCalledWith(firstHost)
-    expect(instance.toolbarMenuOpen).toBe(false)
-  })
-
-  it('keeps a parked Runtime hidden when background work asks it to focus', () => {
-    const host = createMockWindow()
-    host.webContents.id = 787
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => id === 787 ? host : null,
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    manager.createInstance('surface-parked', { workspaceId: 'workspace-1' })
-    const instance = (manager as any).instances.get('surface-parked')
-    const lease = manager.attachSurface('surface-parked', 787, {
-      bounds: { x: 0, y: 0, width: 400, height: 600 },
-      contentBounds: { x: 0, y: 0, width: 400, height: 600 },
-      visible: true,
-      order: 0,
-    })
-    manager.detachSurface('surface-parked', 787, lease)
-    instance.toolbarReady = true
-    instance.window.show.mockClear()
-    instance.window.focus.mockClear()
-
-    manager.focus('surface-parked')
-
-    expect(instance.window.show).not.toHaveBeenCalled()
-    expect(instance.window.focus).not.toHaveBeenCalled()
-  })
-
-  it('clips a panel surface without resizing its Browser viewport', () => {
-    const host = createMockWindow()
-    host.webContents.id = 782
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => id === 782 ? host : null,
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    manager.createInstance('surface-clipped', { workspaceId: 'workspace-1' })
-    const instance = (manager as any).instances.get('surface-clipped')
-
-    const lease = manager.attachSurface('surface-clipped', 782, {
-      bounds: { x: 40, y: 80, width: 560, height: 600 },
-      contentBounds: { x: -240, y: 0, width: 800, height: 600 },
-      visible: true,
-      order: 0,
-    })
-
-    expect(instance.rootView.setBounds).toHaveBeenLastCalledWith({
-      x: 40,
-      y: 80,
-      width: 560,
-      height: 600,
-    })
-    expect(instance.toolbarView.setBounds).toHaveBeenLastCalledWith({
-      x: -240,
-      y: 0,
-      width: 800,
-      height: 48,
-    })
-    expect(instance.pageView.setBounds).toHaveBeenLastCalledWith({
-      x: -240,
-      y: 48,
-      width: 800,
-      height: 552,
-    })
-
-    manager.updateSurface('surface-clipped', 782, lease, {
-      bounds: { x: 40, y: 80, width: 410, height: 600 },
-      contentBounds: { x: -390, y: 0, width: 800, height: 600 },
-      visible: true,
-      order: 0,
-    })
-
-    expect(instance.rootView.setBounds).toHaveBeenLastCalledWith({
-      x: 40,
-      y: 80,
-      width: 410,
-      height: 600,
-    })
-    expect(instance.pageView.setBounds).toHaveBeenLastCalledWith({
-      x: -390,
-      y: 48,
-      width: 800,
-      height: 552,
-    })
-  })
-
-  it('parks every surface for a renderer host without destroying Browser sessions', () => {
-    const firstHost = createMockWindow()
-    firstHost.webContents.id = 780
-    const secondHost = createMockWindow()
-    secondHost.webContents.id = 781
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => (
-        id === 780 ? firstHost : id === 781 ? secondHost : null
-      ),
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-
-    manager.createInstance('surface-a', { workspaceId: 'workspace-1' })
-    manager.createInstance('surface-b', { workspaceId: 'workspace-1' })
-    manager.createInstance('surface-other', { workspaceId: 'workspace-1' })
-    manager.attachSurface('surface-a', 780, {
-      bounds: { x: 0, y: 0, width: 400, height: 600 },
-      contentBounds: { x: 0, y: 0, width: 400, height: 600 },
-      visible: true,
-      order: 0,
-    })
-    manager.attachSurface('surface-b', 780, {
-      bounds: { x: 400, y: 0, width: 400, height: 600 },
-      contentBounds: { x: 0, y: 0, width: 400, height: 600 },
-      visible: true,
-      order: 1,
-    })
-    manager.attachSurface('surface-other', 781, {
-      bounds: { x: 0, y: 0, width: 400, height: 600 },
-      contentBounds: { x: 0, y: 0, width: 400, height: 600 },
-      visible: true,
-      order: 0,
-    })
-
-    manager.parkSurfacesForHost(780)
-
-    const instances = (manager as any).instances
-    expect(instances.get('surface-a').presentation.mode).toBe('parked')
-    expect(instances.get('surface-b').presentation.mode).toBe('parked')
-    expect(instances.get('surface-other').presentation.mode).toBe('panel')
-    expect(instances.get('surface-a').window.destroy).not.toHaveBeenCalled()
-    expect(instances.get('surface-b').window.destroy).not.toHaveBeenCalled()
-    expect(manager.listInstances()).toHaveLength(3)
-  })
-
-  it('routes panel focus and close requests back to the renderer host', () => {
-    const host = createMockWindow()
-    host.webContents.id = 778
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => id === 778 ? host : null,
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    manager.createInstance('surface-focus', { workspaceId: 'workspace-1' })
-    manager.bindSession('surface-focus', 'session-1')
-    manager.attachSurface('surface-focus', 778, {
-      bounds: { x: 0, y: 0, width: 800, height: 600 },
-      contentBounds: { x: 0, y: 0, width: 800, height: 600 },
-      visible: true,
-      order: 0,
-    })
-    const presents: any[] = []
-    const closes: any[] = []
-    manager.onPresentRequest((request, hostId) => {
-      presents.push({ request, hostId })
-    })
-    manager.onClosePanelRequest((browserId, hostId) => {
-      closes.push({ browserId, hostId })
-    })
-
-    manager.focus('surface-focus')
-    manager.hide('surface-focus')
-
-    expect(presents).toEqual([{
-      request: {
-        browserId: 'surface-focus',
-        sessionId: 'session-1',
-        workspaceId: 'workspace-1',
-      },
-      hostId: 778,
-    }])
-    expect(closes).toEqual([{
-      browserId: 'surface-focus',
-      hostId: 778,
-    }])
-    expect(host.focus).toHaveBeenCalled()
-  })
-
-  it('routes parked focus back to its renderer host without showing the parking window', () => {
-    const host = createMockWindow()
-    host.webContents.id = 782
-    manager.setWindowManager({
-      getWindowByWebContentsId: (id: number) => id === 782 ? host : null,
-      getWindowByWorkspace: () => host,
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    manager.createInstance('surface-parked-focus', { workspaceId: 'workspace-1' })
-    manager.bindSession('surface-parked-focus', 'session-1')
-    manager.attachSurface('surface-parked-focus', 782, {
-      bounds: { x: 0, y: 0, width: 800, height: 600 },
-      contentBounds: { x: 0, y: 0, width: 800, height: 600 },
-      visible: true,
-      order: 0,
-    })
-    manager.parkSurfaces(['surface-parked-focus'], {
-      hostWebContentsId: 782,
-      workspaceId: 'workspace-1',
-    })
-    const instance = (manager as any).instances.get('surface-parked-focus')
-    instance.window.show.mockClear()
-    const presents: any[] = []
-    manager.onPresentRequest((request, hostId) => {
-      presents.push({ request, hostId })
-    })
-
-    manager.focus('surface-parked-focus')
-
-    expect(presents).toEqual([{
-      request: {
-        browserId: 'surface-parked-focus',
-        sessionId: 'session-1',
-        workspaceId: 'workspace-1',
-      },
-      hostId: 782,
-    }])
-    expect(instance.window.show).not.toHaveBeenCalled()
-    expect(host.focus).not.toHaveBeenCalled()
-  })
-
-  it('presents a new workspace Browser in Workbench instead of showing its parking window', () => {
-    const host = createMockWindow()
-    host.webContents.id = 783
-    manager.setWindowManager({
-      getWindowByWebContentsId: () => null,
-      getWindowByWorkspace: (workspaceId: string) => workspaceId === 'workspace-1' ? host : null,
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    manager.createInstance('surface-new-focus', { workspaceId: 'workspace-1' })
-    manager.bindSession('surface-new-focus', 'session-1')
-    const instance = (manager as any).instances.get('surface-new-focus')
-    instance.toolbarReady = true
-    const presents: any[] = []
-    manager.onPresentRequest((request, hostId) => {
-      presents.push({ request, hostId })
-    })
-
-    manager.focus('surface-new-focus')
-
-    expect(presents).toEqual([{
-      request: {
-        browserId: 'surface-new-focus',
-        sessionId: 'session-1',
-        workspaceId: 'workspace-1',
-      },
-      hostId: 783,
-    }])
-    expect(instance.window.show).not.toHaveBeenCalled()
-    expect(host.focus).not.toHaveBeenCalled()
-  })
-
-  it('uses CDP viewport emulation instead of resizing the parking window in panel mode', () => {
-    const host = createMockWindow()
-    host.webContents.id = 779
-    manager.setWindowManager({
-      getWindowByWebContentsId: () => host,
-      getWorkspaceForWindow: () => 'workspace-1',
-    } as any)
-    manager.createInstance('surface-resize', { workspaceId: 'workspace-1' })
-    manager.attachSurface('surface-resize', 779, {
-      bounds: { x: 0, y: 0, width: 800, height: 600 },
-      contentBounds: { x: 0, y: 0, width: 800, height: 600 },
-      visible: true,
-      order: 0,
-    })
-    const instance = (manager as any).instances.get('surface-resize')
-    instance.window.setContentSize.mockClear()
-
-    expect(manager.windowResize('surface-resize', 1024, 768)).toEqual({
-      width: 1024,
-      height: 768,
-    })
-    expect(instance.cdp.setViewportSize).toHaveBeenCalledWith(1024, 768)
-    expect(instance.window.setContentSize).not.toHaveBeenCalled()
-  })
 
   describe('agent control overlay', () => {
     it('setAgentControl activates native overlay on bound instance', async () => {
@@ -2525,80 +3544,1167 @@ describe('BrowserPaneManager', () => {
       rect: { x: 100, y: 100, width: 80, height: 18 },
     }
 
-    it('shows bounded selection actions and routes the selected snapshot to the app host', () => {
-      const host = createMockWindow()
-      host.webContents.id = 788
-      manager.setWindowManager({
-        getWindowByWebContentsId: (id: number) => id === 788 ? host : null,
-        getWorkspaceForWindow: () => 'workspace-1',
-        getWindowByWorkspace: () => host,
-        getFocusedWindow: () => null,
-        getAllWindows: () => [{ window: host, workspaceId: 'workspace-1' }],
-      } as any)
-      manager.createInstance('selection-1', { workspaceId: 'workspace-1' })
-      const instance = (manager as any).instances.get('selection-1')
-      instance.currentUrl = 'https://example.com/article'
-      instance.title = 'Example article'
+    const evaluateSelectionActions = (instance: any) => {
+      ;(manager as any).updateNativeOverlayState(instance)
+      const overlayView = webContentsViews.find(({ options }) => (
+        options?.webPreferences?.preload?.includes('browser-overlay-preload')
+      ))?.view
+      const expression = overlayView?.webContents.executeJavaScript.mock.calls.at(-1)?.[0] as string
+      const loadedUrl = overlayView?.webContents.loadURL.mock.calls[0]?.[0] as string
+      const html = decodeURIComponent(loadedUrl.slice(loadedUrl.indexOf(',') + 1))
+      const noteLabel = {
+        textContent: html.match(
+          /data-browser-selection-action="add-note"[\s\S]*?<span data-browser-selection-label>([^<]*)<\/span>/,
+        )?.[1] ?? null,
+      }
+      class FakeButton {
+        disabled = false
+        title = ''
+        querySelector() { return noteLabel }
+      }
+      const addChat = new FakeButton()
+      const newChat = new FakeButton()
+      const addNote = new FakeButton()
+      const chooseNoteTarget = new FakeButton()
+      const overlay = { style: { display: 'block' } }
+      const selectionActions = { style: { display: 'none' }, dataset: {} }
+      const documentStub = {
+        getElementById: (id: string) => (
+          id === 'overlay' ? overlay : selectionActions
+        ),
+        querySelector: (selector: string) => ({
+          '[data-browser-selection-action="add-chat"]': addChat,
+          '[data-browser-selection-action="new-chat"]': newChat,
+          '[data-browser-selection-action="add-note"]': addNote,
+          '[data-browser-selection-action="choose-note-target"]': chooseNoteTarget,
+        }[selector]),
+      }
+
+      Function('document', 'HTMLButtonElement', expression)(documentStub, FakeButton)
+      return { addChat, addNote, chooseNoteTarget, noteLabel }
+    }
+
+    const queueOverlayScripts = async (instanceId: string) => {
+      manager.createInstance(instanceId)
+      await Bun.sleep(0)
+      const instance = (manager as any).instances.get(instanceId)
       instance.nativeOverlayReady = true
-      manager.attachSurface('selection-1', 788, {
-        bounds: { x: 0, y: 0, width: 1200, height: 900 },
-        contentBounds: { x: 0, y: 0, width: 1200, height: 900 },
-        visible: true,
-        order: 0,
-      })
-      const actions: Array<{ payload: any; hostWebContentsId: number }> = []
-      manager.onSelectionAction((payload, hostWebContentsId) => {
-        actions.push({ payload, hostWebContentsId })
-      })
 
-      ;(manager as any).handleSelectionCapture(instance, capture)
+      class FakeButton {
+        disabled = false
+        title = ''
+      }
 
-      expect(instance.pendingSelection.source).toMatchObject({
-        url: 'https://example.com/article',
-        title: 'Example article',
-        quote: 'selected text',
-      })
-      expect(instance.nativeOverlayView.setBounds).toHaveBeenCalledWith({
-        x: 8,
-        y: 82,
-        width: 280,
-        height: 56,
-      })
+      const addChat = new FakeButton()
+      const newChat = new FakeButton()
+      const addNote = new FakeButton()
+      const chooseNoteTarget = new FakeButton()
+      const overlay = { style: { display: 'none' } }
+      const selectionActions = {
+        style: { display: 'none' },
+        dataset: {},
+      }
+      const chip = { textContent: '', style: { display: 'none' } }
+      const shield = {
+        style: { pointerEvents: '', cursor: '', background: '' },
+      }
+      const elements: Record<string, unknown> = {
+        overlay,
+        'selection-actions': selectionActions,
+        chip,
+        shield,
+      }
+      const documentStub = {
+        getElementById: (id: string) => elements[id] ?? null,
+        querySelector: (selector: string) => ({
+          '[data-browser-selection-action="add-chat"]': addChat,
+          '[data-browser-selection-action="new-chat"]': newChat,
+          '[data-browser-selection-action="add-note"]': addNote,
+          '[data-browser-selection-action="choose-note-target"]': chooseNoteTarget,
+        }[selector]),
+      }
+      const updates: Array<{ run: () => void, resolve: () => void }> = []
+      instance.nativeOverlayView.webContents.executeJavaScript = mock((expression: string) => (
+        new Promise<void>(resolve => {
+          updates.push({
+            run: () => Function('document', 'HTMLButtonElement', expression)(documentStub, FakeButton),
+            resolve,
+          })
+        })
+      ))
 
-      ;(manager as any).handleSelectionAction(instance, 'add-note')
+      return {
+        instance,
+        updates,
+        addNote,
+        overlay,
+        selectionActions,
+      }
+    }
 
-      expect(instance.pendingSelection).toBeNull()
-      expect(host.show).toHaveBeenCalled()
-      expect(host.focus).toHaveBeenCalled()
-      expect(actions).toHaveLength(1)
-      expect(actions[0].hostWebContentsId).toBe(host.webContents.id)
-      expect(actions[0].payload).toMatchObject({
-        action: 'add-note',
-        browserId: 'selection-1',
-        source: {
-          quote: 'selected text',
-        },
-      })
-      expect(typeof actions[0].payload.eventId).toBe('string')
+    const clickLastMenuItem = (label: string) => {
+      const template = mockMenuBuildFromTemplate.mock.calls.at(-1)?.[0] as Array<{
+        label?: string
+        click?: () => void
+      }>
+      const item = template.find(candidate => candidate.label === label)
+      expect(item).toBeTruthy()
+      item?.click?.()
+    }
+
+    it('keeps selection action labels compact when the Note target path is long', () => {
+      manager.createInstance('selection-long-note-label')
+      const instance = (manager as any).instances.get('selection-long-note-label')
+      instance.nativeOverlayReady = true
+      instance.pendingSelection = { capture }
+      instance.targetChat = {
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath: 'notes/add-note-ui-test-with-a-very-long-file-name.md',
+      }
+
+      const { addNote, noteLabel } = evaluateSelectionActions(instance)
+
+      expect(noteLabel.textContent).toBe('Add Note')
+      expect(addNote.title).toContain('notes/add-note-ui-test-with-a-very-long-file-name.md')
     })
 
-    it('does not expose Project-scoped selection actions for a standalone window', () => {
-      manager.createInstance('selection-window', { workspaceId: 'workspace-1' })
-      const instance = (manager as any).instances.get('selection-window')
-      instance.currentUrl = 'https://example.com/article'
-      instance.title = 'Example article'
+    it('keeps Add Note available when the target Chat has not chosen a Note yet', () => {
+      manager.createInstance('selection-no-note-target')
+      const instance = (manager as any).instances.get('selection-no-note-target')
       instance.nativeOverlayReady = true
+      instance.pendingSelection = { capture }
+      instance.targetChat = {
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath: null,
+      }
 
-      ;(manager as any).handleSelectionCapture(instance, capture)
+      const { addNote, chooseNoteTarget } = evaluateSelectionActions(instance)
 
-      expect(instance.pendingSelection).toBeNull()
+      expect(addNote.disabled).toBe(false)
+      expect(addNote.title).toBe(i18n.t('projectNoteTarget.chooseFile'))
+      expect(chooseNoteTarget.disabled).toBe(false)
+    })
+
+    it('keeps Add to Chat and Add Note available without a target Chat', () => {
+      manager.createInstance('selection-no-chat-target', {
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+      })
+      const instance = (manager as any).instances.get('selection-no-chat-target')
+      instance.nativeOverlayReady = true
+      instance.pendingSelection = { capture }
+
+      const { addChat, addNote, chooseNoteTarget } = evaluateSelectionActions(instance)
+
+      expect(addChat.disabled).toBe(false)
+      expect(addNote.disabled).toBe(false)
+      expect(chooseNoteTarget.disabled).toBe(false)
+    })
+
+    it('ignores an older overlay script even when its promise never settles', async () => {
+      const {
+        instance,
+        updates,
+        addNote,
+      } = await queueOverlayScripts('selection-overlay-update-order')
+      instance.pendingSelection = { capture }
+
+      instance.selectionActionPending = true
+      ;(manager as any).updateNativeOverlayState(instance)
+      instance.selectionActionPending = false
+      ;(manager as any).updateNativeOverlayState(instance)
+
+      updates[1]!.run()
+      updates[1]!.resolve()
+      await Bun.sleep(0)
+      expect(addNote.disabled).toBe(false)
+
+      updates[0]!.run()
+      expect(addNote.disabled).toBe(false)
+      expect(updates).toHaveLength(2)
+    })
+
+    it('keeps a newer agent overlay when an older selection script finishes later', async () => {
+      const {
+        instance,
+        updates,
+        overlay,
+        selectionActions,
+      } = await queueOverlayScripts('selection-agent-update-order')
+      instance.pendingSelection = { capture }
+      ;(manager as any).updateNativeOverlayState(instance)
+
+      instance.agentControl = {
+        active: true,
+        sessionId: 'session-1',
+        displayName: 'Research Agent',
+      }
+      ;(manager as any).updateNativeOverlayState(instance)
+
+      updates[1]!.run()
+      updates[1]!.resolve()
+      await Bun.sleep(0)
+      expect(overlay.style.display).toBe('block')
+      expect(selectionActions.style.display).toBe('none')
+
+      updates[0]!.run()
+      expect(overlay.style.display).toBe('block')
+      expect(selectionActions.style.display).toBe('none')
+      expect(updates).toHaveLength(2)
+    })
+
+    it('keeps a restored selection overlay when an old agent script finishes after it was hidden', async () => {
+      const {
+        instance,
+        updates,
+        overlay,
+        selectionActions,
+      } = await queueOverlayScripts('agent-selection-restore-order')
+      instance.agentControl = {
+        active: true,
+        sessionId: 'session-1',
+        displayName: 'Research Agent',
+      }
+      ;(manager as any).updateNativeOverlayState(instance)
+
+      instance.agentControl = null
+      ;(manager as any).updateNativeOverlayState(instance)
       expect(instance.nativeOverlayView.setBounds).toHaveBeenLastCalledWith({
         x: 0,
         y: 0,
         width: 0,
         height: 0,
       })
+
+      instance.pendingSelection = { capture }
+      ;(manager as any).updateNativeOverlayState(instance)
+      updates[1]!.run()
+      updates[1]!.resolve()
+      await Bun.sleep(0)
+      expect(overlay.style.display).toBe('none')
+      expect(selectionActions.style.display).toBe('flex')
+
+      updates[0]!.run()
+      expect(overlay.style.display).toBe('none')
+      expect(selectionActions.style.display).toBe('flex')
+      expect(updates).toHaveLength(2)
     })
+
+    it('applies Add Note in the Browser Project without choosing a Chat', async () => {
+      const applySelection = mock(async () => ({
+        sessionId: null,
+        targetTitle: null,
+        noteTargetPath: 'notes/research.md',
+      }))
+      manager.setApplicationService({
+        listProjectTargets: mock(async () => []),
+        listChatTargets: mock(async () => []),
+        openChat: mock(async () => {}),
+        applySelection: applySelection as any,
+      })
+      manager.createInstance('selection-note-without-chat', {
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+      })
+      const instance = (manager as any).instances.get('selection-note-without-chat')
+      instance.currentUrl = 'https://example.com/article'
+      instance.title = 'Example article'
+      instance.nativeOverlayReady = true
+
+      ;(manager as any).handleSelectionCapture(instance, capture)
+      await (manager as any).handleSelectionAction(instance, 'add-note')
+
+      expect(applySelection).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'add-note',
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+        sessionId: null,
+      }))
+      expect(instance.pendingSelection).toBeNull()
+      expect(instance.targetChat).toBeNull()
+    })
+
+  it('adds an independent-window selection to the target Chat through the application service', async () => {
+    const applySelection = mock(async () => ({
+      sessionId: 'session-1',
+      targetTitle: 'Chat 1',
+      noteTargetPath: 'notes/research.md',
+    }))
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => []),
+      openChat: mock(async () => {}),
+      applySelection,
+    })
+    manager.createInstance('selection-1', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    const instance = (manager as any).instances.get('selection-1')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    await (manager as any).handleSelectionAction(instance, 'add-chat')
+
+    expect(applySelection).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'add-chat',
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      originWebContentsId: null,
+      requestId: expect.any(String),
+      source: expect.objectContaining({
+        url: 'https://example.com/article',
+        title: 'Example article',
+        quote: 'selected text',
+      }),
+    }))
+    expect(instance.pendingSelection).toBeNull()
+  })
+
+  it('adds a selection to the Chat and Note in the newly selected Project', async () => {
+    const applySelection = mock(async () => ({
+      sessionId: 'session-2',
+      targetTitle: 'Chat 2',
+      noteTargetPath: 'notes/project-2.md',
+    }))
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => [
+        { id: 'project-1', title: 'Project 1' },
+        { id: 'project-2', title: 'Project 2' },
+      ]),
+      listChatTargets: mock(async ({ projectId }) => projectId === 'project-2'
+        ? [{ id: 'session-2', title: 'Chat 2', noteTargetPath: 'notes/project-2.md' }]
+        : []),
+      openChat: mock(async () => {}),
+      applySelection,
+    })
+    manager.createInstance('selection-switched-project', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    await manager.setProject('selection-switched-project', 'project-2')
+    await manager.setTargetSession('selection-switched-project', 'session-2')
+    const instance = (manager as any).instances.get('selection-switched-project')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    await (manager as any).handleSelectionAction(instance, 'add-note')
+
+    expect(applySelection).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'add-note',
+      workspaceId: 'workspace-1',
+      projectId: 'project-2',
+      sessionId: 'session-2',
+    }))
+    expect(instance.targetChat.noteTargetPath).toBe('notes/project-2.md')
+  })
+
+    it('chooses a Chat and continues add-chat after switching Project', async () => {
+      const action = 'add-chat' as const
+      const applySelection = mock(async () => ({
+        sessionId: 'session-2',
+        targetTitle: 'Chat 2',
+        noteTargetPath: 'notes/project-2.md',
+      }))
+      manager.setApplicationService({
+        listProjectTargets: mock(async () => [
+          { id: 'project-1', title: 'Project 1' },
+          { id: 'project-2', title: 'Project 2' },
+        ]),
+        listChatTargets: mock(async ({ projectId }) => projectId === 'project-2'
+          ? [{ id: 'session-2', title: 'Chat 2', noteTargetPath: 'notes/project-2.md' }]
+          : []),
+        openChat: mock(async () => {}),
+        applySelection,
+      })
+      manager.createInstance(`selection-${action}-after-project-switch`, {
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+      })
+      await manager.setProject(`selection-${action}-after-project-switch`, 'project-2')
+      const instance = (manager as any).instances.get(`selection-${action}-after-project-switch`)
+      instance.currentUrl = 'https://example.com/article'
+      instance.title = 'Example article'
+      instance.nativeOverlayReady = true
+      ;(manager as any).handleSelectionCapture(instance, capture)
+
+      await (manager as any).handleSelectionAction(instance, action)
+
+      clickLastMenuItem('Chat 2')
+      await Bun.sleep(0)
+      await Bun.sleep(0)
+
+      expect(applySelection).toHaveBeenCalledWith(expect.objectContaining({
+        action,
+        projectId: 'project-2',
+        sessionId: 'session-2',
+      }))
+      expect(instance.pendingSelection).toBeNull()
+    })
+
+  it('keeps the action busy while the selected Chat is being validated', async () => {
+    let finishTargetLookup: ((targets: BrowserChatTarget[]) => void) | null = null
+    let listCallCount = 0
+    const applySelection = mock(async () => ({
+      sessionId: 'session-2',
+      targetTitle: 'Chat 2',
+      noteTargetPath: 'notes/project-2.md',
+    }))
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(() => {
+        listCallCount += 1
+        if (listCallCount <= 3) {
+          return Promise.resolve([{
+            id: 'session-2',
+            title: 'Chat 2',
+            noteTargetPath: 'notes/project-2.md',
+          }])
+        }
+        return new Promise<BrowserChatTarget[]>(resolve => { finishTargetLookup = resolve })
+      }),
+      openChat: mock(async () => {}),
+      applySelection,
+    })
+    manager.createInstance('selection-chat-validation', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-2',
+    })
+    const instance = (manager as any).instances.get('selection-chat-validation')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    ;(manager as any).handleSelectionCapture(instance, capture)
+
+    await (manager as any).handleSelectionAction(instance, 'add-chat')
+    clickLastMenuItem('Chat 2')
+
+    expect(instance.selectionActionPending).toBe(true)
+    await (manager as any).handleSelectionAction(instance, 'new-chat')
+    expect(applySelection).not.toHaveBeenCalled()
+
+    finishTargetLookup!([{
+      id: 'session-2',
+      title: 'Chat 2',
+      noteTargetPath: 'notes/project-2.md',
+    }])
+    await Bun.sleep(0)
+    await Bun.sleep(0)
+
+    expect(applySelection).toHaveBeenCalledTimes(1)
+    expect(applySelection).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'add-chat',
+      sessionId: 'session-2',
+    }))
+  })
+
+  it('shows an error when the chosen Chat disappears before validation', async () => {
+    let listCallCount = 0
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => {
+        listCallCount += 1
+        return listCallCount <= 3
+          ? [{ id: 'session-2', title: 'Chat 2', noteTargetPath: null }]
+          : []
+      }),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-2',
+        targetTitle: 'Chat 2',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('selection-chat-disappeared', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-2',
+    })
+    const instance = (manager as any).instances.get('selection-chat-disappeared')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    ;(manager as any).handleSelectionCapture(instance, capture)
+
+    await (manager as any).handleSelectionAction(instance, 'add-chat')
+    clickLastMenuItem('Chat 2')
+    await Bun.sleep(0)
+    await Bun.sleep(0)
+
+    expect(instance.selectionActionPending).toBe(false)
+    expect(instance.pendingSelection).not.toBeNull()
+    expect(instance.selectionFeedback).toEqual({
+      kind: 'error',
+      message: i18n.t('reference.couldNotAdd'),
+    })
+  })
+
+  it('keeps a new page selection made while the previous action is pending', async () => {
+    let finishSelection: ((value: {
+      sessionId: string
+      targetTitle: string
+      noteTargetPath: string | null
+    }) => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Chat 1',
+        noteTargetPath: null,
+      }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(() => new Promise<{
+        sessionId: string
+        targetTitle: string
+        noteTargetPath: string | null
+      }>(resolve => { finishSelection = resolve })),
+    })
+    manager.createInstance('selection-replaced-while-pending', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    const instance = (manager as any).instances.get('selection-replaced-while-pending')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    const firstAction = (manager as any).handleSelectionAction(instance, 'add-chat')
+    const replacement = { ...capture, quote: 'new selected text' }
+
+    ;(manager as any).handleSelectionCapture(instance, replacement)
+    finishSelection!({
+      sessionId: 'session-1',
+      targetTitle: 'Chat 1',
+      noteTargetPath: null,
+    })
+    await firstAction
+
+    expect(instance.selectionActionPending).toBe(false)
+    expect(instance.pendingSelection?.capture.quote).toBe('new selected text')
+  })
+
+  for (const scenario of [
+    {
+      action: 'new-chat' as const,
+      targetSessionId: null,
+      result: {
+        sessionId: 'session-new',
+        targetTitle: 'New Chat',
+        noteTargetPath: null,
+      },
+    },
+    {
+      action: 'add-note' as const,
+      targetSessionId: 'session-1',
+      result: {
+        sessionId: 'session-1',
+        targetTitle: 'Chat 1',
+        noteTargetPath: 'notes/new-target.md',
+      },
+    },
+  ]) {
+    it(`syncs the ${scenario.action} result while preserving a newer page selection`, async () => {
+      let finishSelection: ((value: typeof scenario.result) => void) | null = null
+      manager.setApplicationService({
+        listProjectTargets: mock(async () => []),
+        listChatTargets: mock(async () => scenario.targetSessionId
+          ? [{
+              id: scenario.targetSessionId,
+              title: 'Chat 1',
+              noteTargetPath: null,
+            }]
+          : []),
+        openChat: mock(async () => {}),
+        applySelection: mock(() => new Promise<typeof scenario.result>(resolve => {
+          finishSelection = resolve
+        })),
+      })
+      manager.createInstance(`selection-${scenario.action}-result-with-replacement`, {
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+        targetSessionId: scenario.targetSessionId,
+      })
+      const instance = (manager as any).instances.get(
+        `selection-${scenario.action}-result-with-replacement`,
+      )
+      instance.currentUrl = 'https://example.com/article'
+      instance.title = 'Example article'
+      instance.nativeOverlayReady = true
+      ;(manager as any).handleSelectionCapture(instance, capture)
+      const action = (manager as any).handleSelectionAction(instance, scenario.action)
+
+      ;(manager as any).handleSelectionCapture(instance, {
+        ...capture,
+        quote: 'new selected text',
+      })
+      finishSelection!(scenario.result)
+      await action
+
+      expect(instance.pendingSelection?.capture.quote).toBe('new selected text')
+      expect(instance.targetSessionId).toBe(scenario.result.sessionId)
+      expect(instance.targetChat).toEqual({
+        id: scenario.result.sessionId,
+        title: scenario.result.targetTitle,
+        noteTargetPath: scenario.result.noteTargetPath,
+      })
+    })
+  }
+
+  it('does not restore a deleted target Chat from a late Add Note result', async () => {
+    let finishSelection!: (value: {
+      sessionId: string
+      targetTitle: string
+      noteTargetPath: string
+    }) => void
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Chat 1',
+        noteTargetPath: null,
+      }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(() => new Promise<BrowserSelectionActionResult>(resolve => {
+        finishSelection = resolve
+      })),
+    })
+    manager.createInstance('late-note-result-after-chat-delete', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    const instance = (manager as any).instances.get('late-note-result-after-chat-delete')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    ;(manager as any).handleSelectionCapture(instance, capture)
+
+    const action = (manager as any).handleSelectionAction(instance, 'add-note')
+    instance.targetSessionId = null
+    instance.targetChat = null
+    finishSelection({
+      sessionId: 'session-1',
+      targetTitle: 'Chat 1',
+      noteTargetPath: 'notes/research.md',
+    })
+    await action
+
+    expect(instance.targetSessionId).toBeNull()
+    expect(instance.targetChat).toBeNull()
+  })
+
+  it('does not let a slow toolbar Chat menu clear a newer page selection', async () => {
+    let finishMenuTargets: ((targets: BrowserChatTarget[]) => void) | null = null
+    let listCallCount = 0
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(() => {
+        listCallCount += 1
+        return listCallCount === 1
+          ? new Promise<BrowserChatTarget[]>(resolve => { finishMenuTargets = resolve })
+          : Promise.resolve([])
+      }),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Chat 1',
+        noteTargetPath: null,
+      })),
+    })
+    manager.createInstance('slow-toolbar-chat-menu', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    const instance = (manager as any).instances.get('slow-toolbar-chat-menu')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    const menuCount = mockMenuBuildFromTemplate.mock.calls.length
+
+    const showMenu = (manager as any).showChatTargetMenu(instance)
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    finishMenuTargets!([])
+    await showMenu
+
+    expect(instance.pendingSelection?.capture.quote).toBe('selected text')
+    expect(mockMenuBuildFromTemplate).toHaveBeenCalledTimes(menuCount)
+  })
+
+  it('does not show a stale Chat chooser after another selection action starts', async () => {
+    let finishChooser: ((targets: BrowserChatTarget[]) => void) | null = null
+    let finishNewChat: ((value: {
+      sessionId: string
+      targetTitle: string
+      noteTargetPath: string | null
+    }) => void) | null = null
+    let listCallCount = 0
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(() => {
+        listCallCount += 1
+        return listCallCount <= 2
+          ? Promise.resolve([])
+          : new Promise<BrowserChatTarget[]>(resolve => { finishChooser = resolve })
+      }),
+      openChat: mock(async () => {}),
+      applySelection: mock(() => new Promise<{
+        sessionId: string
+        targetTitle: string
+        noteTargetPath: string | null
+      }>(resolve => { finishNewChat = resolve })),
+    })
+    manager.createInstance('stale-selection-chat-chooser', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    const instance = (manager as any).instances.get('stale-selection-chat-chooser')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    const menuCount = mockMenuBuildFromTemplate.mock.calls.length
+
+    const chooserAction = (manager as any).handleSelectionAction(instance, 'add-chat')
+    const newChatAction = (manager as any).handleSelectionAction(instance, 'new-chat')
+    finishChooser!([{
+      id: 'session-1',
+      title: 'Chat 1',
+      noteTargetPath: null,
+    }])
+    await chooserAction
+
+    expect(mockMenuBuildFromTemplate).toHaveBeenCalledTimes(menuCount)
+
+    finishNewChat!({
+      sessionId: 'session-new',
+      targetTitle: 'New Chat',
+      noteTargetPath: null,
+    })
+    await newChatAction
+  })
+
+  it('does not open the toolbar Chat menu or clear selection while an action is pending', async () => {
+    let finishSelection: ((value: {
+      sessionId: string
+      targetTitle: string
+      noteTargetPath: string | null
+    }) => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Chat 1',
+        noteTargetPath: null,
+      }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(() => new Promise<{
+        sessionId: string
+        targetTitle: string
+        noteTargetPath: string | null
+      }>(resolve => { finishSelection = resolve })),
+    })
+    manager.createInstance('toolbar-chat-menu-during-selection-action', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    const instance = (manager as any).instances.get(
+      'toolbar-chat-menu-during-selection-action',
+    )
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    const pendingSelection = instance.pendingSelection
+    const action = (manager as any).handleSelectionAction(instance, 'add-chat')
+    const menuCount = mockMenuBuildFromTemplate.mock.calls.length
+
+    await (manager as any).showChatTargetMenu(instance)
+
+    expect(instance.pendingSelection).toBe(pendingSelection)
+    expect(mockMenuBuildFromTemplate).toHaveBeenCalledTimes(menuCount)
+
+    finishSelection!({
+      sessionId: 'session-1',
+      targetTitle: 'Chat 1',
+      noteTargetPath: null,
+    })
+    await action
+  })
+
+  it('targets a newly created Chat from a manual Browser', async () => {
+    const applySelection = mock(async () => ({
+      sessionId: 'session-new',
+      targetTitle: 'New Chat',
+      noteTargetPath: null,
+    }))
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => []),
+      openChat: mock(async () => {}),
+      applySelection,
+    })
+    manager.createInstance('selection-new-chat', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    const instance = (manager as any).instances.get('selection-new-chat')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    await (manager as any).handleSelectionAction(instance, 'new-chat')
+
+    expect(applySelection).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'new-chat',
+      sessionId: null,
+    }))
+    expect(manager.listInstances()[0].targetSessionId).toBe('session-new')
+  })
+
+  it('rejects selection actions from an existing Browser while its Project is deleting', async () => {
+    const applySelection = mock(async () => ({
+      sessionId: 'orphan-session',
+      targetTitle: 'Orphan Chat',
+      noteTargetPath: null,
+    }))
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => []),
+      openChat: mock(async () => {}),
+      applySelection,
+    })
+    manager.createInstance('selection-project-deleting', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+    })
+    const instance = (manager as any).instances.get('selection-project-deleting')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    ;(manager as any).handleSelectionCapture(instance, capture)
+
+    manager.beginProjectDeletion('workspace-1', 'project-1')
+    await (manager as any).handleSelectionAction(instance, 'new-chat')
+
+    expect(applySelection).not.toHaveBeenCalled()
+    expect(instance.pendingSelection).not.toBeNull()
+    expect(instance.selectionFeedback).toEqual({
+      kind: 'error',
+      message: i18n.t('reference.couldNotAdd'),
+    })
+  })
+
+  it('keeps the selection and reports the Note destination error in the toolbar', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath: null,
+      }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => {
+        throw new Error('Target Chat has no Project note file')
+      }),
+    })
+    manager.createInstance('selection-note-error', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get('selection-note-error')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    await (manager as any).handleSelectionAction(instance, 'add-note')
+
+    expect(instance.pendingSelection).not.toBeNull()
+    expect(instance.toolbarView.webContents.send).toHaveBeenCalledWith(
+      'browser-toolbar:state-update',
+      expect.objectContaining({
+        selectionFeedback: {
+          kind: 'error',
+          message: i18n.t('reference.couldNotAddNote'),
+        },
+      }),
+    )
+  })
+
+  it('reports the exact Note file after a successful append', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath: 'notes/research.md',
+      }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({
+        sessionId: 'session-1',
+        targetTitle: 'Research Chat',
+        noteTargetPath: 'notes/research.md',
+      })),
+    })
+    manager.createInstance('selection-note-success', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get('selection-note-success')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    await (manager as any).handleSelectionAction(instance, 'add-note')
+
+    expect(instance.pendingSelection).toBeNull()
+    expect(instance.toolbarView.webContents.send).toHaveBeenCalledWith(
+      'browser-toolbar:state-update',
+      expect.objectContaining({
+        selectionFeedback: {
+          kind: 'success',
+          message: 'Added to notes/research.md',
+        },
+      }),
+    )
+  })
+
+  it('chooses a different Note target and keeps the Browser destination in sync', async () => {
+    const applySelection = mock(async () => ({
+      sessionId: 'session-1',
+      targetTitle: null,
+      noteTargetPath: 'notes/second.md',
+    }))
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath: 'notes/first.md',
+      }]),
+      openChat: mock(async () => {}),
+      applySelection,
+    })
+    manager.createInstance('selection-choose-note', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get('selection-choose-note')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    instance.toolbarReady = true
+    instance.isVisible = true
+    instance.window.focus.mockClear()
+
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    await (manager as any).handleSelectionAction(instance, 'choose-note-target')
+
+    expect(applySelection).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'choose-note-target',
+      sessionId: 'session-1',
+    }))
+    expect(instance.pendingSelection).toBeNull()
+    expect(instance.targetChat.title).toBe('Research Chat')
+    expect(instance.targetChat.noteTargetPath).toBe('notes/second.md')
+    expect(instance.window.focus).toHaveBeenCalledTimes(1)
+    expect(instance.toolbarView.webContents.send).toHaveBeenCalledWith(
+      'browser-toolbar:state-update',
+      expect.objectContaining({
+        selectionFeedback: {
+          kind: 'success',
+          message: 'Added to notes/second.md',
+        },
+      }),
+    )
+  })
+
+  it('keeps the selection visible when the shared Note picker is cancelled', async () => {
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath: 'notes/first.md',
+      }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(async () => ({ cancelled: true as const })),
+    })
+    manager.createInstance('selection-cancel-note', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get('selection-cancel-note')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    instance.toolbarReady = true
+    instance.isVisible = true
+    instance.window.focus.mockClear()
+
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    await (manager as any).handleSelectionAction(instance, 'choose-note-target')
+
+    expect(instance.pendingSelection).not.toBeNull()
+    expect(instance.selectionActionPending).toBe(false)
+    expect(instance.selectionFeedback).toBeNull()
+    expect(instance.window.focus).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reopen a Browser hidden while the shared Note picker is pending', async () => {
+    let finish: ((value: { cancelled: true }) => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath: 'notes/first.md',
+      }]),
+      openChat: mock(async () => {}),
+      applySelection: mock(() => new Promise<{ cancelled: true }>(resolve => {
+        finish = resolve
+      })),
+    })
+    manager.createInstance('selection-hide-during-note', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get('selection-hide-during-note')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    instance.toolbarReady = true
+    instance.isVisible = true
+    instance.window.show.mockClear()
+    instance.window.focus.mockClear()
+
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    const action = (manager as any).handleSelectionAction(instance, 'choose-note-target')
+    manager.hide(instance.id)
+    finish!({ cancelled: true })
+    await action
+
+    expect(instance.isVisible).toBe(false)
+    expect(instance.window.show).not.toHaveBeenCalled()
+    expect(instance.window.focus).not.toHaveBeenCalled()
+
+    manager.focus(instance.id)
+    ;(manager as any).handleSelectionCapture(instance, capture)
+    expect(instance.selectionActionPending).toBe(false)
+    expect(instance.pendingSelection).not.toBeNull()
+  })
+
+  it('runs only one application action while the same selection is pending', async () => {
+    let finish: ((value: {
+      sessionId: string
+      targetTitle: string
+      noteTargetPath: string | null
+    }) => void) | null = null
+    const applySelection = mock(() => new Promise<{
+      sessionId: string
+      targetTitle: string
+      noteTargetPath: string | null
+    }>(resolve => { finish = resolve }))
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => [{
+        id: 'session-1',
+        title: 'Research Chat',
+        noteTargetPath: 'notes/research.md',
+      }]),
+      openChat: mock(async () => {}),
+      applySelection,
+    })
+    manager.createInstance('selection-pending', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    await Promise.resolve()
+    const instance = (manager as any).instances.get('selection-pending')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    ;(manager as any).handleSelectionCapture(instance, capture)
+
+    const first = (manager as any).handleSelectionAction(instance, 'add-note')
+    const second = (manager as any).handleSelectionAction(instance, 'add-note')
+    expect(applySelection).toHaveBeenCalledTimes(1)
+
+    finish!({
+      sessionId: 'session-1',
+      targetTitle: 'Research Chat',
+      noteTargetPath: 'notes/research.md',
+    })
+    await Promise.all([first, second])
+  })
+
+  it('does not touch a Browser after an async selection action outlives it', async () => {
+    let finish: ((value: {
+      sessionId: string
+      targetTitle: string
+      noteTargetPath: string | null
+    }) => void) | null = null
+    manager.setApplicationService({
+      listProjectTargets: mock(async () => []),
+      listChatTargets: mock(async () => []),
+      openChat: mock(async () => {}),
+      applySelection: mock(() => new Promise<{
+        sessionId: string
+        targetTitle: string
+        noteTargetPath: string | null
+      }>(resolve => { finish = resolve })),
+    })
+    manager.createInstance('selection-destroyed-while-pending', {
+      workspaceId: 'workspace-1',
+      projectId: 'project-1',
+      targetSessionId: 'session-1',
+    })
+    const instance = (manager as any).instances.get('selection-destroyed-while-pending')
+    instance.currentUrl = 'https://example.com/article'
+    instance.title = 'Example article'
+    instance.nativeOverlayReady = true
+    ;(manager as any).handleSelectionCapture(instance, capture)
+
+    const action = (manager as any).handleSelectionAction(instance, 'add-note')
+    manager.destroyInstance(instance.id)
+    await Promise.resolve()
+    instance.nativeOverlayView.setBounds.mockClear()
+    instance.rootView.addChildView.mockClear()
+    instance.toolbarView.webContents.send.mockClear()
+
+    finish!({
+      sessionId: 'session-1',
+      targetTitle: 'Research Chat',
+      noteTargetPath: 'notes/research.md',
+    })
+    await expect(action).resolves.toBeUndefined()
+
+    expect(instance.nativeOverlayView.setBounds).not.toHaveBeenCalled()
+    expect(instance.rootView.addChildView).not.toHaveBeenCalled()
+    expect(instance.toolbarView.webContents.send).not.toHaveBeenCalled()
+  })
 
     it('clears selection actions when agent control takes priority', () => {
       manager.createInstance('selection-agent')
@@ -2618,6 +4724,23 @@ describe('BrowserPaneManager', () => {
         width: 1200,
         height: 852,
       })
+    })
+
+    it('refuses to create an orphan Browser when no Workspace owns the reveal', async () => {
+      await expect(manager.revealSelection({
+        version: 1,
+        kind: 'web-selection',
+        projectId: 'project-1',
+        url: 'https://example.com/article',
+        title: 'Example article',
+        quote: 'selected text',
+        locator: {
+          type: 'web-text-quote',
+          exact: 'selected text',
+        },
+      })).rejects.toThrow('requires an owning Workspace')
+
+      expect(manager.listInstances()).toHaveLength(0)
     })
 
     it('reveals the saved text quote in the explicitly selected Runtime', async () => {
@@ -2654,7 +4777,7 @@ describe('BrowserPaneManager', () => {
         .toHaveBeenCalledTimes(1)
     })
 
-    it('creates a new Runtime instead of guessing across parked Project layouts', async () => {
+    it('creates a Project-owned window instead of guessing across other Projects', async () => {
       manager.createInstance('selection-other-project', {
         workspaceId: 'workspace-1',
       })

@@ -62,10 +62,13 @@ module.exports = {
     return {
       // Match: .config.isAuthenticated access
       MemberExpression(node) {
+        // Setting persisted auth state is not an availability check.
+        if (node.parent.type === 'AssignmentExpression'
+          && node.parent.left === node && node.parent.operator === '=') return
         // Check if property is 'isAuthenticated'
         if (
-          node.property.type === 'Identifier' &&
-          node.property.name === 'isAuthenticated'
+          (!node.computed && node.property.type === 'Identifier' && node.property.name === 'isAuthenticated')
+          || (node.computed && node.property.type === 'Literal' && node.property.value === 'isAuthenticated')
         ) {
           // Check if accessed via .config.isAuthenticated pattern
           if (

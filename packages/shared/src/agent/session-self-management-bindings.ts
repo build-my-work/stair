@@ -159,6 +159,14 @@ export function attachSessionSelfManagementBindings(
     enumerable: true,
   });
 
+  Object.defineProperty(context, 'createMindmap', {
+    get() {
+      return getSessionScopedToolCallbacks(sessionId)?.createMindmapFn;
+    },
+    configurable: true,
+    enumerable: true,
+  });
+
   Object.defineProperty(context, 'readMindmap', {
     get() {
       return getSessionScopedToolCallbacks(sessionId)?.readMindmapFn;

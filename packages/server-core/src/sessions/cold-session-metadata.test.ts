@@ -8,6 +8,7 @@ import {
   writeSessionJsonl,
   type StoredSession,
 } from '@craft-agent/shared/sessions'
+import { createWorkspaceAtPath } from '@craft-agent/shared/workspaces'
 import type { StoredMessage } from '@craft-agent/core/types'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
 
@@ -27,9 +28,14 @@ import { SessionManager, createManagedSession } from './SessionManager.ts'
 describe('cold-session metadata persistence', () => {
   let tmpRoot: string
   let sm: SessionManager
+  let workspaceId: string
+  let defaultProjectId: string
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'sm-cold-meta-'))
+    const workspace = createWorkspaceAtPath(tmpRoot, 'Test Workspace')
+    workspaceId = workspace.id
+    defaultProjectId = workspace.defaultProjectId
     sm = new SessionManager()
   })
 
@@ -39,7 +45,7 @@ describe('cold-session metadata persistence', () => {
 
   function buildWorkspace() {
     return {
-      id: 'ws_test',
+      id: workspaceId,
       name: 'Test Workspace',
       rootPath: tmpRoot,
       createdAt: Date.now(),
@@ -62,7 +68,7 @@ describe('cold-session metadata persistence', () => {
     mkdirSync(dirname(filePath), { recursive: true })
     const stored: StoredSession = {
       id: sessionId,
-      projectId: 'project-general',
+      projectId: defaultProjectId,
       workspaceRootPath: tmpRoot,
       name: opts.name ?? 'cold session',
       sessionStatus: opts.sessionStatus ?? 'todo',

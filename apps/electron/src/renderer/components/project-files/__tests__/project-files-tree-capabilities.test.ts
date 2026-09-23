@@ -12,4 +12,13 @@ describe('Project Files tree legacy capabilities', () => {
     expect(source).toContain('window.electronAPI.createDrawnixProjectFile')
     expect(source).toContain('window.electronAPI.createProjectDirectory')
   })
+
+  it('clears the visible directory selection when a file is opened', () => {
+    const source = readFileSync(
+      new URL('../ProjectFilesTree.tsx', import.meta.url),
+      'utf8',
+    )
+    expect(source).toContain("setSelectedDirectoryPath('')\n    onOpenFile(relativePath)")
+    expect(source).toContain('parentRelativePath: createParentPath')
+  })
 })

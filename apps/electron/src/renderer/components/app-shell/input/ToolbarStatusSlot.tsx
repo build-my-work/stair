@@ -39,15 +39,11 @@ export function ToolbarStatusSlot({
 }: ToolbarStatusSlotProps) {
   // Filter to the active workspace so a session here doesn't surface a
   // browser-status banner for an agent running in a different workspace.
-  // Accept both the local workspace id (manual tabs) and the remote-mirror
-  // workspace id (tabs stamped by the remote agent over the WS bridge).
-  const { activeWorkspaceId, workspaces } = useAppShellContext()
-  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId)
-  const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId ?? null
+  const { activeWorkspaceId } = useAppShellContext()
   const allInstances = useAtomValue(browserInstancesAtom)
   const browserInstances = React.useMemo(
-    () => filterInstancesForWorkspace(allInstances, activeWorkspaceId, remoteWorkspaceId),
-    [allInstances, activeWorkspaceId, remoteWorkspaceId],
+    () => filterInstancesForWorkspace(allInstances, activeWorkspaceId),
+    [allInstances, activeWorkspaceId],
   )
 
   // Find the visible browser instance bound to this session with active agent control.
@@ -66,8 +62,9 @@ export function ToolbarStatusSlot({
   // Priority resolution: escape interrupt > browser status
   const showBrowser = !showEscapeOverlay && browserInstance !== null
 
-  const handleBrowserClick = React.useCallback((instanceId: string) => {
-    window.electronAPI?.browserPane?.focus?.(instanceId)
+  const handleBrowserClick = React.useCallback((instance: BrowserInstanceInfo) => {
+    if (!instance.projectId) return
+    window.electronAPI?.browserPane?.focus?.(instance.id, instance.projectId)
   }, [])
 
   return (
@@ -100,7 +97,7 @@ export function ToolbarStatusSlot({
         <BrowserStatusBar
           key="browser"
           instance={browserInstance}
-          onClick={() => handleBrowserClick(browserInstance.id)}
+          onClick={() => handleBrowserClick(browserInstance)}
         />
       )}
     </AnimatePresence>

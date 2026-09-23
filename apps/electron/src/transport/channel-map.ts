@@ -21,6 +21,7 @@ export const CHANNEL_MAP = {
   getSessions: invoke(RPC_CHANNELS.sessions.GET),
   getUnreadSummary: invoke(RPC_CHANNELS.sessions.GET_UNREAD_SUMMARY),
   markAllSessionsRead: invoke(RPC_CHANNELS.sessions.MARK_ALL_READ),
+  getExistingSessionIds: invoke(RPC_CHANNELS.sessions.GET_EXISTING_IDS),
   getSessionMessages: invoke(RPC_CHANNELS.sessions.GET_MESSAGES),
   createSession: invoke(RPC_CHANNELS.sessions.CREATE),
   deleteSession: invoke(RPC_CHANNELS.sessions.DELETE),
@@ -212,7 +213,11 @@ export const CHANNEL_MAP = {
 
   // Session Drafts
   getDraft: invoke(RPC_CHANNELS.drafts.GET),
-  setDraft: invoke(RPC_CHANNELS.drafts.SET),
+  setDraftContent: invoke(RPC_CHANNELS.drafts.SET_CONTENT),
+  updateDraftReferences: invoke(RPC_CHANNELS.drafts.UPDATE_REFERENCES),
+  addDraftReference: invoke(RPC_CHANNELS.drafts.ADD_REFERENCE),
+  restoreDraftInput: invoke(RPC_CHANNELS.drafts.RESTORE_INPUT),
+  onDraftReferencesChanged: listener(RPC_CHANNELS.drafts.REFERENCES_CHANGED),
   deleteDraft: invoke(RPC_CHANNELS.drafts.DELETE),
   getAllDrafts: invoke(RPC_CHANNELS.drafts.GET_ALL),
 
@@ -389,8 +394,9 @@ export const CHANNEL_MAP = {
   menuPaste: invoke(RPC_CHANNELS.menu.PASTE),
   menuSelectAll: invoke(RPC_CHANNELS.menu.SELECT_ALL),
 
-  // Browser pane management
+  // Independent Browser window management
   'browserPane.create': invoke(RPC_CHANNELS.browserPane.CREATE),
+  'browserPane.reconcile': invoke(RPC_CHANNELS.browserPane.RECONCILE),
   'browserPane.destroy': invoke(RPC_CHANNELS.browserPane.DESTROY),
   'browserPane.list': invoke(RPC_CHANNELS.browserPane.LIST),
   'browserPane.navigate': invoke(RPC_CHANNELS.browserPane.NAVIGATE),
@@ -399,18 +405,13 @@ export const CHANNEL_MAP = {
   'browserPane.reload': invoke(RPC_CHANNELS.browserPane.RELOAD),
   'browserPane.stop': invoke(RPC_CHANNELS.browserPane.STOP),
   'browserPane.focus': invoke(RPC_CHANNELS.browserPane.FOCUS),
-  'browserPane.attachSurface': invoke(RPC_CHANNELS.browserPane.ATTACH_SURFACE),
-  'browserPane.updateSurface': invoke(RPC_CHANNELS.browserPane.UPDATE_SURFACE),
-  'browserPane.detachSurface': invoke(RPC_CHANNELS.browserPane.DETACH_SURFACE),
-  'browserPane.park': invoke(RPC_CHANNELS.browserPane.PARK),
+  'browserPane.hide': invoke(RPC_CHANNELS.browserPane.HIDE),
+  'browserPane.openTargetChat': invoke(RPC_CHANNELS.browserPane.OPEN_TARGET_CHAT),
   'browserPane.revealSelection': invoke(RPC_CHANNELS.browserPane.REVEAL_SELECTION),
   'browserPane.emptyStateLaunch': invoke(RPC_CHANNELS.browserPane.LAUNCH),
   'browserPane.onStateChanged': listener(RPC_CHANNELS.browserPane.STATE_CHANGED),
   'browserPane.onRemoved': listener(RPC_CHANNELS.browserPane.REMOVED),
   'browserPane.onInteracted': listener(RPC_CHANNELS.browserPane.INTERACTED),
-  'browserPane.onPresentRequested': listener(RPC_CHANNELS.browserPane.PRESENT_REQUESTED),
-  'browserPane.onClosePanelRequested': listener(RPC_CHANNELS.browserPane.CLOSE_PANEL_REQUESTED),
-  'browserPane.onSelectionAction': listener(RPC_CHANNELS.browserPane.SELECTION_ACTION),
 
   // LLM Connections
   listLlmConnections: invoke(RPC_CHANNELS.llmConnections.LIST),

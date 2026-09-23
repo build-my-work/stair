@@ -152,6 +152,38 @@ describe('handleInterrupted (#616)', () => {
       }])
     })
 
+    it('restores queued attachments into the draft effect', () => {
+      const state = makeState([
+        { id: 'msg-2', role: 'user', content: 'queued with file', isQueued: true },
+      ])
+      const queuedAttachment = {
+        id: 'attachment-1',
+        type: 'text',
+        name: 'notes.txt',
+        mimeType: 'text/plain',
+        size: 12,
+        storedPath: '/tmp/session/attachments/notes.txt',
+      } as const
+
+      const next = handleInterrupted(state, {
+        type: 'interrupted',
+        sessionId: 'session-1',
+        message: { id: 'info-1', role: 'info', content: 'Response interrupted', timestamp: 0 } as any,
+        queuedMessages: ['queued with file'],
+        queuedAttachments: [queuedAttachment],
+        queuedRestoreId: 'restore-with-attachment',
+        queuedMessageIds: ['msg-2'],
+      })
+
+      expect(next.effects).toEqual([{
+        type: 'restore_input',
+        text: 'queued with file',
+        attachments: [{ path: queuedAttachment.storedPath, name: queuedAttachment.name }],
+        queuedRestoreId: 'restore-with-attachment',
+        messageIds: ['msg-2'],
+      }])
+    })
+
     it('still works when no queued bubbles exist', () => {
       const state = makeState([
         { id: 'msg-1', role: 'user', content: 'first' },
@@ -210,6 +242,28 @@ describe('handleInterrupted (#616)', () => {
       expect(tool.toolResult).toBe('Interrupted')
       expect(tool.isError).toBe(true)
     })
+  })
+
+  it('restores a persisted queued draft after restart without adding an info bubble', () => {
+    const state = makeState([
+      { id: 'msg-2', role: 'user', content: 'queued before crash', isQueued: true },
+    ])
+
+    const next = handleInterrupted(state, {
+      type: 'interrupted',
+      sessionId: 'session-1',
+      queuedMessages: ['queued before crash'],
+      queuedRestoreId: 'restore-after-restart',
+      queuedMessageIds: ['msg-2'],
+    })
+
+    expect(next.effects).toEqual([{
+      type: 'restore_input',
+      text: 'queued before crash',
+      queuedRestoreId: 'restore-after-restart',
+      messageIds: ['msg-2'],
+    }])
+    expect(next.state.session.messages).toHaveLength(1)
   })
 
   it('always strips transient status messages', () => {

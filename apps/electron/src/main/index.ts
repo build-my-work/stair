@@ -117,7 +117,7 @@ import { registerPiModelResolver } from '@craft-agent/shared/config'
 import { getPiModelsForAuthProvider, getAllPiModels } from '@craft-agent/shared/config'
 import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeCount } from './notifications'
 import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, setBeforeUpdateInstallHook, setInstallQuitFailedHook } from './auto-update'
-import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
+import { WsRpcServer, type EventSink, type RpcServer } from '@craft-agent/server-core/transport'
 import { requestClientProjectFilesFlush } from '@craft-agent/server-core/handlers/rpc/project-files'
 import { registerSaveTextFileIpc } from './save-text-file'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
@@ -475,12 +475,14 @@ app.whenReady().then(async () => {
     // Initialize notification service (always — triggered by server push events)
     initNotificationService(windowManager)
 
-    // Initialize browser pane manager (always — even in headless, for deps wiring)
+    // Initialize independent Browser window manager (always — even in headless, for deps wiring)
     browserPaneManager = new BrowserPaneManager()
     browserPaneManager.setWindowManager(windowManager)
-    windowManager.setRendererSurfaceParkingHandler(hostWebContentsId => {
-      browserPaneManager?.parkSurfacesForHost(hostWebContentsId)
-    })
+    if (isClientOnly) {
+      browserPaneManager.setCapabilityRemoteWorkspaceId(
+        process.env.CRAFT_WORKSPACE_ID || null,
+      )
+    }
     browserPaneManager.registerToolbarIpc()
     browserPaneManager.registerCapabilityIpc()
 
@@ -1068,6 +1070,71 @@ app.whenReady().then(async () => {
         console.log(`CRAFT_SERVER_URL=${instance.protocol}://${instance.host}:${instance.port}`)
         console.log(`CRAFT_SERVER_TOKEN=${instance.token}`)
       }
+    } else {
+      // Thin clients still own Electron-only state such as independent Browser
+      // windows. Keep a loopback RPC host for LOCAL_ONLY channels while the
+      // renderer routes workspace data to CRAFT_SERVER_URL.
+      const localClientMap = new Map<number, string>()
+      const localToken = randomUUID()
+      const localServer = new WsRpcServer({
+        host: '127.0.0.1',
+        port: 0,
+        requireAuth: true,
+        validateToken: async token => token === localToken,
+        serverId: 'thin-client-local',
+        serverVersion: app.getVersion(),
+        onClientConnected: ({ clientId, webContentsId }) => {
+          if (webContentsId != null) localClientMap.set(webContentsId, clientId)
+        },
+        onClientDisconnected: clientId => {
+          for (const [webContentsId, connectedClientId] of localClientMap) {
+            if (connectedClientId === clientId) {
+              localClientMap.delete(webContentsId)
+              break
+            }
+          }
+          cleanupSessionFileWatchForClient(clientId)
+        },
+      })
+      const localSessionManager = new SessionManager()
+      localSessionManager.setBrowserPaneManager(browserPaneManager)
+      const localOAuthFlowStore = new OAuthFlowStore()
+      oauthFlowStore = localOAuthFlowStore
+      registerAllRpcHandlers(localServer, {
+        sessionManager: localSessionManager,
+        platform,
+        windowManager,
+        browserPaneManager,
+        oauthFlowStore: localOAuthFlowStore,
+      })
+      await localServer.listen()
+
+      const resolveLocalClientId = (webContentsId: number) => (
+        localClientMap.get(webContentsId)
+      )
+      moduleSink = localServer.push.bind(localServer)
+      moduleRpcServer = localServer
+      moduleClientResolver = resolveLocalClientId
+
+      ipcMain.on('__get-ws-port', event => {
+        event.returnValue = localServer.port
+      })
+      ipcMain.on('__get-ws-token', event => {
+        event.returnValue = localToken
+      })
+      ipcMain.on('__get-workspace-remote-config', event => {
+        const workspaceId = windowManager?.getWorkspaceForWindow(event.sender.id)
+        event.returnValue = workspaceId
+          ? getWorkspaceByNameOrId(workspaceId)?.remoteServer ?? null
+          : null
+      })
+
+      windowManager.setRpcEventSink(moduleSink, resolveLocalClientId)
+      const { setMenuEventSink } = await import('./menu')
+      setMenuEventSink(moduleSink, resolveLocalClientId)
+      const { setNotificationEventSink } = await import('./notifications')
+      setNotificationEventSink(moduleSink, resolveLocalClientId)
+      mainLog.info(`Client-only local RPC host listening on 127.0.0.1:${localServer.port}`)
     }
 
     // Create initial windows (restores from saved state or opens first workspace)
@@ -1258,7 +1325,7 @@ async function performQuitCleanup(): Promise<void> {
     sessionManager.cleanup()
   }
 
-  // Clean up browser pane instances
+  // Clean up independent Browser windows
   if (browserPaneManager) {
     browserPaneManager.destroyAll()
   }

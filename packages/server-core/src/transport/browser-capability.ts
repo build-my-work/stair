@@ -21,6 +21,8 @@ export type BrowserCapabilityMethod =
   | 'focusBoundForSession'
   | 'destroyInstance'
   | 'destroyForSession'
+  | 'beginProjectDeletion'
+  | 'finishProjectDeletion'
   | 'getInstance'
   | 'listInstances'
   | 'bindSession'
@@ -71,6 +73,83 @@ export interface BrowserCapabilityRequest {
   /** Owning workspace — combined with `sessionId` to form the owner-key prefix. */
   workspaceId: string
 }
+
+export interface BrowserApplicationProjectContext {
+  projectExists: boolean
+  chatTargets: Array<{
+    id: string
+    title: string
+    noteTargetPath: string | null
+  }>
+}
+
+export interface BrowserApplicationProjectTarget {
+  id: string
+  title: string
+}
+
+export type BrowserApplicationCapabilityRequest =
+  | {
+      v: 1
+      action: 'get-application-readiness'
+      workspaceId: string
+    }
+  | {
+      v: 1
+      action: 'list-project-targets'
+      workspaceId: string
+    }
+  | {
+      v: 1
+      action: 'get-project-context'
+      workspaceId: string
+      projectId: string
+      /** Include this Browser's owner even when it is hidden from Chat selectors. */
+      includeOwnerSessionId?: string
+    }
+  | {
+      v: 1
+      action: 'add-selection-note'
+      requestId: string
+      mode: 'current' | 'choose-target'
+      workspaceId: string
+      projectId: string
+      sessionId: string | null
+      source: import('@craft-agent/shared/protocol').BrowserSelectionSource
+    }
+  | {
+      v: 1
+      action: 'open-chat'
+      workspaceId: string
+      projectId: string
+      sessionId: string
+    }
+  | {
+      v: 1
+      action: 'add-selection-to-chat'
+      requestId: string
+      workspaceId: string
+      projectId: string
+      sessionId: string
+      source: import('@craft-agent/shared/protocol').BrowserSelectionSource
+    }
+  | {
+      v: 1
+      action: 'create-chat-from-selection'
+      requestId: string
+      workspaceId: string
+      projectId: string
+      source: import('@craft-agent/shared/protocol').BrowserSelectionSource
+    }
+
+export type BrowserApplicationCapabilityResponse =
+  | BrowserApplicationProjectContext
+  | { projectTargets: BrowserApplicationProjectTarget[] }
+  | { applicationReady: boolean }
+  | { ok: true }
+  | { ok: true; noteTargetPath: string; sessionId: string | null }
+  | { ok: false; reason: 'cancelled' }
+  | { ok: true; sessionId: string; targetTitle: string }
 
 /**
  * Wire shape for `screenshot` / `screenshotRegion` results.

@@ -4,7 +4,11 @@
  * See docs/adr-transport-locality.md for the locality boundary definition.
  */
 
-import type { BrowserCapabilityRequest } from './browser-capability'
+import type {
+  BrowserApplicationCapabilityRequest,
+  BrowserApplicationCapabilityResponse,
+  BrowserCapabilityRequest,
+} from './browser-capability'
 import type {
   DrawnixBoardCapabilityRequest,
   DrawnixBoardCapabilityResponse,
@@ -36,8 +40,19 @@ export const CLIENT_SAVE_TEXT_FILE = 'client:saveTextFile'
 /** Capability: drive a local `BrowserPaneManager` instance for a remote agent. */
 export const CLIENT_BROWSER_INVOKE = 'client:browser:invoke'
 
+/** Capability: access the active workspace's Project/Chat data for a local BrowserWindow. */
+export const CLIENT_BROWSER_APPLICATION_INVOKE = 'client:browserApplication:invoke'
+
 /** Capability: read or transform a Drawnix board currently visible in the client. */
 export const CLIENT_DRAWNIX_BOARD_INVOKE = 'client:drawnixBoard:invoke'
+
+/** Marks transport-only options that must not be forwarded to the client. */
+export const CLIENT_INVOKE_OPTIONS = Symbol('client-invoke-options')
+
+export interface ClientInvokeOptions {
+  [CLIENT_INVOKE_OPTIONS]: true
+  timeoutMs: number | null
+}
 
 /** All capabilities a local Electron client advertises on handshake. */
 export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
@@ -48,6 +63,7 @@ export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
   CLIENT_OPEN_FILE_DIALOG,
   CLIENT_SAVE_TEXT_FILE,
   CLIENT_BROWSER_INVOKE,
+  CLIENT_BROWSER_APPLICATION_INVOKE,
   CLIENT_DRAWNIX_BOARD_INVOKE,
 ]
 
@@ -170,6 +186,22 @@ export async function requestClientBrowserInvoke<T>(
   req: BrowserCapabilityRequest,
 ): Promise<T> {
   return server.invokeClient(clientId, CLIENT_BROWSER_INVOKE, req) as Promise<T>
+}
+
+export async function requestClientBrowserApplicationInvoke(
+  server: RpcServer,
+  clientId: string,
+  request: BrowserApplicationCapabilityRequest,
+): Promise<BrowserApplicationCapabilityResponse> {
+  const transportOptions: ClientInvokeOptions | null = request.action === 'add-selection-note'
+    ? { [CLIENT_INVOKE_OPTIONS]: true, timeoutMs: null }
+    : null
+  return server.invokeClient(
+    clientId,
+    CLIENT_BROWSER_APPLICATION_INVOKE,
+    request,
+    ...(transportOptions ? [transportOptions] : []),
+  ) as Promise<BrowserApplicationCapabilityResponse>
 }
 
 export async function requestClientDrawnixBoardInvoke(

@@ -25,7 +25,11 @@ import {
 import { join, basename } from 'path';
 import type { Reference } from '@craft-agent/core/types';
 import { getWorkspaceSessionsPath, loadWorkspaceConfig } from '../workspaces/storage.ts';
-import { loadProjectById, withProjectMutationLock } from '../projects/storage.ts';
+import {
+  loadProjectById,
+  loadWorkspaceProjects,
+  withProjectMutationLock,
+} from '../projects/storage.ts';
 import { generateUniqueSessionId } from './slug-generator.ts';
 import { toPortablePath, expandPath } from '../utils/paths.ts';
 import { sanitizeSessionId } from './validation.ts';
@@ -179,6 +183,7 @@ export function generateSessionId(workspaceRootPath: string): string {
 export async function createSession(
   workspaceRootPath: string,
   options?: {
+    creationRequestId?: string;
     name?: string;
     workingDirectory?: string;
     permissionMode?: SessionConfig['permissionMode'];
@@ -217,6 +222,7 @@ export async function createSession(
     const sdkCwd = options?.workingDirectory ?? getSessionPath(workspaceRootPath, sessionId);
     const session: SessionConfig = {
       id: sessionId,
+      creationRequestId: options?.creationRequestId,
       workspaceRootPath,
       name: options?.name,
       createdAt: now,
@@ -350,6 +356,15 @@ export function loadSession(workspaceRootPath: string, sessionId: string): Store
   if (existsSync(jsonlPath)) {
     const session = readSessionJsonl(jsonlPath);
     if (session) {
+      if (!session.projectId) {
+        const defaultProjectId = loadWorkspaceConfig(workspaceRootPath)?.defaultProjectId;
+        if (defaultProjectId) session.projectId = defaultProjectId;
+      }
+      if (!session.projectId || !loadProjectById(workspaceRootPath, session.projectId)) {
+        debug(`[sessions] Ignoring session "${session.id}" with invalid Project ownership in ${workspaceRootPath}`);
+        end();
+        return null;
+      }
       end();
       return session;
     }
@@ -376,6 +391,10 @@ export function listSessions(workspaceRootPath: string): SessionMetadata[] {
   const entries = readdirSync(sessionsDir, { withFileTypes: true });
   span.mark('readdir');
   const sessions: SessionMetadata[] = [];
+  const defaultProjectId = loadWorkspaceConfig(workspaceRootPath)?.defaultProjectId;
+  const projectIds = new Set(
+    loadWorkspaceProjects(workspaceRootPath).map(project => project.config.id),
+  );
 
   for (const entry of entries) {
     if (entry.isDirectory()) {
@@ -393,7 +412,12 @@ export function listSessions(workspaceRootPath: string): SessionMetadata[] {
       if (existsSync(jsonlFile)) {
         const header = readSessionHeader(jsonlFile);
         if (header) {
-          const metadata = headerToMetadata(header, workspaceRootPath);
+          const metadata = headerToMetadata(
+            header,
+            workspaceRootPath,
+            defaultProjectId,
+            projectIds,
+          );
           if (metadata) sessions.push(metadata);
         }
       }
@@ -412,10 +436,18 @@ export function listSessions(workspaceRootPath: string): SessionMetadata[] {
  * Convert SessionHeader to SessionMetadata
  * Used for fast session list loading from JSONL format.
  */
-function headerToMetadata(header: SessionHeader, workspaceRootPath: string): SessionMetadata | null {
+function headerToMetadata(
+  header: SessionHeader,
+  workspaceRootPath: string,
+  defaultProjectId: string | undefined,
+  projectIds: ReadonlySet<string>,
+): SessionMetadata | null {
   try {
-    if (typeof header.projectId !== 'string' || !header.projectId.trim()) {
-      debug(`[sessions] Ignoring session "${header.id}" without Project ownership in ${workspaceRootPath}`);
+    const projectId = typeof header.projectId === 'string' && header.projectId.trim()
+      ? header.projectId
+      : defaultProjectId;
+    if (!projectId || !projectIds.has(projectId)) {
+      debug(`[sessions] Ignoring session "${header.id}" with invalid Project ownership in ${workspaceRootPath}`);
       return null;
     }
 
@@ -440,6 +472,7 @@ function headerToMetadata(header: SessionHeader, workspaceRootPath: string): Ses
 
     return {
       ...headerFields,
+      projectId,
       workspaceRootPath,
       sessionStatus: validatedStatus,
       planCount: planCount > 0 ? planCount : undefined,

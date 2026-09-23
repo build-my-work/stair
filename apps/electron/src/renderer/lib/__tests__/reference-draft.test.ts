@@ -3,6 +3,8 @@ import { describe, expect, it } from 'bun:test'
 import type { Reference } from '@craft-agent/core'
 import {
   addSessionDraftReference,
+  applyQueuedInputRestore,
+  mergeAuthoritativeSessionDraftReferences,
   mergeHydratedSessionDrafts,
   removeSessionDraftReference,
   restoreSessionDraftContent,
@@ -65,6 +67,81 @@ describe('引用草稿更新', () => {
       .toEqual({ text: '问题' })
     expect(setSessionDraftReferences({ text: '问题' }, 'project-b', [reference]))
       .toBeNull()
+  })
+
+  it('服务端权威快照合并时同时保留本地新增和本地删除意图', () => {
+    const remote = { ...reference, messageId: 'message-remote' }
+    const local = { ...reference, messageId: 'message-local' }
+
+    expect(mergeAuthoritativeSessionDraftReferences(
+      { text: '问题', references: [local] },
+      'project-a',
+      [reference],
+      [reference, remote],
+    )).toEqual({
+      ok: true,
+      draft: {
+        text: '问题',
+        references: [remote, local],
+      },
+    })
+  })
+
+  it('服务端新增引用会进入本地，但已确认后被用户删除的引用不会复活', () => {
+    const added = { ...reference, messageId: 'message-added' }
+
+    expect(mergeAuthoritativeSessionDraftReferences(
+      { text: '', references: [reference] },
+      'project-a',
+      [reference],
+      [reference, added],
+    )).toEqual({
+      ok: true,
+      draft: { text: '', references: [reference, added] },
+    })
+
+    expect(mergeAuthoritativeSessionDraftReferences(
+      { text: '', references: [reference] },
+      'project-a',
+      [reference, added],
+      [reference, added],
+    )).toEqual({
+      ok: true,
+      draft: { text: '', references: [reference] },
+    })
+  })
+
+  it('发送清空旧草稿时仍保留并发完成的 Browser 新引用', () => {
+    const browserReference = { ...reference, messageId: 'browser-selection' }
+
+    expect(mergeAuthoritativeSessionDraftReferences(
+      null,
+      'project-a',
+      [reference],
+      [reference, browserReference],
+    )).toEqual({
+      ok: true,
+      draft: {
+        text: '',
+        references: [browserReference],
+      },
+    })
+  })
+
+  it('权威快照与本地引用合并超限时显式失败而不是伪装成空草稿', () => {
+    const confirmed = Array.from({ length: 31 }, (_, index): Reference => ({
+      ...reference,
+      messageId: `confirmed-${index}`,
+    }))
+    const remote = { ...reference, messageId: 'remote' }
+    const local = { ...reference, messageId: 'local' }
+
+    expect(mergeAuthoritativeSessionDraftReferences(
+      { text: '', references: [...confirmed, local] },
+      'project-a',
+      confirmed,
+      [...confirmed, remote],
+    )).toEqual({ ok: false, reason: 'reference-boundary' })
   })
 
   it('批量恢复先去重再执行数量上限，重复引用不会造成误拒绝', () => {
@@ -135,6 +212,28 @@ describe('引用草稿更新', () => {
     })
   })
 
+  it('Stop 恢复 queued 附件时追加到用户随后选择的附件', () => {
+    expect(restoreSessionDraftContent(
+      {
+        text: '正在编辑',
+        attachments: [{ path: '/tmp/new.txt', name: 'new.txt' }],
+      },
+      'project-a',
+      '排队消息',
+      [],
+      [{ path: '/tmp/queued.txt', name: 'queued.txt' }],
+    )).toEqual({
+      ok: true,
+      draft: {
+        text: '正在编辑\n\n排队消息',
+        attachments: [
+          { path: '/tmp/new.txt', name: 'new.txt' },
+          { path: '/tmp/queued.txt', name: 'queued.txt' },
+        ],
+      },
+    })
+  })
+
   it('refs-only 恢复不会给 hydration 期间的新文本追加空白行', () => {
     expect(restoreSessionDraftContent(
       { text: 'hydration 期间输入' },
@@ -146,6 +245,150 @@ describe('引用草稿更新', () => {
       draft: {
         text: 'hydration 期间输入',
         references: [reference],
+      },
+    })
+  })
+
+  it('重启 hydration 已包含 restore id 时不会再次追加 queued input', () => {
+    const hydrated = {
+      text: '原草稿\n\n排队消息',
+      attachments: [{ path: '/tmp/queued.txt', name: 'queued.txt' }],
+      references: [reference],
+    }
+    expect(applyQueuedInputRestore(
+      hydrated,
+      hydrated,
+      hydrated,
+      'project-a',
+    )).toEqual({ ok: true, draft: hydrated })
+  })
+
+  it('hydration 前的新输入会与已原子恢复的权威草稿合并而不是覆盖它', () => {
+    const authoritative = {
+      text: '排队消息',
+      attachments: [{ path: '/tmp/queued.txt', name: 'queued.txt' }],
+      references: [reference],
+    }
+    expect(applyQueuedInputRestore(
+      {
+        text: 'hydration 前输入',
+        attachments: [{ path: '/tmp/new.txt', name: 'new.txt' }],
+      },
+      null,
+      authoritative,
+      'project-a',
+    )).toEqual({
+      ok: true,
+      draft: {
+        text: '排队消息\n\nhydration 前输入',
+        attachments: [
+          { path: '/tmp/queued.txt', name: 'queued.txt' },
+          { path: '/tmp/new.txt', name: 'new.txt' },
+        ],
+        references: [reference],
+      },
+    })
+  })
+
+  it('另一个尚未应用 restore id 的窗口会合并 queued input', () => {
+    expect(applyQueuedInputRestore(
+      { text: '原草稿' },
+      { text: '原草稿' },
+      { text: '原草稿\n\n排队消息', references: [reference] },
+      'project-a',
+    )).toEqual({
+      ok: true,
+      draft: {
+        text: '原草稿\n\n排队消息',
+        references: [reference],
+      },
+    })
+  })
+
+  it('本地和权威草稿追加同一段文本时只保留一份', () => {
+    expect(applyQueuedInputRestore(
+      { text: '原草稿\n\n同一段' },
+      { text: '原草稿' },
+      { text: '原草稿\n\n同一段' },
+      'project-a',
+    )).toEqual({
+      ok: true,
+      draft: { text: '原草稿\n\n同一段' },
+    })
+  })
+
+  it('以服务端权威草稿为基线并保留当前窗口尚未落盘的输入', () => {
+    expect(applyQueuedInputRestore(
+      {
+        text: '窗口 A 尚未落盘',
+        attachments: [{ path: '/tmp/window-a.txt', name: 'window-a.txt' }],
+      },
+      null,
+      {
+        text: '窗口 B 已落盘\n\n排队消息',
+        attachments: [{ path: '/tmp/queued.txt', name: 'queued.txt' }],
+        references: [reference],
+      },
+      'project-a',
+    )).toEqual({
+      ok: true,
+      draft: {
+        text: '窗口 B 已落盘\n\n排队消息\n\n窗口 A 尚未落盘',
+        attachments: [
+          { path: '/tmp/queued.txt', name: 'queued.txt' },
+          { path: '/tmp/window-a.txt', name: 'window-a.txt' },
+        ],
+        references: [reference],
+      },
+    })
+  })
+
+  it('保留 queued input，但不会复活恢复期间被本窗口删除的草稿内容', () => {
+    const removedReference = {
+      ...reference,
+      quote: 'removed',
+      locator: {
+        type: 'text-quote' as const,
+        exact: 'removed',
+        start: 0,
+        end: 7,
+      },
+    }
+    const queuedReference = {
+      ...reference,
+      messageId: 'message-queued',
+      quote: 'queued',
+      locator: {
+        type: 'text-quote' as const,
+        exact: 'queued',
+        start: 0,
+        end: 6,
+      },
+    }
+    const confirmedBefore = {
+      text: '准备删除的文字',
+      attachments: [{ path: '/tmp/removed.txt', name: 'removed.txt' }],
+      references: [removedReference],
+    }
+
+    expect(applyQueuedInputRestore(
+      { text: '' },
+      confirmedBefore,
+      {
+        text: '准备删除的文字\n\n排队消息',
+        attachments: [
+          { path: '/tmp/removed.txt', name: 'removed.txt' },
+          { path: '/tmp/queued.txt', name: 'queued.txt' },
+        ],
+        references: [removedReference, queuedReference],
+      },
+      'project-a',
+    )).toEqual({
+      ok: true,
+      draft: {
+        text: '排队消息',
+        attachments: [{ path: '/tmp/queued.txt', name: 'queued.txt' }],
+        references: [queuedReference],
       },
     })
   })

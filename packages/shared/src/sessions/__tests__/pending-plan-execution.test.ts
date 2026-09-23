@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { Reference } from '@craft-agent/core/types'
 import type { StoredSession } from '../types.ts'
+import { createWorkspaceAtPath } from '../../workspaces/storage.ts'
 import {
   clearPendingPlanExecution,
   getPendingPlanExecution,
@@ -40,10 +41,14 @@ function makeStoredSession(workspaceRootPath: string): StoredSession {
 
 describe('pending plan execution persistence', () => {
   let workspaceRoot: string
+  let projectId: string
 
   beforeEach(async () => {
     workspaceRoot = makeTmpDir()
-    await saveSession(makeStoredSession(workspaceRoot))
+    projectId = createWorkspaceAtPath(workspaceRoot, 'Pending plan').defaultProjectId
+    const session = makeStoredSession(workspaceRoot)
+    session.projectId = projectId
+    await saveSession(session)
   })
 
   afterEach(() => {
@@ -56,7 +61,7 @@ describe('pending plan execution persistence', () => {
     const reference: Reference = {
       version: 1,
       kind: 'chat-message',
-      projectId: 'proj_default',
+      projectId,
       sessionId: 'source-session',
       messageId: 'source-message',
       role: 'assistant',

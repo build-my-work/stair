@@ -7,12 +7,12 @@
  *
  * The registry is a simple Map keyed by sessionId. Each backend registers
  * callbacks when a session starts and merges additional callbacks (e.g.
- * browser pane functions) as they become available.
+ * browser window functions) as they become available.
  */
 
 import type { LLMQueryRequest, LLMQueryResult } from './llm-tool.ts';
 import type { SpawnSessionFn } from './spawn-session-tool.ts';
-import type { BrowserPaneFns } from './browser-tools.ts';
+import type { BrowserWindowFns } from './browser-tools.ts';
 import type { AuthRequest } from '@craft-agent/session-tools-core';
 import { debug } from '../utils/debug.ts';
 
@@ -45,11 +45,11 @@ export interface SessionScopedToolCallbacks {
   spawnSessionFn?: SpawnSessionFn;
 
   /**
-   * Browser pane functions for browser_* tools.
-   * Set by the Electron session manager — wraps BrowserPaneManager
+   * Browser window functions for browser_* tools.
+   * Set by the Electron session manager — wraps the Browser window manager
    * with the session's bound browser instance.
    */
-  browserPaneFns?: BrowserPaneFns;
+  browserWindowFns?: BrowserWindowFns;
 
   /** Set labels on a session (defaults to current). */
   setSessionLabelsFn?: (sessionId: string | undefined, labels: string[]) => void | Promise<void>;
@@ -115,6 +115,10 @@ export interface SessionScopedToolCallbacks {
    */
   prWatch?: import('@craft-agent/session-tools-core').PrWatchToolCallbacks;
 
+  /** Create and open a native Drawnix mind map. */
+  createMindmapFn?: (
+    request: import('@craft-agent/session-tools-core').MindmapCreateRequest
+  ) => Promise<import('@craft-agent/session-tools-core').MindmapSnapshot>;
   /** Read the live outline of an open Drawnix board. */
   readMindmapFn?: (
     relativePath: string
@@ -141,7 +145,7 @@ export function registerSessionScopedToolCallbacks(
 
 /**
  * Merge additional callbacks into an existing session's callback set.
- * Used by the Electron session manager to add browser pane functions
+ * Used by the Electron session manager to add browser window functions
  * after the agent has already registered its core callbacks.
  */
 export function mergeSessionScopedToolCallbacks(

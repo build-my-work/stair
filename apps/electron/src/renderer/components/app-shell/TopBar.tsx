@@ -45,6 +45,7 @@ interface TopBarProps {
   onWorkspaceCreated?: (workspace: Workspace) => void
   onWorkspaceRemoved?: () => void
   activeSessionId?: string | null
+  activeProjectId?: string | null
   onNewChat: () => void
   onNewWindow?: () => void
   onOpenSettings: () => void
@@ -62,7 +63,7 @@ interface TopBarProps {
   isProjectFilesAvailable: boolean
   onToggleFocusMode: () => void
   onAddSessionPanel: () => void
-  onAddBrowserPanel: () => void
+  onAddBrowserWindow: () => void
   /** When true, hides controls that don't apply in compact/mobile layout */
   isCompact?: boolean
 }
@@ -75,6 +76,7 @@ export function TopBar({
   onWorkspaceCreated,
   onWorkspaceRemoved,
   activeSessionId,
+  activeProjectId,
   onNewChat,
   onNewWindow,
   onOpenSettings,
@@ -92,7 +94,7 @@ export function TopBar({
   isProjectFilesAvailable,
   onToggleFocusMode,
   onAddSessionPanel,
-  onAddBrowserPanel,
+  onAddBrowserWindow,
   isCompact,
 }: TopBarProps) {
   const { t } = useTranslation()
@@ -249,7 +251,11 @@ export function TopBar({
         {!isCompact && (
           <>
             <div className="min-w-0">
-              <BrowserTabStrip activeSessionId={activeSessionId} maxVisibleBadges={maxVisibleBrowserBadges} />
+              <BrowserTabStrip
+                activeSessionId={activeSessionId}
+                activeProjectId={activeProjectId}
+                maxVisibleBadges={maxVisibleBrowserBadges}
+              />
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -262,9 +268,9 @@ export function TopBar({
                   <SquarePenRounded className="h-3.5 w-3.5" />
                   {t("session.newSessionInPanel")}
                 </StyledDropdownMenuItem>
-                <StyledDropdownMenuItem onClick={onAddBrowserPanel}>
+                <StyledDropdownMenuItem onClick={onAddBrowserWindow}>
                   <Icons.Globe className="h-3.5 w-3.5" />
-                  {t("browser.newPanel")}
+                  {t("browser.newWindow")}
                 </StyledDropdownMenuItem>
               </StyledDropdownMenuContent>
             </DropdownMenu>

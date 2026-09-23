@@ -38,7 +38,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
-  const { onCreateSession } = useAppShellContext()
+  const { onCreateSession, onOpenFile } = useAppShellContext()
 
   const [project, setProject] = useState<LoadedProject | null>(null)
   const [loading, setLoading] = useState(true)
@@ -404,7 +404,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                     aria-label={t('projectInfo.openLocation')}
                     tooltip
                     icon={<FolderOpen className="size-3.5" />}
-                    onClick={() => window.electronAPI.openFile(project.folderPath)}
+                    onClick={() => onOpenFile(project.folderPath)}
                   />
                 </div>
               </Info_Table.Row>

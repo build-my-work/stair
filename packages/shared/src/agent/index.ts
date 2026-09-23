@@ -23,7 +23,7 @@ export {
   mergeSessionScopedToolCallbacks,
   // Types
   type SessionScopedToolCallbacks,
-  type BrowserPaneFns,
+  type BrowserWindowFns,
   // Auth request types (unified auth flow)
   type AuthRequest,
   type AuthRequestType,

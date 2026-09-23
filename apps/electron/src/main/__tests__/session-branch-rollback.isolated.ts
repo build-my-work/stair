@@ -15,6 +15,8 @@ let mockedProvider: 'anthropic' | 'pi' = 'anthropic'
 // Partial-mock baseline: import real modules via file paths (avoids recursive mock imports)
 const actualSharedAgentModule = await import('../../../../../packages/shared/src/agent/index.ts')
 const actualSharedAgentBackendModule = await import('../../../../../packages/shared/src/agent/backend/index.ts')
+const actualSharedConfigModule = await import('../../../../../packages/shared/src/config/index.ts')
+const actualSharedProjectsModule = await import('../../../../../packages/shared/src/projects/index.ts')
 
 mock.module('electron', () => ({
   app: {
@@ -57,6 +59,7 @@ mock.module('../logger', () => {
 })
 
 mock.module('@craft-agent/shared/config', () => ({
+  ...actualSharedConfigModule,
   getWorkspaceByNameOrId: (id: string) => (id === workspace.id ? workspace : null),
   getWorkspaces: () => [workspace],
   loadConfigDefaults: () => ({
@@ -111,12 +114,32 @@ mock.module('@craft-agent/shared/config', () => ({
 
 mock.module('@craft-agent/shared/workspaces', () => ({
   loadWorkspaceConfig: () => ({
+    defaultProjectId: 'project-1',
     defaults: {
       permissionMode: 'ask',
       thinkingLevel: 'medium',
       defaultLlmConnection: undefined,
     },
   }),
+}))
+
+mock.module('@craft-agent/shared/projects', () => ({
+  ...actualSharedProjectsModule,
+  loadProjectById: (_rootPath: string, projectId: string) => projectId === 'project-1'
+    ? {
+        config: {
+          id: projectId,
+          slug: projectId,
+          name: 'Project',
+          createdAt: 0,
+          updatedAt: 0,
+        },
+        folderPath: `${workspaceRootPath}/projects/${projectId}`,
+        assetsPath: `${workspaceRootPath}/projects/${projectId}/assets`,
+        workspaceRootPath,
+        workspaceId: workspace.id,
+      }
+    : null,
 }))
 
 mock.module('@craft-agent/shared/agent', () => ({
@@ -217,6 +240,7 @@ mock.module('@craft-agent/shared/sessions', () => ({
       labels: [],
       isFlagged: false,
       sessionStatus: opts?.sessionStatus,
+      projectId: opts?.projectId ?? 'project-1',
       createdAt: now,
       lastUsedAt: now,
       workspaceRootPath: workspaceRootPath,
@@ -250,6 +274,7 @@ mock.module('@craft-agent/shared/sessions', () => ({
       'sharedUrl','sharedId','pendingPlanExecution',
       'isArchived','archivedAt',
       'branchFromMessageId','branchFromSdkSessionId','branchFromSessionPath',
+      'projectId','parentSessionId',
     ]
     const result: Record<string, unknown> = {}
     for (const f of fields) if (f in s) result[f] = (s as Record<string, unknown>)[f]
@@ -273,6 +298,7 @@ describe('session branch rollback on preflight failure', () => {
       llmConnection: undefined,
       model: 'claude-sonnet-4-20250514',
       sdkSessionId: 'sdk-parent',
+      projectId: 'project-1',
       messages: [
         { id: 'm1', type: 'user', content: 'hello', timestamp: Date.now() - 10 },
         { id: 'm2', type: 'assistant', content: 'hi', timestamp: Date.now() - 5 },

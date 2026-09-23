@@ -1605,7 +1605,7 @@ export class PiAgent extends BaseAgent {
       // browser_tool — single CLI-like tool for all browser actions
       if (toolName === 'browser_tool') {
         const callbacks = getSessionScopedToolCallbacks(this._sessionId);
-        const browserFns = callbacks?.browserPaneFns;
+        const browserFns = callbacks?.browserWindowFns;
         if (!browserFns) {
           return { content: 'Browser window controls are not available. This tool requires the desktop app.', isError: true };
         }
@@ -2067,7 +2067,7 @@ export class PiAgent extends BaseAgent {
     });
 
     // Refresh session-scoped tool callbacks (for SubmitPlan, source auth, etc.)
-    // IMPORTANT: merge (don't replace) so SessionManager-provided browserPaneFns
+    // IMPORTANT: merge (don't replace) so SessionManager-provided browserWindowFns
     // survives across turns.
     const sessionId = this.config.session?.id;
     if (sessionId) {
