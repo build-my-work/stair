@@ -1350,11 +1350,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   const handleStop = (silent = false) => {
     if (!session?.isProcessing) return
 
-    // Explicit Stop (not a redirect/new-message send): put the in-flight prompt
-    // back in the input so the user can tweak and resend. Append to any draft.
-    // Exclude isQueued messages — those are restored separately by the backend
-    // `restore_input` effect (App.tsx) and would otherwise double up here.
-    if (!silent) {
+    // When queued messages exist, the backend restores them into the draft.
+    // Re-adding the already-sent prompt here would duplicate it on the next send.
+    // Without a queue, keep the existing Stop behavior so the prompt can be edited.
+    if (!silent && !session.messages.some(m => m.role === 'user' && m.isQueued)) {
       const lastUserMsg = [...session.messages].reverse().find(m => m.role === 'user' && !m.isQueued)
       const restoredText = coerceInputText(lastUserMsg?.content)
       if (lastUserMsg && (restoredText || (lastUserMsg.references?.length ?? 0) > 0)) {
