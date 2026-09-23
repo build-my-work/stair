@@ -66,11 +66,27 @@ function verifyPackagedRuntimeDependencies(
     `${platform}_${arch}`,
     'koffi.node',
   )
+  const rootKoffiPackage = path.join(appModules, 'koffi', 'package.json')
+  const rootKoffiBinary = path.join(
+    appModules,
+    'koffi',
+    'build',
+    'koffi',
+    `${platform}_${arch}`,
+    'koffi.node',
+  )
   const bunBinary = path.join(
     platform === 'win32' ? resourcesPath : appRoot,
     'vendor',
     'bun',
     platform === 'win32' ? 'bun.exe' : 'bun',
+  )
+  const uvBinary = path.join(
+    appRoot,
+    'resources',
+    'bin',
+    `${platform}-${arch}`,
+    platform === 'win32' ? 'uv.exe' : 'uv',
   )
 
   for (const filePath of [
@@ -125,6 +141,9 @@ function verifyPackagedRuntimeDependencies(
     koffiPackage,
     koffiBinary,
     bunBinary,
+    uvBinary,
+    rootKoffiPackage,
+    rootKoffiBinary,
   ]) {
     if (!existsSync(filePath)) {
       throw new Error(`Missing packaged runtime dependency: ${filePath}`)

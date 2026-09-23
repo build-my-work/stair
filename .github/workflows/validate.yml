@@ -41,5 +41,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run validation suite
+      - name: Run source regression gate
         run: bun run validate:ci

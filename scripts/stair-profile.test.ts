@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'bun:test'
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   truncateSync,
   writeFileSync,
@@ -16,6 +18,7 @@ import { RPC_CHANNELS } from '../packages/shared/src/protocol/channels'
 import {
   copyPiAgentServer,
   copyRipgrep,
+  copySDK,
   type Arch,
   type BuildConfig,
   type Platform,
@@ -98,6 +101,71 @@ describe('Stair 脚本环境', () => {
     expect(env.CRAFT_VITE_PORT).toBe('6193')
     expect(env.CRAFT_DEEPLINK_SCHEME).toBe('stair')
   })
+
+  it('packaged 入口覆盖继承的 Craft 身份但保留验收配置目录', () => {
+    const packagedRoot = mkdtempSync(join(tmpdir(), 'stair-packaged-entry-'))
+    const entryPath = join(packagedRoot, 'stair-main.cjs')
+    try {
+      copyFileSync(join(REPO_ROOT, 'apps/electron/stair-main.cjs'), entryPath)
+      mkdirSync(join(packagedRoot, 'dist'), { recursive: true })
+      writeFileSync(
+        join(packagedRoot, 'dist/main.cjs'),
+        `const keys = [
+          'CRAFT_APP_NAME',
+          'CRAFT_CONFIG_DIR',
+          'CRAFT_DEEPLINK_SCHEME',
+          'CRAFT_APP_ICON',
+          'CRAFT_DISABLE_AUTO_UPDATE',
+        ];
+        console.log('STAIR_PACKAGED_ENV:' + JSON.stringify(
+          Object.fromEntries(keys.map(key => [key, process.env[key]])),
+        ));`,
+      )
+      const run = Bun.spawnSync([process.execPath, entryPath], {
+        env: {
+          ...process.env,
+          CRAFT_APP_NAME: 'Craft Agents',
+          CRAFT_CONFIG_DIR: '/tmp/stair-acceptance',
+          CRAFT_DEEPLINK_SCHEME: 'craftagents',
+          CRAFT_APP_ICON: '/tmp/craft.png',
+          CRAFT_DISABLE_AUTO_UPDATE: '0',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+
+      expect(run.exitCode, run.stderr.toString()).toBe(0)
+      const marker = 'STAIR_PACKAGED_ENV:'
+      const line = run.stdout.toString().split(/\r?\n/u)
+        .find(candidate => candidate.startsWith(marker))
+      const env = JSON.parse(line!.slice(marker.length)) as Record<string, string>
+      expect(env).toMatchObject({
+        CRAFT_APP_NAME: 'Stair',
+        CRAFT_CONFIG_DIR: '/tmp/stair-acceptance',
+        CRAFT_DEEPLINK_SCHEME: 'stair',
+        CRAFT_APP_ICON: join(realpathSync(packagedRoot), 'dist/resources/stair/icon.png'),
+        CRAFT_DISABLE_AUTO_UPDATE: '1',
+      })
+    } finally {
+      rmSync(packagedRoot, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('Stair 开发构建监听', () => {
+  it('初始构建并监听全部 Browser preload 入口', () => {
+    const source = readFileSync(join(REPO_ROOT, 'scripts/electron-dev.ts'), 'utf8')
+    for (const preload of [
+      'apps/electron/src/preload/browser-toolbar.ts',
+      'apps/electron/src/preload/browser-page.ts',
+      'apps/electron/src/preload/browser-overlay.ts',
+    ]) {
+      expect(source).toContain(`entry: "${preload}"`)
+    }
+    expect(source).toContain('...PRELOAD_OUTPUTS.map(output => runEsbuild(output.entry, output.outfile))')
+    expect(source).toContain('for (const output of PRELOAD_OUTPUTS)')
+    expect(source).toContain('await context.watch()')
+  })
 })
 
 describe('Stair 构建入口', () => {
@@ -137,6 +205,20 @@ describe('Stair 构建入口', () => {
     expect(packagedEntry).toContain(
       "'dist', 'resources', 'stair', 'icon.png'",
     )
+    expect(packagedEntry).toContain("process.env.CRAFT_APP_NAME = 'Stair'")
+    expect(packagedEntry).toContain("process.env.CRAFT_DEEPLINK_SCHEME = 'stair'")
+    expect(packagedEntry).toContain("process.env.CRAFT_DISABLE_AUTO_UPDATE = '1'")
+    expect(packagedEntry).not.toContain('||=')
+
+    const baseBuilderConfig = readFileSync(
+      join(REPO_ROOT, 'apps/electron/electron-builder.yml'),
+      'utf8',
+    )
+    expect(baseBuilderConfig).toContain('resources/bin/win32-arm64/**/*')
+    expect(baseBuilderConfig).toContain('resources/bin/linux-arm64/**/*')
+    expect(baseBuilderConfig).toContain('build/koffi/win32_${arch}/**/*')
+    expect(baseBuilderConfig).toContain('from: resources/bin/win32-${arch}')
+    expect(baseBuilderConfig).toContain('to: app/resources/bin/win32-${arch}')
   })
 
   it('把独立深链协议注入 Renderer 构建', () => {
@@ -157,6 +239,7 @@ describe('Stair 构建入口', () => {
       commonBuild.indexOf('function findFileRecursive'),
     )
     expect(buildEntry).toContain('await downloadBun(buildConfig)')
+    expect(buildEntry).toContain('await downloadUv(buildConfig)')
     expect(buildEntry).toContain('copySessionServer(buildConfig)')
     expect(buildEntry).toContain('copyPiAgentServer(buildConfig)')
     expect(buildEntry).toContain('copySDK(buildConfig)')
@@ -173,6 +256,9 @@ describe('Stair 构建入口', () => {
     expect(downloadBun.match(/--retry-all-errors/g)).toHaveLength(2)
     expect(downloadBun).toContain('gh release download')
     expect(downloadBun).toContain('--clobber')
+    expect(commonBuild).toContain("'pack',")
+    expect(commonBuild).toContain('`@anthropic-ai/${pkg}@${sdkVersion}`')
+    expect(commonBuild).toContain("'--pack-destination'")
 
     const afterPack = require(join(
       REPO_ROOT,
@@ -259,6 +345,23 @@ describe('Stair 构建入口', () => {
       writeFileSync(bunBinary, 'bun')
       expect(() => {
         afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('resources/bin/darwin-arm64/uv')
+
+      const darwinUv = join(resourcesPath, 'app/resources/bin/darwin-arm64/uv')
+      mkdirSync(join(darwinUv, '..'), { recursive: true })
+      writeFileSync(darwinUv, 'uv')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
+      }).toThrow('app/node_modules/koffi')
+
+      const rootKoffi = join(resourcesPath, 'app/node_modules/koffi')
+      mkdirSync(rootKoffi, { recursive: true })
+      writeFileSync(join(rootKoffi, 'package.json'), '{}')
+      const rootDarwinKoffi = join(rootKoffi, 'build/koffi/darwin_arm64/koffi.node')
+      mkdirSync(join(rootDarwinKoffi, '..'), { recursive: true })
+      writeFileSync(rootDarwinKoffi, 'koffi')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
       }).not.toThrow()
 
       writeExecutableHeader(join(ripgrepDir, 'rg'), 'darwin', 'x64')
@@ -284,6 +387,73 @@ describe('Stair 构建入口', () => {
       writeFileSync(winBun, 'bun')
       expect(() => {
         afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'win32', 'x64')
+      }).toThrow('resources/bin/win32-x64/uv.exe')
+      const winUv = join(resourcesPath, 'app/resources/bin/win32-x64/uv.exe')
+      mkdirSync(join(winUv, '..'), { recursive: true })
+      writeFileSync(winUv, 'uv')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'win32', 'x64')
+      }).toThrow('win32_x64')
+      const rootWinKoffi = join(rootKoffi, 'build/koffi/win32_x64/koffi.node')
+      mkdirSync(join(rootWinKoffi, '..'), { recursive: true })
+      writeFileSync(rootWinKoffi, 'koffi')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'win32', 'x64')
+      }).not.toThrow()
+
+      writeExecutableHeader(join(ripgrepDir, 'rg.exe'), 'win32', 'arm64')
+      writeFileSync(
+        join(binaryDir, 'package.json'),
+        JSON.stringify({ os: ['win32'], cpu: ['arm64'] }),
+      )
+      const winArmKoffi = join(koffiDir, 'build/koffi/win32_arm64/koffi.node')
+      mkdirSync(join(winArmKoffi, '..'), { recursive: true })
+      writeFileSync(winArmKoffi, 'koffi')
+      const rootWinArmKoffi = join(rootKoffi, 'build/koffi/win32_arm64/koffi.node')
+      mkdirSync(join(rootWinArmKoffi, '..'), { recursive: true })
+      writeFileSync(rootWinArmKoffi, 'koffi')
+      const winArmUv = join(resourcesPath, 'app/resources/bin/win32-arm64/uv.exe')
+      mkdirSync(join(winArmUv, '..'), { recursive: true })
+      writeFileSync(winArmUv, 'uv')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'win32', 'arm64')
+      }).not.toThrow()
+
+      writeExecutableHeader(join(ripgrepDir, 'rg'), 'linux', 'x64')
+      writeFileSync(
+        join(binaryDir, 'package.json'),
+        JSON.stringify({ os: ['linux'], cpu: ['x64'] }),
+      )
+      const linuxKoffi = join(koffiDir, 'build/koffi/linux_x64/koffi.node')
+      mkdirSync(join(linuxKoffi, '..'), { recursive: true })
+      writeFileSync(linuxKoffi, 'koffi')
+      const rootLinuxKoffi = join(rootKoffi, 'build/koffi/linux_x64/koffi.node')
+      mkdirSync(join(rootLinuxKoffi, '..'), { recursive: true })
+      writeFileSync(rootLinuxKoffi, 'koffi')
+      writeFileSync(bunBinary, 'bun')
+      const linuxUv = join(resourcesPath, 'app/resources/bin/linux-x64/uv')
+      mkdirSync(join(linuxUv, '..'), { recursive: true })
+      writeFileSync(linuxUv, 'uv')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'linux', 'x64')
+      }).not.toThrow()
+
+      writeExecutableHeader(join(ripgrepDir, 'rg'), 'linux', 'arm64')
+      writeFileSync(
+        join(binaryDir, 'package.json'),
+        JSON.stringify({ os: ['linux'], cpu: ['arm64'] }),
+      )
+      const linuxArmKoffi = join(koffiDir, 'build/koffi/linux_arm64/koffi.node')
+      mkdirSync(join(linuxArmKoffi, '..'), { recursive: true })
+      writeFileSync(linuxArmKoffi, 'koffi')
+      const rootLinuxArmKoffi = join(rootKoffi, 'build/koffi/linux_arm64/koffi.node')
+      mkdirSync(join(rootLinuxArmKoffi, '..'), { recursive: true })
+      writeFileSync(rootLinuxArmKoffi, 'koffi')
+      const linuxArmUv = join(resourcesPath, 'app/resources/bin/linux-arm64/uv')
+      mkdirSync(join(linuxArmUv, '..'), { recursive: true })
+      writeFileSync(linuxArmUv, 'uv')
+      expect(() => {
+        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'linux', 'arm64')
       }).not.toThrow()
     } finally {
       rmSync(resourcesPath, { recursive: true, force: true })
@@ -324,6 +494,60 @@ describe('Stair 构建入口', () => {
           'utf8',
         ),
       ).toBe(targetArch)
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true })
+      rmSync(electronDir, { recursive: true, force: true })
+    }
+  })
+
+  it('跨架构构建只暂存与核心 SDK 同版本的目标 Claude runtime', () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'stair-sdk-source-'))
+    const electronDir = mkdtempSync(join(tmpdir(), 'stair-sdk-electron-'))
+    const platform = process.platform as Platform
+    const targetArch: Arch = process.arch === 'arm64' ? 'x64' : 'arm64'
+    const packageName = `claude-agent-sdk-${platform}-${targetArch}`
+    const sdkSource = join(rootDir, 'node_modules/@anthropic-ai/claude-agent-sdk')
+    const binarySource = join(rootDir, 'node_modules/@anthropic-ai', packageName)
+    const binaryName = platform === 'win32' ? 'claude.exe' : 'claude'
+
+    try {
+      mkdirSync(sdkSource, { recursive: true })
+      mkdirSync(binarySource, { recursive: true })
+      writeFileSync(join(sdkSource, 'package.json'), JSON.stringify({ version: '1.2.3' }))
+      writeFileSync(join(sdkSource, 'sdk.mjs'), 'sdk')
+      writeFileSync(
+        join(binarySource, 'package.json'),
+        JSON.stringify({ version: '1.2.2', os: [platform], cpu: [targetArch] }),
+      )
+      writeFileSync(join(binarySource, binaryName), targetArch)
+
+      const config = {
+        platform,
+        arch: targetArch,
+        upload: false,
+        uploadLatest: false,
+        uploadScript: false,
+        rootDir,
+        electronDir,
+      } satisfies BuildConfig
+
+      expect(() => copySDK(config)).toThrow('does not match')
+      writeFileSync(
+        join(binarySource, 'package.json'),
+        JSON.stringify({ version: '1.2.3', os: [platform], cpu: [targetArch] }),
+      )
+      copySDK(config)
+
+      const staged = join(
+        electronDir,
+        'node_modules/@anthropic-ai/claude-agent-sdk-binary',
+      )
+      expect(JSON.parse(readFileSync(join(staged, 'package.json'), 'utf8'))).toMatchObject({
+        version: '1.2.3',
+        os: [platform],
+        cpu: [targetArch],
+      })
+      expect(readFileSync(join(staged, binaryName), 'utf8')).toBe(targetArch)
     } finally {
       rmSync(rootDir, { recursive: true, force: true })
       rmSync(electronDir, { recursive: true, force: true })

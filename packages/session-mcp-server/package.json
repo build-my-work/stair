@@ -10,7 +10,8 @@
   },
   "scripts": {
     "build": "bun build src/index.ts --outdir=dist --target=node --format=cjs",
-    "dev": "bun run src/index.ts"
+    "dev": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json"
   },
   "dependencies": {
     "@craft-agent/session-tools-core": "workspace:*",

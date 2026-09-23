@@ -48,7 +48,9 @@ files:
   - resources/bin/darwin-arm64/**/*
   - resources/bin/darwin-x64/**/*
   - resources/bin/win32-x64/**/*
+  - resources/bin/win32-arm64/**/*
   - resources/bin/linux-x64/**/*
+  - resources/bin/linux-arm64/**/*
   # Include bundled Bun runtime (platform-specific, set by build script)
   - vendor/bun/**/*
   # Exclude everything from node_modules (will use extraResources for SDK)
@@ -176,7 +178,7 @@ win:
     # Moving them to extraResources avoids this by copying before the collector runs.
     # See: https://github.com/electron-userland/electron-builder/issues/8250
     - "!vendor/bun/**/*"
-    - "!**/resources/bin/win32-x64/**"
+    - "!**/resources/bin/win32-*/**"
   # Copy executables as extraResources to avoid EBUSY file locking (see comment above)
   extraResources:
     - from: node_modules/@anthropic-ai/claude-agent-sdk
@@ -192,11 +194,11 @@ win:
         - index.js
         - indirect.js
         - lib/**/*
-        - build/koffi/win32_x64/**/*
+        - build/koffi/win32_${arch}/**/*
     - from: vendor/bun/bun.exe
       to: vendor/bun/bun.exe
-    - from: resources/bin/win32-x64
-      to: app/resources/bin/win32-x64
+    - from: resources/bin/win32-${arch}
+      to: app/resources/bin/win32-${arch}
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
     - from: ../../packages/messaging-whatsapp-worker/dist/worker.cjs
       to: messaging-whatsapp-worker/worker.cjs

@@ -11,8 +11,11 @@ import {
   copyFileSync,
   cpSync,
   lstatSync,
+  mkdtempSync,
+  readFileSync,
   readdirSync,
 } from 'fs';
+import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { createHash } from 'crypto';
 
@@ -353,14 +356,15 @@ function nativeBinaryName(config: BuildConfig): string {
 }
 
 /**
- * Copy SDK from root node_modules:
+ * Stage the SDK for packaging:
  *   1. The thin core (`claude-agent-sdk`) — universal sdk.mjs + types.
- *   2. The matching arch's binary package, staged at the stable alias
+ *   2. The matching arch's binary package, fetched at the core SDK version
+ *      when it is not installed locally, then staged at the stable alias
  *      `claude-agent-sdk-binary/` so electron-builder.yml stays arch-agnostic
  *      and the runtime resolver finds the binary regardless of host arch.
  */
 export function copySDK(config: BuildConfig): void {
-  const { rootDir, electronDir } = config;
+  const { rootDir, electronDir, platform, arch } = config;
   const sdkScope = join(electronDir, 'node_modules', '@anthropic-ai');
 
   const sdkSource = join(rootDir, 'node_modules', '@anthropic-ai', 'claude-agent-sdk');
@@ -368,6 +372,12 @@ export function copySDK(config: BuildConfig): void {
 
   if (!existsSync(sdkSource)) {
     throw new Error(`SDK core not found at ${sdkSource}. Run 'bun install' first.`);
+  }
+
+  const sdkMetadata = JSON.parse(readFileSync(join(sdkSource, 'package.json'), 'utf8'));
+  const sdkVersion = sdkMetadata.version;
+  if (typeof sdkVersion !== 'string' || sdkVersion.length === 0) {
+    throw new Error(`SDK core version not found at ${sdkSource}/package.json`);
   }
 
   console.log('Copying SDK core...');
@@ -378,22 +388,59 @@ export function copySDK(config: BuildConfig): void {
   cpSync(sdkSource, sdkDest, { recursive: true, dereference: true });
 
   const pkg = platformBinaryPkg(config);
-  const binSource = join(rootDir, 'node_modules', '@anthropic-ai', pkg);
-  if (!existsSync(binSource)) {
-    throw new Error(
-      `SDK native binary package not found at ${binSource}. ` +
-      `For cross-arch builds run \`npm pack @anthropic-ai/${pkg}@<sdk-version>\` ` +
-      `to fetch it, or use the platform build script (build-dmg.sh / build-linux.sh / build-win.ps1) ` +
-      `which handles the cross-fetch automatically.`,
-    );
-  }
+  let binSource = join(rootDir, 'node_modules', '@anthropic-ai', pkg);
+  let downloadTempDir: string | undefined;
 
-  const aliasDest = join(sdkScope, 'claude-agent-sdk-binary');
-  console.log(`Staging SDK native binary (${pkg}) as claude-agent-sdk-binary alias...`);
-  if (existsSync(aliasDest)) {
-    rmSync(aliasDest, { recursive: true, force: true });
+  try {
+    if (!existsSync(binSource)) {
+      downloadTempDir = mkdtempSync(join(tmpdir(), 'stair-sdk-'));
+      console.log(`Fetching SDK native binary @anthropic-ai/${pkg}@${sdkVersion}...`);
+      const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+      const packOutput = execFileSync(
+        npmCommand,
+        [
+          'pack',
+          `@anthropic-ai/${pkg}@${sdkVersion}`,
+          '--pack-destination',
+          downloadTempDir,
+          '--json',
+        ],
+        { cwd: rootDir, encoding: 'utf8' },
+      );
+      const packed = JSON.parse(packOutput);
+      const archiveName = packed[0]?.filename;
+      if (typeof archiveName !== 'string') {
+        throw new Error(`npm pack did not return an archive for @anthropic-ai/${pkg}@${sdkVersion}`);
+      }
+
+      const extractDir = join(downloadTempDir, 'extract');
+      mkdirSync(extractDir, { recursive: true });
+      execFileSync('tar', ['-xzf', join(downloadTempDir, archiveName), '-C', extractDir]);
+      binSource = join(extractDir, 'package');
+    }
+
+    const binaryMetadata = JSON.parse(readFileSync(join(binSource, 'package.json'), 'utf8'));
+    if (
+      binaryMetadata.version !== sdkVersion ||
+      !binaryMetadata.os?.includes(platform) ||
+      !binaryMetadata.cpu?.includes(arch)
+    ) {
+      throw new Error(
+        `SDK native binary package does not match ${platform}-${arch} SDK ${sdkVersion}: ${binSource}`,
+      );
+    }
+
+    const aliasDest = join(sdkScope, 'claude-agent-sdk-binary');
+    console.log(`Staging SDK native binary (${pkg}) as claude-agent-sdk-binary alias...`);
+    if (existsSync(aliasDest)) {
+      rmSync(aliasDest, { recursive: true, force: true });
+    }
+    cpSync(binSource, aliasDest, { recursive: true, dereference: true });
+  } finally {
+    if (downloadTempDir) {
+      rmSync(downloadTempDir, { recursive: true, force: true });
+    }
   }
-  cpSync(binSource, aliasDest, { recursive: true, dereference: true });
 }
 
 /**

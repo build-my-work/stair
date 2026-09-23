@@ -6,6 +6,7 @@ import {
   copySDK,
   copySessionServer,
   downloadBun,
+  downloadUv,
   verifyMcpServersExist,
   verifySDKCopy,
   type Arch,
@@ -55,6 +56,7 @@ const buildExitCode = await build.exited
 if (buildExitCode !== 0) process.exit(buildExitCode)
 
 await downloadBun(buildConfig)
+await downloadUv(buildConfig)
 copySessionServer(buildConfig)
 copyPiAgentServer(buildConfig)
 verifyMcpServersExist(buildConfig)
