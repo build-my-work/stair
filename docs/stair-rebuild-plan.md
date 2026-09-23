@@ -6,7 +6,7 @@
 - 基线：`upstream/main@50ffa143`（`v0.11.4`）
 - 分支：`codex/stair-rebuild-v2`
 - 更新日期：2026-08-22
-- 范围：保留 Stair 产品能力，不迁移 Craft 或旧 Stair 用户数据
+- 范围：保留 Stair 产品能力，不提供 Craft 或旧 Stair 用户数据的通用迁移；仅保留已测试的“缺失 Project 身份”确定性回填
 - 代码状态：阶段 9 已把 Claude SDK、Claude binary、Session MCP、Pi Agent Server、Koffi、Bun、ripgrep 和运行时 PNG 纳入单架构打包与 `afterPack` 硬门禁，并完成隔离配置目录的全新安装与实际聊天验收；未迁移旧用户数据，未恢复旧 PanelStack、兼容层或多状态所有者
 
 ## 当前实施进度
@@ -50,7 +50,7 @@
 - 默认 Project 和仍包含 Session 的 Project 不可删除；删除 Project 不再解绑 Session。
 - Session、Task 和 Agent 派生入口继承或显式校验 Project 归属。
 - 跨 Project Session 通信被拒绝，旧或非法 Session 不会污染当前 Project。
-- 旧测试夹具已按新不变量更新，没有通过可选字段或兼容迁移放宽边界。
+- 旧 Workspace/Session 仅在 Project 身份字段缺失时确定性回填到真实 General/default Project；显式不存在或跨 Workspace 的 `projectId` 仍被拒绝。该有限读取规则不构成通用旧数据迁移，也没有把新模型字段改回可选。
 
 ### 阶段 2 已完成内容
 
@@ -218,7 +218,7 @@ Stair 将基于最新 Craft 上游重新实现，不再继续修补或重放现�
 重建保留已经验证的产品能力和行为规格，但不保留：
 
 - 现有 Stair 实现结构；
-- 现有用户数据的迁移与兼容逻辑；
+- 现有用户数据的通用迁移与兼容逻辑（不包含上述已测试的缺失 Project 身份确定性回填）；
 - 旧布局、路由、Project、阅读器和书签存储格式；
 - 当前 Stair 分支的兼容层；
 - 之前 29 个 Stair 提交的提交形态。
@@ -723,6 +723,8 @@ Project 前置条件：
 历史中的小提交也在所属阶段内重新实现，不盲目执行 `cherry-pick`，例如开发端口、Browser preload 覆盖、HMR 根节点复用和压缩 EPUB `mimetype` 支持。
 
 ## 8. 验证基线
+
+后续所有迭代的规范性全量回归入口见 [`Stair 全量回归验收规范`](./stair-full-regression.md)。本节保留阶段实施时冻结的最小矩阵与历史记录；它不能替代当前源码状态按产品模块重新执行全量源码门禁、开发版 E2E 和正式包 smoke。
 
 验收矩阵不能延后到阶段 9。每个阶段开始前，必须在本文档或相邻的已提交测试计划中冻结该阶段的验收行、测试夹具、准确测试文件和人工步骤。冻结路径可以指向本阶段将以测试先行方式创建的测试；本阶段第一个提交必须先加入失败测试，再实现产品代码。
 
