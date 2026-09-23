@@ -353,6 +353,8 @@ export function ProjectFileEpubReader({
     let loadedToc: EpubTocNode[] = []
     let loadedTitle = metadata.name
     const mount = mountRef.current
+    // Outer auto-scroll must not clear the iframe range during a pointer drag.
+    const hideSelectionOnScroll = () => setSelection(null)
 
     const handleRelocated = (nextLocation: Location) => {
       if (disposed) return
@@ -395,7 +397,7 @@ export function ProjectFileEpubReader({
       },
       () => resizeObserver?.disconnect(),
       () => resizeScheduler?.cancel(),
-      () => mount?.removeEventListener('scroll', dismissSelection, true),
+      () => mount?.removeEventListener('scroll', hideSelectionOnScroll, true),
       () => {
         if (!rendition) return
         rendition.off('relocated', handleRelocated)
@@ -587,7 +589,7 @@ export function ProjectFileEpubReader({
       }
     }
 
-    mount?.addEventListener('scroll', dismissSelection, true)
+    mount?.addEventListener('scroll', hideSelectionOnScroll, true)
     void load()
     return cleanup
   }, [attempt, bytes, dismissSelection, metadata.name, projectId, relativePath, sourceFingerprint])
@@ -722,6 +724,7 @@ export function ProjectFileEpubReader({
     const content = buildEpubHighlightsMarkdown({
       bookTitle,
       fileName: metadata.name,
+      relativePath,
       toc,
       highlights: wavyHighlights,
       compareCfi,
@@ -744,7 +747,7 @@ export function ProjectFileEpubReader({
     } finally {
       setExporting(false)
     }
-  }, [bookTitle, exporting, metadata.name, t, toc, wavyHighlights])
+  }, [bookTitle, exporting, metadata.name, relativePath, t, toc, wavyHighlights])
 
   const percentage = typeof location.percentage === 'number'
     ? Math.round(Math.min(1, Math.max(0, location.percentage)) * 100)

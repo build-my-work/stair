@@ -108,6 +108,7 @@ function heading(title: string, tocDepth: number): string {
 export function buildEpubHighlightsMarkdown(input: {
   bookTitle?: string
   fileName: string
+  relativePath: string
   toc: EpubTocNode[]
   highlights: EpubHighlightV1[]
   compareCfi: CompareCfi
@@ -121,6 +122,7 @@ export function buildEpubHighlightsMarkdown(input: {
   )
   const sections: string[] = [
     `# ${escapeMarkdownTitle(input.bookTitle?.trim() || input.fileName)}`,
+    `Source: ${escapeMarkdownTitle(input.relativePath)}`,
   ]
 
   const renderNode = (entry: EpubHighlightTreeNode, depth: number): string[] => [

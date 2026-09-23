@@ -10,9 +10,92 @@ import {
   loadPdfPageAspectRatios,
   pdfPageRenderWindow,
   pdfPageScrollTop,
+  restorePdfPageWhenVisible,
 } from '../project-file-pdf-layout'
 
 describe('PDF virtual page layout', () => {
+  it('cancels an obsolete restore when the reader unmounts or its layout changes', () => {
+    const originalFrame = globalThis.requestAnimationFrame
+    const originalCancel = globalThis.cancelAnimationFrame
+    const OriginalObserver = globalThis.ResizeObserver
+    let scheduled!: FrameRequestCallback
+    let resized!: () => void
+    let cancelled = 0
+    let disconnected = 0
+    let restores = 0
+    globalThis.requestAnimationFrame = callback => { scheduled = callback; return 7 }
+    globalThis.cancelAnimationFrame = id => { cancelled = id }
+    globalThis.ResizeObserver = class {
+      constructor(callback: () => void) { resized = callback }
+      observe() {}
+      disconnect() { disconnected += 1 }
+    } as never
+    try {
+      const cleanup = restorePdfPageWhenVisible(
+        { clientWidth: 400, clientHeight: 600 } as HTMLElement,
+        () => { restores += 1; return true },
+      )
+      cleanup()
+      scheduled(0)
+      resized()
+      expect(restores).toBe(0)
+      expect(cancelled).toBe(7)
+      expect(disconnected).toBe(1)
+    } finally {
+      globalThis.requestAnimationFrame = originalFrame
+      globalThis.cancelAnimationFrame = originalCancel
+      globalThis.ResizeObserver = OriginalObserver
+    }
+  })
+
+  it('restores after a hidden container becomes visible, even at the same page width', () => {
+    const originalFrame = globalThis.requestAnimationFrame
+    const originalCancel = globalThis.cancelAnimationFrame
+    const OriginalObserver = globalThis.ResizeObserver
+    const frames = new Map<number, FrameRequestCallback>()
+    let resized: (() => void) | undefined
+    let disconnects = 0
+    globalThis.requestAnimationFrame = callback => { frames.set(1, callback); return 1 }
+    globalThis.cancelAnimationFrame = id => { frames.delete(id) }
+    globalThis.ResizeObserver = class {
+      constructor(callback: () => void) { resized = callback }
+      observe() {}
+      disconnect() { disconnects += 1 }
+    } as never
+    const root = { clientWidth: 0, clientHeight: 0 }
+    let restoredPage = 1
+    let attempts = 0
+    let cleanup = () => {}
+    try {
+      cleanup = restorePdfPageWhenVisible(root as HTMLElement, () => {
+        attempts += 1
+        restoredPage = root.clientHeight > 0 ? 2 : 1
+        return true
+      })
+      const hiddenFrame = frames.get(1)!
+      frames.clear()
+      hiddenFrame(0)
+      expect(attempts).toBe(0)
+
+      root.clientWidth = 200
+      root.clientHeight = 400
+      resized!()
+      const visibleFrame = frames.get(1)!
+      frames.clear()
+      visibleFrame(1)
+      expect(restoredPage).toBe(2)
+      expect(attempts).toBe(1)
+      expect(disconnects).toBe(1)
+      resized!()
+      expect(frames.size).toBe(0)
+    } finally {
+      cleanup()
+      globalThis.requestAnimationFrame = originalFrame
+      globalThis.cancelAnimationFrame = originalCancel
+      globalThis.ResizeObserver = OriginalObserver
+    }
+  })
+
   it('switches from overlay to inline navigation at the old 760px boundary', () => {
     expect(getPdfNavigationLayout(759)).toBe('overlay')
     expect(getPdfNavigationLayout(760)).toBe('inline')

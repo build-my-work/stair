@@ -30,6 +30,8 @@ import { cn } from '@/lib/utils'
 import { saveTextFile } from '@/lib/save-text-file'
 import { registerOpenProjectFileDocument } from './project-file-document-registry'
 import {
+  PDF_PAGE_GAP_PX,
+  PDF_SCROLL_PADDING_PX,
   createPdfPageLayout,
   findPdfPageAtOffset,
   getPdfNavigationLayout,
@@ -37,6 +39,7 @@ import {
   loadPdfPageAspectRatios,
   pdfPageRenderWindow,
   pdfPageScrollTop,
+  restorePdfPageWhenVisible,
 } from './project-file-pdf-layout'
 import {
   ProjectFileReaderSelectionToolbar,
@@ -177,10 +180,12 @@ export function ProjectFilePdfReader({
     typeof createPdfStateMutationCoordinator
   > | null>(null)
   const restoreKeyRef = React.useRef<string | null>(null)
-  const scrollFrameRef = React.useRef<number>()
+  const positionRef = React.useRef({ pageNumber: 1, pageOffsetRatio: 0 })
+  const restoringRef = React.useRef(true)
   const [numPages, setNumPages] = React.useState(0)
   const [pageAspectRatios, setPageAspectRatios] = React.useState<number[]>([])
-  const [pageWidth, setPageWidth] = React.useState(720)
+  const [viewportSize, setViewportSize] = React.useState({ width: 752, height: 0 })
+  const pageWidth = Math.max(280, Math.min(900, viewportSize.width - 32))
   const [currentPage, setCurrentPage] = React.useState(1)
   const [outline, setOutline] = React.useState<PdfOutlineNode[]>([])
   const [pageLabels, setPageLabels] = React.useState<string[] | null>(null)
@@ -244,6 +249,7 @@ export function ProjectFilePdfReader({
     const root = scrollRef.current
     const page = pageLayout[pageNumber - 1]
     if (!root || !page) return false
+    positionRef.current = { pageNumber, pageOffsetRatio }
     root.scrollTo({
       top: pdfPageScrollTop(page, pageOffsetRatio),
       behavior,
@@ -256,7 +262,14 @@ export function ProjectFilePdfReader({
     const viewport = viewportRef.current
     if (!viewport || typeof ResizeObserver === 'undefined') return
     const update = () => {
-      setPageWidth(Math.max(280, Math.min(900, viewport.clientWidth - 32)))
+      setViewportSize(previous => {
+        // Hidden panels must retain their page geometry and semantic position.
+        const width = viewport.clientWidth || previous.width
+        const height = viewport.clientHeight
+        return width === previous.width && height === previous.height
+          ? previous
+          : { width, height }
+      })
     }
     update()
     const observer = new ResizeObserver(update)
@@ -332,31 +345,24 @@ export function ProjectFilePdfReader({
     ) return
     const locatorKey = initialLocator ? JSON.stringify(initialLocator) : ''
     const restoreKey = `${viewerKey}\0${locatorKey}\0${revealRevision}`
-    if (restoreKeyRef.current === restoreKey) return
-    let target: { pageNumber: number; offset: number } | null = null
-    if (initialLocator) {
-      target = {
-        pageNumber: initialLocator.anchor.pageNumber,
-        offset: initialLocator.anchor.y,
-      }
-    } else if (savedProgress) {
-      target = {
-        pageNumber: savedProgress.pageNumber,
-        offset: savedProgress.pageOffsetRatio,
-      }
+    let target = positionRef.current
+    if (restoreKeyRef.current !== restoreKey) {
+      target = initialLocator
+        ? { pageNumber: initialLocator.anchor.pageNumber, pageOffsetRatio: initialLocator.anchor.y }
+        : savedProgress ?? { pageNumber: 1, pageOffsetRatio: 0 }
     }
-    restoreKeyRef.current = restoreKey
-    if (!target) return
-    requestAnimationFrame(() => {
-      revealPage(Math.min(numPages, target.pageNumber), target.offset, 'auto')
+    const root = scrollRef.current
+    if (!root) return
+    // Resize/clamp scroll events still use the previous pixel geometry. Restore
+    // the last reading anchor before accepting another progress update.
+    restoringRef.current = true
+    return restorePdfPageWhenVisible(root, () => {
+      if (!revealPage(Math.min(numPages, target.pageNumber), target.pageOffsetRatio, 'auto')) return false
+      restoreKeyRef.current = restoreKey
+      restoringRef.current = false
+      return true
     })
-  }, [initialLocator, numPages, pageLayout.length, revealPage, revealRevision, savedProgress, viewerKey])
-
-  React.useEffect(() => () => {
-    if (scrollFrameRef.current !== undefined) {
-      cancelAnimationFrame(scrollFrameRef.current)
-    }
-  }, [])
+  }, [initialLocator, numPages, pageLayout.length, revealPage, revealRevision, savedProgress, viewerKey, viewportSize])
 
   const handleDocumentLoad = React.useCallback(async (pdf: PDFDocumentProxy) => {
     setNumPages(pdf.numPages)
@@ -389,27 +395,34 @@ export function ProjectFilePdfReader({
   }, [])
 
   const handleScroll = React.useCallback(() => {
-    dismissSelection()
-    if (scrollFrameRef.current !== undefined) return
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      scrollFrameRef.current = undefined
-      const root = scrollRef.current
-      if (!root || pageLayout.length === 0) return
-      const current = findPdfPageAtOffset(pageLayout, root.scrollTop)
-      if (!current) return
-      setCurrentPage(current.pageNumber)
-      coordinatorRef.current?.scheduleProgress({
-        pageNumber: current.pageNumber,
-        pageOffsetRatio: Math.round(current.pageOffsetRatio * 1_000) / 1_000,
-        percentage: Math.min(
-          1,
-          Math.max(0, (
-            current.pageNumber - 1 + current.pageOffsetRatio
-          ) / numPages),
-        ),
-      })
+    // Drag selection can auto-scroll. Hide the toolbar without clearing the
+    // browser range that the user is still extending across the viewport.
+    setSelection(null)
+    const root = scrollRef.current
+    const viewport = viewportRef.current
+    if (
+      !root || !viewport || restoringRef.current
+      || root.clientWidth <= 0 || root.clientHeight <= 0
+      || viewport.clientWidth !== viewportSize.width
+      || viewport.clientHeight !== viewportSize.height
+    ) return
+    const current = findPdfPageAtOffset(pageLayout, root.scrollTop)
+    if (!current) return
+    // Queue valid progress now; the coordinator already debounces disk writes.
+    // A resize or close before the next animation frame must not lose this scroll.
+    positionRef.current = current
+    setCurrentPage(current.pageNumber)
+    coordinatorRef.current?.scheduleProgress({
+      pageNumber: current.pageNumber,
+      pageOffsetRatio: Math.round(current.pageOffsetRatio * 1_000) / 1_000,
+      percentage: Math.min(
+        1,
+        Math.max(0, (
+          current.pageNumber - 1 + current.pageOffsetRatio
+        ) / numPages),
+      ),
     })
-  }, [dismissSelection, numPages, pageLayout])
+  }, [numPages, pageLayout, viewportSize])
 
   const handleMouseUp = React.useCallback(() => {
     const root = scrollRef.current
@@ -767,7 +780,8 @@ export function ProjectFilePdfReader({
         >
           <div
             ref={scrollRef}
-            className="h-full overflow-auto py-4"
+            className="h-full overflow-auto"
+            style={{ paddingBlock: PDF_SCROLL_PADDING_PX }}
             onScroll={handleScroll}
             onMouseUp={handleMouseUp}
           >
@@ -788,14 +802,15 @@ export function ProjectFilePdfReader({
                     Rendering PDF…
                   </div>
                 )}
-                className="flex flex-col items-center gap-4"
               >
-                {pageLayout.length === numPages ? pageElements : (
-                  <div className="flex h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
-                    <Loader2 className="size-4 animate-spin" />
-                    Preparing pages…
-                  </div>
-                )}
+                <div className="flex flex-col items-center" style={{ gap: PDF_PAGE_GAP_PX }}>
+                  {pageLayout.length === numPages ? pageElements : (
+                    <div className="flex h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" />
+                      Preparing pages…
+                    </div>
+                  )}
+                </div>
               </Document>
             )}
           </div>

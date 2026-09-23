@@ -19,6 +19,7 @@ import { createProject, getProjectPath } from '@craft-agent/shared/projects'
 import {
   EpubStateStore,
   MAX_EPUB_CFI_LENGTH,
+  MAX_EPUB_HIGHLIGHTS_PER_DOCUMENT,
   MAX_EPUB_STATE_BYTES,
   type EpubStateIdentity,
   writeEpubStateFile,
@@ -277,6 +278,31 @@ describe('EpubStateStore', () => {
         contextAfter: 'a'.repeat(1_000),
       },
     })).rejects.toThrow('EPUB_STATE_TOO_LARGE')
+  })
+
+  it('accepts 1000 highlights and rejects the 1001st without changing state', async () => {
+    const store = new EpubStateStore(() => 100)
+    await store.apply(root, identity, highlight('seed'))
+    const highlights = Array.from(
+      { length: MAX_EPUB_HIGHLIGHTS_PER_DOCUMENT },
+      (_, index) => ({
+        ...highlight(`limit-${index}`).highlight,
+        createdAt: 100,
+        updatedAt: 100,
+      }),
+    )
+    writeFileSync(persistedStatePath(), `${JSON.stringify({
+      version: 1,
+      ...identity,
+      revision: highlights.length,
+      highlights,
+      updatedAt: 100,
+    }, null, 2)}\n`)
+
+    await expect(store.apply(root, identity, highlight('overflow')))
+      .rejects.toThrow('EPUB_HIGHLIGHT_LIMIT_EXCEEDED')
+    expect((await store.get(root, identity))?.highlights)
+      .toHaveLength(MAX_EPUB_HIGHLIGHTS_PER_DOCUMENT)
   })
 
   it('isolates state by source fingerprint', async () => {

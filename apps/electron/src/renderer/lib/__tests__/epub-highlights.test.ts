@@ -77,10 +77,11 @@ describe('EPUB highlight grouping and export', () => {
     expect(tree.unmatched.map(value => value.id)).toEqual(['3'])
   })
 
-  it('保留目录层级、转义标题并逐行引用多行文本', () => {
+  it('保留来源路径和目录层级、转义标题并逐行引用多行文本', () => {
     expect(buildEpubHighlightsMarkdown({
       bookTitle: 'OS #Book',
       fileName: 'os.epub',
+      relativePath: 'books/[OS].epub',
       toc,
       highlights: [mark('1', {
         quote: 'line one\nline two',
@@ -92,6 +93,7 @@ describe('EPUB highlight grouping and export', () => {
       compareCfi: (a, b) => a.localeCompare(b),
     })).toBe(
       '# OS \\#Book\n\n'
+      + 'Source: books/\\[OS\\]\\.epub\n\n'
       + '## Part \\*One\\*\n\n'
       + '### Chapter 1\n\n'
       + '> line one\n> line two\n',

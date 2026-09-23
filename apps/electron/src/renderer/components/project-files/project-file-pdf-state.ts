@@ -345,12 +345,20 @@ export function createPdfStateMutationCoordinator(
   let pendingProgress: Omit<PdfProgressV1, 'updatedAt'> | undefined
   let progressTimer: unknown
   let queue: Promise<unknown> = Promise.resolve()
+  let failedOperationCount = 0
+  let lastOperationError: unknown
   let disposed = false
   let disposePromise: Promise<void> | null = null
 
   const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
     const result = queue.then(operation)
-    queue = result.then(() => undefined, () => undefined)
+    queue = result.then(
+      () => undefined,
+      error => {
+        failedOperationCount += 1
+        lastOperationError = error
+      },
+    )
     return result
   }
   const refreshNow = async (): Promise<PdfDocumentStateV1 | null> => {
@@ -381,10 +389,14 @@ export function createPdfStateMutationCoordinator(
       cancelTimer(progressTimer)
       progressTimer = undefined
     }
-    const progress = pendingProgress
-    pendingProgress = undefined
-    if (!progress || disposed) return Promise.resolve(undefined)
-    return enqueue(() => applyNow({ type: 'set-progress', progress }))
+    if (!pendingProgress || disposed) return Promise.resolve(undefined)
+    return enqueue(async () => {
+      const progress = pendingProgress
+      if (!progress) return undefined
+      const response = await applyNow({ type: 'set-progress', progress })
+      if (pendingProgress === progress) pendingProgress = undefined
+      return response
+    })
   }
 
   return {
@@ -412,25 +424,24 @@ export function createPdfStateMutationCoordinator(
         await disposePromise
         return
       }
-      await flushProgress()
-      await queue
+      const failuresBeforeFlush = failedOperationCount
+      let pendingQueue: Promise<unknown>
+      do {
+        await flushProgress()
+        pendingQueue = queue
+        await pendingQueue
+        if (failedOperationCount !== failuresBeforeFlush) throw lastOperationError
+      } while (pendingProgress || queue !== pendingQueue)
     },
     dispose() {
       if (disposePromise) return disposePromise
-      if (progressTimer !== undefined) {
-        cancelTimer(progressTimer)
-        progressTimer = undefined
-      }
-      const progress = pendingProgress
-      pendingProgress = undefined
-      const pendingFlush = progress
-        ? enqueue(() => applyNow({ type: 'set-progress', progress }))
-            .catch(error => {
-              options.onBackgroundError?.(error, 'set-progress')
-            })
-        : queue.then(() => undefined)
+      const pendingFlush = this.flush()
       disposed = true
-      disposePromise = pendingFlush.then(() => undefined)
+      disposePromise = pendingFlush.catch(error => {
+        disposed = false
+        disposePromise = null
+        throw error
+      })
       return disposePromise
     },
   }

@@ -115,10 +115,18 @@ describe('EPUB selection toolbar lifecycle', () => {
     documentTarget.dispatchEvent(new Event('selectionchange'))
     expect(dismissals).toBe(1)
 
+    // The iframe can auto-scroll while the pointer extends a text selection.
+    // This must not invoke the callback that removes the browser range.
+    windowTarget.dispatchEvent(new Event('scroll'))
+    expect(dismissals).toBe(1)
+
     collapsed = false
     documentTarget.dispatchEvent(new Event('pointerup'))
     documentTarget.dispatchEvent(new Event('selectionchange'))
     expect(dismissals).toBe(1)
+
+    windowTarget.dispatchEvent(new Event('scroll'))
+    expect(dismissals).toBe(2)
 
     cleanup()
   })
@@ -156,12 +164,14 @@ describe('EPUB selection toolbar lifecycle', () => {
     expect(dismissals).toBe(4)
   })
 
-  it('dismisses on mount scroll, view unload, and reader resize', () => {
+  it('hides the toolbar on mount scroll and clears ranges on view unload or resize', () => {
     const readerSource = readFileSync(
       new URL('../ProjectFileEpubReader.tsx', import.meta.url),
       'utf8',
     )
-    expect(readerSource).toContain("mount?.addEventListener('scroll', dismissSelection, true)")
+    expect(readerSource).toContain('const hideSelectionOnScroll = () => setSelection(null)')
+    expect(readerSource).toContain("mount?.addEventListener('scroll', hideSelectionOnScroll, true)")
+    expect(readerSource).toContain("mount?.removeEventListener('scroll', hideSelectionOnScroll, true)")
     expect(readerSource).toMatch(/unloadedHook[\s\S]*?dismissSelection\(\)/)
     expect(readerSource).toMatch(/new ResizeObserver\(\(\) => \{\s*dismissSelection\(\)/)
   })

@@ -17,6 +17,7 @@ import type {
 import { createProject, getProjectPath } from '@craft-agent/shared/projects'
 
 import {
+  MAX_PDF_HIGHLIGHTS_PER_DOCUMENT,
   MAX_PDF_STATE_BYTES,
   PdfStateStore,
   type PdfStateIdentity,
@@ -213,6 +214,15 @@ describe('PdfStateStore', () => {
       },
     })).rejects.toThrow('INVALID_PDF_RECT')
     await expect(store.apply(root, identity, {
+      ...highlight('too-many-rects'),
+      highlight: {
+        ...highlight('too-many-rects').highlight,
+        rects: Array.from({ length: 513 }, () => (
+          highlight('too-many-rects').highlight.rects[0]
+        )),
+      },
+    })).rejects.toThrow('INVALID_PDF_RECTS')
+    await expect(store.apply(root, identity, {
       ...highlight('bad-style'),
       highlight: {
         ...highlight('bad-style').highlight,
@@ -292,6 +302,31 @@ describe('PdfStateStore', () => {
         })),
       },
     })).rejects.toThrow('PDF_STATE_TOO_LARGE')
+  })
+
+  it('accepts 1000 highlights and rejects the 1001st without changing state', async () => {
+    const store = new PdfStateStore(() => 100)
+    await store.apply(root, identity, highlight('seed'))
+    const highlights = Array.from(
+      { length: MAX_PDF_HIGHLIGHTS_PER_DOCUMENT },
+      (_, index) => ({
+        ...highlight(`limit-${index}`).highlight,
+        createdAt: 100,
+        updatedAt: 100,
+      }),
+    )
+    writeFileSync(persistedStatePath(), `${JSON.stringify({
+      version: 1,
+      ...identity,
+      revision: highlights.length,
+      highlights,
+      updatedAt: 100,
+    }, null, 2)}\n`)
+
+    await expect(store.apply(root, identity, highlight('overflow')))
+      .rejects.toThrow('PDF_HIGHLIGHT_LIMIT_EXCEEDED')
+    expect((await store.get(root, identity))?.highlights)
+      .toHaveLength(MAX_PDF_HIGHLIGHTS_PER_DOCUMENT)
   })
 
   it('quarantines corrupt and oversized persisted state', async () => {

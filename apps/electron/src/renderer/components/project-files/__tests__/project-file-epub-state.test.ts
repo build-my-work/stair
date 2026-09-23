@@ -128,6 +128,153 @@ describe('EPUB selection and references', () => {
 })
 
 describe('EPUB state mutation coordination', () => {
+  for (const firstWriteFails of [false, true]) {
+    it(`keeps the newest reading position when an older write ${firstWriteFails ? 'fails' : 'succeeds'}`, async () => {
+      let started!: () => void
+      let release!: () => void
+      const writeStarted = new Promise<void>(resolve => { started = resolve })
+      const writeBlocked = new Promise<void>(resolve => { release = resolve })
+      let attempts = 0
+      let persisted: EpubStateMutation | undefined
+      const coordinator = createEpubStateMutationCoordinator({
+        initialRevision: 0,
+        applyMutation: async mutation => {
+          if (++attempts === 1) {
+            started()
+            await writeBlocked
+            if (firstWriteFails) throw new Error('offline')
+          }
+          persisted = mutation
+          return { revision: attempts, applied: true }
+        },
+        getState: async () => null,
+        onStateRefresh: () => undefined,
+        scheduleTimer: () => 1,
+        cancelTimer: () => undefined,
+      })
+      coordinator.scheduleProgress({ cfi: 'older-position' })
+      const closing = coordinator.flush()
+      const outcome = Promise.allSettled([closing])
+      await writeStarted
+      coordinator.scheduleProgress({ cfi: 'newest-position' })
+      release()
+      expect((await outcome)[0]!.status).toBe(firstWriteFails ? 'rejected' : 'fulfilled')
+      await coordinator.flush()
+      expect(persisted).toEqual({
+        type: 'set-progress',
+        progress: { cfi: 'newest-position' },
+      })
+      await coordinator.dispose()
+    })
+  }
+
+  it('allows retry after disposal cannot save reading progress', async () => {
+    let fail = true
+    let persisted: EpubStateMutation | undefined
+    const coordinator = createEpubStateMutationCoordinator({
+      initialRevision: 0,
+      applyMutation: async mutation => {
+        if (fail) throw new Error('offline')
+        persisted = mutation
+        return { revision: 1, applied: true }
+      },
+      getState: async () => null,
+      onStateRefresh: () => undefined,
+      scheduleTimer: () => 1,
+      cancelTimer: () => undefined,
+    })
+    coordinator.scheduleProgress({ cfi: 'last-read-position' })
+    await expect(coordinator.dispose()).rejects.toThrow('offline')
+    fail = false
+    await coordinator.flush()
+    expect(persisted).toEqual({ type: 'set-progress', progress: { cfi: 'last-read-position' } })
+    await coordinator.dispose()
+  })
+
+  it('reports a failed mutation queued while close is waiting for progress', async () => {
+    let releaseProgress!: () => void
+    const progressWrite = new Promise<void>(resolve => { releaseProgress = resolve })
+    const coordinator = createEpubStateMutationCoordinator({
+      initialRevision: 0,
+      applyMutation: async mutation => {
+        if (mutation.type !== 'set-progress') throw new Error('delete failed')
+        await progressWrite
+        return { revision: 1, applied: true }
+      },
+      getState: async () => null,
+      onStateRefresh: () => undefined,
+      scheduleTimer: () => 1,
+      cancelTimer: () => undefined,
+    })
+    coordinator.scheduleProgress({ cfi: 'last-read-position' })
+    const closing = coordinator.flush()
+    const deleting = coordinator.mutate({ type: 'delete-highlight', highlightId: 'existing' })
+    const outcomes = Promise.allSettled([closing, deleting])
+    releaseProgress()
+
+    expect(await outcomes).toEqual([
+      { status: 'rejected', reason: new Error('delete failed') },
+      { status: 'rejected', reason: new Error('delete failed') },
+    ])
+    await coordinator.flush()
+    await coordinator.dispose()
+  })
+
+  it('vetoes a close waiting for a failed highlight mutation, then allows close after rollback', async () => {
+    const existing = highlight('existing')
+    let highlights = [existing]
+    let failWrite!: (error: Error) => void
+    const write = new Promise<never>((_resolve, reject) => { failWrite = reject })
+    const coordinator = createEpubStateMutationCoordinator({
+      initialRevision: 0,
+      applyMutation: () => write,
+      getState: async () => null,
+      onStateRefresh: () => undefined,
+    })
+    const deleting = deleteEpubHighlightOptimistically({
+      highlight: existing,
+      mutate: mutation => coordinator.mutate(mutation),
+      updateHighlights: update => { highlights = update(highlights) },
+    })
+    const closing = coordinator.flush()
+    const outcomes = Promise.allSettled([deleting, closing])
+    failWrite(new Error('delete failed'))
+
+    expect(await outcomes).toEqual([
+      { status: 'rejected', reason: new Error('delete failed') },
+      { status: 'rejected', reason: new Error('delete failed') },
+    ])
+    expect(highlights).toEqual([existing])
+    await expect(coordinator.flush()).resolves.toBeUndefined()
+    await coordinator.dispose()
+  })
+
+  it('retries an unsaved reading position when a vetoed close is attempted again', async () => {
+    let attempts = 0
+    const persisted: EpubStateMutation[] = []
+    const coordinator = createEpubStateMutationCoordinator({
+      initialRevision: 0,
+      applyMutation: async mutation => {
+        if (++attempts === 1) throw new Error('offline')
+        persisted.push(mutation)
+        return { revision: 1, applied: true }
+      },
+      getState: async () => null,
+      onStateRefresh: () => undefined,
+      scheduleTimer: () => 1,
+      cancelTimer: () => undefined,
+    })
+
+    coordinator.scheduleProgress({ cfi: 'last-read-position' })
+    await expect(coordinator.flush()).rejects.toThrow('offline')
+    await coordinator.flush()
+    expect(persisted).toEqual([{
+      type: 'set-progress',
+      progress: { cfi: 'last-read-position' },
+    }])
+    await coordinator.dispose()
+  })
+
   it('debounces progress and flushes the latest location during dispose', async () => {
     const timers = new Map<number, { callback: () => void; delay: number }>()
     const mutations: EpubStateMutation[] = []

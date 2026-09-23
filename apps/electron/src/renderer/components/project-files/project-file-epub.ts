@@ -86,7 +86,9 @@ export function attachEpubContentsSelectionLifecycle(
   const dismissOnEscape = (event: Event) => {
     if ((event as KeyboardEvent).key === 'Escape') dismiss()
   }
-  const dismissOnScroll = () => dismiss()
+  const dismissOnScroll = () => {
+    if (!pointerSelectionActive) dismiss()
+  }
 
   contents.document.addEventListener('pointerdown', dismissOnPointerDown, true)
   contents.document.addEventListener('pointerup', finishPointerSelection, true)

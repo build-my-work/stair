@@ -3,8 +3,8 @@ import type { PDFDocumentProxy } from 'pdfjs-dist'
 export const MAX_PDF_READER_PAGES = 1_000
 export const PDF_INLINE_NAV_MIN_WIDTH_PX = 760
 
-const PDF_PAGE_GAP_PX = 16
-const PDF_SCROLL_PADDING_PX = 16
+export const PDF_PAGE_GAP_PX = 16
+export const PDF_SCROLL_PADDING_PX = 16
 const PDF_REVEAL_OFFSET_PX = 24
 const PDF_RENDER_RADIUS = 2
 
@@ -109,6 +109,35 @@ export function pdfPageScrollTop(
 ): number {
   const ratio = Math.min(1, Math.max(0, pageOffsetRatio))
   return Math.max(0, page.top + page.height * ratio - PDF_REVEAL_OFFSET_PX)
+}
+
+export function restorePdfPageWhenVisible(
+  root: HTMLElement,
+  restore: () => boolean,
+): () => void {
+  let frame: number | undefined
+  let finished = false
+  let observer: ResizeObserver | undefined
+  const schedule = () => {
+    if (finished || frame !== undefined) return
+    frame = requestAnimationFrame(() => {
+      frame = undefined
+      if (finished || root.clientWidth <= 0 || root.clientHeight <= 0) return
+      if (!restore()) return
+      finished = true
+      observer?.disconnect()
+    })
+  }
+  if (typeof ResizeObserver !== 'undefined') {
+    observer = new ResizeObserver(schedule)
+    observer.observe(root)
+  }
+  schedule()
+  return () => {
+    finished = true
+    observer?.disconnect()
+    if (frame !== undefined) cancelAnimationFrame(frame)
+  }
 }
 
 export function pdfPageRenderWindow(
