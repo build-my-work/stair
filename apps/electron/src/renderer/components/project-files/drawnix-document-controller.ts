@@ -95,13 +95,13 @@ export function serializeNativeDrawnixBoard(board: PlaitBoard): string {
   }, null, 2)
 }
 
-function toOutlineNode(element: MindElement): DrawnixMindmapNode {
+export function mindElementToOutlineNode(element: MindElement): DrawnixMindmapNode {
   return {
     id: element.id,
     topic: Node.string(element.data.topic),
     children: element.children
       .filter(child => MindElement.isMindElement(null, child))
-      .map(toOutlineNode),
+      .map(mindElementToOutlineNode),
   }
 }
 
@@ -113,7 +113,7 @@ export function snapshotDrawnixBoard(
   return {
     relativePath,
     changeSeq,
-    roots: board.children.filter(PlaitMind.isMind).map(toOutlineNode),
+    roots: board.children.filter(PlaitMind.isMind).map(mindElementToOutlineNode),
   }
 }
 
@@ -239,7 +239,9 @@ export function applyMindmapOperations(
 }
 
 export class DrawnixDocumentController implements OpenDrawnixBoardController {
-  private changeSeq = 0
+  // A fresh 52-bit epoch survives renderer restarts without reusing old read
+  // tokens, while leaving room for safe-integer increments on the live board.
+  private changeSeq = Number.parseInt(crypto.randomUUID().replaceAll('-', '').slice(-13), 16)
   private dirty = false
   private pendingChange: Promise<void> | null = null
   private saveTimer: ReturnType<typeof setTimeout> | null = null

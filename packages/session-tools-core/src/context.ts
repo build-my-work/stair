@@ -353,6 +353,9 @@ export interface SessionToolContext {
    */
   appendProjectMemory?(input: ProjectMemoryAppendInput): Promise<ProjectMemoryAppendResult>;
 
+  /** Create, initialize, and open a native Drawnix Project File. */
+  createMindmap?(request: MindmapCreateRequest): Promise<MindmapSnapshot>;
+
   /** Read the live outline of an already-open Drawnix Project File. */
   readMindmap?(relativePath: string): Promise<MindmapSnapshot>;
 
@@ -487,6 +490,11 @@ export interface MindmapSnapshot {
   relativePath: string;
   changeSeq: number;
   roots: MindmapOutlineNode[];
+}
+
+export interface MindmapCreateRequest {
+  relativePath: string;
+  markdown: string;
 }
 
 export type MindmapUpdateOperation =

@@ -23,6 +23,10 @@ import {
   parseNativeDrawnixDocument,
   snapshotDrawnixBoard,
 } from '../drawnix-document-controller'
+import {
+  handleDrawnixBoardCapability,
+  registerOpenDrawnixBoard,
+} from '../drawnix-board-registry'
 
 const INITIAL_FINGERPRINT = `sha256:${'a'.repeat(64)}` as ProjectFileFingerprint
 
@@ -48,6 +52,86 @@ function savedResponse(
 }
 
 describe('Drawnix document controller', () => {
+  it('does not reuse a read token from a previous renderer process', async () => {
+    const controllerModule = new URL('../drawnix-document-controller.ts', import.meta.url).pathname
+    const previousRenderer = Bun.spawnSync([process.execPath, '-e', `
+      import { createTestingBoard } from '@plait/core'
+      import { DrawnixDocumentController } from ${JSON.stringify(controllerModule)}
+      const controller = new DrawnixDocumentController(
+        createTestingBoard([], []), 'project-a', 'maps/restart.drawnix',
+        ${JSON.stringify(INITIAL_FINGERPRINT)}, () => { throw new Error('no save expected') }, () => {},
+      )
+      console.log(JSON.stringify(await controller.read()))
+    `], { cwd: import.meta.dir })
+    expect(previousRenderer.exitCode).toBe(0)
+    const stale = JSON.parse(previousRenderer.stdout.toString()) as { changeSeq: number }
+    const controller = new DrawnixDocumentController(
+      createEmptyBoard(), 'project-a', 'maps/restart.drawnix',
+      INITIAL_FINGERPRINT, request => Promise.resolve(savedResponse(request, 1)), () => {},
+    )
+
+    await expect(controller.update({
+      v: 1, action: 'update', projectId: 'project-a', relativePath: 'maps/restart.drawnix',
+      expectedChangeSeq: stale.changeSeq,
+      operations: [{ type: 'populate_empty', markdown: '# Stale overwrite' }],
+    })).rejects.toMatchObject({ code: 'MINDMAP_BOARD_CHANGED' })
+    expect((await controller.read()).roots).toEqual([])
+  })
+
+  it('rejects a stale capability after the user saves and reopens the same board', async () => {
+    const projectId = 'reopened-project'
+    const relativePath = 'maps/reopened.drawnix'
+    const board = createEmptyBoard()
+    applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Original' }])
+    let savedContent = ''
+    let savedFingerprint = INITIAL_FINGERPRINT
+    const save = async (request: SaveDrawnixProjectFileRequest) => {
+      savedContent = request.content
+      const response = savedResponse(request, 1)
+      savedFingerprint = response.sourceFingerprint
+      return response
+    }
+    const controller = new DrawnixDocumentController(
+      board, projectId, relativePath, savedFingerprint, save, () => {},
+    )
+    let unregister = registerOpenDrawnixBoard(projectId, relativePath, controller)
+    try {
+      const stale = await handleDrawnixBoardCapability({ v: 1, action: 'read', projectId, relativePath })
+      if (!stale.ok) throw new Error(stale.error.message)
+      const nodeId = stale.snapshot.roots[0]!.id
+      applyMindmapOperations(board, [{ type: 'set_topic', nodeId, topic: 'User saved this' }])
+      controller.notifyBoardChanged()
+      await controller.flush()
+      unregister()
+
+      const persisted = parseNativeDrawnixDocument(savedContent)
+      const reopened = new DrawnixDocumentController(
+        createTestingBoard([], persisted.elements),
+        projectId, relativePath, savedFingerprint, save, () => {},
+      )
+      unregister = registerOpenDrawnixBoard(projectId, relativePath, reopened)
+      expect(await handleDrawnixBoardCapability({
+        v: 1, action: 'update', projectId, relativePath,
+        expectedChangeSeq: stale.snapshot.changeSeq,
+        operations: [{ type: 'set_topic', nodeId, topic: 'Stale overwrite' }],
+      })).toMatchObject({ ok: false, error: { code: 'MINDMAP_BOARD_CHANGED' } })
+      const current = await reopened.read()
+      expect(current.roots[0]!.topic).toBe('User saved this')
+      expect(Number.isSafeInteger(current.changeSeq)).toBe(true)
+      expect(current.changeSeq).toBeGreaterThanOrEqual(0)
+      expect(await handleDrawnixBoardCapability({
+        v: 1, action: 'update', projectId, relativePath,
+        expectedChangeSeq: current.changeSeq,
+        operations: [{ type: 'insert_child', parentId: nodeId, topic: 'Fresh addition' }],
+      })).toMatchObject({
+        ok: true,
+        snapshot: { roots: [{ topic: 'User saved this', children: [{ topic: 'Fresh addition' }] }] },
+      })
+    } finally {
+      unregister()
+    }
+  })
+
   it('populates an empty board and applies node transforms as one live document', async () => {
     const board = createEmptyBoard()
 
@@ -122,7 +206,7 @@ describe('Drawnix document controller', () => {
       action: 'update',
       projectId: 'project-a',
       relativePath: 'maps/tutorial.drawnix',
-      expectedChangeSeq: 0,
+      expectedChangeSeq: (await controller.read()).changeSeq,
       operations: [{ type: 'populate_empty', markdown: '# Tutorial\n## Agent topic' }],
     })
 
@@ -149,7 +233,7 @@ describe('Drawnix document controller', () => {
       }],
     })
 
-    expect(updated.changeSeq).toBe(3)
+    expect(updated.changeSeq).toBe(afterUserEdit.changeSeq + 1)
     expect(updated.roots[0]).toMatchObject({
       topic: 'User-renamed tutorial',
       children: [{ topic: 'Agent topic' }, { topic: 'Agent-added topic' }],
@@ -287,12 +371,13 @@ describe('Drawnix document controller', () => {
       request => Promise.resolve(savedResponse(request, 1)),
       () => {},
     )
+    const beforeUpdate = await controller.read()
     const request = (topic: string) => controller.update({
       v: 1,
       action: 'update',
       projectId: 'project-a',
       relativePath: 'maps/tutorial.drawnix',
-      expectedChangeSeq: 0,
+      expectedChangeSeq: beforeUpdate.changeSeq,
       operations: [{ type: 'set_topic' as const, nodeId: rootId, topic }],
     })
 
@@ -327,18 +412,35 @@ describe('Drawnix document controller', () => {
       () => {},
     )
 
+    const beforeUpdate = await controller.read()
     await expect(controller.update({
       v: 1,
       action: 'update',
       projectId: 'project-a',
       relativePath: 'maps/tutorial.drawnix',
-      expectedChangeSeq: 0,
+      expectedChangeSeq: beforeUpdate.changeSeq,
       operations: [
         { type: 'set_topic', nodeId: before.roots[0]!.id, topic: 'Changed root' },
         { type: 'set_topic', nodeId: before.roots[0]!.children[0]!.id, topic: 'Changed child' },
       ],
     })).rejects.toThrow('synthetic transform failure')
-    expect(await controller.read()).toEqual(before)
+    expect(await controller.read()).toEqual(beforeUpdate)
+  })
+
+  it('rejects a batch with more than 50 operations before changing the board', async () => {
+    const board = createEmptyBoard()
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Original' }])
+    const before = snapshotDrawnixBoard(board, 'maps/tutorial.drawnix', 0)
+    const operations = Array.from({ length: 51 }, (_, index) => ({
+      type: 'set_topic' as const,
+      nodeId: before.roots[0]!.id,
+      topic: `Topic ${index}`,
+    }))
+
+    expect(() => applyMindmapOperations(board, operations)).toThrow(
+      'Provide between 1 and 50 mind-map operations.',
+    )
+    expect(snapshotDrawnixBoard(board, 'maps/tutorial.drawnix', 0)).toEqual(before)
   })
 
   it('only allows populate_empty on an empty board', async () => {

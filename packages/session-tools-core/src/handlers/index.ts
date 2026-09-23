@@ -116,6 +116,8 @@ export type {
 // Decision model
 export { handleDecide } from './decide.ts';
 export type { DecideArgs } from './decide.ts';
+export { handleMindmapCreate } from './mindmap-create.ts';
+export type { MindmapCreateArgs } from './mindmap-create.ts';
 export { handleMindmapRead } from './mindmap-read.ts';
 export type { MindmapReadArgs } from './mindmap-read.ts';
 export { handleMindmapUpdate } from './mindmap-update.ts';

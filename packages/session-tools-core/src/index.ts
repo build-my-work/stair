@@ -202,6 +202,7 @@ export type {
 
   MindmapOutlineNode,
   MindmapSnapshot,
+  MindmapCreateRequest,
   MindmapUpdateOperation,
   MindmapUpdateRequest,
 } from './context.ts';
@@ -251,6 +252,7 @@ export {
   handleDeletePage,
   // Decision model
   handleDecide,
+  handleMindmapCreate,
   handleMindmapRead,
   handleMindmapUpdate,
 } from './handlers/index.ts';
@@ -282,6 +284,7 @@ export type {
   WritePageDataArgs,
   DeletePageArgs,
   DecideArgs,
+  MindmapCreateArgs,
   MindmapReadArgs,
   MindmapUpdateArgs,
 } from './handlers/index.ts';
@@ -307,6 +310,7 @@ export {
   TransformDataSchema,
   ScriptSandboxSchema,
   RenderTemplateSchema,
+  MindmapCreateSchema,
   MindmapReadSchema,
   MindmapUpdateSchema,
   // Browser tool schema

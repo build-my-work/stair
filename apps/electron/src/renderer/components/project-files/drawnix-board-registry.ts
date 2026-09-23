@@ -58,6 +58,12 @@ export async function handleDrawnixBoardCapability(
         'A Project id and canonical .drawnix Project File path are required.',
       )
     }
+    if (request.action === 'create') {
+      throw codedError(
+        'MINDMAP_CREATE_UNAVAILABLE',
+        'Creating a Drawnix mind map requires the Project File capability bridge.',
+      )
+    }
     const controllers = openBoards.get(boardKey(request.projectId, request.relativePath))
     if (!controllers?.size) {
       throw codedError(

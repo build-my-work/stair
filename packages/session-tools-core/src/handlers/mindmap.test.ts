@@ -1,9 +1,34 @@
 import { describe, expect, it } from 'bun:test';
 import type { SessionToolContext } from '../context.ts';
+import { handleMindmapCreate } from './mindmap-create.ts';
 import { handleMindmapRead } from './mindmap-read.ts';
 import { handleMindmapUpdate } from './mindmap-update.ts';
 
 describe('mind-map session tools', () => {
+  it('creates a native mind map through the session callback', async () => {
+    const requests: unknown[] = [];
+    const ctx = {
+      createMindmap: async (request: unknown) => {
+        requests.push(request);
+        return {
+          relativePath: 'mindmaps/tutorial.drawnix',
+          changeSeq: 0,
+          roots: [{ id: 'root', topic: 'Tutorial', children: [] }],
+        };
+      },
+    } as unknown as SessionToolContext;
+    const request = {
+      relativePath: 'mindmaps/tutorial.drawnix',
+      markdown: '# Tutorial',
+    };
+
+    const result = await handleMindmapCreate(ctx, request);
+
+    expect(result.isError).toBe(false);
+    expect(result.content[0]?.text).toContain('mindmaps/tutorial.drawnix');
+    expect(requests).toEqual([request]);
+  });
+
   it('reads and updates the live board through session callbacks', async () => {
     const reads: string[] = [];
     const updates: unknown[] = [];
@@ -49,6 +74,10 @@ describe('mind-map session tools', () => {
 
   it('fails explicitly when the board callback is unavailable or closed', async () => {
     const unavailable = {} as SessionToolContext;
+    expect((await handleMindmapCreate(unavailable, {
+      relativePath: 'mindmaps/tutorial.drawnix',
+      markdown: '# Tutorial',
+    })).isError).toBe(true);
     expect((await handleMindmapRead(unavailable, {
       relativePath: 'maps/tutorial.drawnix',
     })).isError).toBe(true);

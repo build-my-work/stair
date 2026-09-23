@@ -87,6 +87,7 @@ describe('session tool filtering helpers', () => {
     expect(blocked.has('update_page')).toBe(true);
     expect(blocked.has('write_page_data')).toBe(true);
     expect(blocked.has('delete_page')).toBe(true);
+    expect(blocked.has('mindmap_create')).toBe(true);
     expect(blocked.has('mindmap_update')).toBe(true);
   });
 
@@ -96,6 +97,17 @@ describe('session tool filtering helpers', () => {
       expect(allowed.has(`mcp__session__${name}`)).toBe(true);
       expect(SESSION_TOOL_DEFS.some(d => d.name === name && d.executionMode === 'registry' && d.readOnly === true)).toBe(true);
     }
+  });
+
+  it('requires a confirmed Project-relative path before creating a mind map', () => {
+    const def = SESSION_TOOL_DEFS.find(tool => tool.name === 'mindmap_create');
+
+    expect(def?.description).toContain('ask where to save it');
+    expect(def?.description).toContain('mindmaps/<name>.drawnix');
+    expect(def?.description).toContain('Never silently choose the Project root');
+    const schema = getToolDefsAsJsonSchema().find(tool => tool.name === 'mindmap_create');
+    expect(schema?.inputSchema.required).toContain('relativePath');
+    expect(schema?.inputSchema.required).toContain('markdown');
   });
 
   it('safe-mode helpers support MCP prefixing', () => {
@@ -124,8 +136,8 @@ describe('session tool filtering helpers', () => {
     });
 
     it('keeps only the always-on coding tools in a bare coding session', () => {
-      expect(names({ profile: 'coding' })).toEqual(['SubmitPlan', 'send_developer_feedback', 'browser_tool', 'pr_status', 'pr_bind', 'pr_unbind', 'pr_set_auto_merge', 'list_background_tasks', 'mindmap_read', 'mindmap_update']);
-      expect(names({ profile: 'coding', includeDeveloperFeedback: false })).toEqual(['SubmitPlan', 'browser_tool', 'pr_status', 'pr_bind', 'pr_unbind', 'pr_set_auto_merge', 'list_background_tasks', 'mindmap_read', 'mindmap_update']);
+      expect(names({ profile: 'coding' })).toEqual(['SubmitPlan', 'send_developer_feedback', 'browser_tool', 'pr_status', 'pr_bind', 'pr_unbind', 'pr_set_auto_merge', 'list_background_tasks', 'mindmap_create', 'mindmap_read', 'mindmap_update']);
+      expect(names({ profile: 'coding', includeDeveloperFeedback: false })).toEqual(['SubmitPlan', 'browser_tool', 'pr_status', 'pr_bind', 'pr_unbind', 'pr_set_auto_merge', 'list_background_tasks', 'mindmap_create', 'mindmap_read', 'mindmap_update']);
     });
 
     it('adds source tools only with enabled sources, project memory only with a project', () => {
@@ -152,6 +164,7 @@ describe('session tool filtering helpers', () => {
         const options = { profile: 'coding' as const, includeBrowser };
         const coding = names(options);
         expect(coding.includes('browser_tool')).toBe(includeBrowser);
+        expect(coding).toContain('mindmap_create');
         expect(coding).toContain('mindmap_read');
         expect(coding).toContain('mindmap_update');
         expect(getToolDefsAsJsonSchema(options).map(def => def.name)).toEqual(coding);
@@ -160,7 +173,9 @@ describe('session tool filtering helpers', () => {
         const blocked = getSessionSafeBlockedToolNames(options);
         expect(allowed.has('browser_tool')).toBe(includeBrowser);
         expect(allowed.has('mindmap_read')).toBe(true);
+        expect(allowed.has('mindmap_create')).toBe(false);
         expect(allowed.has('mindmap_update')).toBe(false);
+        expect(blocked.has('mindmap_create')).toBe(true);
         expect(blocked.has('mindmap_update')).toBe(true);
       }
     });
@@ -172,7 +187,7 @@ describe('session tool filtering helpers', () => {
 
     it('applies the same filter to the JSON Schema view (Pi)', () => {
       const pi = getToolDefsAsJsonSchema({ prefix: 'mcp__session__', profile: 'coding' }).map(d => d.name);
-      expect(pi).toEqual(['mcp__session__SubmitPlan', 'mcp__session__send_developer_feedback', 'mcp__session__browser_tool', 'mcp__session__pr_status', 'mcp__session__pr_bind', 'mcp__session__pr_unbind', 'mcp__session__pr_set_auto_merge', 'mcp__session__list_background_tasks', 'mcp__session__mindmap_read', 'mcp__session__mindmap_update']);
+      expect(pi).toEqual(['mcp__session__SubmitPlan', 'mcp__session__send_developer_feedback', 'mcp__session__browser_tool', 'mcp__session__pr_status', 'mcp__session__pr_bind', 'mcp__session__pr_unbind', 'mcp__session__pr_set_auto_merge', 'mcp__session__list_background_tasks', 'mcp__session__mindmap_create', 'mcp__session__mindmap_read', 'mcp__session__mindmap_update']);
     });
   });
 

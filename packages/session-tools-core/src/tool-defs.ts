@@ -65,6 +65,7 @@ import { handleArchiveSession } from './handlers/archive-session.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
 import { handleListMessagingChannels, handleUnbindMessagingChannel } from './handlers/messaging.ts';
 import { handleDecide } from './handlers/decide.ts';
+import { handleMindmapCreate } from './handlers/mindmap-create.ts';
 import { handleMindmapRead } from './handlers/mindmap-read.ts';
 import { handleMindmapUpdate } from './handlers/mindmap-update.ts';
 
@@ -388,6 +389,15 @@ export const ListMessagingChannelsSchema = z.object({
 
 export const UnbindMessagingChannelSchema = z.object({
   platform: z.enum(['telegram', 'whatsapp']).optional().describe('Platform to unbind. If omitted, unbinds all.'),
+});
+
+export const MindmapCreateSchema = z.object({
+  relativePath: z.string().min(1).describe(
+    'Project-relative .drawnix path explicitly specified or confirmed by the user, including its directory',
+  ),
+  markdown: z.string().min(1).describe(
+    'Hierarchical Markdown used to initialize the new Drawnix mind map',
+  ),
 });
 
 export const MindmapReadSchema = z.object({
@@ -791,9 +801,15 @@ Shows which external chat apps are connected and can send/receive messages.`,
   unbind_messaging_channel: `Disconnect a messaging channel from the current session.
 Messages will no longer be forwarded between the chat app and this session.`,
 
+  mindmap_create: `Create, initialize, and open a new native Drawnix mind map in the current Project.
+
+The save location must be explicitly specified or confirmed by the user before calling this tool. If the user did not provide a directory, ask where to save it and recommend \`mindmaps/<name>.drawnix\`. Never silently choose the Project root or any other directory.
+
+Pass the confirmed Project-relative path in relativePath. The path must end in .drawnix. Missing parent directories are created, but an existing file is never overwritten. After creation, use mindmap_read and mindmap_update for further edits.`,
+
   mindmap_read: `Read the live outline and change sequence of an already-open Drawnix mind map.
 
-The user must create the .drawnix file in Project Files and keep its canvas open. Always call this immediately before mindmap_update so user edits are protected by changeSeq.`,
+The .drawnix file must already exist and its canvas must be open. For a new board, call mindmap_create after confirming its save location. Always call this immediately before mindmap_update so user edits are protected by changeSeq.`,
 
   mindmap_update: `Update an already-open Drawnix mind map without replacing the whole document.
 
@@ -891,6 +907,7 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'get_session_info', description: TOOL_DESCRIPTIONS.get_session_info, inputSchema: GetSessionInfoSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetSessionInfo },
   { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListSessions },
   { name: 'list_background_tasks', description: TOOL_DESCRIPTIONS.list_background_tasks, inputSchema: ListBackgroundTasksSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListBackgroundTasks },
+  { name: 'mindmap_create', description: TOOL_DESCRIPTIONS.mindmap_create, inputSchema: MindmapCreateSchema, executionMode: 'registry', safeMode: 'block', handler: handleMindmapCreate },
   { name: 'mindmap_read', description: TOOL_DESCRIPTIONS.mindmap_read, inputSchema: MindmapReadSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleMindmapRead },
   { name: 'mindmap_update', description: TOOL_DESCRIPTIONS.mindmap_update, inputSchema: MindmapUpdateSchema, executionMode: 'registry', safeMode: 'block', handler: handleMindmapUpdate },
   // Inter-session messaging
@@ -922,6 +939,7 @@ export const CODING_PROFILE_TOOLS: Readonly<Record<string, 'always' | 'sources' 
   list_background_tasks: 'always',
   send_developer_feedback: 'always',
   browser_tool: 'always',
+  mindmap_create: 'always',
   mindmap_read: 'always',
   mindmap_update: 'always',
   // PR tools are core to Coding mode; each returns a clean "unavailable" result off a GitHub checkout

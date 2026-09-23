@@ -20,6 +20,19 @@
   pointer-events: none;
 }
 
+/* The published react-text build keeps pre-wrap inline; keep dynamic mind text on one visible line. */
+.stair-drawnix-host .plait-board-container g[plait-mind='true'] .text foreignObject,
+.stair-drawnix-host .plait-board-container g[plait-mind_child='true'] .text foreignObject,
+.stair-drawnix-host .plait-board-container g[plait-mind-temporary='true'] .text foreignObject {
+  overflow: visible;
+}
+
+.stair-drawnix-host .plait-board-container g[plait-mind='true'] .slate-editable-container,
+.stair-drawnix-host .plait-board-container g[plait-mind_child='true'] .slate-editable-container,
+.stair-drawnix-host .plait-board-container g[plait-mind-temporary='true'] .slate-editable-container {
+  white-space: nowrap !important;
+}
+
 .stair-drawnix-host .plait-board-container.theme-colorful .board-host-svg,
 .stair-drawnix-host .plait-board-container.theme-default .board-host-svg {
   background-color: #fff;

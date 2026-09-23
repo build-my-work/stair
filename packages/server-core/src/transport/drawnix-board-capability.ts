@@ -27,6 +27,12 @@ export interface DrawnixBoardReadCapabilityRequest
   action: 'read'
 }
 
+export interface DrawnixBoardCreateCapabilityRequest
+  extends DrawnixBoardCapabilityBase {
+  action: 'create'
+  markdown: string
+}
+
 export interface DrawnixBoardUpdateCapabilityRequest
   extends DrawnixBoardCapabilityBase {
   action: 'update'
@@ -35,6 +41,7 @@ export interface DrawnixBoardUpdateCapabilityRequest
 }
 
 export type DrawnixBoardCapabilityRequest =
+  | DrawnixBoardCreateCapabilityRequest
   | DrawnixBoardReadCapabilityRequest
   | DrawnixBoardUpdateCapabilityRequest
 
