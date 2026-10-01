@@ -1,24 +1,4 @@
-import i18n from 'i18next'
-import { coerceInputText } from '@/lib/input-text'
-
-export interface BuildPlanApprovalMessageOptions {
-  /** Optional accepted plan path (kept for call-site compatibility; message remains path-agnostic). */
-  planPath?: string
-  draftInput?: string
-}
-
-function normalizeDraftInput(input?: string): string {
-  return coerceInputText(input).trim()
-}
-
-export function buildPlanApprovalMessage(options: BuildPlanApprovalMessageOptions = {}): string {
-  const draftInput = normalizeDraftInput(options.draftInput)
-
-  const sections: string[] = [i18n.t('plan.approved')]
-
-  if (draftInput.length > 0) {
-    sections.push(['---', `**${i18n.t('plan.additionalUserContext')}**`, draftInput].join('\n\n'))
-  }
-
-  return sections.join('\n\n')
-}
+// The approval-message contract now lives in `@craft-agent/shared` so the
+// server-owned durable dispatch and every renderer surface build byte-identical
+// text. Re-exported here for existing imports.
+export { buildPlanApprovalMessage, type BuildPlanApprovalMessageOptions } from '@craft-agent/shared/sessions/plan-approval'

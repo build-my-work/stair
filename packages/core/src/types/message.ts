@@ -624,7 +624,7 @@ export type AgentEvent =
   | { type: 'source_activated'; sourceSlug: string; originalMessage: string }
   | { type: 'usage_update'; usage: Pick<AgentEventUsage, 'inputTokens' | 'contextWindow'> }
   | { type: 'context_usage'; contextUsage: ContextUsageSnapshot }
-  | { type: 'compaction_failed' }
+  | { type: 'compaction_failed'; /** Which compaction failed: only a manual (command) failure owns the Accept & Compact pending record; an overflow/auto failure must leave it alone. */ compactionTrigger?: 'manual' | 'automatic' }
   | { type: 'steer_undelivered'; message: string; messageId?: string };
 
 /**

@@ -287,7 +287,10 @@ export interface ElectronAPI {
   // Consolidated session command handler
   sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'markPendingPlanExecutionDispatched' }>): Promise<boolean>
   sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'continueInNewSession' }>): Promise<{ sessionId: string }>
-  sessionCommand(sessionId: string, command: Exclude<SessionCommand, { type: 'markPendingPlanExecutionDispatched' | 'continueInNewSession' }>): Promise<void | ShareResult | RefreshTitleResult | { count: number }>
+  sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'dispatchPendingPlanExecution' }>): Promise<{ ok: boolean; reason?: 'missing' | 'busy' | 'not-ready' | 'already-dispatched' | 'failed' | 'stale' | 'invalid-references' | 'persist-failed' }>
+  sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'setPendingPlanExecution' }>): Promise<{ executionId?: string; restoreId?: string } | null>
+  sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'consumePendingPlanDraft' }>): Promise<import('@craft-agent/shared/config').PlanDraftConsumption | null>
+  sessionCommand(sessionId: string, command: Exclude<SessionCommand, { type: 'markPendingPlanExecutionDispatched' | 'continueInNewSession' | 'dispatchPendingPlanExecution' | 'setPendingPlanExecution' | 'consumePendingPlanDraft' }>): Promise<void | ShareResult | RefreshTitleResult | { count: number }>
 
   // Server info (REMOTE_ELIGIBLE — returns data from whichever server owns the workspace)
   getServerHomeDir(): Promise<string>
@@ -323,6 +326,9 @@ export interface ElectronAPI {
     draftReferencesSnapshot?: Reference[]
     awaitingCompaction: boolean
     executionDispatched: boolean
+    executionId?: string
+    restoreId?: string
+    failed?: boolean
   } | null>
   // Permission mode reconciliation
   getSessionPermissionModeState(sessionId: string): Promise<PermissionModeState | null>
@@ -520,6 +526,7 @@ export interface ElectronAPI {
   setDraftContent(
     sessionId: string,
     content: Pick<import('@craft-agent/shared/config').SessionDraft, 'text' | 'attachments'>,
+    mutation?: import('@craft-agent/shared/config').DraftContentMutation,
   ): Promise<import('@craft-agent/shared/config').SessionDraft | null>
   updateDraftReferences(
     sessionId: string,
@@ -538,6 +545,12 @@ export interface ElectronAPI {
     input: {
       restoreId: string
       draft: import('@craft-agent/shared/config').SessionDraft
+      local?: {
+        content: Pick<import('@craft-agent/shared/config').SessionDraft, 'text' | 'attachments'>
+        mutation: import('@craft-agent/shared/config').DraftContentMutation
+      }
+      /** Recovery is scoped to a failed host record; its receipt owns the snapshot. */
+      planExecutionId?: string
     },
   ): Promise<import('@craft-agent/shared/config').SessionDraftRestoreResult>
   onDraftReferencesChanged(

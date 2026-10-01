@@ -411,6 +411,8 @@ describe('session draft storage', () => {
     expect(JSON.parse(output)).toEqual({
       first: {
         applied: true,
+        committed: true,
+        revision: 2,
         draft: {
           text: 'typed first\n\nqueued text',
           attachments: restored.attachments,
@@ -419,6 +421,8 @@ describe('session draft storage', () => {
       },
       replay: {
         applied: false,
+        committed: true,
+        revision: 2,
         draft: {
           text: 'typed first\n\nqueued text',
           attachments: restored.attachments,
@@ -441,6 +445,7 @@ describe('session draft storage', () => {
     `)
     expect(JSON.parse(output)).toEqual({
       drafts: { s1: { text: 'queued' } },
+      revisions: { s1: 1 },
       appliedRestoreIds: { s1: ['restore-1'] },
     })
   })

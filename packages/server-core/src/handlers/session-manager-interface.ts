@@ -209,17 +209,24 @@ export interface ISessionManager {
     planPath: string,
     draftInputSnapshot?: string,
     draftReferencesSnapshot?: Reference[],
-  ): Promise<void>
+    approvalText?: string,
+    approvalBadges?: import('@craft-agent/core').ContentBadge[],
+  ): Promise<import('@craft-agent/shared/sessions').PendingPlanExecutionRecord>
   markPendingPlanExecutionDispatched(sessionId: string): Promise<boolean>
-  clearPendingPlanExecution(sessionId: string): Promise<void>
+  dispatchPendingPlanExecution(sessionId: string, executionId?: string, rpcContext?: { callerClientId?: string }): Promise<{ ok: boolean; reason?: 'missing' | 'busy' | 'not-ready' | 'already-dispatched' | 'failed' | 'stale' | 'invalid-references' | 'persist-failed' }>
+  consumePendingPlanDraft(sessionId: string, executionId: string, local?: { content: import('@craft-agent/shared/config').DraftContent; mutation: import('@craft-agent/shared/config').DraftContentMutation }): Promise<import('@craft-agent/shared/config').PlanDraftConsumption | null>
+  restorePendingPlanDraft(sessionId: string, executionId: string, restoreId: string, local?: { content: import('@craft-agent/shared/config').DraftContent; mutation: import('@craft-agent/shared/config').DraftContentMutation }): Promise<import('@craft-agent/shared/config').SessionDraftRestoreResult>
+  clearPendingPlanExecution(sessionId: string, executionId?: string): Promise<void>
   getPendingPlanExecution(sessionId: string): {
     planPath: string
     draftInputSnapshot?: string
     draftReferencesSnapshot?: Reference[]
     awaitingCompaction: boolean
     executionDispatched: boolean
+    executionId?: string
+    failed?: boolean
   } | null
-  markCompactionComplete(sessionId: string): Promise<void>
+  markCompactionComplete(sessionId: string): Promise<boolean>
 
   /**
    * Send the plan-approval "I approve this plan, please execute it" message

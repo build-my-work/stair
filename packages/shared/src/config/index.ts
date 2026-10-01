@@ -7,6 +7,7 @@ export * from './models-pi.ts';
 export * from './model-fetcher.ts';
 export * from './preferences.ts';
 export * from './storage.ts';
+export type { DraftContent, DraftContentMutation } from './draft-content.ts';
 export * from './theme.ts';
 export * from './validators.ts';
 export * from './cli-domains.ts';

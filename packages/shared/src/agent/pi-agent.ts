@@ -2280,7 +2280,7 @@ export class PiAgent extends BaseAgent {
         return;
       }
     } catch (error) {
-      if (compactMatch) yield { type: 'compaction_failed' };
+      if (compactMatch) yield { type: 'compaction_failed', compactionTrigger: 'manual' };
       if (error instanceof Error && error.message.includes('abort')) {
         if (compactMatch) yield { type: 'complete' };
         if (this.abortReason === AbortReason.PlanSubmitted) {

@@ -18,6 +18,8 @@ import {
   formatProjectContextForPrompt,
 } from '../system'
 import type { ProjectPromptContext } from '../../projects/types.ts'
+import { CONFIG_DIR } from '../../config/paths.ts'
+import { toPortablePath } from '../../utils/paths.ts'
 
 const GIT_CONVENTIONS_HEADING = '## Git Conventions'
 const CO_AUTHOR_TRAILER = 'Co-Authored-By: Craft Agent <agents-noreply@craft.do>'
@@ -80,7 +82,7 @@ describe('system prompt guidance', () => {
 
     expect(prompt).toContain('## Automations')
     expect(prompt).toContain('Automations run prompts, webhooks, or workspace-local scripts')
-    expect(prompt).toContain('Read `~/.craft-agent/docs/automations.md` before creating or modifying automations.')
+    expect(prompt).toContain(`Read \`${toPortablePath(CONFIG_DIR)}/docs/automations.md\` before creating or modifying automations.`)
     expect(prompt).toContain('Script actions run workspace-local scripts, not arbitrary shell snippets.')
   })
 

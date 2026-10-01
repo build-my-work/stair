@@ -30,6 +30,7 @@ describe('Draft RPC Workspace 授权', () => {
     const getDraftHydration = spyOn(config, 'getSessionDraftHydrationState')
       .mockImplementation(() => ({
         drafts: { ...drafts },
+        revisions: { 'session-a': 3, 'session-b': 7, stale: 100 },
         appliedRestoreIds: {
           'session-a': ['restore-a'],
           'session-b': ['restore-b'],
@@ -152,10 +153,12 @@ describe('Draft RPC Workspace 授权', () => {
     expect(await get(workspaceA, 'session-a')).toEqual({ text: 'updated' })
     expect(await getAll(workspaceA)).toEqual({
       drafts: { 'session-a': { text: 'updated' } },
+      revisions: { 'session-a': 3 },
       appliedRestoreIds: { 'session-a': ['restore-a'] },
     })
     expect(await getAll(workspaceB)).toEqual({
       drafts: { 'session-b': { text: 'workspace b' } },
+      revisions: { 'session-b': 7 },
       appliedRestoreIds: { 'session-b': ['restore-b'] },
     })
     expect(getSessions).toHaveBeenCalledWith('workspace-a')

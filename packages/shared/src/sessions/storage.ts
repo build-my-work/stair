@@ -23,6 +23,7 @@ import {
   unlinkSync,
 } from 'fs';
 import { join, basename } from 'path';
+import { randomUUID } from 'node:crypto';
 import type { Reference } from '@craft-agent/core/types';
 import { getWorkspaceSessionsPath, loadWorkspaceConfig } from '../workspaces/storage.ts';
 import {
@@ -41,6 +42,7 @@ import type {
   SessionTokenUsage,
   SessionHeader,
   SessionStatus,
+  PendingPlanExecutionRecord,
 } from './types.ts';
 import type { Plan } from '../agent/plan-types.ts';
 import { validateSessionStatus } from '../statuses/validation.ts';
@@ -336,6 +338,16 @@ export async function getOrCreateSessionById(
 export async function saveSession(session: StoredSession): Promise<void> {
   sessionPersistenceQueue.enqueue(session);
   await sessionPersistenceQueue.flush(session.id);
+}
+
+/**
+ * Save session with a durability guarantee: rejects when the write fails, so
+ * lifecycle transitions (pending-plan claim/handoff) never report success
+ * that disk never saw and can keep their state retryable instead.
+ */
+export async function saveSessionStrict(session: StoredSession): Promise<void> {
+  sessionPersistenceQueue.enqueue(session);
+  await sessionPersistenceQueue.flush(session.id, { strict: true });
 }
 
 /**
@@ -691,9 +703,41 @@ export async function unarchiveSession(workspaceRootPath: string, sessionId: str
 // ============================================================
 
 /**
+ * In-process serialization for pending-plan record mutations. These functions
+ * do read-check-write transitions on the session file; without the chain two
+ * concurrent callers (two mounted windows, reload recovery plus a live one)
+ * could both observe the pre-transition record and both claim (review defect:
+ * parallel claims `[true, true]`). Same pattern as the SM lifecycle lock, but
+ * owned by storage so every caller is covered.
+ */
+const pendingPlanTransactions = new Map<string, Promise<unknown>>();
+
+function withPendingPlanTransaction<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = pendingPlanTransactions.get(sessionId) ?? Promise.resolve()
+  const result = previous.catch(() => {}).then(async () => {
+    // Read only after newer debounced/in-flight history is durable. Loading
+    // the older disk snapshot first would enqueue it over those newer messages.
+    await sessionPersistenceQueue.flush(sessionId, { strict: true })
+    return operation()
+  })
+  const settled = result.then(() => {}, () => {})
+  pendingPlanTransactions.set(sessionId, settled)
+  void settled.finally(() => {
+    if (pendingPlanTransactions.get(sessionId) === settled) {
+      pendingPlanTransactions.delete(sessionId)
+    }
+  })
+  return result
+}
+
+/**
  * Set pending plan execution state.
  * Called when user clicks "Accept & Compact" - stores the plan path
  * so it can be executed after compaction, even if the page reloads.
+ *
+ * Rejects when the record cannot be durably persisted (strict write) so the
+ * caller can keep the consumed draft unconsumed. Mints the record's stable
+ * `executionId` / `restoreId` and returns the persisted record.
  */
 export async function setPendingPlanExecution(
   workspaceRootPath: string,
@@ -701,72 +745,146 @@ export async function setPendingPlanExecution(
   planPath: string,
   draftInputSnapshot?: string,
   draftReferencesSnapshot?: Reference[],
-): Promise<void> {
-  const session = loadSession(workspaceRootPath, sessionId);
-  if (!session) return;
+  approvalMessage?: string,
+  referencesValidated?: boolean,
+  approvalBadges?: import('@craft-agent/core').ContentBadge[],
+): Promise<PendingPlanExecutionRecord | null> {
+  return withPendingPlanTransaction(sessionId, async () => {
+    const session = loadSession(workspaceRootPath, sessionId);
+    if (!session) return null;
 
-  session.pendingPlanExecution = {
-    planPath,
-    draftInputSnapshot,
-    ...(draftReferencesSnapshot?.length ? { draftReferencesSnapshot } : {}),
-    awaitingCompaction: true,
-    executionDispatched: false,
-  };
-  await saveSession(session);
+    // Preserve the renderer's complete localized approval and mention badges,
+    // including long draft context supported by ordinary message submission.
+    const storedApprovalMessage = typeof approvalMessage === 'string'
+      && approvalMessage.trim().length > 0
+      ? approvalMessage
+      : undefined;
+
+    session.pendingPlanExecution = {
+      planPath,
+      draftInputSnapshot,
+      ...(draftReferencesSnapshot?.length ? { draftReferencesSnapshot } : {}),
+      ...(storedApprovalMessage !== undefined ? { approvalMessage: storedApprovalMessage, ...(approvalBadges?.length ? { approvalBadges } : {}) } : {}),
+      ...(referencesValidated === true ? { referencesValidated: true } : {}),
+      awaitingCompaction: true,
+      executionDispatched: false,
+      executionId: randomUUID(),
+      restoreId: randomUUID(),
+    };
+    await saveSessionStrict(session);
+    return session.pendingPlanExecution;
+  });
 }
 
 /**
- * Mark compaction as complete for pending plan execution.
- * Called when compaction_complete event fires - sets awaitingCompaction to false
- * so reload recovery knows compaction finished and can trigger execution.
+ * Mark compaction as complete for pending plan execution. The correlation
+ * (`generation`/`stopEpoch` captured when the record's own `/compact` turn
+ * started) is re-checked inside the transaction against the stored record, so
+ * a late completion from an older or foreign compaction can never authorize a
+ * newer record. Returns whether the record actually became ready.
  */
 export async function markCompactionComplete(
   workspaceRootPath: string,
-  sessionId: string
-): Promise<void> {
-  const session = loadSession(workspaceRootPath, sessionId);
-  if (!session?.pendingPlanExecution) return;
+  sessionId: string,
+  correlation?: { generation: number; stopEpoch: number },
+): Promise<boolean> {
+  return withPendingPlanTransaction(sessionId, async () => {
+    const session = loadSession(workspaceRootPath, sessionId);
+    const pending = session?.pendingPlanExecution;
+    if (!session || !pending || pending.awaitingCompaction === false || pending.failed) {
+      return false;
+    }
+    // Only the record's own compaction turn may ready it. A record without a
+    // recorded turn was never correlated (legacy stored record or the compact
+    // never started) and is deliberately left unready.
+    if (
+      !pending.compactionTurn
+      || !correlation
+      || pending.compactionTurn.generation !== correlation.generation
+      || pending.compactionTurn.stopEpoch !== correlation.stopEpoch
+    ) {
+      return false;
+    }
 
-  session.pendingPlanExecution.awaitingCompaction = false;
-  await saveSession(session);
+    pending.awaitingCompaction = false;
+    await saveSessionStrict(session);
+    return true;
+  });
 }
 
 /**
  * Mark pending plan execution as already dispatched from the UI.
  * This prevents reload recovery from sending the same approval message twice
  * if cleanup fails after the send has already been kicked off.
+ *
+ * The claim is the read-check-write transition itself (serialized above, and
+ * persisted with a strict write that rejects on IO failure), so at most one
+ * concurrent caller ever receives true. Identity scoping: a mismatching
+ * `executionId` is a stale claim for a replaced record, and an OMITTED id is
+ * a legacy no-identity command — allowed only on actual legacy records, never
+ * on an identified one.
  */
 export async function markPendingPlanExecutionDispatched(
   workspaceRootPath: string,
-  sessionId: string
+  sessionId: string,
 ): Promise<boolean> {
-  const session = loadSession(workspaceRootPath, sessionId);
-  const pending = session?.pendingPlanExecution;
-  if (!session || !pending || pending.awaitingCompaction || pending.executionDispatched) {
-    return false;
-  }
+  return withPendingPlanTransaction(sessionId, async () => {
+    const session = loadSession(workspaceRootPath, sessionId);
+    const pending = session?.pendingPlanExecution;
+    if (!session || !pending || pending.awaitingCompaction || pending.executionDispatched || pending.failed) {
+      return false;
+    }
+    // LEGACY-ONLY claim path: a claim without the server-side durable approval
+    // handoff is a split handoff, so identified records are rejected outright —
+    // even when the right id is presented. Modern dispatch creates the
+    // approval atomically with the claim.
+    if (pending.executionId !== undefined) {
+      debug('[storage] pending plan dispatch claim rejected (identified records dispatch server-side only)');
+      return false;
+    }
 
-  pending.executionDispatched = true;
-  await saveSession(session);
-  return true;
+    session.pendingPlanExecution = { ...pending, executionDispatched: true };
+    try {
+      await saveSessionStrict(session);
+    } catch (error) {
+      debug('[storage] pending plan dispatch claim failed to persist', error);
+      return false;
+    }
+    return true;
+  });
 }
 
 /**
  * Clear pending plan execution state.
  * Called after plan execution is sent, on new user message, or when
  * the pending execution is no longer relevant.
+ *
+ * Identity scoping (same contract as the claim): a mismatching `executionId`
+ * never deletes a replacement record, and an OMITTED id — a legacy
+ * no-identity command — only clears actual legacy records, never an
+ * identified one.
  */
 export async function clearPendingPlanExecution(
   workspaceRootPath: string,
-  sessionId: string
+  sessionId: string,
+  executionId?: string,
 ): Promise<void> {
-  const session = loadSession(workspaceRootPath, sessionId);
-  // Nothing pending (the common case: this runs on every user message): no rewrite. Rewriting the
-  // whole file here raced concurrent sends on the shared .tmp path and could revert newer writes.
-  if (!session?.pendingPlanExecution) return;
+  await withPendingPlanTransaction(sessionId, async () => {
+    const session = loadSession(workspaceRootPath, sessionId);
+    // Nothing pending (the common case: this runs on every user message): no rewrite. Rewriting the
+    // whole file here raced concurrent sends on the shared .tmp path and could revert newer writes.
+    if (!session?.pendingPlanExecution) return;
+    const recordId = session.pendingPlanExecution.executionId;
+    if (recordId !== undefined) {
+      if (executionId === undefined || executionId !== recordId) {
+        debug('[storage] pending plan clear ignored (identity mismatch or missing)');
+        return;
+      }
+    }
 
-  delete session.pendingPlanExecution;
-  await saveSession(session);
+    delete session.pendingPlanExecution;
+    await saveSessionStrict(session);
+  });
 }
 
 /**
@@ -776,13 +894,7 @@ export async function clearPendingPlanExecution(
 export function getPendingPlanExecution(
   workspaceRootPath: string,
   sessionId: string
-): {
-  planPath: string;
-  draftInputSnapshot?: string;
-  draftReferencesSnapshot?: Reference[];
-  awaitingCompaction: boolean;
-  executionDispatched: boolean;
-} | null {
+): PendingPlanExecutionRecord | null {
   const session = loadSession(workspaceRootPath, sessionId);
   if (!session?.pendingPlanExecution) return null;
   return {

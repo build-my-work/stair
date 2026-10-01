@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test'
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
 import type { SessionHeader } from '../types'
 import { getHeaderMetadataSignature, mergeHeaderWithExternalMetadata } from '../persistence-queue'
 
@@ -95,5 +95,197 @@ describe('session persistence header conflict helpers', () => {
     const merged = mergeHeaderWithExternalMetadata(local, disk)
     expect(merged.name).toBe('External Name')
     expect(merged.labels).toEqual(['external'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Strict (error-propagating) writes — real IO failures, not mocks.
+// ---------------------------------------------------------------------------
+
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import type { StoredSession } from '../types'
+import { SessionPersistenceQueue } from '../persistence-queue'
+import { ensureSessionsDir, getSessionFilePath } from '../storage'
+
+function makeSession(workspaceRootPath: string, id: string): StoredSession {
+  return {
+    id,
+    workspaceRootPath,
+    projectId: 'proj_default',
+    createdAt: 1,
+    lastUsedAt: 1,
+    messages: [],
+    tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, contextTokens: 0, costUsd: 0 },
+  } as StoredSession
+}
+
+describe('session persistence queue strict writes', () => {
+  let workspaceRoot: string
+
+  beforeEach(() => {
+    workspaceRoot = mkdtempSync(join(tmpdir(), 'pq-strict-'))
+    ensureSessionsDir(workspaceRoot)
+  })
+
+  afterEach(() => {
+    rmSync(workspaceRoot, { recursive: true, force: true })
+  })
+
+  it('strict flush rejects when the write fails (real EACCES)', async () => {
+    const queue = new SessionPersistenceQueue(0)
+    const session = makeSession(workspaceRoot, 'strict-io')
+    const sessionDir = join(workspaceRoot, 'sessions', 'strict-io')
+    mkdirSync(sessionDir, { recursive: true })
+    chmodSync(sessionDir, 0o555)
+    try {
+      queue.enqueue(session)
+      await expect(queue.flush('strict-io', { strict: true })).rejects.toThrow()
+      expect(existsSync(getSessionFilePath(workspaceRoot, 'strict-io'))).toBe(false)
+    } finally {
+      chmodSync(sessionDir, 0o755)
+      queue.cancel('strict-io')
+    }
+  })
+
+  it('plain flush keeps the historical best-effort contract on failure', async () => {
+    const queue = new SessionPersistenceQueue(0)
+    const session = makeSession(workspaceRoot, 'best-effort-io')
+    const sessionDir = join(workspaceRoot, 'sessions', 'best-effort-io')
+    mkdirSync(sessionDir, { recursive: true })
+    chmodSync(sessionDir, 0o555)
+    try {
+      queue.enqueue(session)
+      await expect(queue.flush('best-effort-io')).resolves.toBeUndefined()
+    } finally {
+      chmodSync(sessionDir, 0o755)
+      queue.cancel('best-effort-io')
+    }
+  })
+
+  it('strict flush surfaces a failure of an in-flight best-effort write', async () => {
+    const queue = new SessionPersistenceQueue(0)
+    const session = makeSession(workspaceRoot, 'inflight-io')
+    const sessionDir = join(workspaceRoot, 'sessions', 'inflight-io')
+    mkdirSync(sessionDir, { recursive: true })
+
+    // The debounced write takes the entry and starts (and fails) while the
+    // strict caller arrives with nothing pending: it must still learn the
+    // session's newest persisted state never reached disk.
+    const failingWrite = queue.flush('inflight-io') // plain: swallows the error internally
+    chmodSync(sessionDir, 0o555)
+    const enqueue = makeSession(workspaceRoot, 'inflight-io')
+    queue.enqueue(enqueue)
+    await failingWrite
+    // Entry may still be pending if the plain flush never took it; force the
+    // strict path through whichever state it finds.
+    try {
+      await expect(queue.flush('inflight-io', { strict: true })).rejects.toThrow()
+    } finally {
+      chmodSync(sessionDir, 0o755)
+      queue.cancel('inflight-io')
+    }
+  })
+
+  it('a successful write clears a previous strict failure', async () => {
+    const queue = new SessionPersistenceQueue(0)
+    const sessionDir = join(workspaceRoot, 'sessions', 'recovered-io')
+    mkdirSync(sessionDir, { recursive: true })
+    chmodSync(sessionDir, 0o555)
+    queue.enqueue(makeSession(workspaceRoot, 'recovered-io'))
+    try {
+      await expect(queue.flush('recovered-io', { strict: true })).rejects.toThrow()
+    } finally {
+      chmodSync(sessionDir, 0o755)
+    }
+    queue.enqueue(makeSession(workspaceRoot, 'recovered-io'))
+    await expect(queue.flush('recovered-io', { strict: true })).resolves.toBeUndefined()
+    const content = readFileSync(getSessionFilePath(workspaceRoot, 'recovered-io'), 'utf-8')
+    expect(content).toContain('"id":"recovered-io"')
+    queue.cancel('recovered-io')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Codex-review regressions: sticky strict failures, best-effort no-reject
+// contract under concurrency, and true replace-on-rename semantics.
+// ---------------------------------------------------------------------------
+
+import { mkdirSync } from 'node:fs'
+import * as fsPromises from 'node:fs/promises'
+import { spyOn } from 'bun:test'
+
+describe('session persistence queue durability regressions', () => {
+  let workspaceRoot: string
+
+  beforeEach(() => {
+    workspaceRoot = mkdtempSync(join(tmpdir(), 'pq-durability-'))
+    ensureSessionsDir(workspaceRoot)
+  })
+
+  afterEach(() => {
+    rmSync(workspaceRoot, { recursive: true, force: true })
+  })
+
+  function makeFailingTmpDirFixture(id: string) {
+    const session = makeSession(workspaceRoot, id)
+    const path = getSessionFilePath(workspaceRoot, id)
+    mkdirSync(path + '.tmp', { recursive: true }) // EISDIR on every write
+    return { path, session }
+  }
+
+  it('a strict flush keeps reporting an undurable state until a write succeeds', async () => {
+    const queue = new SessionPersistenceQueue(60_000)
+    const { path, session } = makeFailingTmpDirFixture('sticky-failure')
+    queue.enqueue(session)
+    let failures = 0
+    for (let i = 0; i < 3; i++) {
+      try {
+        await queue.flush('sticky-failure', { strict: true })
+      } catch {
+        failures++
+      }
+    }
+    expect(failures).toBe(3)
+    // A genuine successful retry clears the sticky failure.
+    rmSync(path + '.tmp', { recursive: true, force: true })
+    queue.enqueue(session)
+    await expect(queue.flush('sticky-failure', { strict: true })).resolves.toBeUndefined()
+    queue.cancel('sticky-failure')
+  })
+
+  it('two concurrent plain flushes of one failing write both keep the no-reject contract', async () => {
+    const queue = new SessionPersistenceQueue(60_000)
+    const { path, session } = makeFailingTmpDirFixture('best-effort-failure')
+    queue.enqueue(session)
+    const results = await Promise.allSettled([
+      queue.flush('best-effort-failure'),
+      queue.flush('best-effort-failure'),
+    ])
+    expect(results.map(result => result.status)).toEqual(['fulfilled', 'fulfilled'])
+    // ...while a strict caller still learns the disk never got the data.
+    await expect(queue.flush('best-effort-failure', { strict: true })).rejects.toThrow()
+    queue.cancel('best-effort-failure')
+  })
+
+  it('a failed atomic replacement preserves the prior valid session file', async () => {
+    const queue = new SessionPersistenceQueue(0)
+    const session = makeSession(workspaceRoot, 'rename-failure')
+    queue.enqueue(session)
+    await queue.flush('rename-failure', { strict: true })
+    const path = getSessionFilePath(workspaceRoot, 'rename-failure')
+    const before = readFileSync(path, 'utf-8')
+
+    const rename = spyOn(fsPromises, 'rename').mockRejectedValue(new Error('injected rename failure'))
+    try {
+      queue.enqueue({ ...session, name: 'updated' })
+      await expect(queue.flush('rename-failure', { strict: true })).rejects.toThrow('injected rename failure')
+      expect(existsSync(path)).toBe(true)
+      expect(readFileSync(path, 'utf-8')).toBe(before)
+    } finally {
+      rename.mockRestore()
+      queue.cancel('rename-failure')
+    }
   })
 })

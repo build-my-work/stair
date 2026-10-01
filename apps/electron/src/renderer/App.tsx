@@ -426,6 +426,9 @@ export default function App() {
         store.get(sessionMetaMapAtom).get(sessionId)?.projectId
         ?? store.get(sessionAtomFamily(sessionId))?.projectId
       ),
+      onBeforeRestore: sessionId => {
+        window.dispatchEvent(new CustomEvent('craft:flush-input', { detail: { sessionId } }))
+      },
       onTextRestored: (sessionId, text) => {
         window.dispatchEvent(new CustomEvent('craft:restore-input', {
           detail: { sessionId, text },
@@ -456,6 +459,84 @@ export default function App() {
   ): Promise<T> => draftCoordinator.runBrowserSelectionTask(operation), [draftCoordinator])
   const hydratingCreatedSessionsRef = useRef<Set<string>>(new Set())
   const createdSessionsWithEarlyEventsRef = useRef<Set<string>>(new Set())
+  // Recovery of a failed Accept & Compact's consumed draft. One handler for
+  // both delivery channels: the live `compaction_failed` wire event and the
+  // `craft:compaction-failed` DOM re-delivery (reconnect/missed-event
+  // exposure of the durable outbox). The coordinator's queuedRestoreId path
+  // provides the required ordering — pending local edits are flushed FIRST,
+  // then one atomic idempotent restore commits under the durable restoreId,
+  // merging under any newer draft — and duplicate deliveries converge
+  // (appliedRestoreIds / applied:false) instead of double-merging. Only after
+  // that durable restore resolves is the scoped ACK sent, which clears the
+  // non-executable outbox record on the host.
+  const recoverFailedCompactionDraft = useCallback((payload: {
+    sessionId: string
+    executionId?: string
+    restoreId?: string
+    text?: string
+    references?: import('@craft-agent/core').Reference[]
+  }) => {
+    const { sessionId, restoreId } = payload
+    if (!restoreId) return
+    if (draftCoordinator.deferRestore(transportWorkspaceIdRef.current, sessionId, {
+      type: 'restore_input',
+      text: payload.text ?? '',
+      ...(payload.references?.length ? { references: payload.references } : {}),
+      queuedRestoreId: restoreId,
+      planExecutionId: payload.executionId,
+    })) {
+      // Admission closed during a Workspace switch: the deferred restore is
+      // replayed by the coordinator when admissions reopen.
+      return
+    }
+    const targetProjectId = store.get(sessionMetaMapAtom).get(sessionId)?.projectId
+      ?? store.get(sessionAtomFamily(sessionId))?.projectId
+    void draftCoordinator.restoreInput(
+      windowWorkspaceId,
+      sessionId,
+      targetProjectId,
+      {
+        type: 'restore_input',
+        text: payload.text ?? '',
+        ...(payload.references?.length ? { references: payload.references } : {}),
+        queuedRestoreId: restoreId,
+        planExecutionId: payload.executionId,
+      },
+    )
+      .catch(error => {
+        rendererLog.warn('[drafts] Failed to recover compaction-failure draft; outbox retained for retry', {
+          sessionId,
+          error,
+        })
+      })
+  }, [draftCoordinator, windowWorkspaceId])
+
+  // Re-delivery channel for the durable failed-compaction outbox: the
+  // FreeFormInput dispatcher exposes it through this DOM event when its
+  // pending-plan load observes a failed record (reconnect, or a wire event
+  // missed while disconnected). Same ordered recovery handler as the live
+  // wire event.
+  useEffect(() => {
+    const handleOutboxRedelivery = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        sessionId?: string
+        executionId?: string
+        restoreId?: string
+        text?: string
+        references?: Reference[]
+      }>).detail
+      if (!detail?.sessionId || !detail.restoreId) return
+      recoverFailedCompactionDraft({
+        sessionId: detail.sessionId,
+        executionId: detail.executionId,
+        restoreId: detail.restoreId,
+        text: detail.text,
+        references: detail.references,
+      })
+    }
+    window.addEventListener('craft:compaction-failed', handleOutboxRedelivery)
+    return () => window.removeEventListener('craft:compaction-failed', handleOutboxRedelivery)
+  }, [recoverFailedCompactionDraft])
   // Unified session options for all session-scoped settings
   const [sessionOptions, setSessionOptions] = useState<Map<string, SessionOptions>>(new Map())
 
@@ -1210,6 +1291,21 @@ export default function App() {
         }))
       }
 
+      // A failed manual compaction cancelled the pending plan terminally and
+      // kept the consumed snapshot as a durable non-executable outbox. Drive
+      // the ordered renderer-side recovery (flush local edits → one atomic
+      // idempotent restore under the durable restoreId → scoped ACK).
+      if (event.type === 'compaction_failed') {
+        recoverFailedCompactionDraft({
+          sessionId,
+          ...(event.executionId !== undefined ? { executionId: event.executionId } : {}),
+          ...(event.restoreId !== undefined ? { restoreId: event.restoreId } : {}),
+          ...(event.text !== undefined ? { text: event.text } : {}),
+          ...(event.references?.length ? { references: event.references } : {}),
+        })
+        return
+      }
+
       // Check if session is currently streaming (atom is source of truth)
       const atomSession = store.get(sessionAtomFamily(sessionId))
       const projectId = atomSession?.projectId
@@ -1617,7 +1713,7 @@ export default function App() {
     window.electronAPI.sessionCommand(sessionId, { type: 'rename', name })
   }, [updateSessionById])
 
-  const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[], references?: Reference[]) => {
+  const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'>) => {
     let optimisticMessageId: string | null = null
     try {
       // Capture pre-send processing state so we can flag mid-stream sends
@@ -1772,6 +1868,7 @@ export default function App() {
         badges: badges.length > 0 ? badges : undefined,
         references: references?.length ? references : undefined,
         optimisticMessageId: userMessage.id,
+        ...(options?.planExecutionId ? { planExecutionId: options.planExecutionId } : {}),
       })
     } catch (error) {
       console.error('Failed to send message:', error)
@@ -1793,12 +1890,7 @@ export default function App() {
         if (restoreResult.ok && restoredDraft) {
           draftCoordinator.setDraft(sessionId, restoredDraft)
           void Promise.all([
-            window.electronAPI.setDraftContent(sessionId, {
-              text: restoredDraft.text,
-              ...(restoredDraft.attachments?.length
-                ? { attachments: restoredDraft.attachments }
-                : {}),
-            }),
+            draftCoordinator.flushContent(sessionId),
             window.electronAPI.updateDraftReferences(sessionId, {
               baseReferences: existingDraft?.references ?? [],
               nextReferences: restoredDraft.references ?? [],
@@ -1922,6 +2014,19 @@ export default function App() {
     )
     return results.filter((a): a is FileAttachment => a !== null)
   }, [draftCoordinator])
+
+  const handlePreparePendingPlanExecution = useCallback((sessionId: string, command: Extract<import('@craft-agent/shared/protocol').SessionCommand, { type: 'setPendingPlanExecution' }>) => {
+    const approvalBadges = windowWorkspaceSlug && command.approvalText
+      ? extractBadges(command.approvalText, skills, sources, windowWorkspaceSlug)
+      : []
+    return window.electronAPI.sessionCommand(sessionId, { ...command, approvalBadges })
+  }, [windowWorkspaceSlug, skills, sources])
+
+  const handleConsumePendingPlanDraft = useCallback(async (sessionId: string, executionId: string, live: { text: string; references: Reference[] }) => {
+    draftCoordinator.updateText(sessionId, live.text)
+    if (!draftCoordinator.replaceReferences(sessionId, live.references)) throw new Error('Could not synchronize plan draft references')
+    return draftCoordinator.consumePlanDraft(windowWorkspaceId, sessionId, executionId)
+  }, [draftCoordinator, windowWorkspaceId])
 
   const handleInputChange = useCallback((sessionId: string, value: string) => {
     draftCoordinator.updateText(sessionId, value)
@@ -2354,6 +2459,8 @@ export default function App() {
     // Session options
     onSessionOptionsChange: handleSessionOptionsChange,
     onInputChange: handleInputChange,
+    onConsumePendingPlanDraft: handleConsumePendingPlanDraft,
+    onPreparePendingPlanExecution: handlePreparePendingPlanExecution,
     onAttachmentsChange: handleAttachmentsChange,
     onReferencesChange: handleReferencesChange,
     onAddDraftReference: handleAddDraftReference,
@@ -2399,6 +2506,8 @@ export default function App() {
     handleReset,
     handleSessionOptionsChange,
     handleInputChange,
+    handleConsumePendingPlanDraft,
+    handlePreparePendingPlanExecution,
     handleAttachmentsChange,
     handleReferencesChange,
     handleAddDraftReference,

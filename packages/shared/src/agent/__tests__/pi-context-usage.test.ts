@@ -58,7 +58,7 @@ describe('Pi canonical context occupancy', () => {
   it.each([true, false])('signals failed/aborted compaction before terminal events (aborted=%s)', (aborted) => {
     const adapter = new PiEventAdapter();
     const events = adapt(adapter, { type: 'compaction_end', reason: 'threshold', aborted, errorMessage: aborted ? undefined : 'summary failed' });
-    expect(events[0]).toEqual({ type: 'compaction_failed' });
+    expect(events[0]).toEqual({ type: 'compaction_failed', compactionTrigger: 'automatic' });
     expect(events.some(e => e.type === 'info')).toBe(false);
     if (!aborted) expect(events[1].type).toBe('error');
   });

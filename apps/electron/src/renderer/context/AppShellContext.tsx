@@ -87,7 +87,7 @@ export interface AppShellContextType {
 
   // Session callbacks
   onCreateSession: (workspaceId: string, options?: import('../../shared/types').CreateSessionOptions) => Promise<Session>
-  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], badges?: import('@craft-agent/core').ContentBadge[], references?: Reference[]) => void
+  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], badges?: import('@craft-agent/core').ContentBadge[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'>) => void
   onRenameSession: (sessionId: string, name: string) => void
   onFlagSession: (sessionId: string) => void
   onUnflagSession: (sessionId: string) => void
@@ -134,6 +134,8 @@ export interface AppShellContextType {
   onSessionOptionsChange: (sessionId: string, updates: SessionOptionUpdates) => void
 
   // Input draft callback
+  onPreparePendingPlanExecution?: (sessionId: string, command: Extract<import('@craft-agent/shared/protocol').SessionCommand, { type: 'setPendingPlanExecution' }>) => Promise<{ executionId?: string; restoreId?: string } | null>
+  onConsumePendingPlanDraft?: (sessionId: string, executionId: string, live: { text: string; references: Reference[] }) => Promise<import('@craft-agent/shared/config').PlanDraftConsumption | null>
   onInputChange: (sessionId: string, value: string) => void
 
   // Attachment draft callback — persists attachment refs per session

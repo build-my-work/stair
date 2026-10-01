@@ -192,7 +192,10 @@ export type PushTarget =
 // Protocol constants
 // ---------------------------------------------------------------------------
 
-export const PROTOCOL_VERSION = '1.0'
+// Version 2 requires atomic plan-draft consumption and identity-scoped
+// compaction/recovery. Older clients clear input before preparation, so the
+// existing handshake major-version gate must reject them before any RPC.
+export const PROTOCOL_VERSION = '2.0'
 
 /** Heartbeat interval in ms. Server pings every 30s. */
 export const HEARTBEAT_INTERVAL_MS = 30_000

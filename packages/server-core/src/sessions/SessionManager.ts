@@ -30,7 +30,7 @@ import {
   type BackendHostRuntimeContext,
   type PostInitResult,
 } from '@craft-agent/shared/agent/backend'
-import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, purgeSessionDraft, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior, getPersistedUiLanguage, resolveTitleLanguageName } from '@craft-agent/shared/config'
+import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, purgeSessionDraft, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior, getPersistedUiLanguage, resolveTitleLanguageName, hasAppliedDraftRestore, consumeSessionDraftForPlan, getPlanDraftConsumption, restoreSessionDraftAtomic, retirePlanDraftConsumption } from '@craft-agent/shared/config'
 import type { MidStreamBehavior } from '@craft-agent/shared/config'
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
 import { isValidWorkingDirectory } from '../utils/path-validation'
@@ -48,7 +48,8 @@ import {
   type Workspace,
   type WorkspaceInfo,
 } from '@craft-agent/shared/config'
-import type { ActiveSessionInfo, ContextUsageSnapshot, PermissionRisk, SessionProcessingStatus } from '@craft-agent/core/types'
+import type { ActiveSessionInfo, ContentBadge, ContextUsageSnapshot, PermissionRisk, SessionProcessingStatus } from '@craft-agent/core/types'
+import { referenceKey } from '@craft-agent/core/types'
 import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
 import {
   // Session persistence functions
@@ -60,10 +61,6 @@ import {
   deleteSession as deleteStoredSession,
   updateSessionMetadata,
   canUpdateSdkCwd,
-  setPendingPlanExecution as setStoredPendingPlanExecution,
-  markCompactionComplete as markStoredCompactionComplete,
-  markPendingPlanExecutionDispatched as markStoredPendingPlanExecutionDispatched,
-  clearPendingPlanExecution as clearStoredPendingPlanExecution,
   getPendingPlanExecution as getStoredPendingPlanExecution,
   getSessionAttachmentsPath,
   getSessionPath as getSessionStoragePath,
@@ -153,6 +150,7 @@ import {
   validateReferencesForSession,
 } from './message-references'
 import { buildRecoveryMessages } from './recovery-messages'
+import { buildPlanApprovalMessage } from '@craft-agent/shared/sessions/plan-approval'
 
 // Import from server-core domain utilities
 import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
@@ -937,6 +935,10 @@ interface ManagedSession {
   lastSentMessageIds?: string[]
   // Merged replays in flight: first entry's message ID → IDs of every bubble it replays.
   replayMergedIds?: Map<string, string[]>
+  // Approval replay owns the full queued payload until the first backend
+  // event. Stop can return following merged input while recovering the plan
+  // draft separately, including during scheduling, hydration or agent setup.
+  pendingApprovalReplay?: { entries: ManagedSession['messageQueue']; stopEpoch: number }
   lastSentAttachments?: FileAttachment[]
   lastSentStoredAttachments?: StoredAttachment[]
   lastSentOptions?: SendMessageOptions
@@ -1011,11 +1013,20 @@ interface ManagedSession {
   autoRetryTimer?: ReturnType<typeof setTimeout>
   autoRetryPending?: {
     content: string
+    /** The steer-carrying text the server's own retry sends (differs from `content` when steers were accepted). */
+    retryContent?: string
     deadlineMs: number
     /** Persisted references from the interrupted user turn. */
     references?: Reference[]
     /** True after the first matching sendMessage consumes the slot; later matches drop. */
     committed: boolean
+    /** Turn generation the continuation was scheduled for: ownership check for undelivered steers and cancellation. */
+    scheduledGeneration?: number
+    originalContent?: string
+    sourceSlug?: string
+    /** Full host payloads held for the continuation, recoverable until its first backend event. */
+    ownedSteers?: ManagedSession['messageQueue']
+    deliveryMessageId?: string
   }
   /**
    * Exact content of the server's own auto-retry, set just before it calls sendMessage so the
@@ -1061,10 +1072,19 @@ const PI_SDK_MESSAGE_ID_CACHE_LIMIT = 256
 
 export interface AutoRetryPendingHost {
   autoRetryPending?: {
+    /** Legacy dedupe key: plain original + `[<slug> activated]` (what a v0.9.x renderer's own retry sends). */
     content: string
+    /** The server's actual send when steers were accepted into the turn. */
+    retryContent?: string
     deadlineMs: number
     references?: Reference[]
     committed: boolean
+    /** Turn generation the continuation was scheduled for: ownership check for undelivered steers and cancellation. */
+    scheduledGeneration?: number
+    originalContent?: string
+    sourceSlug?: string
+    ownedSteers?: ManagedSession['messageQueue']
+    deliveryMessageId?: string
   }
 }
 
@@ -1074,7 +1094,7 @@ export function claimAutoRetryPending(
   nowMs = Date.now(),
 ): 'send' | 'drop' {
   const pending = host.autoRetryPending
-  if (pending && message === pending.content) {
+  if (pending && (message === pending.content || message === pending.retryContent)) {
     if (nowMs < pending.deadlineMs) {
       if (pending.committed) return 'drop'
       pending.committed = true
@@ -1092,22 +1112,51 @@ export function claimAutoRetryPending(
 }
 
 /**
- * Most-recent non-empty user message content, for the source-activation auto-retry
- * fallback (bugfix/session-continuation). The per-turn capture
- * (`getCurrentTurnUserMessage`) can come back empty — an empty/attachment-only turn,
- * or a capture that raced turn teardown — which used to strand the session: the
- * activation force-aborted the turn but nothing was re-sent. Falling back to the last
- * persisted user message keeps the turn continuing, while preserving the "no bogus
- * empty resend" intent (returns '' only when there is genuinely nothing to resend).
+ * Remove trailing `[<slug> activated]` markers that earlier activation retries of
+ * the same turn appended (`buildActivationRetryMessage`). The marker format is
+ * owned by this module, so chained activations re-send the user's own request
+ * with only the newest suffix instead of stacking markers.
  */
-export function lastUserMessageContent(messages: Message[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]
-    if (m.role === 'user' && typeof m.content === 'string' && m.content.trim()) {
-      return m.content
-    }
+export function stripActivationRetrySuffixes(text: string): string {
+  let current = text
+  for (let i = 0; i < 8; i++) {
+    const stripped = current.replace(/\n\n\[[^\]\n]{1,80} activated\]$/, '')
+    if (stripped === current) break
+    current = stripped
   }
-  return ''
+  return current
+}
+
+/**
+ * The interrupted turn's structured references, resolved from the turn identity
+ * the SM itself recorded when it started the send: the union of the references
+ * persisted on the turn's user messages (`lastSentMessageIds` — merged
+ * continuation turns contribute several ids), falling back to the options
+ * captured at send time. Identity-scoped on purpose: a continuation must never
+ * pick references out of unrelated history.
+ */
+export function activationTurnReferences(
+  messages: Message[],
+  turnMessageIds: string[] | undefined,
+  sendOptions: SendMessageOptions | undefined,
+): Reference[] | undefined {
+  const references: Reference[] = []
+  const seen = new Set<string>()
+  if (turnMessageIds?.length) {
+    const ids = new Set(turnMessageIds)
+    for (const message of messages) {
+      if (message.role !== 'user' || !ids.has(message.id)) continue
+      for (const reference of message.references ?? []) {
+        const key = JSON.stringify(reference)
+        if (!seen.has(key)) {
+          seen.add(key)
+          references.push(reference)
+        }
+      }
+    }
+    if (references.length) return references
+  }
+  return sendOptions?.references?.length ? sendOptions.references : undefined
 }
 
 /**
@@ -1115,12 +1164,15 @@ export function lastUserMessageContent(messages: Message[]): string {
  * suffix (also what a legacy renderer's own retry sends, so it is the dedupe key). `retry` is what
  * the server sends: corrections steered into the turn follow the original request, so the latest
  * instruction the model reads is the corrected one, not the request it replaced.
+ * An empty original (references-only turn) sends the bare suffix: empty visible
+ * text with live citations is a valid continuation.
  */
 export function buildActivationRetryMessage(original: string, steers: readonly string[], sourceSlug: string): { plain: string; retry: string } {
   const suffix = `[${sourceSlug} activated]`
-  const plain = `${original}\n\n${suffix}`
+  const base = original.trim() ? original : ''
+  const plain = base ? `${base}\n\n${suffix}` : suffix
   const kept = steers.filter(text => text.trim())
-  return { plain, retry: kept.length > 0 ? `${original}\n\n${kept.join('\n\n')}\n\n${suffix}` : plain }
+  return { plain, retry: kept.length > 0 ? (base ? `${base}\n\n${kept.join('\n\n')}\n\n${suffix}` : `${kept.join('\n\n')}\n\n${suffix}`) : plain }
 }
 
 /** Longest chain of automation-created sessions that may trigger further automations (loop guard). */
@@ -2945,7 +2997,7 @@ export class SessionManager implements ISessionManager {
     if (stored) {
       managed.messages = (stored.messages || []).map(storedToMessage)
       managed.tokenUsage = stored.tokenUsage
-      managed.pendingPlanExecution = stored.pendingPlanExecution
+      managed.pendingPlanExecution = this.reconcileStoredPendingPlanExecution(managed, stored)
       // Deferred-load fields (intentionally undefined after startup, see
       // loadSessionsFromDisk). Populate from disk only if not already set in
       // memory — a caller may have mutated them via setSessionSources etc.
@@ -2960,6 +3012,7 @@ export class SessionManager implements ISessionManager {
       // Queue recovery: find orphaned queued messages from crash/restart and re-queue them.
       const orphanedQueued = managed.messages.filter(m =>
         m.role === 'user' && m.isQueued === true && !m.queuedRestoreId
+        && !(managed.pendingPlanExecution?.failed && m.id === managed.pendingPlanExecution.approvalMessageId)
       )
       if (orphanedQueued.length > 0) {
         sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
@@ -3014,6 +3067,15 @@ export class SessionManager implements ISessionManager {
   // queue already has an entry whenever persistSession was just called.
   async flushSession(sessionId: string): Promise<void> {
     await sessionPersistenceQueue.flush(sessionId)
+  }
+
+  /**
+   * Flush with a durability guarantee: rejects when the session's last known
+   * write failed, so lifecycle transitions (pending-plan claim/handoff,
+   * compaction-failure cancellation) never report success that disk never saw.
+   */
+  private async flushSessionStrict(sessionId: string): Promise<void> {
+    await sessionPersistenceQueue.flush(sessionId, { strict: true })
   }
 
   // Flush all pending sessions (call on app quit).
@@ -3480,7 +3542,7 @@ export class SessionManager implements ISessionManager {
     if (storedSession) {
       managed.messages = (storedSession.messages || []).map(storedToMessage)
       managed.tokenUsage = storedSession.tokenUsage
-      managed.pendingPlanExecution = storedSession.pendingPlanExecution
+      managed.pendingPlanExecution = this.reconcileStoredPendingPlanExecution(managed, storedSession)
       managed.lastReadMessageId = storedSession.lastReadMessageId
       managed.hasUnread = storedSession.hasUnread  // Explicit unread flag for NEW badge state machine
       managed.enabledSourceSlugs = storedSession.enabledSourceSlugs
@@ -3503,6 +3565,7 @@ export class SessionManager implements ISessionManager {
       // Queue recovery: find orphaned queued messages from crash/restart and re-queue them
       const orphanedQueued = managed.messages.filter(m =>
         m.role === 'user' && m.isQueued === true && !m.queuedRestoreId
+        && !(managed.pendingPlanExecution?.failed && m.id === managed.pendingPlanExecution.approvalMessageId)
       )
       if (orphanedQueued.length > 0) {
         sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
@@ -5981,86 +6044,792 @@ export class SessionManager implements ISessionManager {
   // ============================================
 
   /**
+   * Publish lifecycle transitions before taking the persistence snapshot.
+   * Ordinary metadata saves must observe the same pending-plan image while
+   * strict IO is in flight; a separate disk read/write would let their older
+   * snapshots erase a preparation, undo readiness or resurrect an ACK.
+   * Callers hold the lifecycle lock and have hydrated messages first.
+   */
+  private async commitPendingPlanExecution(
+    managed: ManagedSession,
+    next: ManagedSession['pendingPlanExecution'],
+  ): Promise<void> {
+    const previous = managed.pendingPlanExecution
+    managed.pendingPlanExecution = next
+    try {
+      this.persistSession(managed)
+      await this.flushSessionStrict(managed.id)
+    } catch (error) {
+      if (this.sessions.get(managed.id) === managed && managed.pendingPlanExecution === next) {
+        managed.pendingPlanExecution = previous
+        // Replace any concurrent metadata snapshot of the failed transition
+        // with the rolled-back live image, preserving its other edits.
+        this.persistSession(managed)
+        await this.flushSessionStrict(managed.id).catch(rollbackError => {
+          sessionLog.error(`Session ${managed.id}: pending plan rollback persistence failed`, rollbackError)
+        })
+      }
+      throw error
+    }
+  }
+
+  /**
    * Set pending plan execution state.
    * Called when user clicks "Accept & Compact" to persist the plan path
    * so execution can resume after compaction (even if page reloads).
+   *
+   * Runs inside the session lifecycle lock so preparation cannot interleave
+   * with dispatch/cancel/compaction transitions, and REJECTS (never silently
+   * succeeds) when the session or its stored record is missing, the strict
+   * persistence write fails, or another unresolved pending intent or restore
+   * outbox already exists for this session — a second acceptance would drop
+   * the first one's consumed snapshot. The existing intent must be recovered
+   * (scoped ACK) or executed first; the only replaceable records are the
+   * ambiguous pre-identity dispatched records left inert by reconciliation.
+   *
+   * Fresh reference validation happens HERE, with the same strictness as a
+   * normal sendMessage: structure, Project boundary, live source
+   * Chat/message existence and Project-File fingerprints. Only a durably
+   * accepted snapshot earns the continuation trust the later dispatch reuses;
+   * a forged quote (e.g. from another Project) cannot bypass send validation
+   * via prepare+dispatch. `approvalText` is the renderer-composed (localized)
+   * approval message stored with the acceptance; it is ordinary user text,
+   * and references are validated independently.
    */
   async setPendingPlanExecution(
     sessionId: string,
     planPath: string,
     draftInputSnapshot?: string,
     draftReferencesSnapshot?: Reference[],
-  ): Promise<void> {
-    const managed = this.sessions.get(sessionId)
-    if (managed) {
-      const references = draftReferencesSnapshot?.length
-        ? normalizeReferencesForSession(draftReferencesSnapshot, {
-            id: managed.id,
-            workspaceId: managed.workspace.id,
-            projectId: managed.projectId,
-          })
-        : undefined
-      managed.pendingPlanExecution = {
+    approvalText?: string,
+    approvalBadges?: ContentBadge[],
+  ): Promise<NonNullable<StoredSession['pendingPlanExecution']>> {
+    return this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) {
+        throw new Error(`PENDING_PLAN_SESSION_MISSING: Session ${sessionId} not found`)
+      }
+      await this.ensureMessagesLoaded(managed)
+
+      const previous = managed.pendingPlanExecution
+      // A new acceptance must never drop an unrecoverable snapshot. Whether
+      // the previous record's draft was consumed is read from the DURABLE
+      // drafts-store receipt (the authoritative, atomic record) — never from
+      // a client claim. A read failure rejects preparation outright: guessing
+      // "unconsumed" on an IO error could drop a consumed snapshot.
+      let previousConsumed = false
+      if (previous?.executionId) {
+        previousConsumed = (() => {
+          const receipt = getPlanDraftConsumption(sessionId, previous.executionId)
+          return receipt?.text === true || (receipt?.referenceKeys?.length ?? 0) > 0
+        })()
+      }
+      // Replaceable: the ambiguous pre-identity dispatched record (inert by
+      // reconciliation), or a crashed PREPARATION that consumed nothing (its
+      // snapshot still lives in the user's draft). Everything else — a failed
+      // restore outbox, a consumed record, a durably dispatched intent, an
+      // already-compacted ready record — is unresolved and rejects.
+      const previousUnresolved = previous && !(
+        previous.executionDispatched === true && previous.executionId === undefined
+        || previous.awaitingCompaction === true
+          && !previous.executionDispatched
+          && !previous.failed
+          && !previousConsumed
+      )
+      if (previousUnresolved) {
+        throw new Error(`PENDING_PLAN_EXISTS: Session ${sessionId} still has an unresolved Accept & Compact intent (executionId ${previous!.executionId ?? 'none'}); recover or execute it before starting a new one`)
+      }
+
+      const referenceTarget = {
+        id: managed.id,
+        workspaceId: managed.workspace.id,
+        projectId: managed.projectId,
+      }
+      let references: Reference[] | undefined
+      if (draftReferencesSnapshot?.length) {
+        for (const reference of draftReferencesSnapshot) {
+          if (!isChatMessageReference(reference)) continue
+          const source = this.sessions.get(reference.sessionId)
+          if (source) await this.ensureMessagesLoaded(source)
+        }
+        // Full fresh validation — identical to a first-class send.
+        references = validateReferencesForSession(draftReferencesSnapshot, referenceTarget, sourceId => {
+          const source = this.sessions.get(sourceId)
+          return source ? {
+            id: source.id,
+            workspaceId: source.workspace.id,
+            projectId: source.projectId,
+            messages: source.messages,
+          } : null
+        })
+        await validateProjectFileReferencesForSend(references, managed.workspace.rootPath)
+      }
+
+      // Flush a newly-created session if it has not reached disk yet. Existing
+      // sessions are persisted from the live image below, also retrying an
+      // earlier failed write instead of remaining stuck on its error marker.
+      if (!loadStoredSession(managed.workspace.rootPath, sessionId)) {
+        try {
+          await this.flushSessionStrict(sessionId)
+        } catch {
+          // A failed initial write has consumed its queue entry. Retry that
+          // live session image after filesystem recovery before accepting a
+          // plan; a missing session without any creation/write still rejects.
+          this.persistSession(managed)
+          await this.flushSessionStrict(sessionId)
+        }
+      }
+      if (!loadStoredSession(managed.workspace.rootPath, sessionId)) {
+        throw new Error(`PENDING_PLAN_SESSION_MISSING: no stored session ${sessionId} to hold the pending plan record`)
+      }
+      const storedApproval = typeof approvalText === 'string' && approvalText.trim() ? approvalText : undefined
+      const record: NonNullable<ManagedSession['pendingPlanExecution']> = {
         planPath,
         draftInputSnapshot,
         ...(references?.length ? { draftReferencesSnapshot: references } : {}),
+        ...(storedApproval !== undefined ? { approvalMessage: storedApproval, ...(approvalBadges?.length ? { approvalBadges } : {}) } : {}),
+        referencesValidated: true,
         awaitingCompaction: true,
         executionDispatched: false,
+        executionId: randomUUID(),
+        restoreId: randomUUID(),
       }
-      await setStoredPendingPlanExecution(
-        managed.workspace.rootPath,
-        sessionId,
-        planPath,
-        draftInputSnapshot,
-        references,
-      )
+      await this.commitPendingPlanExecution(managed, record)
       sessionLog.info(`Session ${sessionId}: set pending plan execution for ${planPath}`)
+      return record
+    })
+  }
+
+  /**
+   * Atomically consume the accepted plan's draft snapshot: the stored draft's
+   * matching components are cleared and the EXACT receipt is recorded in the
+   * SAME drafts-file write (consumeSessionDraftForPlan). This is the crash
+   * boundary for preparation — either the receipt and the consumed draft land
+   * together, or nothing changed and the snapshot still lives in the user's
+   * draft (recovery then restores nothing, correctly). A boolean claim before
+   * or after a separate client-side clear proves neither side.
+   *
+   * The renderer calls this instead of clearing locally first: it flushes its
+   * outstanding local edits (so the store reflects live input), awaits this
+   * result, and only then mirrors the consumed components in its local state —
+   * skipping any component the user edited while the call was in flight.
+   * IO failures reject: the client must NOT clear on failure.
+   */
+  async consumePendingPlanDraft(
+    sessionId: string,
+    executionId: string,
+    local?: { content: import('@craft-agent/shared/config').DraftContent; mutation: import('@craft-agent/shared/config').DraftContentMutation },
+  ): Promise<import('@craft-agent/shared/config').PlanDraftConsumption | null> {
+    return this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) return null
+      await this.ensureMessagesLoaded(managed)
+      const record = managed.pendingPlanExecution
+      // A lost reply can be retried after cancellation. Return the committed
+      // receipt even after another window restored and ACKed the outbox. The
+      // renderer's writer checkpoint retains this proof until its next accept.
+      if (getPlanDraftConsumption(sessionId, executionId)) {
+        return consumeSessionDraftForPlan(sessionId, managed.projectId, executionId, {
+          text: '', references: [],
+        })
+      }
+      if (!record || record.executionId !== executionId) return null
+      if (record.failed
+        || record.executionDispatched || !record.awaitingCompaction || record.compactionTurn) return null
+      // The record's OWN snapshot is authoritative — a client cannot aim
+      // consumption at arbitrary text.
+      const result = consumeSessionDraftForPlan(sessionId, managed.projectId, executionId, {
+        text: record.draftInputSnapshot ?? '',
+        references: record.draftReferencesSnapshot ?? [],
+      }, local)
+      sessionLog.info(`Session ${sessionId}: plan draft consumption (executionId ${executionId}) text=${result.receipt.text} references=${result.receipt.referenceKeys.length}`)
+      return result
+    })
+  }
+
+  /** Recover only components proven consumed by this host, never a client snapshot. */
+  async restorePendingPlanDraft(
+    sessionId: string,
+    executionId: string,
+    restoreId: string,
+    local?: { content: import('@craft-agent/shared/config').DraftContent; mutation: import('@craft-agent/shared/config').DraftContentMutation },
+  ): Promise<import('@craft-agent/shared/config').SessionDraftRestoreResult> {
+    return this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) throw new Error('PENDING_PLAN_SESSION_MISSING')
+      await this.ensureMessagesLoaded(managed)
+      const record = managed.pendingPlanExecution
+      if (record?.executionId === executionId && record.restoreId === restoreId && record.failed) {
+        const snapshot = this.pendingPlanRecoveryDraft(sessionId, record)
+        return restoreSessionDraftAtomic(sessionId, managed.projectId, restoreId, snapshot, local, executionId)
+      }
+      // A second window or a lost RPC response can replay after the first ACK.
+      // Its local edit still commits; the bound restore receipt prevents a
+      // second snapshot and rejects a fabricated/foreign identity.
+      if (hasAppliedDraftRestore(sessionId, restoreId, executionId)) {
+        return restoreSessionDraftAtomic(sessionId, managed.projectId, restoreId, { text: '' }, local, executionId)
+      }
+      throw new Error('PENDING_PLAN_STALE: Recovery identity is not a failed pending plan')
+    })
+  }
+
+  private pendingPlanRecoveryDraft(
+    sessionId: string,
+    record: NonNullable<ManagedSession['pendingPlanExecution']>,
+  ): import('@craft-agent/shared/config').SessionDraft {
+    const receipt = record.executionId ? getPlanDraftConsumption(sessionId, record.executionId) : null
+    const keys = new Set(receipt?.referenceKeys ?? [])
+    const references = (record.draftReferencesSnapshot ?? []).filter(reference => keys.has(referenceKey(reference)))
+    return {
+      text: receipt?.text ? record.draftInputSnapshot ?? '' : '',
+      ...(references.length ? { references } : {}),
     }
   }
 
   /**
    * Mark compaction as complete for pending plan execution.
-   * Called when compaction_complete event fires - allows reload recovery
-   * to know that compaction finished and plan can be executed.
+   *
+   * `expectedExecutionId` is the record identity the caller observed: an
+   * identified record is readied only by a call carrying its exact id, so a
+   * legacy no-identity command can never authorize modern intent. The
+   * completion must also belong to the record's own compaction turn: the
+   * correlation captured when the /compact send started is compared against
+   * the live turn emitting the event (the event pump only delivers a turn's
+   * events while that turn is the live one), so a late completion from an
+   * older or foreign compaction never readies a newer record. Correlation
+   * gates the TRANSITION to ready; an already durably-ready record (including
+   * a legacy one) is executed by dispatch without needing a correlation.
    */
-  async markCompactionComplete(sessionId: string): Promise<void> {
-    const managed = this.sessions.get(sessionId)
-    if (managed) {
-      if (managed.pendingPlanExecution) managed.pendingPlanExecution.awaitingCompaction = false
-      await markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
+  async markCompactionComplete(
+    sessionId: string,
+    expectedExecutionId?: string,
+    originatingTurn?: { generation: number; stopEpoch: number },
+  ): Promise<boolean> {
+    return this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) return false
+      await this.ensureMessagesLoaded(managed)
+      const record = managed.pendingPlanExecution
+      const correlation = record?.compactionTurn
+      if (!record || !correlation) {
+        sessionLog.info(`Session ${sessionId}: compaction completion has no correlated pending plan; ignored`)
+        return false
+      }
+      if (record.failed) {
+        sessionLog.info(`Session ${sessionId}: compaction completion ignored — pending plan already terminally failed`)
+        return false
+      }
+      if (record.executionId !== undefined && expectedExecutionId !== record.executionId) {
+        sessionLog.info(`Session ${sessionId}: compaction completion identity mismatch; pending plan not readied`)
+        return false
+      }
+      // The completion must belong to the turn that EMITTED the event — the
+      // originating context captured by the send's execution, never re-derived
+      // from the live generation at decision time.
+      const emittingTurn = originatingTurn ?? { generation: managed.processingGeneration, stopEpoch: managed.stopEpoch ?? 0 }
+      if (emittingTurn.generation !== correlation.generation || emittingTurn.stopEpoch !== correlation.stopEpoch) {
+        sessionLog.info(`Session ${sessionId}: compaction completion is stale (emitting turn is not the record's compaction turn); pending plan not readied`)
+        return false
+      }
+      if (!record.awaitingCompaction || record.executionDispatched) return false
+      await this.commitPendingPlanExecution(managed, { ...record, awaitingCompaction: false })
       sessionLog.info(`Session ${sessionId}: compaction marked complete for pending plan`)
-    }
+      return true
+    })
   }
 
   /**
    * Mark pending plan execution as already dispatched from the UI.
-   * This prevents reload recovery from double-submitting the same plan if
-   * sending succeeded but cleanup failed due a reconnect/disconnect.
+   * LEGACY-ONLY escape hatch (an old renderer's claim-then-send flow): it can
+   * only ever claim a pre-identity record; identified records are rejected
+   * regardless of what identity is presented, because a claim without the
+   * server-side durable approval handoff is a split handoff that can lose the
+   * plan. Modern renderers use `dispatchPendingPlanExecution`.
    */
   async markPendingPlanExecutionDispatched(sessionId: string): Promise<boolean> {
-    const managed = this.sessions.get(sessionId)
-    if (!managed || managed.isProcessing) {
-      sessionLog.info(`Session ${sessionId}: pending plan dispatch claim rejected (missing or busy)`)
-      return false
-    }
-    const claimed = await markStoredPendingPlanExecutionDispatched(managed.workspace.rootPath, sessionId)
-    if (claimed && managed.pendingPlanExecution) managed.pendingPlanExecution.executionDispatched = true
-    sessionLog.info(`Session ${sessionId}: pending plan execution dispatch claim ${claimed ? 'accepted' : 'rejected'}`)
-    return claimed
+    return this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed || managed.isProcessing) {
+        sessionLog.info(`Session ${sessionId}: pending plan dispatch claim rejected (missing or busy)`)
+        return false
+      }
+      await this.ensureMessagesLoaded(managed)
+      const record = managed.pendingPlanExecution
+      if (!record || record.executionId !== undefined || record.awaitingCompaction || record.executionDispatched || record.failed) return false
+      try {
+        await this.commitPendingPlanExecution(managed, { ...record, executionDispatched: true })
+        return true
+      } catch (error) {
+        sessionLog.error(`Session ${sessionId}: legacy pending plan claim failed to persist`, error)
+        return false
+      }
+    })
   }
 
   /**
-   * Clear pending plan execution state.
-   * Called after plan execution is triggered, on new user message,
-   * or when the pending execution is no longer relevant.
+   * Server-owned durable dispatch of an accepted plan ("Accept & Compact"
+   * continuation). Replaces the renderer's claim→send→clear RPC split: the
+   * whole acceptance is one server-side critical section.
+   *
+   * Phases:
+   * 1. Under the lifecycle lock (after hydrating messages): identity recheck
+   *    — the caller submits the executionId it actually observed; a
+   *    no-identity or mismatched command on an identified record is stale.
+   *    Ready = not awaiting compaction (correlation gated the transition; a
+   *    durably-ready record — including a legacy one — needs no correlation).
+   * 2. Reference validation OUTSIDE the lock: filesystem IO here must not
+   *    block user input admission, and an await is not an authorization lock
+   *    on user intent.
+   * 3. COMMIT under the lock: hydrate, RE-READ the live record, and recheck
+   *    identity, failure, dispatch state, idle and the turn generation
+   *    captured in phase 1. A user message that admitted during the
+   *    validation await cleared the record (safety valve) and started a new
+   *    turn — the acceptance aborts with zero approval messages. Only then
+   *    are the permission-mode switch and the durable handoff written: the
+   *    approval user message is created queued and persisted TOGETHER with
+   *    the dispatched flag and its `approvalMessageId` in ONE session-file
+   *    write (strict flush; IO failure rolls back and stays retryable).
+   * 4. The model turn starts outside the lock via the standard queued-message
+   *    replay machinery; the record survives until genuine backend handoff
+   *    (agent initialized), where sendMessage clears it scoped by the
+   *    approval identity. Orphan-queue recovery and cold-load reconciliation
+   *    re-queue a mid-delivery crash by the stable approvalMessageId.
    */
-  async clearPendingPlanExecution(sessionId: string): Promise<void> {
-    const managed = this.sessions.get(sessionId)
-    if (managed) {
-      delete managed.pendingPlanExecution
-      await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
-      sessionLog.info(`Session ${sessionId}: cleared pending plan execution`)
+  async dispatchPendingPlanExecution(
+    sessionId: string,
+    executionId?: string,
+    rpcContext?: { callerClientId?: string },
+  ): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'busy' | 'not-ready' | 'already-dispatched' | 'failed' | 'stale' | 'invalid-references' | 'persist-failed' }> {
+    // Phase 1: identity + readiness under the lock, on the hydrated record.
+    const admission = await this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) return { ok: false as const, reason: 'missing' as const }
+      await this.ensureMessagesLoaded(managed)
+      const record = managed.pendingPlanExecution
+      if (!record) return { ok: false as const, reason: 'missing' as const }
+      if (record.executionId !== undefined && executionId !== record.executionId) {
+        return { ok: false as const, reason: 'stale' as const }
+      }
+      if (managed.isProcessing) return { ok: false as const, reason: 'busy' as const }
+      if (record.failed) return { ok: false as const, reason: 'failed' as const }
+      if (record.awaitingCompaction) return { ok: false as const, reason: 'not-ready' as const }
+      if (record.executionDispatched) return { ok: false as const, reason: 'already-dispatched' as const }
+      return {
+        ok: true as const,
+        record,
+        managed,
+        scheduledGeneration: managed.processingGeneration,
+        scheduledStopEpoch: managed.stopEpoch ?? 0,
+      }
+    })
+    if (!admission.ok) return admission
+    const { managed } = admission
+
+    // Phase 2: validation outside the lock. Structure is re-normalized and
+    // Project Files must still match their selection fingerprints (they can
+    // change between accept and dispatch). Chat quotes were fully validated
+    // (live source and message existence) at prepare time and persisted
+    // durably — that durable acceptance is what earns their reuse here,
+    // exactly like any other queued message.
+    const referenceTarget = {
+      id: managed.id,
+      workspaceId: managed.workspace.id,
+      projectId: managed.projectId,
     }
+    let references: Reference[] = []
+    if (admission.record.draftReferencesSnapshot?.length) {
+      try {
+        if (admission.record.referencesValidated === true) {
+          references = normalizeReferencesForSession(admission.record.draftReferencesSnapshot, referenceTarget)
+        } else {
+          // Older ready records have no evidence of a prior host acceptance.
+          // Hydrate their Chat sources and enforce fresh scope/message checks.
+          for (const reference of admission.record.draftReferencesSnapshot) {
+            if (!isChatMessageReference(reference)) continue
+            const source = this.sessions.get(reference.sessionId)
+            if (source) await this.ensureMessagesLoaded(source)
+          }
+          references = validateReferencesForSession(admission.record.draftReferencesSnapshot, referenceTarget, sourceId => {
+            const source = this.sessions.get(sourceId)
+            return source ? { id: source.id, workspaceId: source.workspace.id, projectId: source.projectId, messages: source.messages } : null
+          })
+        }
+      } catch (error) {
+        sessionLog.warn(`Session ${sessionId}: pending plan references failed normalization`, error)
+        await this.cancelPendingPlanSuperseded(sessionId, admission.record)
+        return { ok: false as const, reason: 'invalid-references' as const }
+      }
+      try {
+        await validateProjectFileReferencesForSend(references, managed.workspace.rootPath)
+      } catch (error) {
+        sessionLog.warn(`Session ${sessionId}: pending plan references failed fresh validation`, error)
+        await this.cancelPendingPlanSuperseded(sessionId, admission.record)
+        return { ok: false as const, reason: 'invalid-references' as const }
+      }
+    }
+
+    // Phase 3: commit. Everything re-read and rechecked under the lock.
+    return this.withSessionLifecycleLock(sessionId, async () => {
+      // The live managed record, re-read after the awaits (never a
+      // pre-hydration or pre-await snapshot).
+      const liveManaged = this.sessions.get(sessionId)
+      if (!liveManaged) return { ok: false as const, reason: 'missing' as const }
+      const record = liveManaged.pendingPlanExecution
+      if (!record || record !== admission.record && record.executionId !== admission.record.executionId) {
+        // Replaced or cleared while validation awaited (e.g. a user message's
+        // safety valve cancelled the intent): the acceptance aborts.
+        return { ok: false as const, reason: 'stale' as const }
+      }
+      if (record.executionId !== undefined && executionId !== record.executionId) {
+        return { ok: false as const, reason: 'stale' as const }
+      }
+      if (liveManaged.isProcessing
+        || liveManaged.processingGeneration !== admission.scheduledGeneration
+        || (liveManaged.stopEpoch ?? 0) !== admission.scheduledStopEpoch) {
+        // A new turn admitted (or a Stop landed) while validation awaited:
+        // never commit or replay over live user intent.
+        return { ok: false as const, reason: 'stale' as const }
+      }
+      if (record.failed) return { ok: false as const, reason: 'failed' as const }
+      if (record.executionDispatched) return { ok: false as const, reason: 'already-dispatched' as const }
+
+      // Leave Explore mode so the plan can run without prompts (back to Guarded
+      // if the session came from it) — same policy as acceptPlan. The caller's
+      // transport context pins browser-tool routing to the approving client,
+      // exactly as a first-class SEND_MESSAGE does.
+      if (rpcContext?.callerClientId) {
+        this.setLastMessageClientId(sessionId, rpcContext.callerClientId)
+      }
+      if (liveManaged.permissionMode === 'safe') {
+        this.setSessionPermissionMode(sessionId, planExecutionMode(liveManaged.previousPermissionMode))
+      }
+
+      const approvalText = record.approvalMessage?.trim()
+        ? record.approvalMessage!
+        : buildPlanApprovalMessage({ draftInput: record.draftInputSnapshot })
+      const approvalMessageId = generateMessageId()
+      const approvalMessage: Message = {
+        id: approvalMessageId,
+        role: 'user',
+        content: approvalText,
+        ...(record.approvalBadges?.length ? { badges: record.approvalBadges } : {}),
+        timestamp: this.monotonic(),
+        ...(references.length ? { references } : {}),
+        isQueued: true,
+      }
+      liveManaged.messages.push(approvalMessage)
+      liveManaged.messageQueue.push({
+        message: approvalText,
+        messageId: approvalMessageId,
+        options: { ...(references.length ? { references } : {}), ...(record.approvalBadges?.length ? { badges: record.approvalBadges } : {}) },
+      })
+      record.executionDispatched = true
+      record.approvalMessageId = approvalMessageId
+      try {
+        this.persistSession(liveManaged)
+        await this.flushSessionStrict(liveManaged.id)
+      } catch (error) {
+        // The atomic handoff write failed: roll the in-memory acceptance back.
+        // The record stays retryable — no dispatched flag was durably recorded.
+        liveManaged.messages = liveManaged.messages.filter(message => message.id !== approvalMessageId)
+        liveManaged.messageQueue = liveManaged.messageQueue.filter(entry => entry.messageId !== approvalMessageId)
+        record.executionDispatched = false
+        delete record.approvalMessageId
+        if (this.sessions.get(sessionId) === liveManaged && liveManaged.pendingPlanExecution === record) {
+          // A concurrent metadata write may already hold a copy of the
+          // approval bubble. Correct the whole queued image before reporting
+          // failure, so reboot cannot replay an acceptance that failed.
+          this.persistSession(liveManaged)
+          await this.flushSessionStrict(sessionId).catch(rollbackError => {
+            sessionLog.error(`Session ${sessionId}: approval rollback persistence failed`, rollbackError)
+          })
+        }
+        sessionLog.error(`Session ${sessionId}: pending plan durable acceptance failed`, error)
+        return { ok: false as const, reason: 'persist-failed' as const }
+      }
+
+      // Stop closes admission synchronously, including while this write holds
+      // the lifecycle lock. Persist cancellation before any queued replay can
+      // start, so a restart cannot execute the stopped approval either.
+      if ((liveManaged.stopEpoch ?? 0) !== admission.scheduledStopEpoch || liveManaged.stopRequested) {
+        await this.cancelPendingPlanExecution(liveManaged, record)
+        return { ok: false as const, reason: 'stale' as const }
+      }
+
+      this.sendEvent({
+        type: 'user_message',
+        sessionId,
+        message: approvalMessage,
+        status: 'queued',
+      }, liveManaged.workspace.id)
+
+      // Durable acceptance complete — the critical section ends here. The
+      // replay path runs the model turn (setImmediate inside, so it cannot
+      // execute while the lock is held); its send path performs the
+      // backend-handoff cleanup scoped by the approval identity.
+      this.processNextQueuedMessage(sessionId)
+      sessionLog.info(`Session ${sessionId}: pending plan execution durably accepted (approval ${approvalMessageId})`)
+      return { ok: true as const }
+    })
+  }
+
+  /**
+   * Cancel a pending plan at dispatch time because its references no longer
+   * validate (files changed / structure invalid): the intent is superseded by
+   * conditions, so it becomes a terminally failed restore outbox — the
+   * consumed draft is recoverable through the standard outbox protocol. Runs
+   * under the lifecycle lock with live-identity rechecks.
+   */
+  private async cancelPendingPlanSuperseded(
+    sessionId: string,
+    expected: NonNullable<ManagedSession['pendingPlanExecution']>,
+  ): Promise<void> {
+    await this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      const record = managed?.pendingPlanExecution
+      if (!managed || !record || record.executionId !== expected.executionId) return
+      await this.cancelPendingPlanExecution(managed, record)
+    })
+  }
+
+  /**
+   * Cancel a pending plan whose compaction failed (manual compaction_failed,
+   * Stop during the compact, or a compaction that died with the process). The
+   * record becomes TERMINALLY non-executable in memory first — a later
+   * completion event can never re-authorize a known-failed operation, even if
+   * persisting the marker fails — and then the failed record is kept as a
+   * durable restore outbox: the renderer performs the ordered recovery (flush
+   * local edits, then the idempotent atomic restore, then a scoped ACK that
+   * clears the outbox). Until that ACK the snapshot stays recoverable;
+   * reconnection re-delivers it through the pending-plan load. The host never
+   * pre-applies the restore itself: an outstanding renderer write could wipe
+   * it before the atomic restore commits, and the same restoreId would then
+   * no-op. The delivered payload restores TEXT only when the renderer's
+   * durable consumption receipt says the text was actually consumed — an
+   * unconsumed snapshot still lives in the user's draft and re-appending it
+   * would duplicate it.
+   */
+  private async cancelPendingPlanExecution(
+    managed: ManagedSession,
+    record: NonNullable<ManagedSession['pendingPlanExecution']>,
+  ): Promise<void> {
+    if (this.sessions.get(managed.id) !== managed || managed.pendingPlanExecution !== record) return
+    // Terminal in memory BEFORE anything else, no matter what fails below.
+    record.failed = true
+    if (record.approvalMessageId) {
+      managed.messageQueue = managed.messageQueue.filter(entry => entry.messageId !== record.approvalMessageId)
+      const approval = managed.messages.find(message => message.id === record.approvalMessageId)
+      if (approval) approval.isQueued = false
+    }
+    // The outbox needs both stable identities; legacy hydrated records may
+    // lack them.
+    record.executionId ??= randomUUID()
+    record.restoreId ??= randomUUID()
+
+    const persistFailure = async () => {
+      this.persistSession(managed)
+      await this.flushSessionStrict(managed.id)
+    }
+    try {
+      await persistFailure()
+    } catch (error) {
+      sessionLog.error(`Session ${managed.id}: failed to persist non-executable pending plan state; will retry`, error)
+      // Retryable: the in-memory flag already blocks this process, and the
+      // retry (plus cold-load reconciliation) closes the window across reload.
+      void this.withSessionLifecycleLock(managed.id, async () => {
+        if (this.sessions.get(managed.id)?.pendingPlanExecution !== record || !record.failed) return
+        await persistFailure().catch(() => {})
+      }).catch(() => {})
+    }
+
+    // Re-delivery of the recovery intent. Idempotent on the renderer side via
+    // the durable restoreId; disconnected renderers are re-exposed through the
+    // pending-plan load on their next mount. TEXT is restored only when the
+    // durable drafts-store receipt says it was actually consumed — an
+    // unconsumed snapshot still lives in the user's draft, and appending a
+    // second copy is exactly what the receipt prevents. A receipt-read
+    // failure must not be guessed: keep the failed outbox and let a later
+    // re-delivery (duplicate event, cold-load) retry.
+    let restored: import('@craft-agent/shared/config').SessionDraft
+    try {
+      restored = this.pendingPlanRecoveryDraft(managed.id, record)
+    } catch (error) {
+      sessionLog.error(`Session ${managed.id}: plan consumption receipt unreadable; deferring outbox re-delivery`, error)
+      return
+    }
+    this.sendEvent({
+      type: 'compaction_failed',
+      sessionId: managed.id,
+      executionId: record.executionId,
+      restoreId: record.restoreId,
+      ...(restored.text ? { text: restored.text } : {}),
+      ...(restored.references?.length ? { references: restored.references } : {}),
+    }, managed.workspace.id)
+  }
+
+  /**
+   * Reconcile a stored pending-plan record at cold hydration (messages loaded
+   * from disk — no turn of this process exists yet). All decisions are made by
+   * persisted IDs (`approvalMessageId`, `failed`, `compactionTurn`), never by
+   * content matching or timestamp guessing. Recovery actions are scheduled off
+   * the synchronous hydration path, take the lifecycle lock, and re-check the
+   * CAPTURED session and record identity at run time — a session deleted or a
+   * record replaced while the task was queued is never touched.
+   */
+  private reconcileStoredPendingPlanExecution(
+    managed: ManagedSession,
+    stored: StoredSession,
+  ): StoredSession['pendingPlanExecution'] | undefined {
+    const record = stored.pendingPlanExecution
+    if (!record) return undefined
+    const capturedExecutionId = record.executionId
+
+    // Re-check that the live session AND record are still the ones hydrated
+    // here: same identity (or both legacy), still in the same lifecycle state.
+    const stillCurrentSession = () => this.sessions.get(managed.id) === managed
+    const stillCurrentRecord = (currentRecord: NonNullable<ManagedSession['pendingPlanExecution']>, requireFailed: boolean) => {
+      if (requireFailed !== (currentRecord.failed === true)) return false
+      if (capturedExecutionId !== undefined) return currentRecord.executionId === capturedExecutionId
+      return currentRecord.executionId === undefined
+    }
+
+    if (record.failed) {
+      // Durable restore outbox: re-deliver the recovery intent to any
+      // connected renderer. The record stays failed — non-executable — until
+      // the scoped recovery ACK; it is never cleared by user input.
+      setImmediate(() => {
+        void this.withSessionLifecycleLock(managed.id, async () => {
+          if (!stillCurrentSession()) return
+          const currentRecord = managed.pendingPlanExecution
+          if (!currentRecord || !stillCurrentRecord(currentRecord, true)) return
+          await this.cancelPendingPlanExecution(managed, currentRecord)
+        }).catch(error => sessionLog.error(`Session ${managed.id}: pending plan outbox re-delivery failed`, error))
+      })
+      return record
+    }
+
+    if (record.executionDispatched) {
+      if (record.approvalMessageId) {
+        const approval = (stored.messages ?? []).find(message => message.id === record.approvalMessageId)
+        if (!approval) {
+          // The durable claim was never written together with its approval
+          // message: the acceptance never happened — make the record retryable.
+          sessionLog.info(`Session ${managed.id}: dispatched pending plan has no persisted approval message; making record retryable`)
+          return { ...record, executionDispatched: false }
+        }
+        if (approval.isQueued) {
+          // The orphaned-queue recovery above re-queues and replays it; the
+          // replay's send path clears the record at backend handoff.
+          return record
+        }
+        // Not queued and the record survived: the crash happened mid-delivery,
+        // before genuine backend handoff (which clears the record scoped by
+        // the approval identity). Re-queue the SAME message id — at-least-once
+        // delivery with at-most-once authorization, and no duplicate bubble
+        // (replay re-stamps the existing message). A crash after handoff but
+        // before its cleanup write replays once — the documented post-handoff
+        // ambiguity boundary.
+        setImmediate(() => {
+          void this.withSessionLifecycleLock(managed.id, async () => {
+            if (!stillCurrentSession()) return
+            const currentRecord = managed.pendingPlanExecution
+            if (!currentRecord || !stillCurrentRecord(currentRecord, false)) return
+            const existing = managed.messages.find(message => message.id === currentRecord.approvalMessageId)
+            if (!existing || existing.isQueued) return
+            existing.isQueued = true
+            managed.messageQueue.push({
+              message: existing.content,
+              messageId: existing.id,
+              options: existing.references?.length ? { references: existing.references } : undefined,
+            })
+            this.persistSession(managed)
+            if (!managed.isProcessing && managed.messageQueue.length > 0) {
+              setImmediate(() => { this.processNextQueuedMessage(managed.id) })
+            }
+          }).catch(error => sessionLog.error(`Session ${managed.id}: pending plan mid-delivery recovery failed`, error))
+        })
+        return record
+      }
+      // Legacy record dispatched before identifiers existed: ambiguous, never
+      // replayed (deliberate migration — no blind replay of unknown state).
+      sessionLog.info(`Session ${managed.id}: legacy dispatched pending plan record left inert`)
+      return record
+    }
+
+    if (record.awaitingCompaction) {
+      // Close consumption admission synchronously: a delayed consume RPC must
+      // not clear a draft after reboot reconciliation has cancelled its owner.
+      record.failed = true
+      // A /compact turn cannot survive the process boundary: the correlated
+      // compaction is incomplete and must become non-executable (never ready).
+      // The consumed draft is recovered through the outbox protocol above.
+      setImmediate(() => {
+        void this.withSessionLifecycleLock(managed.id, async () => {
+          if (!stillCurrentSession()) return
+          const currentRecord = managed.pendingPlanExecution
+          if (!currentRecord || currentRecord.executionDispatched || !stillCurrentRecord(currentRecord, true)) return
+          await this.cancelPendingPlanExecution(managed, currentRecord)
+        }).catch(error => sessionLog.error(`Session ${managed.id}: pending plan cold-load cancellation failed`, error))
+      })
+      return record
+    }
+
+    return record
+  }
+
+  /**
+   * Clear pending plan execution state — the scoped recovery ACK, or an
+   * explicit cancel. Identity is checked BEFORE any live mutation (after
+   * hydrating under the lock): an omitted or mismatched `executionId` never
+   * deletes an identified record, and no pre-hydration snapshot can authorize
+   * the mutation. A terminally FAILED record is only cleared once its restore
+   * is durably applied (or nothing needed restoring): matching ids alone do
+   * not prove the snapshot reached the drafts store, and an unapplied
+   * snapshot must stay recoverable. Pre-identity (legacy) records may be
+   * cleared by anyone, matching the documented migration.
+   */
+  async clearPendingPlanExecution(sessionId: string, executionId?: string): Promise<void> {
+    await this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) return
+      await this.ensureMessagesLoaded(managed)
+      const record = managed.pendingPlanExecution
+      if (record) {
+        if (record.executionId !== undefined && executionId !== record.executionId) {
+          sessionLog.info(`Session ${sessionId}: pending plan clear ignored (identity mismatch${executionId === undefined ? ' — no-identity command on an identified record' : ''})`)
+          return
+        }
+        if (!record.failed && record.approvalMessageId) return
+        if (!record.failed && record.executionId) {
+          const receipt = getPlanDraftConsumption(sessionId, record.executionId)
+          if (receipt?.text || receipt?.referenceKeys.length) {
+            await this.cancelPendingPlanExecution(managed, record)
+            return
+          }
+        }
+        if (record.failed) {
+          // Only components the DURABLE receipt says were consumed need
+          // restoring; a read failure keeps the outbox (never guess).
+          let receipt: import('@craft-agent/shared/config').PlanDraftConsumptionReceipt | null = null
+          try {
+            receipt = record.executionId ? getPlanDraftConsumption(sessionId, record.executionId) : null
+          } catch (error) {
+            sessionLog.info(`Session ${sessionId}: pending plan recovery ACK ignored — receipt unreadable`, error)
+            return
+          }
+          const needsTextRestore = receipt?.text === true && !!record.draftInputSnapshot?.trim()
+          const needsReferenceRestore = (receipt?.referenceKeys?.length ?? 0) > 0 && !!record.draftReferencesSnapshot?.length
+          if ((needsTextRestore || needsReferenceRestore) && record.restoreId
+            && !hasAppliedDraftRestore(sessionId, record.restoreId, record.executionId)) {
+            sessionLog.info(`Session ${sessionId}: pending plan recovery ACK ignored — restore ${record.restoreId} is not durably applied; snapshot stays recoverable`)
+            return
+          }
+        }
+      }
+      if (record) await this.commitPendingPlanExecution(managed, undefined)
+      if (record?.executionId) retirePlanDraftConsumption(sessionId, record.executionId)
+      sessionLog.info(`Session ${sessionId}: cleared pending plan execution`)
+    })
   }
 
   /**
@@ -6073,16 +6842,25 @@ export class SessionManager implements ISessionManager {
     draftReferencesSnapshot?: Reference[]
     awaitingCompaction: boolean
     executionDispatched: boolean
+    executionId?: string
+    restoreId?: string
+    compactionTurn?: { generation: number; stopEpoch: number }
+    approvalMessageId?: string
+    approvalMessage?: string
+    consumed?: { text?: boolean; references?: boolean }
+    failed?: boolean
   } | null {
     const managed = this.sessions.get(sessionId)
     if (!managed) return null
-    if (managed.pendingPlanExecution) {
-      return {
-        ...managed.pendingPlanExecution,
-        executionDispatched: managed.pendingPlanExecution.executionDispatched === true,
-      }
+    const record = managed.pendingPlanExecution ?? getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+    if (!record) return null
+    const failed = record.failed || (!managed.messagesLoaded && record.awaitingCompaction)
+    if (failed) {
+      const restored = this.pendingPlanRecoveryDraft(sessionId, record)
+      return { ...record, failed: true, draftInputSnapshot: restored.text || undefined,
+        draftReferencesSnapshot: restored.references, executionDispatched: record.executionDispatched === true }
     }
-    return getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+    return { ...record, executionDispatched: record.executionDispatched === true }
   }
 
   /**
@@ -7045,11 +7823,26 @@ export class SessionManager implements ISessionManager {
      * directly (tests, intra-server flows) to leave the existing pin in place.
      */
     rpcContext?: { callerClientId?: string },
+    /**
+     * Server-owned continuation context (source-activation retry). This
+     * parameter is internal to the SM process: the SEND_MESSAGE RPC handler
+     * never forwards it, so a renderer payload cannot forge it. Trust is
+     * established by object identity against the live dedup slot — the
+     * references were validated and persisted by the server when the
+     * interrupted turn started.
+     */
+    internalContinuation?: { activationReferences?: Reference[] },
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
     }
+    const trackedPlanRecord = existingMessageId && managed.pendingPlanExecution?.approvalMessageId === existingMessageId
+      ? managed.pendingPlanExecution
+      : undefined
+    const trackedApprovalExecutionId = trackedPlanRecord?.executionId
+    const approvalStopEpoch = managed.stopEpoch ?? 0
+    const approvalReplay = trackedPlanRecord ? managed.pendingApprovalReplay : undefined
     this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
 
     // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
@@ -7057,25 +7850,57 @@ export class SessionManager implements ISessionManager {
     // duplicate that arrives from a legacy renderer still running the client-side
     // auto_retry. The first matching caller wins (server timer or legacy RPC,
     // whichever arrives first), subsequent matching calls within the deadline drop.
-    // The server's own retry may carry steered corrections, so a legacy renderer's plain copy no
-    // longer equals it: it claims the slot directly (that copy is then dropped as a duplicate).
-    const activationResend = managed.pendingActivationResend !== undefined && managed.pendingActivationResend === message
+    //
+    // Trust model for the retry's references: the primary path is the
+    // server-owned continuation context, matched by object identity against the
+    // live dedup slot (unforgeable from the RPC surface). The legacy plain/retry
+    // content match below is only a compatibility adapter into the SAME
+    // server-owned snapshot — never an independent source of trust.
+    const autoRetryClaimedAt = Date.now()
+    const pendingAutoRetry = managed.autoRetryPending
+    const legacyMatch = pendingAutoRetry !== undefined
+      && autoRetryClaimedAt < pendingAutoRetry.deadlineMs
+      && (message === pendingAutoRetry.content || message === pendingAutoRetry.retryContent)
+    // A persisted continuation's own queue replay is delivery, not a duplicate RPC.
+    let activationResend = managed.pendingActivationResend !== undefined && managed.pendingActivationResend === message
+      || existingMessageId !== undefined && pendingAutoRetry?.deliveryMessageId === existingMessageId
+        && message === pendingAutoRetry.retryContent
     if (activationResend) {
       managed.pendingActivationResend = undefined
       if (managed.autoRetryPending) managed.autoRetryPending.committed = true
     }
-    const autoRetryClaimedAt = Date.now()
-    const pendingAutoRetry = managed.autoRetryPending
-    const pendingAutoRetryReferences = pendingAutoRetry
-      && pendingAutoRetry.content === message
-      && autoRetryClaimedAt < pendingAutoRetry.deadlineMs
+    const continuationReferences = internalContinuation?.activationReferences !== undefined
+      && pendingAutoRetry?.references === internalContinuation.activationReferences
       ? pendingAutoRetry.references
       : undefined
     if (!activationResend && claimAutoRetryPending(managed, message, autoRetryClaimedAt) === 'drop') {
       sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
       return
     }
+    const activationSlot = activationResend || legacyMatch ? pendingAutoRetry : undefined
+    if (activationSlot) {
+      activationResend = true
+      options = { ...options, hidden: true }
+      if (managed.autoRetryTimer) clearTimeout(managed.autoRetryTimer)
+      managed.autoRetryTimer = undefined
+      if (activationSlot.scheduledGeneration === managed.processingGeneration) {
+        this.recoverPendingSteers(managed)
+        const owned = activationSlot.ownedSteers ??= []
+        if (activationSlot.originalContent !== undefined && activationSlot.sourceSlug) {
+          activationSlot.retryContent = buildActivationRetryMessage(
+            activationSlot.originalContent, managed.turnSteers ?? [], activationSlot.sourceSlug,
+          ).retry
+        }
+        const ids = [...(managed.lastSentMessageIds ?? []), ...owned.flatMap(steer => steer.messageId ? [steer.messageId] : [])]
+        activationSlot.references = activationTurnReferences(managed.messages, ids, {
+          references: activationSlot.references,
+        })
+      }
+      message = activationSlot.retryContent ?? message
+    }
     if (!activationResend && !_isAuthRetry) managed.turnFromUser = !options?.hidden
+    const pendingAutoRetryReferences = activationSlot?.references ?? continuationReferences
+      ?? (legacyMatch ? pendingAutoRetry?.references : undefined)
     if (pendingAutoRetryReferences) {
       options = {
         ...options,
@@ -7086,11 +7911,36 @@ export class SessionManager implements ISessionManager {
     // Clear any pending plan execution state when a new user message is sent.
     // The explicit /compact turn immediately after "Accept & Compact" is the
     // one exception: that command is what transitions the pending record from
-    // awaiting → ready. Any other message remains a safety valve that cancels it.
+    // awaiting → ready. Any other message remains a safety valve that cancels
+    // it. The cancellation runs inside the session lifecycle lock so it shares
+    // a serialized boundary with the pending-plan commit (a dispatch whose
+    // validation is awaiting filesystem IO re-checks the live record under the
+    // same lock and aborts when user intent has moved on) — identity-scoped on
+    // the record captured HERE (a replacement created while this send was
+    // starting is never blindly deleted). Records already committed to
+    // execution (dispatched, delivery-tracked) are skipped: their approval is
+    // durably enqueued ahead of this message and delivery owns the cleanup.
+    // A terminally failed record is a durable restore outbox that new input
+    // never clears; only the scoped recovery ACK removes it.
     const isCompactCommand = /^\/compact(\s|$)/i.test(message.trim())
     if (!isCompactCommand) {
-      delete managed.pendingPlanExecution
-      await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+      await this.withSessionLifecycleLock(sessionId, async () => {
+        await this.ensureMessagesLoaded(managed)
+        const supersededPlan = managed.pendingPlanExecution
+        if (
+          supersededPlan
+          && !supersededPlan.failed
+          && supersededPlan.approvalMessageId === undefined
+        ) {
+          const receipt = supersededPlan.executionId ? getPlanDraftConsumption(sessionId, supersededPlan.executionId) : null
+          if (receipt?.text || receipt?.referenceKeys.length) {
+            await this.cancelPendingPlanExecution(managed, supersededPlan)
+          } else {
+            await this.commitPendingPlanExecution(managed, undefined)
+            if (supersededPlan.executionId) retirePlanDraftConsumption(sessionId, supersededPlan.executionId)
+          }
+        }
+      })
     }
 
     // Ensure messages are loaded before we try to add new ones
@@ -7142,7 +7992,24 @@ export class SessionManager implements ISessionManager {
     if (!shouldReusePersistedReferences) {
       await validateProjectFileReferencesForSend(references, managed.workspace.rootPath)
     }
+    if (activationSlot && managed.autoRetryPending !== activationSlot) return
+    const currentApproval = managed.pendingPlanExecution
+    if (trackedPlanRecord && (
+      this.sessions.get(sessionId) !== managed
+      || !currentApproval
+      || currentApproval.executionId !== trackedApprovalExecutionId
+      || currentApproval.approvalMessageId !== existingMessageId
+      || currentApproval.failed
+      || !currentApproval.executionDispatched
+      || (managed.stopEpoch ?? 0) !== approvalStopEpoch
+      || managed.stopRequested
+      || approvalReplay && managed.pendingApprovalReplay !== approvalReplay
+    )) return
     const messageForModel = formatReferencesForModel(message, references)
+    const recoveredActivationSteers = !activationSlot && pendingAutoRetry
+      && (!pendingAutoRetry.committed || (pendingAutoRetry.ownedSteers?.length ?? 0) > 0)
+      ? this.recoverActivationSteers(managed, pendingAutoRetry)
+      : false
 
     // If currently processing, behavior depends on the connection's
     // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
@@ -7155,7 +8022,7 @@ export class SessionManager implements ISessionManager {
     // - 'queue': hold the message untouched; the current turn keeps running
     //   to natural completion; replay as a new turn afterwards. NO call to
     //   `agent.redirect()`, NO forceAbort, NO interruption.
-    if (managed.isProcessing) {
+    if (managed.isProcessing || recoveredActivationSteers && managed.messageQueue.length > 0) {
       const connection = resolveSessionConnection(managed.llmConnection, undefined)
       // Fallback to 'steer' when no connection is resolvable — preserves
       // today's exact behavior (call redirect, take whatever it returns).
@@ -7164,12 +8031,14 @@ export class SessionManager implements ISessionManager {
       // queued right away, like any queued message, and the model decides in the background whether
       // it corrects the running work and should be steered in (steerQueuedIfDecided). Recording
       // first keeps send order and leaves the queue the single source of truth.
-      const decideDelivery = canSteerTextPayload(attachments, storedAttachments, options) && this.decisionFeatureActive('midTurnMessages')
-      const behavior = decideDelivery ? 'queue' : configured
+      const decideDelivery = !trackedPlanRecord && canSteerTextPayload(attachments, storedAttachments, options) && this.decisionFeatureActive('midTurnMessages')
+      // An approval is its own authorized turn, never a steer into a different
+      // request that won admission while its payload was being hydrated.
+      const behavior = trackedPlanRecord || decideDelivery ? 'queue' : configured
 
       // Create user message for UI and persist queued delivery state so a
       // restart can recover messages that have not reached the model yet.
-      const userMessage: Message = {
+      const userMessage: Message = existingUserMessage ?? {
         id: generateMessageId(),
         role: 'user',
         content: message,
@@ -7181,7 +8050,8 @@ export class SessionManager implements ISessionManager {
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
       }
-      managed.messages.push(userMessage)
+      if (!existingUserMessage) managed.messages.push(userMessage)
+      if (activationSlot) activationSlot.deliveryMessageId = userMessage.id
 
       const agent = managed.agent
       // Redirect is text-only. Any semantic options/attachments use the normal
@@ -7190,7 +8060,8 @@ export class SessionManager implements ISessionManager {
       // A manual compaction owns the turn: nothing consumes steers, so queue for
       // replay after `complete` instead of steering (OSS #1058). Not an interruption.
       const compactionInFlight = agent?.isCompactionInFlight?.() === true
-      const attemptedSteer = shouldAttemptMidStreamSteer(behavior, textOnly, agent)
+      const attemptedSteer = managed.isProcessing && !recoveredActivationSteers
+        && shouldAttemptMidStreamSteer(behavior, textOnly, agent)
       // Steer the reference-formatted payload so cited context reaches the model.
       const steered = attemptedSteer && agent
         ? agent.redirect(messageForModel, { messageId: userMessage.id })
@@ -7220,8 +8091,16 @@ export class SessionManager implements ISessionManager {
         // for both queue-direct (current turn still running) and
         // queue-after-abort (backend already aborted) — the replay path in
         // processNextQueuedMessage is identical.
-        managed.messageQueue.push(payload)
-        if (this.decisionFeatureActive('midTurnMessages')) payload.continuationCheck = this.markQueuedContinuation(managed, payload)
+        if (approvalReplay) {
+          managed.messageQueue.push(...approvalReplay.entries)
+          for (const entry of approvalReplay.entries) {
+            const queued = managed.messages.find(candidate => candidate.id === entry.messageId)
+            if (queued) queued.isQueued = true
+          }
+        } else {
+          managed.messageQueue.push(payload)
+          if (this.decisionFeatureActive('midTurnMessages')) payload.continuationCheck = this.markQueuedContinuation(managed, payload)
+        }
         if (decideDelivery) void this.steerQueuedIfDecided(managed, payload, userMessage, configured)
         // Only claim interruption when a steer attempt actually aborted the
         // in-flight turn. In 'queue' mode the current turn runs to natural
@@ -7231,12 +8110,15 @@ export class SessionManager implements ISessionManager {
         if (delivery.wasInterrupted) managed.wasInterrupted = true
       }
 
+      if (approvalReplay && managed.pendingApprovalReplay === approvalReplay) managed.pendingApprovalReplay = undefined
+
       this.persistSession(managed)
       // Force a synchronous flush so the user message is genuinely on disk
       // before we tell the renderer "accepted" — `persistSession` only
       // enqueues with a 500ms debounce. (#616 reliability fix.)
       await this.flushSession(managed.id)
       onAck?.(userMessage.id)
+      if (!managed.isProcessing) this.processNextQueuedMessage(sessionId)
       return
     }
 
@@ -7337,6 +8219,7 @@ export class SessionManager implements ISessionManager {
       }
     }
 
+    if (activationSlot) activationSlot.deliveryMessageId = userMessage.id
     managed.lastMessageAt = Date.now()
     this.setProcessing(managed, true)
     managed.streamingText = ''
@@ -7370,6 +8253,39 @@ export class SessionManager implements ISessionManager {
     const myGeneration = managed.processingGeneration
     // A Stop from now on (not a stale stopRequested flag) keeps this turn from starting.
     const turnStopEpoch = managed.stopEpoch ?? 0
+
+    // This send IS the pending plan's manual compaction turn: stamp the
+    // correlation (generation + stop epoch) onto the record so the completion
+    // and failure event paths can verify the event belongs to this record's
+    // own /compact — a late or foreign compaction event can then neither
+    // authorize nor cancel it. The stamp is tied to the record's durable
+    // consumption receipt: the Accept & Compact flow atomically consumes the
+    // draft BEFORE submitting /compact, so a receiptless record is not this
+    // flow's compact (e.g. a stale /compact from a replaced acceptance) and
+    // must never become ready off its completion. Persisted strictly and
+    // immediately: the completion event's correlation check reads the stored
+    // record.
+    let compactionAcceptance: ManagedSession['pendingPlanExecution']
+    if (isCompactCommand && managed.pendingPlanExecution && !managed.pendingPlanExecution.failed) {
+      const compactRecord = managed.pendingPlanExecution
+      const receiptPresent = compactRecord.executionId
+        ? (() => { try { return getPlanDraftConsumption(sessionId, compactRecord.executionId!) !== null } catch { return false } })()
+        : false
+      if (!receiptPresent || options?.planExecutionId !== compactRecord.executionId) {
+        sessionLog.info(`Session ${sessionId}: /compact does not correlate to the pending plan (no durable consumption receipt); readiness unaffected`)
+      } else {
+        compactionAcceptance = compactRecord
+        compactRecord.compactionTurn = { generation: myGeneration, stopEpoch: turnStopEpoch }
+        this.persistSession(managed)
+        try {
+          await this.flushSessionStrict(sessionId)
+        } catch (error) {
+          // The compact still runs; without a durable correlation its completion
+          // cannot ready the plan and failure/reload paths recover the draft.
+          sessionLog.error(`Session ${sessionId}: failed to persist pending plan compaction correlation`, error)
+        }
+      }
+    }
 
     // Pre-enable sources required by invoked skills (Issue #249)
     // This eliminates the two-turn penalty where the agent discovers missing sources at runtime.
@@ -7429,364 +8345,477 @@ export class SessionManager implements ISessionManager {
       }
     }
 
-    // Decision-model checks for this turn run while the agent is set up below.
-    const preTurnDecisions = this.startPreTurnDecisions(managed, message, options, { activationResend, authRetry: _isAuthRetry, attachments })
-
-    // Start perf span for entire sendMessage flow
-    const sendSpan = perf.span('session.sendMessage', { sessionId })
-
-    const workspaceRootPath = managed.workspace.rootPath
-    const enabledSlugs = managed.enabledSourceSlugs ?? []
-    const hasSources = enabledSlugs.length > 0
-
-    // Load enabled sources up-front so we can refresh tokens BEFORE getOrCreateAgent
-    // runs its internal cold-session build. Otherwise that build sees stale tokens
-    // and emits AUTH_REQUIRED, causing a brief "needs_auth" UI flicker before the
-    // post-build refresh restores state (#710).
-    const sources: LoadedSource[] = hasSources
-      ? getSourcesBySlugs(workspaceRootPath, enabledSlugs)
-      : []
-
-    if (hasSources && managed.tokenRefreshManager) {
-      const refreshResult = await refreshExpiredCredentials(sources, managed.tokenRefreshManager)
-      if (refreshResult.failedSources.length > 0) {
-        sessionLog.warn('[OAuth] Some sources failed token refresh:', refreshResult.failedSources.map(f => f.slug))
-      }
-      if (refreshResult.refreshedCount > 0) {
-        sendSpan.mark('oauth.refreshed')
-      }
-    }
-
-    // Get or create the agent (lazy loading). Its internal cold-session build at
-    // ~L2956 now sees fresh tokens (or correctly-needs_auth failed sources, since
-    // ensureFreshToken mirrors the disk write to source.config in-memory).
-    const agent = await this.getOrCreateAgent(managed)
-    sendSpan.mark('agent.ready')
-
-    // Always set all sources for context (even if none are enabled), including built-ins
-    const allSources = loadAllSources(workspaceRootPath)
-    agent.setAllSources(allSources)
-    sendSpan.mark('sources.loaded')
-
-    // Apply source servers if any are enabled
-    if (hasSources) {
-      const sessionPath = getSessionStoragePath(workspaceRootPath, sessionId)
-      // Single fresh build — tokens already refreshed above.
-      const { mcpServers, apiServers, errors } = await buildServersFromSources(sources, sessionPath, managed.tokenRefreshManager, agent.getSummarizeCallback())
-      if (errors.length > 0) {
-        sessionLog.warn(`Source build errors:`, errors)
-      }
-
-      const mcpCount = Object.keys(mcpServers).length
-      const apiCount = Object.keys(apiServers).length
-      if (mcpCount > 0 || apiCount > 0 || enabledSlugs.length > 0) {
-        const usableSources = sources.filter(isSourceUsable)
-        const intendedSlugs = usableSources.map(s => s.config.slug)
-        await agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
-        sessionLog.info(`Applied ${mcpCount} MCP + ${apiCount} API sources to session ${sessionId} (${allSources.length} total)`)
-      }
-      sendSpan.mark('servers.applied')
-    }
-
-    // Continued from another session: the summary this first turn carries may still be generating
-    // (the agent above was set up meanwhile)
-    if (managed.pendingHandoffSummary) await this.waitForHandoffSummary(managed)
-
     try {
-      sessionLog.info('Starting chat for session:', sessionId)
-      sessionLog.info('Workspace:', JSON.stringify(managed.workspace, null, 2))
-      sessionLog.info('Message:', message)
-      sessionLog.info('Agent model:', agent.getModel())
-      sessionLog.info('process.cwd():', process.cwd())
+      // Decision-model checks for this turn run while the agent is set up below.
+      const preTurnDecisions = this.startPreTurnDecisions(managed, message, options, { activationResend, authRetry: _isAuthRetry, attachments })
 
-      // Process the message through the agent
-      sessionLog.info('Calling agent.chat()...')
-      if (attachments?.length) {
-        sessionLog.info('Attachments:', attachments.length)
+      // Start perf span for entire sendMessage flow
+      const sendSpan = perf.span('session.sendMessage', { sessionId })
+
+      const workspaceRootPath = managed.workspace.rootPath
+      const enabledSlugs = managed.enabledSourceSlugs ?? []
+      const hasSources = enabledSlugs.length > 0
+
+      // Load enabled sources up-front so we can refresh tokens BEFORE getOrCreateAgent
+      // runs its internal cold-session build. Otherwise that build sees stale tokens
+      // and emits AUTH_REQUIRED, causing a brief "needs_auth" UI flicker before the
+      // post-build refresh restores state (#710).
+      const sources: LoadedSource[] = hasSources
+        ? getSourcesBySlugs(workspaceRootPath, enabledSlugs)
+        : []
+
+      if (hasSources && managed.tokenRefreshManager) {
+        const refreshResult = await refreshExpiredCredentials(sources, managed.tokenRefreshManager)
+        if (refreshResult.failedSources.length > 0) {
+          sessionLog.warn('[OAuth] Some sources failed token refresh:', refreshResult.failedSources.map(f => f.slug))
+        }
+        if (refreshResult.refreshedCount > 0) {
+          sendSpan.mark('oauth.refreshed')
+        }
       }
 
-      // Skills mentioned via @mentions are resolved by the UI layer (extractBadges
-      // in mentions.ts), which injects fully-qualified names in the rawText.
-      // No transformation needed here.
-
-      // Ensure main process reads tool metadata from the correct session directory.
-      // This must be set before each chat() call since multiple sessions share the process.
-      const chatSessionDir = getSessionStoragePath(workspaceRootPath, sessionId)
-      toolMetadataStore.setSessionDir(chatSessionDir)
-
-      // Transient guidance for this turn (interruption notice, decision-model suggestion) travels
-      // as `turnContext`: the model sees it after the message, in <system-reminder> tags, but it
-      // is not part of the stored message nor of the resend after a source activation.
-      const turnContext: string[] = []
-      // A /compact turn takes no turn context, so the notice waits for the next real turn.
-      if (managed.wasInterrupted && !isCompactCommand) {
-        turnContext.push('<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>')
-        managed.wasInterrupted = false
-      }
-
-      const messageBackendContext = resolveBackendContext({
-        sessionConnectionSlug: managed.llmConnection,
-        workspaceDefaultConnectionSlug: loadWorkspaceConfig(workspaceRootPath)?.defaults?.defaultLlmConnection,
-        managedModel: managed.model,
+      // Get or create the agent (lazy loading). Its internal cold-session build at
+      // ~L2956 now sees fresh tokens (or correctly-needs_auth failed sources, since
+      // ensureFreshToken mirrors the disk write to source.config in-memory).
+      const agent = await this.getOrCreateAgent(managed).catch(async error => {
+        if (activationSlot && managed.processingGeneration === myGeneration) {
+          this.recoverActivationSteers(managed, activationSlot)
+          await this.onProcessingStopped(sessionId, 'error')
+          sendSpan.mark('agent.setup_failed')
+          sendSpan.end()
+        }
+        throw error
       })
-      const modelInputAttachments = filterAttachmentsForModelInput(
-        attachments,
-        messageBackendContext.connection,
-        messageBackendContext.resolvedModel,
-      )
-      if (modelInputAttachments.omittedImages.length > 0) {
-        const omittedNames = modelInputAttachments.omittedImages.map(a => a.name).join(', ')
-        sessionLog.info(`Omitting ${modelInputAttachments.omittedImages.length} image attachment(s) from model input for ${messageBackendContext.resolvedModel}: ${omittedNames}`)
-        this.sendEvent({
-          type: 'info',
-          sessionId,
-          message: `Image attachment${modelInputAttachments.omittedImages.length === 1 ? '' : 's'} not sent because image input is disabled for ${messageBackendContext.resolvedModel}.`,
-          level: 'warning',
-        }, managed.workspace.id)
+      sendSpan.mark('agent.ready')
+
+      // Always set all sources for context (even if none are enabled), including built-ins
+      const allSources = loadAllSources(workspaceRootPath)
+      agent.setAllSources(allSources)
+      sendSpan.mark('sources.loaded')
+
+      // Apply source servers if any are enabled
+      if (hasSources) {
+        const sessionPath = getSessionStoragePath(workspaceRootPath, sessionId)
+        // Single fresh build — tokens already refreshed above.
+        const { mcpServers, apiServers, errors } = await buildServersFromSources(sources, sessionPath, managed.tokenRefreshManager, agent.getSummarizeCallback())
+        if (errors.length > 0) {
+          sessionLog.warn(`Source build errors:`, errors)
+        }
+
+        const mcpCount = Object.keys(mcpServers).length
+        const apiCount = Object.keys(apiServers).length
+        if (mcpCount > 0 || apiCount > 0 || enabledSlugs.length > 0) {
+          const usableSources = sources.filter(isSourceUsable)
+          const intendedSlugs = usableSources.map(s => s.config.slug)
+          await agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
+          sessionLog.info(`Applied ${mcpCount} MCP + ${apiCount} API sources to session ${sessionId} (${allSources.length} total)`)
+        }
+        sendSpan.mark('servers.applied')
       }
 
-      const { thinkingOverride, suggestionHint } = preTurnDecisions ? await preTurnDecisions : { thinkingOverride: null, suggestionHint: null }
-      // Stopped, superseded or deleted while the agent was set up or the pre-turn checks ran: do not
-      // start the turn.
-      const stoppedMeanwhile = (managed.stopEpoch ?? 0) !== turnStopEpoch
-      const superseded = managed.processingGeneration !== myGeneration
-      const deleted = this.sessions.get(sessionId) !== managed
-      if (stoppedMeanwhile || superseded || deleted) {
-        sessionLog.info(`Turn for session ${sessionId} not started: ${deleted ? 'deleted' : superseded ? 'superseded' : 'stopped'} before it began`)
-        sendSpan.mark('chat.not_started')
-        if (deleted) return  // the finally block below cleans up
-        sendSpan.end()
-        if (!superseded) this.onProcessingStopped(sessionId, 'interrupted')
-        return
-      }
-      if (suggestionHint) turnContext.push(suggestionHint)
-      // A /compact turn takes neither: trailing text would become compaction instructions.
-      const chatOptions: ChatOptions = {
-        ...(thinkingOverride ? { thinkingOverride } : {}),
-        ...(turnContext.length > 0 && !isCompactCommand ? { turnContext: turnContext.join('\n\n') } : {}),
-      }
+      // Continued from another session: the summary this first turn carries may still be generating
+      // (the agent above was set up meanwhile).
+      if (managed.pendingHandoffSummary) await this.waitForHandoffSummary(managed)
 
-      sendSpan.mark('chat.starting')
-      const chatIterator = agent.chat(messageForModel, modelInputAttachments.attachments, Object.keys(chatOptions).length > 0 ? chatOptions : undefined)
-      sessionLog.info('Got chat iterator, starting iteration...')
+      try {
+        sessionLog.info('Starting chat for session:', sessionId)
+        sessionLog.info('Workspace:', JSON.stringify(managed.workspace, null, 2))
+        sessionLog.info('Message:', message)
+        sessionLog.info('Agent model:', agent.getModel())
+        sessionLog.info('process.cwd():', process.cwd())
 
-      for await (const event of chatIterator) {
-        // Handoff may start a new turn before the old SDK iterator settles.
-        // Pending steers were transferred synchronously at the handoff boundary;
-        // trailing old events must not complete or mutate the replacement turn.
+        // Process the message through the agent
+        sessionLog.info('Calling agent.chat()...')
+        if (attachments?.length) {
+          sessionLog.info('Attachments:', attachments.length)
+        }
+
+        // Skills mentioned via @mentions are resolved by the UI layer (extractBadges
+        // in mentions.ts), which injects fully-qualified names in the rawText.
+        // No transformation needed here.
+
+        // Ensure main process reads tool metadata from the correct session directory.
+        // This must be set before each chat() call since multiple sessions share the process.
+        const chatSessionDir = getSessionStoragePath(workspaceRootPath, sessionId)
+        toolMetadataStore.setSessionDir(chatSessionDir)
+
+        // Transient guidance for this turn (interruption notice, decision-model suggestion) travels
+        // as `turnContext`: the model sees it after the message, in <system-reminder> tags, but it
+        // is not part of the stored message nor of the resend after a source activation.
+        const turnContext: string[] = []
+        // A /compact turn takes no turn context, so the notice waits for the next real turn.
+        if (managed.wasInterrupted && !isCompactCommand) {
+          turnContext.push('<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>')
+          managed.wasInterrupted = false
+        }
+
+        const messageBackendContext = resolveBackendContext({
+          sessionConnectionSlug: managed.llmConnection,
+          workspaceDefaultConnectionSlug: loadWorkspaceConfig(workspaceRootPath)?.defaults?.defaultLlmConnection,
+          managedModel: managed.model,
+        })
+        const modelInputAttachments = filterAttachmentsForModelInput(
+          attachments,
+          messageBackendContext.connection,
+          messageBackendContext.resolvedModel,
+        )
+        if (modelInputAttachments.omittedImages.length > 0) {
+          const omittedNames = modelInputAttachments.omittedImages.map(a => a.name).join(', ')
+          sessionLog.info(`Omitting ${modelInputAttachments.omittedImages.length} image attachment(s) from model input for ${messageBackendContext.resolvedModel}: ${omittedNames}`)
+          this.sendEvent({
+            type: 'info',
+            sessionId,
+            message: `Image attachment${modelInputAttachments.omittedImages.length === 1 ? '' : 's'} not sent because image input is disabled for ${messageBackendContext.resolvedModel}.`,
+            level: 'warning',
+          }, managed.workspace.id)
+        }
+
+        const { thinkingOverride, suggestionHint } = preTurnDecisions ? await preTurnDecisions : { thinkingOverride: null, suggestionHint: null }
+        // Stopped, superseded or deleted while the agent was set up or the pre-turn checks ran: do not
+        // start the turn.
+        const stoppedMeanwhile = (managed.stopEpoch ?? 0) !== turnStopEpoch
+        const superseded = managed.processingGeneration !== myGeneration
+        const deleted = this.sessions.get(sessionId) !== managed
+        if (stoppedMeanwhile || superseded || deleted) {
+          sessionLog.info(`Turn for session ${sessionId} not started: ${deleted ? 'deleted' : superseded ? 'superseded' : 'stopped'} before it began`)
+          sendSpan.mark('chat.not_started')
+          if (deleted) return  // the finally block below cleans up
+          sendSpan.end()
+          if (!superseded) this.onProcessingStopped(sessionId, 'interrupted')
+          return
+        }
+        if (suggestionHint) turnContext.push(suggestionHint)
+        // A /compact turn takes neither: trailing text would become compaction instructions.
+        const chatOptions: ChatOptions = {
+          ...(thinkingOverride ? { thinkingOverride } : {}),
+          ...(turnContext.length > 0 && !isCompactCommand ? { turnContext: turnContext.join('\n\n') } : {}),
+        }
+
+        sendSpan.mark('chat.starting')
+        const chatIterator = agent.chat(messageForModel, modelInputAttachments.attachments, Object.keys(chatOptions).length > 0 ? chatOptions : undefined)
+        sessionLog.info('Got chat iterator, starting iteration...')
+
+        let approvalHandoffMarked = false
+        for await (const event of chatIterator) {
+          // Handoff may start a new turn before the old SDK iterator settles.
+          // Pending steers were transferred synchronously at the handoff boundary;
+          // trailing old events must not complete or mutate the replacement turn.
+          if (managed.processingGeneration !== myGeneration) {
+            sendSpan.mark('chat.superseded')
+            sendSpan.end()
+            return
+          }
+          // Genuine backend handoff for a durably accepted plan approval: the
+          // FIRST event from the chat iterator proves the backend accepted and
+          // started executing the turn (agent construction, source-server
+          // builds and pre-turn decisions all preceded this without consuming
+          // the tracker — a crash anywhere before first delivery re-queues the
+          // approval by its stable message id). From here on, a crash has
+          // ordinary mid-turn semantics.
+          if (!approvalHandoffMarked) {
+            approvalHandoffMarked = true
+            if (activationSlot?.deliveryMessageId === userMessage.id
+              && (managed.stopEpoch ?? 0) === turnStopEpoch && !managed.stopRequested) {
+              const delivered = activationSlot.ownedSteers ?? []
+              activationSlot.ownedSteers = []
+              for (const steer of delivered) {
+                const original = managed.messages.find(candidate => candidate.id === steer.messageId)
+                if (!original) continue
+                original.isQueued = false
+                this.sendEvent({ type: 'user_message', sessionId, message: original,
+                  status: 'processing', optimisticMessageId: steer.optimisticMessageId }, managed.workspace.id)
+              }
+              if (delivered.length > 0) this.persistSession(managed)
+            }
+            if (existingMessageId && managed.pendingPlanExecution?.approvalMessageId === existingMessageId) {
+              await this.withSessionLifecycleLock(sessionId, async () => {
+                const deliveredRecord = managed.pendingPlanExecution
+                if (this.sessions.get(sessionId) !== managed || deliveredRecord?.approvalMessageId !== existingMessageId
+                  || deliveredRecord.executionId !== trackedApprovalExecutionId || deliveredRecord.failed
+                  || managed.processingGeneration !== myGeneration || (managed.stopEpoch ?? 0) !== turnStopEpoch
+                  || managed.stopRequested) return
+                if (approvalReplay && managed.pendingApprovalReplay === approvalReplay) managed.pendingApprovalReplay = undefined
+                await this.commitPendingPlanExecution(managed, undefined)
+                if (trackedApprovalExecutionId) retirePlanDraftConsumption(sessionId, trackedApprovalExecutionId)
+              })
+            }
+          }
+          // Log events (skip noisy text_delta)
+          if (event.type !== 'text_delta') {
+            if (event.type === 'tool_start') {
+              sessionLog.info(`tool_start: ${event.toolName} (${event.toolUseId})`)
+            } else if (event.type === 'tool_result') {
+              sessionLog.info(`tool_result: ${event.toolUseId} isError=${event.isError}`)
+            } else {
+              sessionLog.info('Got event:', event.type)
+            }
+          }
+
+          // Process the event first, carrying the ORIGINATING turn context
+          // captured when this send's execution started — compaction
+          // completion/failure correlation compares against the turn that
+          // EMITTED the event, never a correlation re-derived from the live
+          // record/generation at event time.
+          await this.processEvent(managed, event, { generation: myGeneration, stopEpoch: turnStopEpoch })
+
+          // Fallback: Capture SDK session ID if the onSdkSessionIdUpdate callback didn't fire.
+          // Primary capture happens in getOrCreateAgent() via onSdkSessionIdUpdate callback,
+          // which immediately flushes to disk. This fallback handles edge cases where the
+          // callback might not fire (e.g., SDK version mismatch, callback not supported).
+          if (!managed.sdkSessionId) {
+            const sdkId = agent.getSessionId()
+            if (sdkId) {
+              managed.sdkSessionId = sdkId
+              sessionLog.info(`Captured SDK session ID via fallback: ${sdkId}`)
+              // Also flush here since we're in fallback mode
+              this.persistSession(managed)
+              sessionPersistenceQueue.flush(managed.id)
+            }
+          }
+
+          // Handle complete event - SDK always sends this (even after interrupt)
+          // This is the central place where processing ends
+          if (event.type === 'complete') {
+            // Skip normal completion handling if auth retry is in progress
+            // The retry will handle its own completion
+            if (managed.authRetryInProgress) {
+              sessionLog.info('Chat completed but auth retry is in progress, skipping normal completion handling')
+              sendSpan.mark('chat.complete.auth_retry_pending')
+              sendSpan.end()
+              return  // Exit function - retry will handle completion
+            }
+
+            // Auth/plan handoff paths already stopped processing and emitted a complete
+            // event to the renderer. Ignore the backend's trailing complete to avoid
+            // double cleanup and duplicate UI completion events.
+            if (!managed.isProcessing) {
+              sessionLog.info('Chat completed after explicit handoff/stop; skipping normal completion handling')
+              sendSpan.mark('chat.complete.already_stopped')
+              sendSpan.end()
+              return
+            }
+
+            sessionLog.info('Chat completed via complete event')
+
+            // Check if we got an assistant response in this turn
+            // If not, the SDK may have hit context limits or other issues
+            const lastAssistantMsg = [...managed.messages].reverse().find(m =>
+              m.role === 'assistant' && !m.isIntermediate
+            )
+            const lastUserMsg = [...managed.messages].reverse().find(m => m.role === 'user')
+
+            // If the last user message is newer than any assistant response, we got no reply
+            // This can happen due to context overflow or API issues
+            if (lastUserMsg && (!lastAssistantMsg || lastUserMsg.timestamp > lastAssistantMsg.timestamp)) {
+              sessionLog.warn(`Session ${sessionId} completed without assistant response - possible context overflow or API issue`)
+
+              // Check if there's a captured API error that explains the silent failure.
+              // Pass explicit session path to avoid reading from the wrong session
+              // (_sessionDir singleton can be clobbered by concurrent sessions).
+              const sessionErrorPath = getSessionStoragePath(managed.workspace.rootPath, managed.id)
+              const apiError = getLastApiError(sessionErrorPath)
+
+              if (apiError && apiError.status === 400) {
+                const isImageError = apiError.message?.includes('image exceeds')
+
+                const errorMessage: Message = {
+                  id: generateMessageId(),
+                  role: 'error',
+                  content: isImageError
+                    ? `Image Too Large: ${apiError.message}`
+                    : `Request Error: ${apiError.message}`,
+                  timestamp: this.monotonic(),
+                  errorCode: isImageError ? 'image_too_large' : 'invalid_request',
+                  errorTitle: isImageError ? 'Image Too Large' : 'Invalid Request',
+                  errorDetails: isImageError
+                    ? ['An image in the conversation exceeds the 5 MB API limit.',
+                       'This session cannot recover — the image is embedded in the history.',
+                       'Please start a new session to continue.']
+                    : [apiError.message],
+                  errorCanRetry: false,
+                }
+                managed.messages.push(errorMessage)
+                this.sendEvent({
+                  type: 'typed_error',
+                  sessionId,
+                  error: {
+                    code: isImageError ? 'image_too_large' as const : 'invalid_request' as const,
+                    title: errorMessage.errorTitle!,
+                    message: apiError.message,
+                    actions: [],
+                    canRetry: false,
+                    details: errorMessage.errorDetails,
+                  },
+                }, managed.workspace.id)
+              }
+            }
+
+            sendSpan.mark('chat.complete')
+            sendSpan.end()
+            // The backend also ends a turn the user stopped with `complete`. Reporting that as a
+            // completion marked a stopped task step done with no output (found 2026-10-11).
+            const stoppedDuringTurn = (managed.stopEpoch ?? 0) !== turnStopEpoch
+            this.onProcessingStopped(sessionId, stoppedDuringTurn ? 'interrupted' : 'complete')
+            return  // Exit function, skip finally block (onProcessingStopped handles cleanup)
+          }
+
+          // NOTE: We no longer break early on !isProcessing or stopRequested.
+          // After soft interrupt (forceAbort), the backend sets turnComplete=true which causes
+          // the generator to yield remaining queued events and then complete naturally.
+          // This ensures we don't lose in-flight messages.
+        }
+
         if (managed.processingGeneration !== myGeneration) {
           sendSpan.mark('chat.superseded')
           sendSpan.end()
           return
         }
-        // Log events (skip noisy text_delta)
-        if (event.type !== 'text_delta') {
-          if (event.type === 'tool_start') {
-            sessionLog.info(`tool_start: ${event.toolName} (${event.toolUseId})`)
-          } else if (event.type === 'tool_result') {
-            sessionLog.info(`tool_result: ${event.toolUseId} isError=${event.isError}`)
-          } else {
-            sessionLog.info('Got event:', event.type)
-          }
-        }
-
-        // Process the event first
-        await this.processEvent(managed, event)
-
-        // Fallback: Capture SDK session ID if the onSdkSessionIdUpdate callback didn't fire.
-        // Primary capture happens in getOrCreateAgent() via onSdkSessionIdUpdate callback,
-        // which immediately flushes to disk. This fallback handles edge cases where the
-        // callback might not fire (e.g., SDK version mismatch, callback not supported).
-        if (!managed.sdkSessionId) {
-          const sdkId = agent.getSessionId()
-          if (sdkId) {
-            managed.sdkSessionId = sdkId
-            sessionLog.info(`Captured SDK session ID via fallback: ${sdkId}`)
-            // Also flush here since we're in fallback mode
-            this.persistSession(managed)
-            sessionPersistenceQueue.flush(managed.id)
-          }
-        }
-
-        // Handle complete event - SDK always sends this (even after interrupt)
-        // This is the central place where processing ends
-        if (event.type === 'complete') {
-          // Skip normal completion handling if auth retry is in progress
-          // The retry will handle its own completion
-          if (managed.authRetryInProgress) {
-            sessionLog.info('Chat completed but auth retry is in progress, skipping normal completion handling')
-            sendSpan.mark('chat.complete.auth_retry_pending')
-            sendSpan.end()
-            return  // Exit function - retry will handle completion
-          }
-
-          // Auth/plan handoff paths already stopped processing and emitted a complete
-          // event to the renderer. Ignore the backend's trailing complete to avoid
-          // double cleanup and duplicate UI completion events.
-          if (!managed.isProcessing) {
-            sessionLog.info('Chat completed after explicit handoff/stop; skipping normal completion handling')
-            sendSpan.mark('chat.complete.already_stopped')
-            sendSpan.end()
-            return
-          }
-
-          sessionLog.info('Chat completed via complete event')
-
-          // Check if we got an assistant response in this turn
-          // If not, the SDK may have hit context limits or other issues
-          const lastAssistantMsg = [...managed.messages].reverse().find(m =>
-            m.role === 'assistant' && !m.isIntermediate
-          )
-          const lastUserMsg = [...managed.messages].reverse().find(m => m.role === 'user')
-
-          // If the last user message is newer than any assistant response, we got no reply
-          // This can happen due to context overflow or API issues
-          if (lastUserMsg && (!lastAssistantMsg || lastUserMsg.timestamp > lastAssistantMsg.timestamp)) {
-            sessionLog.warn(`Session ${sessionId} completed without assistant response - possible context overflow or API issue`)
-
-            // Check if there's a captured API error that explains the silent failure.
-            // Pass explicit session path to avoid reading from the wrong session
-            // (_sessionDir singleton can be clobbered by concurrent sessions).
-            const sessionErrorPath = getSessionStoragePath(managed.workspace.rootPath, managed.id)
-            const apiError = getLastApiError(sessionErrorPath)
-
-            if (apiError && apiError.status === 400) {
-              const isImageError = apiError.message?.includes('image exceeds')
-
-              const errorMessage: Message = {
-                id: generateMessageId(),
-                role: 'error',
-                content: isImageError
-                  ? `Image Too Large: ${apiError.message}`
-                  : `Request Error: ${apiError.message}`,
-                timestamp: this.monotonic(),
-                errorCode: isImageError ? 'image_too_large' : 'invalid_request',
-                errorTitle: isImageError ? 'Image Too Large' : 'Invalid Request',
-                errorDetails: isImageError
-                  ? ['An image in the conversation exceeds the 5 MB API limit.',
-                     'This session cannot recover — the image is embedded in the history.',
-                     'Please start a new session to continue.']
-                  : [apiError.message],
-                errorCanRetry: false,
-              }
-              managed.messages.push(errorMessage)
-              this.sendEvent({
-                type: 'typed_error',
-                sessionId,
-                error: {
-                  code: isImageError ? 'image_too_large' as const : 'invalid_request' as const,
-                  title: errorMessage.errorTitle!,
-                  message: apiError.message,
-                  actions: [],
-                  canRetry: false,
-                  details: errorMessage.errorDetails,
-                },
-              }, managed.workspace.id)
-            }
-          }
-
-          sendSpan.mark('chat.complete')
+        // Loop exited - either via complete event (normal) or generator ended after soft interrupt
+        if (!managed.isProcessing) {
+          sessionLog.info('Chat loop exited after explicit handoff/stop')
+          sendSpan.mark('chat.exit.already_stopped')
           sendSpan.end()
-          // The backend also ends a turn the user stopped with `complete`. Reporting that as a
-          // completion marked a stopped task step done with no output (found 2026-10-11).
-          const stoppedDuringTurn = (managed.stopEpoch ?? 0) !== turnStopEpoch
-          this.onProcessingStopped(sessionId, stoppedDuringTurn ? 'interrupted' : 'complete')
-          return  // Exit function, skip finally block (onProcessingStopped handles cleanup)
+        } else if (managed.stopRequested) {
+          sessionLog.info('Chat loop completed after stop request - events drained successfully')
+          this.onProcessingStopped(sessionId, 'interrupted')
+        } else {
+          sessionLog.info('Chat loop exited unexpectedly')
         }
+      } catch (error) {
+        if (managed.processingGeneration !== myGeneration) {
+          sendSpan.mark('chat.superseded')
+          sendSpan.end()
+          return
+        }
+        // Check if this is an abort error (expected when interrupted)
+        const isAbortError = error instanceof Error && (
+          error.name === 'AbortError' ||
+          error.message === 'Request was aborted.' ||
+          error.message.includes('aborted')
+        )
 
-        // NOTE: We no longer break early on !isProcessing or stopRequested.
-        // After soft interrupt (forceAbort), the backend sets turnComplete=true which causes
-        // the generator to yield remaining queued events and then complete naturally.
-        // This ensures we don't lose in-flight messages.
-      }
+        if (isAbortError) {
+          // Extract abort reason if available (safety net for unexpected abort propagation)
+          const reason = (error as DOMException).cause as AbortReason | undefined
 
-      if (managed.processingGeneration !== myGeneration) {
-        sendSpan.mark('chat.superseded')
-        sendSpan.end()
-        return
-      }
-      // Loop exited - either via complete event (normal) or generator ended after soft interrupt
-      if (!managed.isProcessing) {
-        sessionLog.info('Chat loop exited after explicit handoff/stop')
-        sendSpan.mark('chat.exit.already_stopped')
-        sendSpan.end()
-      } else if (managed.stopRequested) {
-        sessionLog.info('Chat loop completed after stop request - events drained successfully')
-        this.onProcessingStopped(sessionId, 'interrupted')
-      } else {
-        sessionLog.info('Chat loop exited unexpectedly')
-      }
-    } catch (error) {
-      if (managed.processingGeneration !== myGeneration) {
-        sendSpan.mark('chat.superseded')
-        sendSpan.end()
-        return
-      }
-      // Check if this is an abort error (expected when interrupted)
-      const isAbortError = error instanceof Error && (
-        error.name === 'AbortError' ||
-        error.message === 'Request was aborted.' ||
-        error.message.includes('aborted')
-      )
+          sessionLog.info(`Chat aborted (reason: ${reason || 'unknown'})`)
+          sendSpan.mark('chat.aborted')
+          sendSpan.setMetadata('abort_reason', reason || 'unknown')
+          sendSpan.end()
 
-      if (isAbortError) {
-        // Extract abort reason if available (safety net for unexpected abort propagation)
-        const reason = (error as DOMException).cause as AbortReason | undefined
+          // UI handoff paths (plan submission, auth request) handle their own cleanup
+          // by setting isProcessing = false directly. All other abort reasons route
+          // through onProcessingStopped for queue draining.
+          if (reason === AbortReason.UserStop || reason === AbortReason.Redirect || reason === undefined) {
+            this.onProcessingStopped(sessionId, 'interrupted')
+          }
+        } else {
+          sessionLog.error('Error in chat:', error)
+          sessionLog.error('Error message:', error instanceof Error ? error.message : String(error))
+          sessionLog.error('Error stack:', error instanceof Error ? error.stack : 'No stack')
 
-        sessionLog.info(`Chat aborted (reason: ${reason || 'unknown'})`)
-        sendSpan.mark('chat.aborted')
-        sendSpan.setMetadata('abort_reason', reason || 'unknown')
-        sendSpan.end()
+          // Report chat/SDK errors via runtime hooks (Electron can forward to Sentry)
+          sessionRuntimeHooks.captureException(error, { errorSource: 'chat', sessionId })
 
-        // UI handoff paths (plan submission, auth request) handle their own cleanup
-        // by setting isProcessing = false directly. All other abort reasons route
-        // through onProcessingStopped for queue draining.
-        if (reason === AbortReason.UserStop || reason === AbortReason.Redirect || reason === undefined) {
+          sendSpan.mark('chat.error')
+          sendSpan.setMetadata('error', error instanceof Error ? error.message : String(error))
+          sendSpan.end()
+          this.sendEvent({
+            type: 'error',
+            sessionId,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          }, managed.workspace.id)
+          // Handle error via centralized handler
+          this.onProcessingStopped(sessionId, 'error')
+        }
+      } finally {
+        // Only handle cleanup for unexpected exits (loop break without complete event)
+        // Normal completion returns early after calling onProcessingStopped
+        // Errors are handled in catch block
+        if (managed.isProcessing && managed.processingGeneration === myGeneration) {
+          sessionLog.info('Finally block cleanup - unexpected exit')
+          sendSpan.mark('chat.unexpected_exit')
+          sendSpan.end()
           this.onProcessingStopped(sessionId, 'interrupted')
         }
-      } else {
-        sessionLog.error('Error in chat:', error)
-        sessionLog.error('Error message:', error instanceof Error ? error.message : String(error))
-        sessionLog.error('Error stack:', error instanceof Error ? error.stack : 'No stack')
-
-        // Report chat/SDK errors via runtime hooks (Electron can forward to Sentry)
-        sessionRuntimeHooks.captureException(error, { errorSource: 'chat', sessionId })
-
-        sendSpan.mark('chat.error')
-        sendSpan.setMetadata('error', error instanceof Error ? error.message : String(error))
-        sendSpan.end()
-        this.sendEvent({
-          type: 'error',
-          sessionId,
-          error: error instanceof Error ? error.message : 'Unknown error'
-        }, managed.workspace.id)
-        // Handle error via centralized handler
-        this.onProcessingStopped(sessionId, 'error')
       }
     } finally {
-      // Only handle cleanup for unexpected exits (loop break without complete event)
-      // Normal completion returns early after calling onProcessingStopped
-      // Errors are handled in catch block
-      if (managed.isProcessing && managed.processingGeneration === myGeneration) {
-        sessionLog.info('Finally block cleanup - unexpected exit')
-        sendSpan.mark('chat.unexpected_exit')
-        sendSpan.end()
-        this.onProcessingStopped(sessionId, 'interrupted')
+      // Agent setup, pre-turn work and an iterator that ends without a manual
+      // success are all failed compactions. None may strand a consumed draft.
+      if (compactionAcceptance && compactionAcceptance.awaitingCompaction && !compactionAcceptance.failed
+        && compactionAcceptance.compactionTurn?.generation === myGeneration) {
+        await this.withSessionLifecycleLock(sessionId, async () => {
+          if (this.sessions.get(sessionId) !== managed || managed.pendingPlanExecution !== compactionAcceptance) return
+          if (!compactionAcceptance.awaitingCompaction || compactionAcceptance.failed) return
+          await this.cancelPendingPlanExecution(managed, compactionAcceptance)
+        })
+        if (managed.isProcessing && managed.processingGeneration === myGeneration) await this.onProcessingStopped(sessionId, 'error')
       }
     }
   }
 
   async cancelProcessing(sessionId: string, silent = false): Promise<void> {
     const managed = this.sessions.get(sessionId)
-    if (!managed?.isProcessing) {
+    const stopRecord = managed?.pendingPlanExecution
+    // The delivery tracker survives until the first backend event. Hard Stop
+    // also owns a queued approval or a replay still waiting for turn admission.
+    const stoppingApproval = !silent && stopRecord?.executionDispatched && stopRecord.approvalMessageId && !stopRecord.failed
+    if (!managed || !managed.isProcessing && !managed.autoRetryTimer && !managed.autoRetryPending?.ownedSteers?.length
+      && !stoppingApproval && !managed.pendingApprovalReplay) {
       return // Not processing, nothing to cancel
     }
 
     sessionLog.info('Cancelling processing for session:', sessionId, silent ? '(silent)' : '')
 
-    // A hard Stop visibly cancels undelivered accepted steers just like queued
-    // sends. Transfer first so the existing input-restoration path includes them.
+    // Close turn admission before any durability await. An agent startup
+    // finishing while cancellation writes must not start the stopped turn.
+    const stoppedEpoch = managed.stopEpoch ?? 0
+    managed.stopRequested = true
+    managed.stopEpoch = stoppedEpoch + 1
+    this.recoverPendingApprovalSteers(managed)
+    // Transfer undelivered accepted input before aborting its backend, so the
+    // queued-input restore below retains each original payload.
+    this.recoverActivationSteers(managed)
     this.recoverPendingSteers(managed)
+    // Interrupt the backend at the same admission boundary. Recovery writes
+    // may wait on IO; the stopped turn must not keep running during that wait.
+    // Keep background agents alive where the backend supports reply-only Stop.
+    if (managed.agent && !managed.agent.stopTurn?.()) {
+      managed.agent.forceAbort(AbortReason.UserStop)
+    }
+
+    // A Stop during the manual /compact of an Accept & Compact kills the
+    // compaction: funnel into the same failure path (mark non-executable,
+    // restore the consumed draft idempotently, clear) instead of leaving a
+    // plan awaiting a compaction that can no longer complete. A non-compact
+    // message that caused a silent redirect already cleared the record via
+    // sendMessage's safety valve, so this no-ops there.
+    const stoppingCompaction = stopRecord && !stopRecord.executionDispatched && stopRecord.compactionTurn
+      && managed.isProcessing && stopRecord.compactionTurn.generation === managed.processingGeneration
+      && stopRecord.compactionTurn.stopEpoch === stoppedEpoch
+    if (stopRecord && !stopRecord.failed && (stoppingCompaction || stoppingApproval)) {
+      const stoppedExecutionId = stopRecord.executionId
+      const stoppedTurn = stopRecord.compactionTurn
+      const stoppedApprovalId = stopRecord.approvalMessageId
+      await this.withSessionLifecycleLock(sessionId, async () => {
+        // Readiness may publish a new image while its strict write is pending.
+        // Stop still owns that compaction by execution/turn identity until the
+        // active compact ends; an idle ready plan remains executable.
+        const currentRecord = this.sessions.get(sessionId)?.pendingPlanExecution
+        if (this.sessions.get(sessionId) !== managed || !currentRecord) return
+        if (stoppedExecutionId !== undefined ? currentRecord.executionId !== stoppedExecutionId : currentRecord !== stopRecord) return
+        if (stoppingApproval) {
+          const sameApproval = currentRecord.approvalMessageId === stoppedApprovalId && currentRecord.executionDispatched
+          const rolledBackApproval = currentRecord.approvalMessageId === undefined && !currentRecord.executionDispatched
+          if (!sameApproval && !rolledBackApproval) return
+        } else {
+          if (currentRecord.executionDispatched || !stoppedTurn
+            || currentRecord.compactionTurn?.generation !== stoppedTurn.generation
+            || currentRecord.compactionTurn.stopEpoch !== stoppedTurn.stopEpoch) return
+        }
+        await this.cancelPendingPlanExecution(managed, currentRecord)
+      }).catch(error => sessionLog.error(`Session ${sessionId}: Stop-funnel cancellation failed`, error))
+    }
 
     // Collect queued message text for input restoration before clearing
     const queuedTexts = managed.messageQueue.map(q => q.message)
@@ -7820,22 +8849,10 @@ export class SessionManager implements ISessionManager {
       managed.messages = managed.messages.filter(m => !queuedMessageIdSet.has(m.id))
     }
 
-    // Signal intent to stop - let the event loop drain remaining events before clearing isProcessing
-    // This prevents losing in-flight messages after soft interrupt
-    managed.stopRequested = true
-    // Prompts of the stopped turn can no longer be answered, and a turn still being prepared must
-    // not start (see the risk-badge path and sendMessage).
-    managed.stopEpoch = (managed.stopEpoch ?? 0) + 1
-
     // Track interruption so the next user message gets a context note
     // telling the LLM the previous response was cut short
     managed.wasInterrupted = true
 
-    // Stop the turn, keeping background agents alive where the backend can (Claude keep-alive);
-    // otherwise hard-abort.
-    if (managed.agent && !managed.agent.stopTurn?.()) {
-      managed.agent.forceAbort(AbortReason.UserStop)
-    }
 
     // Only show "Response interrupted" message when user explicitly clicked Stop
     // Silent mode is used when redirecting (sending new message while processing)
@@ -7867,6 +8884,10 @@ export class SessionManager implements ISessionManager {
         ? { queuedRestoreId, queuedMessageIds: pendingRestoreMessageIds }
         : {}),
     }, managed.workspace.id)
+
+    // A pending retry can be stopped after its old iterator already closed.
+    // No event pump remains to clear this flag for the next user turn.
+    if (!managed.isProcessing) managed.stopRequested = false
 
     // Safety timeout: if event loop doesn't complete within 5 seconds, force cleanup
     // This handles cases where the generator gets stuck
@@ -8077,12 +9098,57 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  /** Release a cancelled/failed continuation's full payloads into the existing FIFO. */
+  private recoverActivationSteers(managed: ManagedSession, slot = managed.autoRetryPending): boolean {
+    if (!slot) return false
+    if (managed.autoRetryPending === slot) {
+      if (managed.autoRetryTimer) clearTimeout(managed.autoRetryTimer)
+      managed.autoRetryTimer = undefined
+      managed.autoRetryPending = undefined
+    }
+    // Cancel the pending hidden delivery as well as its timer; it must not
+    // reappear ahead of fresh input or through cold queue recovery.
+    if (slot.deliveryMessageId) {
+      managed.messageQueue = managed.messageQueue.filter(entry => entry.messageId !== slot.deliveryMessageId)
+      const continuation = managed.messages.find(message => message.id === slot.deliveryMessageId)
+      if (continuation?.hidden) continuation.isQueued = false
+    }
+    const before = managed.messageQueue.length
+    const owned = slot.ownedSteers ?? []
+    slot.ownedSteers = []
+    for (const payload of owned) {
+      if (!payload.messageId || managed.messageQueue.some(entry => entry.messageId === payload.messageId)) continue
+      ;(managed.acceptedSteers ??= new Map()).set(payload.messageId, payload)
+      this.recoverUndeliveredSteer(managed, { message: payload.message, messageId: payload.messageId })
+    }
+    // Do not drain a newer turn's backend when an older timer is cancelled.
+    if (managed.processingGeneration === slot.scheduledGeneration && !managed.autoRetryPending) {
+      this.recoverPendingSteers(managed)
+    }
+    return managed.messageQueue.length > before
+  }
+
   /** Reconcile an accepted steer with its original bubble and full host payload. */
   private recoverUndeliveredSteer(managed: ManagedSession, steer: { message: string; messageId?: string }): void {
+    const payload = steer.messageId ? managed.acceptedSteers?.get(steer.messageId) : undefined
+    const liveSlot = managed.autoRetryPending
+    const alreadyOwned = steer.messageId ? liveSlot?.ownedSteers?.some(entry => entry.messageId === steer.messageId) : false
+    if (liveSlot && liveSlot.scheduledGeneration === managed.processingGeneration && (payload || alreadyOwned)) {
+      if (payload && !alreadyOwned) (liveSlot.ownedSteers ??= []).push(payload)
+      if (steer.messageId) managed.acceptedSteers?.delete(steer.messageId)
+      const original = managed.messages.find(message => message.id === steer.messageId)
+      if (original) {
+        original.isQueued = true
+        this.sendEvent({ type: 'user_message', sessionId: managed.id, message: original,
+          status: 'queued', optimisticMessageId: payload?.optimisticMessageId }, managed.workspace.id)
+        this.persistSession(managed)
+      }
+      sessionLog.info(`Session ${managed.id}: undelivered steer ${steer.messageId ?? '(no id)'} owned by the source-activation continuation`)
+      return
+    }
     // Only identity-bearing steers have a recoverable payload. A steer without
     // a messageId (a pre-identity backend or a references-formatted message)
     // goes through the references-aware fallback instead.
-    const payload = steer.messageId ? managed.acceptedSteers?.get(steer.messageId) : undefined
     // Identity-bearing events are idempotent, including trailing events after Stop.
     if (!payload) {
       // A trailing event for an already-recovered (or Stop-cancelled) steer
@@ -8143,6 +9209,27 @@ export class SessionManager implements ISessionManager {
     managed.acceptedSteers?.clear()
   }
 
+  /** Return merged input that never reached the approval's backend turn. */
+  private recoverPendingApprovalSteers(managed: ManagedSession): void {
+    const replay = managed.pendingApprovalReplay
+    if (!replay) return
+    managed.pendingApprovalReplay = undefined
+    const approvalId = replay.entries[0]?.messageId
+    if (approvalId) {
+      managed.replayMergedIds?.delete(approvalId)
+      const approval = managed.messages.find(message => message.id === approvalId)
+      // The plan's own recovery outbox (or cold delivery tracker after a
+      // startup error) owns this bubble; generic queue recovery must not too.
+      if (approval) approval.isQueued = false
+    }
+    const following = replay.entries.slice(1)
+    managed.messageQueue = [...following, ...managed.messageQueue]
+    for (const entry of following) {
+      const queued = managed.messages.find(message => message.id === entry.messageId)
+      if (queued) queued.isQueued = true
+    }
+  }
+
   /**
    * Central handler for when processing stops (any reason).
    * Single source of truth for cleanup and queue processing.
@@ -8158,6 +9245,16 @@ export class SessionManager implements ISessionManager {
     if (!managed) return
 
     sessionLog.info(`Processing stopped for session ${sessionId}: ${reason}`)
+    const replayApprovalId = managed.pendingApprovalReplay?.entries[0]?.messageId
+    if (replayApprovalId && managed.lastSentMessageIds?.includes(replayApprovalId)) this.recoverPendingApprovalSteers(managed)
+
+    const activationSlot = managed.autoRetryPending
+    if (activationSlot?.deliveryMessageId && activationSlot.ownedSteers?.length
+      && managed.lastSentMessageIds?.includes(activationSlot.deliveryMessageId)) {
+      // Setup or iterator failure before the first event never delivered the
+      // continuation's owned input. Return it before normal queue draining.
+      this.recoverActivationSteers(managed, activationSlot)
+    }
 
     // Backend recovery events precede complete; discard payloads already delivered.
     managed.acceptedSteers?.clear()
@@ -8303,7 +9400,7 @@ export class SessionManager implements ISessionManager {
    */
   private processNextQueuedMessage(sessionId: string): void {
     const managed = this.sessions.get(sessionId)
-    if (!managed || managed.messageQueue.length === 0) return
+    if (!managed || managed.messageQueue.length === 0 || managed.pendingApprovalReplay) return
 
     const first = managed.messageQueue.shift()!
     // Mid-turn messages: entries judged to continue this one are replayed with it as one turn.
@@ -8316,6 +9413,10 @@ export class SessionManager implements ISessionManager {
     const next = merged.length > 0
       ? { ...first, message: [first, ...merged].map(entry => entry.message).join('\n\n') }
       : first
+    const approvalReplay = first.messageId && managed.pendingPlanExecution?.approvalMessageId === first.messageId
+      ? { entries: [first, ...merged], stopEpoch: managed.stopEpoch ?? 0 }
+      : undefined
+    if (approvalReplay) managed.pendingApprovalReplay = approvalReplay
     if (merged.length > 0 && first.messageId) {
       const ids = [first, ...merged].map(entry => entry.messageId).filter((id): id is string => !!id)
       ;(managed.replayMergedIds ??= new Map()).set(first.messageId, ids)
@@ -8353,6 +9454,8 @@ export class SessionManager implements ISessionManager {
 
     // Process message (use setImmediate to allow current stack to clear)
     setImmediate(() => {
+      if (approvalReplay && (this.sessions.get(sessionId) !== managed || managed.pendingApprovalReplay !== approvalReplay
+        || (managed.stopEpoch ?? 0) !== approvalReplay.stopEpoch || managed.pendingPlanExecution?.failed)) return
       this.sendMessage(
         sessionId,
         next.message,
@@ -8361,6 +9464,9 @@ export class SessionManager implements ISessionManager {
         next.options,
         next.messageId
       ).catch(err => {
+        if (approvalReplay && this.sessions.get(sessionId) === managed && managed.pendingApprovalReplay === approvalReplay) {
+          this.recoverPendingApprovalSteers(managed)
+        }
         sessionLog.error('replay failed', {
           sessionId,
           messageId: next.messageId,
@@ -9359,7 +10465,17 @@ export class SessionManager implements ISessionManager {
     }
   }
 
-  private async processEvent(managed: ManagedSession, event: AgentEvent): Promise<void> {
+  private async processEvent(
+    managed: ManagedSession,
+    event: AgentEvent,
+    /**
+     * Turn context captured when the EMITTING send's execution started. The
+     * compaction completion/failure paths compare the record's correlation
+     * against THIS — a late event from an older turn can never authorize or
+     * cancel a fresh record, no matter what the live generation is now.
+     */
+    originatingTurn?: { generation: number; stopEpoch: number },
+  ): Promise<void> {
     const sessionId = managed.id
     const workspaceId = managed.workspace.id
     this.notifySessionActivity(sessionId)
@@ -9755,9 +10871,19 @@ export class SessionManager implements ISessionManager {
           managed.messages.push(compactionMessage)
 
           if (isManualCompactionComplete) {
-            if (managed.pendingPlanExecution) managed.pendingPlanExecution.awaitingCompaction = false
-            await markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
-            sessionLog.info(`Session ${sessionId}: manual compaction complete, marked pending plan ready`)
+            // Only the pending record's OWN compaction turn may ready it. The
+            // ORIGINATING context is the turn that emitted this event (the
+            // live generation/stopEpoch of the running compaction turn) —
+            // never a correlation derived from the stored record itself. The
+            // lifecycle lock re-checks it against the current managed record.
+            const marked = await this.markCompactionComplete(
+              sessionId,
+              managed.pendingPlanExecution?.executionId,
+              originatingTurn ?? { generation: managed.processingGeneration, stopEpoch: managed.stopEpoch ?? 0 },
+            )
+            if (!marked) {
+              sessionLog.info(`Session ${sessionId}: manual compaction complete did not ready a pending plan (missing, resolved, failed, or stale correlation)`)
+            }
           }
         }
 
@@ -10125,77 +11251,90 @@ export class SessionManager implements ISessionManager {
         // longer fires its own auto_retry (see processor.ts).
         sessionLog.info(`Source "${event.sourceSlug}" activated for session ${sessionId}, scheduling auto-retry`)
 
-        const modelOriginalMessage = event.originalMessage ?? ''
-        const persistedOriginal = managed
-          ? managed.messages.findLast(message => (
-              message.role === 'user'
-              && formatReferencesForModel(message.content, message.references ?? []) === modelOriginalMessage
-            )) ?? (managed.lastSentMessage !== undefined
-              ? managed.messages.findLast(message => (
-                  message.role === 'user' && message.content === managed.lastSentMessage
-                ))
-              : undefined)
+        // Authoritative continuation snapshot: the turn the SM itself is running.
+        // sendMessage records `lastSentMessage` (composed visible text of the turn,
+        // which is already free of the model-only reference block), `lastSentOptions`
+        // and `lastSentMessageIds` when it starts a send, so the interrupted request
+        // is resolved by identity, never by searching message history — an earlier
+        // unrelated request can no longer be resurrected through a content match or a
+        // fallback scan (review defect 1). Empty visible text is valid: a
+        // references-only turn continues with its live citations.
+        const snapshotReferences = managed && managed.lastSentMessage !== undefined
+          ? activationTurnReferences(managed.messages, managed.lastSentMessageIds, managed.lastSentOptions)
           : undefined
-        const references = persistedOriginal?.references
-        const strippedOriginalMessage = stripReferencesFromModelInput(modelOriginalMessage)
-        // References are normally the final model-input block. If another internal
-        // suffix (for example the interruption reminder) follows it, the strict
-        // stripper intentionally refuses to guess; fall back to the persisted raw
-        // user text so neither internal block can become a visible retry message.
-        const originalMessage = references?.length
-          && strippedOriginalMessage === modelOriginalMessage
-          ? persistedOriginal?.content ?? strippedOriginalMessage
-          : strippedOriginalMessage
+        const resendMessage = managed?.lastSentMessage !== undefined
+          ? stripActivationRetrySuffixes(managed.lastSentMessage)
+          : stripReferencesFromModelInput(event.originalMessage ?? '')
 
         this.sendEvent({
           type: 'source_activated',
           sessionId,
           sourceSlug: event.sourceSlug,
-          originalMessage,
+          originalMessage: resendMessage,
         }, workspaceId)
 
         if (!managed) break
         this.noteSuggestionUse(managed, { activatedSource: event.sourceSlug })
 
-        // The captured original message can be empty — an empty/attachment-only turn,
-        // or a per-turn capture that raced turn teardown. Fall back to the last
-        // persisted user message so an activation that force-aborted the turn still
-        // continues; skip only when there is genuinely nothing to resend (preserves
-        // the "no bogus empty resend" intent). See bugfix/session-continuation.
-        // The retry always uses the cleaned original: never the model-formatted
-        // text with its internal reference block or retry guidance.
-        // A references-only turn (empty text, live citations) still retries.
-        const resendMessage = originalMessage.trim()
-          ? originalMessage
-          : lastUserMessageContent(managed.messages)
-        if (!resendMessage.trim() && !references?.length) {
-          sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but no message to resend (empty capture, no prior user message); skipping auto-retry`)
+        // No turn identity (the SM never started a send for this session) and an
+        // empty capture: there is genuinely nothing authoritative to continue.
+        // Skipping is the correct behavior — the old fallback that scanned history
+        // for the last non-empty user message could resurrect an unrelated request.
+        if (managed.lastSentMessage === undefined) {
+          sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but no server-known turn to resend (no lastSentMessage identity); skipping auto-retry`)
+          break
+        }
+        if (!resendMessage.trim() && !snapshotReferences?.length) {
+          sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but the turn has no text and no references to resend; skipping auto-retry`)
           break
         }
 
         const { plain: messageWithSuffix, retry: retryMessage } = buildActivationRetryMessage(resendMessage, managed.turnSteers ?? [], event.sourceSlug)
         const messageCountAtSchedule = managed.messages.length
+        const scheduledGeneration = managed.processingGeneration
+        const scheduledStopEpoch = managed.stopEpoch ?? 0
 
         // Stash the retry payload so a duplicate sendMessage from a legacy renderer
         // (mixed-version rollout: new server + v0.9.5 Electron client) gets deduped.
-        // 2s window covers WS latency tail on flaky mobile / proxy links.
-        managed.autoRetryPending = {
+        // The slot carries BOTH the plain dedupe key and the steer-carrying retry
+        // text plus the turn's persisted (already validated) references, so the
+        // legacy copy inherits the same server-owned snapshot. 2s window covers WS
+        // latency tail on flaky mobile / proxy links.
+        const slotReferences = snapshotReferences?.length ? [...snapshotReferences] : undefined
+        const slot: NonNullable<ManagedSession['autoRetryPending']> = {
           content: messageWithSuffix,
+          retryContent: retryMessage,
           deadlineMs: Date.now() + 2000,
-          ...(references?.length ? { references: [...references] } : {}),
+          ...(slotReferences ? { references: slotReferences } : {}),
           committed: false,
+          scheduledGeneration: managed.processingGeneration,
+          originalContent: resendMessage,
+          sourceSlug: event.sourceSlug,
         }
+        managed.autoRetryPending = slot
 
         if (managed.autoRetryTimer) clearTimeout(managed.autoRetryTimer)
         managed.autoRetryTimer = setTimeout(() => {
           const current = this.sessions.get(sessionId)
-          if (!current) return
+          if (current !== managed || current.autoRetryPending !== slot) return
           current.autoRetryTimer = undefined
 
-          // If a user follow-up arrived in the 100ms window, skip — they preempted us.
-          if (current.messages.length > messageCountAtSchedule) {
-            sessionLog.info(`Auto-retry skipped for ${sessionId}: follow-up message arrived first`)
-            current.autoRetryPending = undefined
+          // Superseded while the 100ms window was open: a user follow-up arrived
+          // (message count grew), a new turn started (generation moved) or the user
+          // stopped the session (stop epoch moved). A stale retry never fires.
+          const acceptedIds = new Set([
+            ...(slot.ownedSteers ?? []).flatMap(steer => steer.messageId ? [steer.messageId] : []),
+            ...(current.acceptedSteers?.keys() ?? []),
+          ])
+          if (
+            current.messages.slice(messageCountAtSchedule).some(message => !acceptedIds.has(message.id))
+            || current.processingGeneration !== scheduledGeneration
+            || (current.stopEpoch ?? 0) !== scheduledStopEpoch
+            || current.stopRequested
+          ) {
+            sessionLog.info(`Auto-retry skipped for ${sessionId}: superseded (follow-up, Stop or new turn arrived first)`)
+            this.recoverActivationSteers(current, slot)
+            if (!current.isProcessing && current.messageQueue.length > 0) this.processNextQueuedMessage(sessionId)
             return
           }
 
@@ -10203,11 +11342,33 @@ export class SessionManager implements ISessionManager {
           // so a legacy renderer's duplicate RPC arriving ~50ms later gets dropped.
           // The pending slot is cleared by the deadline check in sendMessage, by the
           // next matching sendMessage that drops as a duplicate, or by session deletion.
-          // Hidden: the user already sees their message and the activation; the retry only
-          // restarts the turn with the new tools (and runs no per-message decision points).
+          // sendMessage captures any late accepted payloads and keeps their
+          // original bubbles recoverable until the retry's first backend event.
           current.pendingActivationResend = retryMessage
-          this.sendMessage(sessionId, retryMessage, undefined, undefined, references?.length ? { hidden: true, references } : { hidden: true }).catch(err => {
+          this.sendMessage(
+            sessionId,
+            retryMessage,
+            undefined,
+            undefined,
+            { hidden: true },
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            // Server-owned continuation identity: matched by object identity against
+            // the live dedup slot inside sendMessage. Not a wire-expressible field —
+            // the SEND_MESSAGE RPC handler never forwards this parameter, so a
+            // renderer payload cannot forge persisted-reference reuse.
+            { activationReferences: current.autoRetryPending?.references },
+          ).catch(async err => {
             if (current.pendingActivationResend === retryMessage) current.pendingActivationResend = undefined
+            if (this.sessions.get(sessionId) !== current) return
+            this.recoverActivationSteers(current, slot)
+            if (slot.deliveryMessageId && current.lastSentMessageIds?.includes(slot.deliveryMessageId) && current.isProcessing) {
+              await this.onProcessingStopped(sessionId, 'error')
+            } else if (!current.isProcessing && current.messageQueue.length > 0) {
+              this.processNextQueuedMessage(sessionId)
+            }
             sessionLog.error(`Auto-retry sendMessage failed for ${sessionId}:`, err)
           })
         }, 100)
@@ -10238,11 +11399,45 @@ export class SessionManager implements ISessionManager {
         break
       }
 
-      case 'compaction_failed':
-        delete managed.pendingPlanExecution
-        await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
-        sessionLog.info(`Session ${sessionId}: compaction failed, cleared pending plan execution`)
+      case 'compaction_failed': {
+        // An automatic (overflow) compaction failure never owns the Accept &
+        // Compact pending record — only the manual command's failure does.
+        if (event.compactionTrigger === 'automatic') {
+          sessionLog.info(`Session ${sessionId}: automatic compaction failed (pending plan untouched)`)
+          break
+        }
+        const record = managed.pendingPlanExecution
+        if (!record || record.failed || record.executionDispatched) {
+          sessionLog.info(`Session ${sessionId}: compaction failed with no correlated pending plan; nothing to cancel`)
+          break
+        }
+        // Correlation: the ORIGINATING context is the turn that emitted this
+        // failure (the live generation/stopEpoch). Only a failure belonging to
+        // the record's own compaction turn may cancel it — a late failure from
+        // an older or foreign turn (superseded by a Stop or a new turn, whose
+        // own events/paths decide the record) must not. Records without a
+        // recorded compaction turn (the /compact never started) have no
+        // failure to correlate: leave them to their own turn's events or
+        // reload reconciliation.
+        if (!record.awaitingCompaction || !record.compactionTurn) break
+        const failingTurn = originatingTurn ?? { generation: managed.processingGeneration, stopEpoch: managed.stopEpoch ?? 0 }
+        if (
+          record.compactionTurn.generation !== failingTurn.generation
+          || record.compactionTurn.stopEpoch !== failingTurn.stopEpoch
+        ) {
+          sessionLog.info(`Session ${sessionId}: compaction failure is stale (emitting turn is not the record's compaction turn); pending plan untouched`)
+          break
+        }
+        await this.withSessionLifecycleLock(sessionId, async () => {
+          // Re-check the LIVE session after the lock wait: a deleteSession that
+          // held the lock (its force-abort can emit this very event) must not
+          // have its files recreated by a detached cancellation persisting.
+          if (this.sessions.get(sessionId) !== managed || managed.pendingPlanExecution !== record || record.failed) return
+          await this.cancelPendingPlanExecution(managed, record)
+        })
+        sessionLog.info(`Session ${sessionId}: compaction failed, cancelled pending plan execution and restored draft`)
         break
+      }
 
       case 'complete':
         // Complete event from CraftAgent - accumulate usage from this turn
@@ -10308,6 +11503,7 @@ export class SessionManager implements ISessionManager {
 
       case 'steer_undelivered':
         this.recoverUndeliveredSteer(managed, event)
+        await this.flushSession(managed.id)
         break
 
       // Note: working_directory_changed is user-initiated only (via updateWorkingDirectory),

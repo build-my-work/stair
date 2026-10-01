@@ -4,7 +4,7 @@ import {
   serializeEnvelope,
   deserializeEnvelope,
 } from '@craft-agent/server-core/transport'
-import type { MessageEnvelope } from '@craft-agent/shared/protocol'
+import { PROTOCOL_VERSION, type MessageEnvelope } from '@craft-agent/shared/protocol'
 
 // ---------------------------------------------------------------------------
 // Mock WS server helpers
@@ -57,7 +57,7 @@ function createMockServer(opts?: {
             id: crypto.randomUUID(),
             type: 'handshake_ack',
             clientId: 'test-client-001',
-            protocolVersion: '1.0',
+            protocolVersion: PROTOCOL_VERSION,
           }
           ws.send(serializeEnvelope(ack))
           return
@@ -118,7 +118,7 @@ function createErrorServer(): MockServer {
             id: crypto.randomUUID(),
             type: 'handshake_ack',
             clientId: 'test-client-err',
-            protocolVersion: '1.0',
+            protocolVersion: PROTOCOL_VERSION,
           }
           ws.send(serializeEnvelope(ack))
           return
@@ -250,7 +250,7 @@ describe('CliRpcClient', () => {
               id: crypto.randomUUID(),
               type: 'handshake_ack',
               clientId: 'silent-client',
-              protocolVersion: '1.0',
+              protocolVersion: PROTOCOL_VERSION,
             }
             ws.send(serializeEnvelope(ack))
           }
@@ -330,7 +330,7 @@ describe('CliRpcClient', () => {
               id: crypto.randomUUID(),
               type: 'handshake_ack',
               clientId: 'destroy-test',
-              protocolVersion: '1.0',
+              protocolVersion: PROTOCOL_VERSION,
             }))
           }
         },

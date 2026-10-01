@@ -1053,7 +1053,7 @@ describe('PiEventAdapter', () => {
       } as any));
 
       expect(events).toHaveLength(2);
-      expect(events[0]).toEqual({ type: 'compaction_failed' });
+      expect(events[0]).toEqual({ type: 'compaction_failed', compactionTrigger: 'automatic' });
       expect(events[1]).toMatchObject({
         type: 'error',
         message: 'Context compaction failed: Out of memory',
@@ -1067,7 +1067,7 @@ describe('PiEventAdapter', () => {
         aborted: true,
       } as any));
 
-      expect(events).toEqual([{ type: 'compaction_failed' }]);
+      expect(events).toEqual([{ type: 'compaction_failed', compactionTrigger: 'automatic' }]);
     });
 
     it('should emit retry/backoff with reason and delay for auto_retry_start', () => {
@@ -1547,7 +1547,7 @@ describe('PiEventAdapter', () => {
       } as any));
 
       expect(failureEvents).toEqual([
-        { type: 'compaction_failed' },
+        { type: 'compaction_failed', compactionTrigger: 'automatic' },
         { type: 'error', message: 'Context compaction failed: Out of memory during summary' },
         { type: 'complete' },
       ]);
@@ -1621,7 +1621,7 @@ describe('PiEventAdapter', () => {
       } as any));
 
       expect(events).toEqual([
-        { type: 'compaction_failed' },
+        { type: 'compaction_failed', compactionTrigger: 'automatic' },
         { type: 'error', message: 'Auto-compaction hit a transient error. Try /compact manually.' },
         { type: 'complete' },
       ]);

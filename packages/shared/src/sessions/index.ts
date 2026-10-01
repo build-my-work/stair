@@ -18,6 +18,7 @@ export type {
   SessionMetadata,
   SessionHeader,
   SessionPersistentField,
+  PendingPlanExecutionRecord,
 } from './types.ts';
 
 // Field constants
@@ -39,6 +40,7 @@ export {
   createSession,
   getOrCreateSessionById,
   saveSession,
+  saveSessionStrict,
   loadSession,
   listSessions,
   deleteSession,

@@ -1,121 +1,28 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { expect, it } from 'bun:test'
+import { copyFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import type { Reference } from '@craft-agent/core/types'
-import type { StoredSession } from '../types.ts'
-import { createWorkspaceAtPath } from '../../workspaces/storage.ts'
-import {
-  clearPendingPlanExecution,
-  getPendingPlanExecution,
-  getSessionFilePath,
-  markCompactionComplete,
-  markPendingPlanExecutionDispatched,
-  saveSession,
-  setPendingPlanExecution,
-} from '../storage.ts'
+import { join, resolve } from 'node:path'
 
-function makeTmpDir(): string {
-  const dir = join(tmpdir(), `pending-plan-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
-  mkdirSync(dir, { recursive: true })
-  return dir
-}
-
-function makeStoredSession(workspaceRootPath: string): StoredSession {
-  return {
-    id: 'session-1',
-    workspaceRootPath,
-    projectId: 'proj_default',
-    createdAt: 1000,
-    lastUsedAt: 1000,
-    messages: [],
-    tokenUsage: {
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      contextTokens: 0,
-      costUsd: 0,
-    },
-  } as StoredSession
-}
-
-describe('pending plan execution persistence', () => {
-  let workspaceRoot: string
-  let projectId: string
-
-  beforeEach(async () => {
-    workspaceRoot = makeTmpDir()
-    projectId = createWorkspaceAtPath(workspaceRoot, 'Pending plan').defaultProjectId
-    const session = makeStoredSession(workspaceRoot)
-    session.projectId = projectId
-    await saveSession(session)
-  })
-
-  afterEach(() => {
-    if (existsSync(workspaceRoot)) {
-      rmSync(workspaceRoot, { recursive: true, force: true })
-    }
-  })
-
-  it('defaults executionDispatched to false and persists transitions', async () => {
-    const reference: Reference = {
-      version: 1,
-      kind: 'chat-message',
-      projectId,
-      sessionId: 'source-session',
-      messageId: 'source-message',
-      role: 'assistant',
-      quote: 'selected text',
-      locator: {
-        type: 'text-quote',
-        exact: 'selected text',
-        start: 0,
-        end: 13,
-      },
-    }
-    await setPendingPlanExecution(
-      workspaceRoot,
-      'session-1',
-      '/tmp/plan.md',
-      'draft snapshot',
-      [reference],
+it('runs pending-plan persistence and draft consumption in an isolated profile', () => {
+  // Source tests share a module cache within each workspace. A subprocess
+  // prevents another file's cached CONFIG_DIR from selecting a real profile.
+  const configDir = mkdtempSync(join(tmpdir(), 'pending-plan-test-profile-'))
+  try {
+    copyFileSync(
+      resolve(import.meta.dir, '../../../../../apps/electron/resources/config-defaults.json'),
+      join(configDir, 'config-defaults.json'),
     )
-
-    expect(getPendingPlanExecution(workspaceRoot, 'session-1')).toEqual({
-      planPath: '/tmp/plan.md',
-      draftInputSnapshot: 'draft snapshot',
-      draftReferencesSnapshot: [reference],
-      awaitingCompaction: true,
-      executionDispatched: false,
+    const child = Bun.spawnSync([
+      process.execPath,
+      'test',
+      join(import.meta.dir, 'pending-plan-execution.fixture.ts'),
+    ], {
+      env: { ...process.env, CRAFT_CONFIG_DIR: configDir },
+      stdout: 'inherit',
+      stderr: 'inherit',
     })
-
-    expect(await markPendingPlanExecutionDispatched(workspaceRoot, 'session-1')).toBe(false)
-    await markCompactionComplete(workspaceRoot, 'session-1')
-    expect(await markPendingPlanExecutionDispatched(workspaceRoot, 'session-1')).toBe(true)
-    expect(await markPendingPlanExecutionDispatched(workspaceRoot, 'session-1')).toBe(false)
-
-    expect(getPendingPlanExecution(workspaceRoot, 'session-1')).toEqual({
-      planPath: '/tmp/plan.md',
-      draftInputSnapshot: 'draft snapshot',
-      draftReferencesSnapshot: [reference],
-      awaitingCompaction: false,
-      executionDispatched: true,
-    })
-  })
-
-  it('clears a pending plan, and leaves the file alone when nothing is pending', async () => {
-    const path = getSessionFilePath(workspaceRoot, 'session-1')
-    const untouched = statSync(path).mtimeMs
-    await new Promise(resolve => setTimeout(resolve, 15))
-    // Runs on every user message: no rewrite (concurrent sends used to race on the .tmp file).
-    await Promise.all([
-      clearPendingPlanExecution(workspaceRoot, 'session-1'),
-      clearPendingPlanExecution(workspaceRoot, 'session-1'),
-    ])
-    expect(statSync(path).mtimeMs).toBe(untouched)
-
-    await setPendingPlanExecution(workspaceRoot, 'session-1', '/tmp/plan.md')
-    await clearPendingPlanExecution(workspaceRoot, 'session-1')
-    expect(getPendingPlanExecution(workspaceRoot, 'session-1')).toBeNull()
-  })
-})
+    expect(child.exitCode).toBe(0)
+  } finally {
+    rmSync(configDir, { recursive: true, force: true })
+  }
+}, 30_000)

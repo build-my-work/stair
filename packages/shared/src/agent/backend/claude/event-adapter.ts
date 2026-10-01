@@ -578,7 +578,7 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
       if (this.manualCompactionBoundarySeen && msg.subtype === 'success' && !msg.is_error) {
         events.push({ type: 'info', message: 'Compacted Conversation', compactionTrigger: 'manual' });
       } else {
-        events.push({ type: 'compaction_failed' });
+        events.push({ type: 'compaction_failed', compactionTrigger: 'manual' });
       }
     }
 

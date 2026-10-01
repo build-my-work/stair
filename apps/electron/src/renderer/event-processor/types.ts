@@ -618,7 +618,7 @@ export type Effect =
   | { type: 'generate_title'; sessionId: string; userMessage: string }
   | { type: 'permission_mode_changed'; sessionId: string; permissionMode: PermissionMode; previousPermissionMode?: PermissionMode; transitionDisplay?: string; modeVersion?: number; changedAt?: string; changedBy?: 'user' | 'system' | 'restore' | 'automation' | 'unknown' }
   | { type: 'coding_mode_changed'; sessionId: string; codingMode: boolean }
-  | { type: 'restore_input'; text: string; references?: Reference[]; attachments?: DraftAttachmentRef[]; queuedRestoreId?: string; messageIds?: string[] }
+  | { type: 'restore_input'; text: string; references?: Reference[]; attachments?: DraftAttachmentRef[]; queuedRestoreId?: string; messageIds?: string[]; planExecutionId?: string }
   | { type: 'toast_error'; message: string }
 
 /**

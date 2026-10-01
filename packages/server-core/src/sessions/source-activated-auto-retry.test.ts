@@ -121,7 +121,9 @@ describe('source_activated auto-retry', () => {
 
   it('basic re-send — fires sendMessage with "[<slug> activated]" suffix', async () => {
     const sessionId = 'basic-resend'
-    buildSession(sessionId)
+    const managed = buildSession(sessionId)
+    // Production turn identity: sendMessage recorded the running turn's payload.
+    managed.lastSentMessage = 'list my repos'
     const calls = spyOnSendMessage(sessionId)
 
     await fireSourceActivated(sessionId, 'github', 'list my repos')
@@ -162,6 +164,7 @@ describe('source_activated auto-retry', () => {
       references: [reference],
     })
     target.lastSentMessage = 'explain this'
+    target.lastSentMessageIds = ['original-user-message']
     target.isProcessing = true
     const events: Array<{ type: string; originalMessage?: string }> = []
     sm.setEventSink((_channel, _target, event) => events.push(event as never))
@@ -217,6 +220,7 @@ describe('source_activated auto-retry', () => {
       references: [reference],
     })
     target.lastSentMessage = 'explain this'
+    target.lastSentMessageIds = ['original-user-message']
     target.isProcessing = true
 
     await fireSourceActivated(
@@ -236,7 +240,8 @@ describe('source_activated auto-retry', () => {
 
   it('chained activations — produces two retries with different suffixes', async () => {
     const sessionId = 'chained'
-    buildSession(sessionId)
+    const managed = buildSession(sessionId)
+    managed.lastSentMessage = 'find issues'
     const calls = spyOnSendMessage(sessionId)
 
     await fireSourceActivated(sessionId, 'github', 'find issues')
@@ -265,16 +270,19 @@ describe('source_activated auto-retry', () => {
     expect(managed.autoRetryTimer).toBeUndefined()
   })
 
-  it('empty originalMessage with a prior user message — falls back to the last user message', async () => {
-    // Regression for bugfix/session-continuation: when the per-turn capture comes
-    // back empty (empty/attachment-only turn, or a capture that raced turn teardown)
-    // but the user's message is already in history, the activation must still continue
-    // by resending the last user message — not silently strand the session.
+  it('no server-known turn identity — skips instead of searching history', async () => {
+    // The old fallback (resend the last non-empty user message when the capture
+    // came back empty) is what let a references-only activation resurrect an
+    // unrelated earlier destructive request. Continuation now resolves strictly
+    // from the turn identity sendMessage recorded (`lastSentMessage`); with no
+    // identity there is no authoritative request to continue, so the retry is
+    // skipped. A turn that DID run always has the identity — including empty
+    // references-only turns (see activation-continuation.test.ts).
     const sessionId = 'empty-with-history'
     const managed = buildSession(sessionId)
     const calls = spyOnSendMessage(sessionId)
 
-    // The current turn's user message is pushed to history at turn start.
+    // History pushed manually without a server-side send: no turn identity.
     managed.messages.push({
       id: 'u1',
       role: 'user',
@@ -285,7 +293,7 @@ describe('source_activated auto-retry', () => {
     await fireSourceActivated(sessionId, 'craft-my-space', '')
     await new Promise(r => setTimeout(r, 150))
 
-    expect(calls).toEqual(['summarize my latest doc\n\n[craft-my-space activated]'])
+    expect(calls).toEqual([])
   })
 
   it('legitimate user message preempts retry — skipped when follow-up arrived', async () => {
@@ -371,6 +379,7 @@ describe('source_activated auto-retry', () => {
   it('timer cancelled on session delete — no auto-retry fires after deletion', async () => {
     const sessionId = 'deleted-mid-window'
     const managed = buildSession(sessionId)
+    managed.lastSentMessage = 'do the thing'
     const calls = spyOnSendMessage(sessionId)
 
     await fireSourceActivated(sessionId, 'github', 'do the thing')

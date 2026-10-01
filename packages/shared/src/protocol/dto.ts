@@ -586,11 +586,14 @@ export type SessionEvent =
   | { type: 'auth_request'; sessionId: string; message: Message; request: SharedAuthRequest }
   | { type: 'auth_completed'; sessionId: string; requestId: string; success: boolean; cancelled?: boolean; error?: string }
   | { type: 'source_activated'; sessionId: string; sourceSlug: string; originalMessage: string }
+  | { type: 'compaction_failed'; sessionId: string; /** Scoped recovery identity for the ACK clear. */ executionId?: string; /** Durable idempotency key of the restore (renderer flushes local edits, then commits one atomic restore under this id). */ restoreId?: string; /** Consumed draft snapshot to restore into the input (merge semantics; empty text with references is valid). */ text?: string; references?: import('@craft-agent/core').Reference[] }
   | { type: 'usage_update'; sessionId: string; tokenUsage: Pick<NonNullable<Session['tokenUsage']>, 'inputTokens' | 'contextWindow' | 'contextUsage'> }
   | { type: 'message_annotations_updated'; sessionId: string; messageId: string; annotations: AnnotationV1[] }
   | { type: 'working_directory_error'; sessionId: string; error: string }
 
 export interface SendMessageOptions {
+  /** Accept & Compact may start only the exact record observed by this input. */
+  planExecutionId?: string
   skillSlugs?: string[]
   badges?: ContentBadge[]
   optimisticMessageId?: string
@@ -646,10 +649,28 @@ export type SessionCommand =
       planPath: string
       draftInputSnapshot?: string
       draftReferencesSnapshot?: Reference[]
+      /** Renderer-composed (localized) approval text, preserved as ordinary user text. */
+      approvalText?: string
+      approvalBadges?: ContentBadge[]
     }
   | { type: 'markCompactionComplete' }
+  /** LEGACY-ONLY claim path (old renderer claim-then-send); identified records always dispatch server-side. */
   | { type: 'markPendingPlanExecutionDispatched' }
-  | { type: 'clearPendingPlanExecution' }
+  | { type: 'clearPendingPlanExecution'; executionId?: string }
+  /**
+   * Atomic server-side draft consumption for the accepted plan: the stored
+   * draft's matching components are cleared and the exact receipt recorded in
+   * the same drafts-file write. The client mirrors the returned result only
+   * for components it did not clear locally.
+   */
+  | { type: 'consumePendingPlanDraft'; executionId: string; local?: { content: import('../config/draft-content.ts').DraftContent; mutation: import('../config/draft-content.ts').DraftContentMutation } }
+  /**
+   * Server-owned durable dispatch of an accepted plan: atomic
+   * readiness+claim+acceptance in one host critical section. `executionId` is
+   * the identity the caller actually observed — a no-identity or mismatched
+   * command on an identified record is stale and rejected.
+   */
+  | { type: 'dispatchPendingPlanExecution'; executionId?: string }
   | { type: 'addAnnotation'; messageId: string; annotation: AnnotationV1 }
   | { type: 'removeAnnotation'; messageId: string; annotationId: string }
   | { type: 'updateAnnotation'; messageId: string; annotationId: string; patch: Partial<AnnotationV1> }

@@ -22,6 +22,7 @@
     "./auth/types": "./src/auth/types.ts",
     "./config": "./src/config/index.ts",
     "./config/paths": "./src/config/paths.ts",
+    "./config/draft-content": "./src/config/draft-content.ts",
     "./docs": "./src/docs/index.ts",
     "./docs/doc-links": "./src/docs/doc-links.ts",
     "./config/types": "./src/config/types.ts",
@@ -78,7 +79,8 @@
     "./pr-watch": "./src/pr-watch/index.ts",
     "./tasks": "./src/tasks/index.ts",
     "./i18n": "./src/i18n/index.ts",
-    "./resources": "./src/resources/index.ts"
+    "./resources": "./src/resources/index.ts",
+    "./sessions/plan-approval": "./src/sessions/plan-approval.ts"
   },
   "dependencies": {
     "@craft-agent/core": "workspace:*",

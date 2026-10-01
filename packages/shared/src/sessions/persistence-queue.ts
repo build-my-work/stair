@@ -55,10 +55,18 @@ function mergeHeaderWithExternalMetadata(localHeader: SessionHeader, diskHeader:
  * IMPORTANT: Writes are serialized per-session to prevent race conditions
  * when rapid successive flushes (e.g., clearSessionForRecovery + onSdkSessionIdUpdate)
  * would otherwise write to the same .tmp file concurrently.
+ *
+ * Error policy is deliberate: ordinary debounced writes are best-effort
+ * (logged, never rejected — a transient IO failure must not take down event
+ * processing), but callers that depend on durability (pending-plan claim and
+ * handoff) flush with `{ strict: true }`, which surfaces the failure of the
+ * session's last write so the caller can keep its state retryable instead of
+ * reporting success that disk never saw.
  */
 class SessionPersistenceQueue {
   private pending = new Map<string, PendingWrite>()
   private writeInProgress = new Map<string, Promise<void>>()
+  private writeErrors = new Map<string, unknown>()
   private lastWrittenHeaderSignature = new Map<string, string>()
   private debounceMs: number
 
@@ -86,13 +94,45 @@ class SessionPersistenceQueue {
   /**
    * Write a session to disk immediately in JSONL format.
    * Uses atomic write (write-to-temp-then-rename) to prevent corruption on crash.
+   *
+   * All writes for one session — debounced or strict — are serialized through
+   * `writeInProgress` so nothing interleaves on the shared .tmp file, even when
+   * a strict flush races the debounce timer taking the pending entry.
    */
-  private async write(sessionId: string): Promise<void> {
+  private async write(sessionId: string, strict = false): Promise<void> {
     const entry = this.pending.get(sessionId)
     if (!entry) return
 
     this.pending.delete(sessionId)
+    clearTimeout(entry.timer)
 
+    const previous = this.writeInProgress.get(sessionId)
+    const run = (previous ? previous.catch(() => {}) : Promise.resolve())
+      .then(() => this.performWrite(sessionId, entry))
+    this.writeInProgress.set(sessionId, run)
+    try {
+      await run
+    } catch (error) {
+      if (!strict) {
+        console.error(`[PersistenceQueue] Failed to write session ${sessionId}:`, error)
+        return
+      }
+      throw error
+    } finally {
+      if (this.writeInProgress.get(sessionId) === run) {
+        this.writeInProgress.delete(sessionId)
+      }
+    }
+  }
+
+  private async performWrite(sessionId: string, entry: PendingWrite): Promise<void> {
+    // Signature as it was before this attempt — restored on failure so a
+    // failed write never makes the NEXT write mis-detect external metadata
+    // changes against a signature that never reached disk.
+    const priorSignature = this.lastWrittenHeaderSignature.get(sessionId)
+    // Fixed temp name: writes for one session are serialized through
+    // `writeInProgress`, so no two writers ever share this path.
+    let tmpFile: string | undefined
     try {
       const { data } = entry
       ensureSessionsDir(data.workspaceRootPath)
@@ -119,7 +159,7 @@ class SessionPersistenceQueue {
 
       // Queue writes should never clobber session metadata changed externally
       // (watcher edits, direct header edits, other instances), but they must
-      // still persist local metadata updates (e.g. generated title).
+      // still persist local metadata updates (e.g., generated title).
       //
       // Preserve disk metadata only when disk diverged from our last written
       // signature, which indicates an external mutation.
@@ -143,25 +183,44 @@ class SessionPersistenceQueue {
         ...persistableMessages.map(m => makeSessionPathPortable(JSON.stringify(m), sessionDir)),
       ]
 
-      // Atomic write: write to .tmp then rename over the real file.
-      // If the process crashes mid-write, only the .tmp is corrupted —
-      // the original session.jsonl remains intact.
-      //
       // Update signature BEFORE the write so that fs.watch events fired
-      // during unlink/rename are correctly identified as self-writes.
+      // during the rename are correctly identified as self-writes.
       // Without this, onSessionMetadataChange sees the stale signature
-      // and reverts in-memory metadata on idle sessions.
+      // and reverts in-memory metadata on idle sessions. Rolled back in the
+      // catch below when the write never happened.
       const finalSignature = getHeaderMetadataSignature(header)
       this.lastWrittenHeaderSignature.set(sessionId, finalSignature)
 
-      const tmpFile = filePath + '.tmp'
+      // Atomic replacement: write the temp file, then `rename` over the
+      // target — rename REPLACES the destination atomically (libuv uses
+      // MoveFileEx(REPLACE_EXISTING) on Windows), so a failure at any point
+      // leaves the previous valid session.jsonl untouched. The old
+      // unlink-first dance destroyed the prior file when the rename failed,
+      // which the durable atomic-handoff contract cannot tolerate.
+      tmpFile = filePath + '.tmp'
+
       await writeFile(tmpFile, lines.join('\n') + '\n', 'utf-8')
-      // On Windows, rename fails if target exists. Delete first for cross-platform compatibility.
-      try { await unlink(filePath) } catch { /* ignore if doesn't exist */ }
       await rename(tmpFile, filePath)
+      tmpFile = undefined
+      this.writeErrors.delete(sessionId)
       debug(`[PersistenceQueue] Wrote session ${sessionId}`)
     } catch (error) {
-      console.error(`[PersistenceQueue] Failed to write session ${sessionId}:`, error)
+      // Roll the self-write signature back: this attempt never reached disk.
+      if (priorSignature === undefined) {
+        this.lastWrittenHeaderSignature.delete(sessionId)
+      } else {
+        this.lastWrittenHeaderSignature.set(sessionId, priorSignature)
+      }
+      if (tmpFile !== undefined) {
+        try { await unlink(tmpFile) } catch { /* temp already gone */ }
+      }
+      // Recorded even for best-effort callers: a strict flush that chained
+      // behind this write (or arrived while it was in flight) must learn that
+      // the session's newest persisted state is not on disk. STICKY until a
+      // write actually succeeds or the session is explicitly cancelled —
+      // never deleted merely because it was reported.
+      this.writeErrors.set(sessionId, error)
+      throw error
     }
   }
 
@@ -169,32 +228,50 @@ class SessionPersistenceQueue {
    * Immediately flush a specific session if pending.
    * Waits for any in-progress write to complete before starting a new one
    * to prevent race conditions on the shared .tmp file.
+   *
+   * `{ strict: true }` rejects when the session's last known write failed —
+   * including a failure of an in-flight best-effort write that had already
+   * taken the pending entry — so durability-dependent callers never mistake a
+   * swallowed IO error for success. Plain flush keeps the historical
+   * best-effort contract.
    */
-  async flush(sessionId: string): Promise<void> {
+  async flush(sessionId: string, options?: { strict?: boolean }): Promise<void> {
+    const strict = options?.strict === true
     const entry = this.pending.get(sessionId)
     if (entry) {
       clearTimeout(entry.timer)
-
-      // Wait for any in-progress write to complete first
+      await this.write(sessionId, strict)
+    } else {
+      // No pending entry: our data may already be in the write that is in
+      // progress — await it before judging durability. A plain flush keeps the
+      // documented no-reject contract even when that in-flight write fails
+      // (the failure stays recorded for strict callers).
       const inProgress = this.writeInProgress.get(sessionId)
       if (inProgress) {
-        await inProgress
+        await (strict ? inProgress : inProgress.catch(() => {}))
       }
+    }
+    if (strict) await this.assertLastWriteSucceeded(sessionId)
+  }
 
-      // Start new write and track it
-      const writePromise = this.write(sessionId)
-      this.writeInProgress.set(sessionId, writePromise)
-
-      try {
-        await writePromise
-      } finally {
-        this.writeInProgress.delete(sessionId)
-      }
+  /**
+   * The last write failure is STICKY: it keeps rejecting strict flushes until
+   * a write actually succeeds (performWrite clears it) or the session's queue
+   * state is explicitly cancelled. Reporting never consumes it — otherwise a
+   * caller that checked durability twice would see a false success the second
+   * time while disk still never received the data.
+   */
+  private async assertLastWriteSucceeded(sessionId: string): Promise<void> {
+    const failure = this.writeErrors.get(sessionId)
+    if (failure !== undefined) {
+      throw failure
     }
   }
 
   /**
    * Cancel a pending write for a session (e.g., when deleting the session).
+   * Explicit cancellation also drops the sticky failure marker: the session's
+   * queue state is being discarded, so there is nothing left to report.
    */
   cancel(sessionId: string): void {
     const entry = this.pending.get(sessionId)
@@ -203,6 +280,7 @@ class SessionPersistenceQueue {
       this.pending.delete(sessionId)
       debug(`[PersistenceQueue] Cancelled pending write for session ${sessionId}`)
     }
+    this.writeErrors.delete(sessionId)
     this.lastWrittenHeaderSignature.delete(sessionId)
   }
 

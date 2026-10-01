@@ -279,13 +279,14 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     ctx,
     sessionId: string,
     content: Pick<import('@craft-agent/shared/config').SessionDraft, 'text' | 'attachments'>,
+    mutation?: import('@craft-agent/shared/config').DraftContentMutation,
   ) => {
     assertDraftSessionAccess(
       ctx.workspaceId,
       deps.sessionManager.getSessions(ctx.workspaceId ?? undefined),
       sessionId,
     )
-    return setSessionDraftContent(sessionId, content)
+    return setSessionDraftContent(sessionId, content, mutation)
   })
 
   server.handle(RPC_CHANNELS.drafts.UPDATE_REFERENCES, async (
@@ -349,13 +350,21 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     input: {
       restoreId: string
       draft: import('@craft-agent/shared/config').SessionDraft
+      local?: {
+        content: Pick<import('@craft-agent/shared/config').SessionDraft, 'text' | 'attachments'>
+        mutation: import('@craft-agent/shared/config').DraftContentMutation
+      }
+      planExecutionId?: string
     },
   ) => {
     const sessions = deps.sessionManager.getSessions(ctx.workspaceId ?? undefined)
     assertDraftSessionAccess(ctx.workspaceId, sessions, sessionId)
     const projectId = sessions.find(session => session.id === sessionId)?.projectId
     if (!projectId) throw new Error('DRAFT_PROJECT_REQUIRED: Session has no Project')
-    return restoreSessionDraftAtomic(sessionId, projectId, input.restoreId, input.draft)
+    if (input.planExecutionId) {
+      return deps.sessionManager.restorePendingPlanDraft(sessionId, input.planExecutionId, input.restoreId, input.local)
+    }
+    return restoreSessionDraftAtomic(sessionId, projectId, input.restoreId, input.draft, input.local)
   })
 
   // Delete draft for a session
@@ -380,6 +389,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     const sessionIds = new Set(sessions.map(session => session.id))
     return {
       drafts,
+      revisions: Object.fromEntries(Object.entries(state.revisions ?? {}).filter(([sessionId]) => sessionIds.has(sessionId))),
       appliedRestoreIds: Object.fromEntries(
         Object.entries(state.appliedRestoreIds)
           .filter(([sessionId]) => sessionIds.has(sessionId)),

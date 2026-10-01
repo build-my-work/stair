@@ -88,6 +88,51 @@ export type SessionPersistentField = typeof SESSION_PERSISTENT_FIELDS[number];
 export type SessionStatus = string;
 
 /**
+ * Pending plan execution record — the durable state of an "Accept & Compact".
+ *
+ * Ownership contract: the record carries a stable `executionId` minted at set
+ * time; claim/clear/compaction transitions pass and re-check that id inside
+ * the storage transaction so a stale action can never affect a *replaced*
+ * record. `approvalMessageId` pairs the durable dispatch claim with the queued
+ * approval user message persisted atomically in the same session-file write;
+ * reload reconciliation uses those ids, never content or timestamp guessing.
+ * A `failed` record is terminal and non-executable: its snapshot is kept as a
+ * durable restore outbox until the consumed draft has been restored.
+ */
+export interface PendingPlanExecutionRecord {
+  /** Path to the plan file to execute */
+  planPath: string;
+  /** Optional snapshot of draft input captured at accept time */
+  draftInputSnapshot?: string;
+  /** Structured draft references captured with the input snapshot. */
+  draftReferencesSnapshot?: Reference[];
+  /** Server acceptance after fresh reference validation; absent records must be revalidated. */
+  referencesValidated?: boolean;
+  /** Whether we're still waiting for compaction to complete */
+  awaitingCompaction: boolean;
+  /** Whether execution has already been dispatched (durable host handoff). */
+  executionDispatched?: boolean;
+  /** Stable identity of this pending record; rejects stale claim/clear. */
+  executionId?: string;
+  /** Durable idempotency key for restoring the consumed draft on failure. */
+  restoreId?: string;
+  /**
+   * Correlation of the `/compact` turn that must complete before execution:
+   * captured at compaction turn start so a late/stale completion or failure
+   * from another turn can neither authorize nor cancel this record.
+   */
+  compactionTurn?: { generation: number; stopEpoch: number };
+  /** The queued approval user message persisted with the durable claim. */
+  approvalMessageId?: string;
+  /** Renderer-composed (localized) approval text accepted with the record; ordinary user text. */
+  approvalMessage?: string;
+  /** Mention display metadata composed by the same renderer path as ordinary sends. */
+  approvalBadges?: import('@craft-agent/core').ContentBadge[];
+  /** Terminal non-executable state after a failed/cancelled compaction. */
+  failed?: boolean;
+}
+
+/**
  * Built-in status IDs (for TypeScript consumers)
  * These are the default statuses but users can add/remove custom ones
  */
@@ -183,18 +228,7 @@ export interface SessionConfig {
    * When set, indicates a plan needs to be executed after compaction completes.
    * Cleared on: successful execution, new user message, or manual clear.
    */
-  pendingPlanExecution?: {
-    /** Path to the plan file to execute */
-    planPath: string;
-    /** Optional snapshot of draft input captured at accept time */
-    draftInputSnapshot?: string;
-    /** Structured draft references captured with the input snapshot. */
-    draftReferencesSnapshot?: Reference[];
-    /** Whether we're still waiting for compaction to complete */
-    awaitingCompaction: boolean;
-    /** Whether execution has already been dispatched from the UI. */
-    executionDispatched?: boolean;
-  };
+  pendingPlanExecution?: PendingPlanExecutionRecord;
   /** When true, session is hidden from session list (e.g., mini edit sessions) */
   hidden?: boolean;
   /** Whether this session is archived */
@@ -335,18 +369,7 @@ export interface SessionHeader {
    * When set, indicates a plan needs to be executed after compaction completes.
    * Cleared on: successful execution, new user message, or manual clear.
    */
-  pendingPlanExecution?: {
-    /** Path to the plan file to execute */
-    planPath: string;
-    /** Optional snapshot of draft input captured at accept time */
-    draftInputSnapshot?: string;
-    /** Structured draft references captured with the input snapshot. */
-    draftReferencesSnapshot?: Reference[];
-    /** Whether we're still waiting for compaction to complete */
-    awaitingCompaction: boolean;
-    /** Whether execution has already been dispatched from the UI. */
-    executionDispatched?: boolean;
-  };
+  pendingPlanExecution?: PendingPlanExecutionRecord;
   /** When true, session is hidden from session list (e.g., mini edit sessions) */
   hidden?: boolean;
   /** Whether this session is archived */

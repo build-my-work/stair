@@ -4,6 +4,7 @@ import {
   deserializeEnvelope,
 } from '@craft-agent/server-core/transport'
 import type { SpawnedServer } from './server-spawner.ts'
+import { PROTOCOL_VERSION } from '@craft-agent/shared/protocol'
 
 // ---------------------------------------------------------------------------
 // Mock WS server for run command tests
@@ -66,7 +67,7 @@ function createMockServer(opts?: MockServerOptions): MockServer {
             id: crypto.randomUUID(),
             type: 'handshake_ack',
             clientId: 'run-test-client',
-            protocolVersion: '1.0',
+            protocolVersion: PROTOCOL_VERSION,
           }))
           return
         }

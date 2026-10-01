@@ -560,6 +560,14 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
       get selectionStart() { return cursorPositionRef.current },
       setValue: (newValue: string) => {
         lastValueRef.current = newValue
+        lastMentionSignatureRef.current = getMentionSignature(newValue, skillSlugs, sourceSlugs)
+        if (divRef.current) {
+          divRef.current.innerHTML = textToHTML(newValue, skills, sources, workspaceId) || '<br>'
+          if (document.activeElement === divRef.current) {
+            cursorPositionRef.current = Math.min(cursorPositionRef.current, newValue.length)
+            setCursorPosition(divRef.current, cursorPositionRef.current)
+          }
+        }
       },
       setSelectionRange: (start: number, _end: number) => {
         // Store pending cursor for when external value sync runs
@@ -591,7 +599,7 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
         return rect
       },
       get element() { return divRef.current },
-    }), [])
+    }), [skills, sources, workspaceId, skillSlugs, sourceSlugs])
 
     // Handle input events
     const handleInput = React.useCallback(() => {

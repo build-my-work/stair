@@ -51,6 +51,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     getDraftReferences,
     hydrateDraftAttachments,
     onInputChange,
+    onConsumePendingPlanDraft,
+    onPreparePendingPlanExecution,
     onAttachmentsChange,
     onReferencesChange,
     enabledSources,
@@ -499,6 +501,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
               enabledModes={enabledModes}
               inputValue={inputValue}
               onInputChange={handleInputChange}
+              onConsumePendingPlanDraft={(id, live) => onConsumePendingPlanDraft!(sessionId, id, live)}
+              onPreparePendingPlanExecution={command => onPreparePendingPlanExecution!(sessionId, command)}
               attachmentsValue={attachmentsValue}
               onAttachmentsChange={handleAttachmentsChange}
               referencesValue={referencesValue}
@@ -562,9 +566,9 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
         <ChatDisplay
           ref={chatDisplayRef}
           session={session}
-          onSendMessage={(message, attachments, skillSlugs, references) => {
+          onSendMessage={(message, attachments, skillSlugs, references, options) => {
             if (session) {
-              onSendMessage(session.id, message, attachments, skillSlugs, undefined, references)
+              onSendMessage(session.id, message, attachments, skillSlugs, undefined, references, options)
             }
           }}
           onOpenFile={handleOpenFile}
@@ -586,6 +590,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
           enabledModes={enabledModes}
           inputValue={inputValue}
           onInputChange={handleInputChange}
+          onConsumePendingPlanDraft={(id, live) => onConsumePendingPlanDraft!(sessionId, id, live)}
+          onPreparePendingPlanExecution={command => onPreparePendingPlanExecution!(sessionId, command)}
           attachmentsValue={attachmentsValue}
           onAttachmentsChange={handleAttachmentsChange}
           referencesValue={referencesValue}

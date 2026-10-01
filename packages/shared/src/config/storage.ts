@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, readdirSync } from 'fs';
 import { join, dirname, basename } from 'path';
+import { createHash } from 'node:crypto';
+import { mergeDraftContent, type DraftContentMutation } from './draft-content.ts';
 import { getCredentialManager } from '../credentials/index.ts';
 import { getOrCreateLatestSession, type SessionConfig } from '../sessions/index.ts';
 import {
@@ -1217,16 +1219,51 @@ export interface SessionDraft {
   text: string;
   attachments?: DraftAttachmentRef[];
   references?: Reference[];
+  /** Server version, also returned for an empty versioned draft. */
+  revision?: number;
 }
 
 interface DraftsData {
   drafts: Record<string, SessionDraft>;
+  revisions?: Record<string, number>;
+  contentMutations?: Record<string, Array<{ id: string; fingerprint: string; revision: number }>>;
+  /** One checkpoint per renderer, retained until the owning Chat is purged. */
+  contentWriters?: Record<string, Record<string, {
+    sequence: number;
+    id: string;
+    fingerprint: string;
+    consumption?: { executionId: string; receipt: PlanDraftConsumptionReceipt };
+  }>>;
   appliedRestoreIds: Record<string, string[]>;
+  planRestoreExecutions?: Record<string, Record<string, string>>;
   appliedReferenceRequests: Record<string, Array<{
     requestId: string;
     referenceKey: string;
   }>>;
+  /**
+   * Durable plan-consumption receipts, per session per plan executionId: the
+   * authoritative record of which draft components were ACTUALLY consumed
+   * (cleared from the stored draft) in the same drafts-file write as the
+   * consumption itself. A missing entry means nothing was consumed; a read
+   * error must never be interpreted as "unconsumed".
+   */
+  planConsumption?: Record<string, Record<string, PlanDraftConsumptionReceipt>>;
   updatedAt: number;
+}
+
+export interface PlanDraftConsumptionReceipt {
+  /** The stored draft's text matched the accepted snapshot and was cleared. */
+  text: boolean;
+  /** Reference keys removed from the stored draft (empty = none matched). */
+  referenceKeys: string[];
+  consumedAt: number;
+}
+
+export interface PlanDraftConsumption {
+  receipt: PlanDraftConsumptionReceipt;
+  /** The draft as it exists after the (idempotent) consumption write. */
+  draft: SessionDraft | null;
+  revision: number;
 }
 
 const ATTACHMENT_CONTENT_TYPES = new Set(['image', 'pdf', 'text', 'office', 'audio', 'unknown']);
@@ -1289,52 +1326,174 @@ function isEmptyDraft(draft: SessionDraft): boolean {
 }
 
 /**
- * Load all drafts from disk. Entries that don't parse as SessionDraft
- * (e.g. pre-upgrade string drafts) are discarded silently.
+ * Load the drafts store, distinguishing "no entry/file" from IO/corrupt-file
+ * failures by THROWING on the latter. Receipt decisions (plan consumption,
+ * recovery) must use this so a read error is never silently treated as
+ * "nothing consumed".
  */
-function loadDraftsData(): DraftsData {
+function loadDraftsDataStrict(): DraftsData {
+  let raw: Partial<DraftsData>;
   try {
-    if (!existsSync(DRAFTS_FILE)) {
+    raw = readJsonFileSync<Partial<DraftsData>>(DRAFTS_FILE);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return { drafts: {}, appliedRestoreIds: {}, appliedReferenceRequests: {}, updatedAt: 0 };
     }
-    const raw = readJsonFileSync<{
-      drafts?: Record<string, unknown>;
-      appliedRestoreIds?: Record<string, unknown>;
-      appliedReferenceRequests?: Record<string, unknown>;
-      updatedAt?: number;
-    }>(DRAFTS_FILE);
-    const drafts: Record<string, SessionDraft> = {};
-    for (const [sessionId, value] of Object.entries(raw.drafts ?? {})) {
-      if (isSessionDraft(value)) {
-        drafts[sessionId] = value;
-      }
-    }
-    const appliedRestoreIds: Record<string, string[]> = {};
-    for (const [sessionId, value] of Object.entries(raw.appliedRestoreIds ?? {})) {
-      if (Array.isArray(value) && value.every(id => typeof id === 'string')) {
-        appliedRestoreIds[sessionId] = value.slice(-64);
-      }
-    }
-    const appliedReferenceRequests: DraftsData['appliedReferenceRequests'] = {};
-    for (const [sessionId, value] of Object.entries(raw.appliedReferenceRequests ?? {})) {
-      if (!Array.isArray(value)) continue;
-      const requests = value.filter((entry): entry is { requestId: string; referenceKey: string } => (
-        !!entry
-        && typeof entry === 'object'
-        && typeof (entry as { requestId?: unknown }).requestId === 'string'
-        && typeof (entry as { referenceKey?: unknown }).referenceKey === 'string'
-      ));
-      if (requests.length > 0) appliedReferenceRequests[sessionId] = requests.slice(-64);
-    }
-    return {
-      drafts,
-      appliedRestoreIds,
-      appliedReferenceRequests,
-      updatedAt: raw.updatedAt ?? 0,
-    };
-  } catch {
-    return { drafts: {}, appliedRestoreIds: {}, appliedReferenceRequests: {}, updatedAt: 0 };
+    throw error;
   }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid drafts store');
+  const drafts: Record<string, SessionDraft> = {};
+  for (const [sessionId, value] of Object.entries(raw.drafts ?? {})) {
+    // Retain the existing migration for obsolete draft shapes.
+    if (isSessionDraft(value)) drafts[sessionId] = value;
+  }
+  const appliedRestoreIds: Record<string, string[]> = {};
+  for (const [sessionId, value] of Object.entries(raw.appliedRestoreIds ?? {})) {
+    if (!Array.isArray(value) || !value.every(id => typeof id === 'string')) {
+      throw new Error('Invalid draft restore receipt');
+    }
+    appliedRestoreIds[sessionId] = value.slice(-64);
+  }
+  const appliedReferenceRequests: DraftsData['appliedReferenceRequests'] = {};
+  for (const [sessionId, value] of Object.entries(raw.appliedReferenceRequests ?? {})) {
+    if (!Array.isArray(value) || !value.every(entry => entry && typeof entry.requestId === 'string' && typeof entry.referenceKey === 'string')) {
+      throw new Error('Invalid draft reference receipt');
+    }
+    appliedReferenceRequests[sessionId] = value.slice(-64);
+  }
+  const planConsumption: NonNullable<DraftsData['planConsumption']> = {};
+  for (const [sessionId, byExecution] of Object.entries(raw.planConsumption ?? {})) {
+    if (!byExecution || typeof byExecution !== 'object' || Array.isArray(byExecution)) throw new Error('Invalid plan consumption receipts');
+    const receipts: Record<string, PlanDraftConsumptionReceipt> = {};
+    for (const [executionId, value] of Object.entries(byExecution)) {
+      if (!value || typeof value.text !== 'boolean' || !Array.isArray(value.referenceKeys)
+        || !value.referenceKeys.every(key => typeof key === 'string')
+        || typeof value.consumedAt !== 'number' || !Number.isFinite(value.consumedAt)) {
+        throw new Error('Invalid plan consumption receipt');
+      }
+      receipts[executionId] = value;
+    }
+    planConsumption[sessionId] = receipts;
+  }
+  const revisions = raw.revisions ?? {};
+  if (Object.values(revisions).some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('Invalid draft revision');
+  const contentMutations = raw.contentMutations ?? {};
+  for (const receipts of Object.values(contentMutations)) {
+    if (!Array.isArray(receipts) || receipts.some(value => !value || typeof value.id !== 'string'
+      || typeof value.fingerprint !== 'string' || !Number.isSafeInteger(value.revision))) {
+      throw new Error('Invalid draft mutation receipt');
+    }
+  }
+  const contentWriters = raw.contentWriters ?? {};
+  for (const writers of Object.values(contentWriters)) {
+    if (!writers || typeof writers !== 'object' || Array.isArray(writers)
+      || Object.values(writers).some(value => !value || !Number.isSafeInteger(value.sequence) || value.sequence < 1
+        || typeof value.id !== 'string' || typeof value.fingerprint !== 'string')) {
+      throw new Error('Invalid draft writer checkpoint');
+    }
+    for (const writer of Object.values(writers)) {
+      const consumption = writer.consumption;
+      if (consumption && (typeof consumption.executionId !== 'string' || !consumption.receipt
+        || typeof consumption.receipt.text !== 'boolean' || !Array.isArray(consumption.receipt.referenceKeys)
+        || !consumption.receipt.referenceKeys.every(key => typeof key === 'string')
+        || !Number.isFinite(consumption.receipt.consumedAt))) throw new Error('Invalid draft writer consumption checkpoint');
+    }
+  }
+  const planRestoreExecutions = raw.planRestoreExecutions ?? {};
+  for (const records of Object.values(planRestoreExecutions)) {
+    if (!records || typeof records !== 'object' || Array.isArray(records)
+      || Object.values(records).some(value => typeof value !== 'string')) throw new Error('Invalid plan restore receipts');
+  }
+  return { drafts, revisions, contentMutations, contentWriters, appliedRestoreIds, planRestoreExecutions, appliedReferenceRequests, planConsumption, updatedAt: raw.updatedAt ?? 0 };
+}
+
+/**
+ * Atomically consume the accepted plan snapshot's components from the stored
+ * draft and record the exact receipt in the SAME drafts-file write. This is
+ * the crash boundary for preparation: either the write lands (receipt + the
+ * consumed draft are consistent forever after) or nothing changed (no
+ * receipt, draft intact — recovery restores nothing because the snapshot
+ * still lives in the user's draft). A boolean claim before/after a separate
+ * client-side clear cannot prove any of this.
+ *
+ * Consumption is conditional: TEXT is consumed only when the stored draft's
+ * text matches the accepted snapshot exactly (the coordinator flushes
+ * outstanding local edits before calling, so the store reflects live input);
+ * REFERENCES are consumed per-key when present. Idempotent per executionId —
+ * a replay returns the recorded receipt and the current draft.
+ */
+export function consumeSessionDraftForPlan(
+  sessionId: string,
+  projectId: string,
+  executionId: string,
+  snapshot: { text: string; references: import('@craft-agent/core').Reference[] },
+  local?: { content: Pick<SessionDraft, 'text' | 'attachments'>; mutation: DraftContentMutation },
+): PlanDraftConsumption {
+  if (!executionId || executionId.length > 200) throw new Error('Invalid plan execution id');
+  const data = loadDraftsDataStrict();
+  const existing = data.planConsumption?.[sessionId]?.[executionId]
+    ?? Object.values(data.contentWriters?.[sessionId] ?? {}).find(writer => writer.consumption?.executionId === executionId)?.consumption?.receipt;
+  if (existing) {
+    return { receipt: existing, draft: data.drafts[sessionId] ?? null, revision: data.revisions?.[sessionId] ?? 0 };
+  }
+  if (local) applyDraftContentMutation(data, sessionId, local.content, local.mutation, projectId);
+  if (snapshot.references.some(reference => reference.projectId !== projectId)) {
+    throw new Error('DRAFT_REFERENCE_REJECTED: Plan snapshot references belong to another Project');
+  }
+
+  const current = data.drafts[sessionId] ?? { text: '' };
+  const consumedText = !!snapshot.text.trim() && current.text.trim() === snapshot.text.trim();
+  const snapshotKeys = new Set(snapshot.references.map(reference => referenceKey(reference)));
+  const currentReferences = current.references ?? [];
+  const consumedKeys = currentReferences
+    .filter(reference => snapshotKeys.has(referenceKey(reference)))
+    .map(reference => referenceKey(reference));
+  const remainingReferences = currentReferences.filter(reference => !snapshotKeys.has(referenceKey(reference)));
+
+  persistSessionDraft(data, sessionId, {
+    text: consumedText ? '' : current.text,
+    ...((current.attachments?.length) ? { attachments: current.attachments } : {}),
+    ...(remainingReferences.length ? { references: remainingReferences } : {}),
+  });
+  const receipt: PlanDraftConsumptionReceipt = {
+    text: consumedText,
+    referenceKeys: consumedKeys,
+    consumedAt: Date.now(),
+  };
+  data.planConsumption ??= {};
+  data.planConsumption[sessionId] ??= {};
+  data.planConsumption[sessionId][executionId] = receipt;
+  if (local?.mutation.clientId) {
+    const writer = data.contentWriters?.[sessionId]?.[local.mutation.clientId];
+    if (writer) writer.consumption = { executionId, receipt };
+  }
+  // ONE write: the consumed draft and its receipt land together or not at all.
+  saveDraftsData(data);
+  return { receipt, draft: data.drafts[sessionId] ?? null, revision: data.revisions?.[sessionId] ?? 0 };
+}
+
+/**
+ * The authoritative consumption receipt for a plan execution. Returns null
+ * when no receipt exists (nothing consumed); THROWS on IO/corrupt-file
+ * failures — callers must never treat a read error as "unconsumed".
+ */
+export function getPlanDraftConsumption(
+  sessionId: string,
+  executionId: string,
+): PlanDraftConsumptionReceipt | null {
+  const data = loadDraftsDataStrict();
+  return data.planConsumption?.[sessionId]?.[executionId]
+    ?? Object.values(data.contentWriters?.[sessionId] ?? {}).find(writer => writer.consumption?.executionId === executionId)?.consumption?.receipt
+    ?? null;
+}
+
+/** Retire the outbox receipt; each renderer keeps its latest consumption proof for lost replies. */
+export function retirePlanDraftConsumption(sessionId: string, executionId: string): void {
+  const data = loadDraftsDataStrict();
+  if (!data.planConsumption?.[sessionId]?.[executionId]) return;
+  delete data.planConsumption[sessionId]![executionId];
+  if (!Object.keys(data.planConsumption[sessionId]!).length) delete data.planConsumption[sessionId];
+  saveDraftsData(data);
 }
 
 function saveDraftsData(data: DraftsData): void {
@@ -1347,7 +1506,7 @@ function saveDraftsData(data: DraftsData): void {
  * Get the persisted draft for a session (text + attachment refs).
  */
 export function getSessionDraft(sessionId: string): SessionDraft | null {
-  const data = loadDraftsData();
+  const data = loadDraftsDataStrict();
   return data.drafts[sessionId] ?? null;
 }
 
@@ -1357,7 +1516,7 @@ export function getSessionDraft(sessionId: string): SessionDraft | null {
  */
 export function setSessionDraft(sessionId: string, draft: SessionDraft): void {
   if (!isSessionDraft(draft)) throw new Error('Invalid session draft');
-  const data = loadDraftsData();
+  const data = loadDraftsDataStrict();
   persistSessionDraft(data, sessionId, draft);
   saveDraftsData(data);
 }
@@ -1368,6 +1527,8 @@ function persistSessionDraft(
   draft: SessionDraft,
 ): SessionDraft | null {
   if (!isSessionDraft(draft)) throw new Error('Invalid session draft');
+  data.revisions ??= {};
+  data.revisions[sessionId] = (data.revisions[sessionId] ?? 0) + 1;
   if (isEmptyDraft(draft)) {
     delete data.drafts[sessionId];
     return null;
@@ -1401,11 +1562,96 @@ function normalizeDraftAttachment(ref: DraftAttachmentRef): DraftAttachmentRef {
   return base;
 }
 
+/** Apply a captured base-to-next edit, never a blind stale-window replacement. */
+function applyDraftContentMutation(
+  data: DraftsData,
+  sessionId: string,
+  content: Pick<SessionDraft, 'text' | 'attachments'>,
+  mutation: DraftContentMutation,
+  projectId?: string,
+): boolean {
+  if (!mutation.id || mutation.id.length > 200 || !Number.isSafeInteger(mutation.baseRevision)
+    || mutation.baseRevision < 0 || !isSessionDraft(mutation.base) || !isSessionDraft(content)) {
+    throw new Error('Invalid draft content mutation');
+  }
+  if ((mutation.clientId !== undefined || mutation.sequence !== undefined)
+    && (!mutation.clientId || mutation.clientId.length > 200 || !Number.isSafeInteger(mutation.sequence) || mutation.sequence! < 1)) {
+    throw new Error('Invalid draft writer identity');
+  }
+  const currentRevision = data.revisions?.[sessionId] ?? 0;
+  if (mutation.baseRevision > currentRevision) throw new Error('DRAFT_VERSION_CONFLICT: Unknown draft version');
+  const fingerprint = createHash('sha256').update(JSON.stringify({ content, mutation })).digest('hex');
+  const receipts = data.contentMutations?.[sessionId] ?? [];
+  const applied = receipts.find(receipt => receipt.id === mutation.id);
+  if (applied) {
+    if (applied.fingerprint !== fingerprint) throw new Error('DRAFT_REQUEST_CONFLICT: Mutation id reused');
+    return false;
+  }
+  if (mutation.clientId) {
+    const writer = data.contentWriters?.[sessionId]?.[mutation.clientId];
+    if (writer && mutation.sequence! <= writer.sequence) {
+      if (mutation.sequence === writer.sequence && (mutation.id !== writer.id || fingerprint !== writer.fingerprint)) {
+        throw new Error('DRAFT_REQUEST_CONFLICT: Writer sequence reused');
+      }
+      return false;
+    }
+  } else if (receipts.length === 64 && mutation.baseRevision < receipts[0]!.revision) {
+    // An old client cannot prove whether an evicted request committed. Never
+    // guess by applying its delta again; modern writers retain a checkpoint.
+    throw new Error('DRAFT_REQUEST_EXPIRED: Refresh before retrying an old draft request');
+  }
+  const current = data.drafts[sessionId] ?? { text: '' };
+  const merged = mutation.baseRevision === currentRevision
+    ? content
+    : mergeDraftContent(current, mutation.base, content);
+  let references = current.references ?? [];
+  if (mutation.references) {
+    const { baseReferences, nextReferences } = mutation.references;
+    if (!projectId || !isSessionDraft({ text: '', references: baseReferences })
+      || !isSessionDraft({ text: '', references: nextReferences })
+      || [...baseReferences, ...nextReferences, ...references].some(reference => reference.projectId !== projectId)) {
+      throw new Error('DRAFT_REFERENCE_REJECTED: Invalid local reference mutation');
+    }
+    const baseKeys = new Set(baseReferences.map(referenceKey));
+    const nextKeys = new Set(nextReferences.map(referenceKey));
+    const removed = new Set([...baseKeys].filter(key => !nextKeys.has(key)));
+    references = references.filter(reference => !removed.has(referenceKey(reference)));
+    const currentKeys = new Set(references.map(referenceKey));
+    for (const reference of nextReferences) {
+      const key = referenceKey(reference);
+      if (!baseKeys.has(key) && !currentKeys.has(key)) {
+        references.push(reference);
+        currentKeys.add(key);
+      }
+    }
+  }
+  persistSessionDraft(data, sessionId, { ...merged, ...(references.length ? { references } : {}) });
+  data.contentMutations ??= {};
+  data.contentMutations[sessionId] = [...receipts, { id: mutation.id, fingerprint, revision: data.revisions![sessionId]! }].slice(-64);
+  if (mutation.clientId) {
+    data.contentWriters ??= {};
+    data.contentWriters[sessionId] ??= {};
+    data.contentWriters[sessionId][mutation.clientId] = { ...data.contentWriters[sessionId][mutation.clientId], sequence: mutation.sequence!, id: mutation.id, fingerprint };
+  }
+  return true;
+}
+
 export function setSessionDraftContent(
   sessionId: string,
   content: Pick<SessionDraft, 'text' | 'attachments'>,
+  mutation?: DraftContentMutation,
 ): SessionDraft | null {
-  const data = loadDraftsData();
+  const data = loadDraftsDataStrict();
+  if (mutation) {
+    // References have their own scoped RPC. Consumption/recovery may join them.
+    if (mutation.references) throw new Error('Use the scoped reference mutation');
+    if (applyDraftContentMutation(data, sessionId, content, mutation)) saveDraftsData(data);
+    return { ...(data.drafts[sessionId] ?? { text: '' }), revision: data.revisions?.[sessionId] ?? 0 };
+  }
+  if (data.appliedRestoreIds[sessionId]?.length || Object.keys(data.planConsumption?.[sessionId] ?? {}).length
+    || Object.values(data.contentWriters?.[sessionId] ?? {}).some(writer => writer.consumption)) {
+    throw new Error('DRAFT_VERSION_REQUIRED: Refresh the draft before editing recovered input');
+  }
   const current = data.drafts[sessionId];
   const result = persistSessionDraft(data, sessionId, {
     text: content.text,
@@ -1426,7 +1672,7 @@ export function addSessionDraftReferenceAtomic(
   if (requestId !== undefined && (!requestId || requestId.length > 200)) {
     throw new Error('Invalid draft reference request id');
   }
-  const data = loadDraftsData();
+  const data = loadDraftsDataStrict();
   const current = data.drafts[sessionId] ?? { text: '' };
   const references = current.references ?? [];
   if (references.some(candidate => candidate.projectId !== projectId)) return null;
@@ -1482,7 +1728,7 @@ export function reconcileSessionDraftReferences(
     || nextReferences.some(reference => reference.projectId !== projectId)
   ) return null;
 
-  const data = loadDraftsData();
+  const data = loadDraftsDataStrict();
   const current = data.drafts[sessionId] ?? { text: '' };
   if (current.references?.some(reference => reference.projectId !== projectId)) return null;
   const baseKeys = new Set(baseReferences.map(referenceKey));
@@ -1515,10 +1761,14 @@ export function reconcileSessionDraftReferences(
 export interface SessionDraftRestoreResult {
   draft: SessionDraft | null;
   applied: boolean;
+  /** A successful empty restore is a durable commit too. */
+  committed?: boolean;
+  revision?: number;
 }
 
 export interface SessionDraftHydrationState {
   drafts: Record<string, SessionDraft>;
+  revisions?: Record<string, number>;
   appliedRestoreIds: Record<string, string[]>;
 }
 
@@ -1527,6 +1777,8 @@ export function restoreSessionDraftAtomic(
   projectId: string,
   restoreId: string,
   input: SessionDraft,
+  local?: { content: Pick<SessionDraft, 'text' | 'attachments'>; mutation: DraftContentMutation },
+  planExecutionId?: string,
 ): SessionDraftRestoreResult {
   if (!restoreId || restoreId.length > 200) throw new Error('Invalid draft restore id');
   if (!isSessionDraft(input)) throw new Error('Invalid session draft');
@@ -1534,10 +1786,16 @@ export function restoreSessionDraftAtomic(
     throw new Error('DRAFT_REFERENCE_REJECTED: Restore references belong to another Project');
   }
 
-  const data = loadDraftsData();
+  const data = loadDraftsDataStrict();
   const appliedIds = data.appliedRestoreIds[sessionId] ?? [];
+  if (appliedIds.includes(restoreId) && planExecutionId
+    && data.planRestoreExecutions?.[sessionId]?.[restoreId] !== planExecutionId) {
+    throw new Error('DRAFT_RESTORE_CONFLICT: Restore identity belongs to another operation');
+  }
+  const localApplied = local ? applyDraftContentMutation(data, sessionId, local.content, local.mutation, projectId) : false;
   if (appliedIds.includes(restoreId)) {
-    return { draft: data.drafts[sessionId] ?? null, applied: false };
+    if (localApplied) saveDraftsData(data);
+    return { draft: data.drafts[sessionId] ?? null, applied: false, committed: true, revision: data.revisions?.[sessionId] ?? 0 };
   }
 
   const current = data.drafts[sessionId] ?? { text: '' };
@@ -1570,23 +1828,48 @@ export function restoreSessionDraftAtomic(
     ...(references.length ? { references } : {}),
   });
   data.appliedRestoreIds[sessionId] = [...appliedIds, restoreId].slice(-64);
+  if (planExecutionId) {
+    data.planRestoreExecutions ??= {};
+    data.planRestoreExecutions[sessionId] = Object.fromEntries(
+      Object.entries({ ...data.planRestoreExecutions[sessionId], [restoreId]: planExecutionId })
+        .filter(([id]) => data.appliedRestoreIds[sessionId]!.includes(id)),
+    );
+  }
   saveDraftsData(data);
-  return { draft: result, applied: true };
+  return { draft: result, applied: true, committed: true, revision: data.revisions?.[sessionId] ?? 0 };
+}
+
+/**
+ * Whether a durable draft restore under `restoreId` has been applied for the
+ * session (idempotency marker in the drafts store). Recovery ACK decisions
+ * read this instead of trusting that matching ids prove the snapshot reached
+ * the store.
+ */
+export function hasAppliedDraftRestore(sessionId: string, restoreId: string, executionId?: string): boolean {
+  const data = loadDraftsDataStrict();
+  return (data.appliedRestoreIds[sessionId] ?? []).includes(restoreId)
+    && (executionId === undefined || data.planRestoreExecutions?.[sessionId]?.[restoreId] === executionId);
 }
 
 export function deleteSessionDraft(sessionId: string): void {
-  const data = loadDraftsData();
+  const data = loadDraftsDataStrict();
   delete data.drafts[sessionId];
   delete data.appliedRestoreIds[sessionId];
+  if (data.planRestoreExecutions) delete data.planRestoreExecutions[sessionId];
   saveDraftsData(data);
 }
 
 /** Remove all persisted draft state when the owning Chat is permanently deleted. */
 export function purgeSessionDraft(sessionId: string): void {
-  const data = loadDraftsData();
+  const data = loadDraftsDataStrict();
   delete data.drafts[sessionId];
   delete data.appliedRestoreIds[sessionId];
+  if (data.planRestoreExecutions) delete data.planRestoreExecutions[sessionId];
   delete data.appliedReferenceRequests[sessionId];
+  if (data.planConsumption) delete data.planConsumption[sessionId];
+  if (data.revisions) delete data.revisions[sessionId];
+  if (data.contentMutations) delete data.contentMutations[sessionId];
+  if (data.contentWriters) delete data.contentWriters[sessionId];
   saveDraftsData(data);
 }
 
@@ -1594,14 +1877,15 @@ export function purgeSessionDraft(sessionId: string): void {
  * Get all drafts as a record keyed by sessionId.
  */
 export function getAllSessionDrafts(): Record<string, SessionDraft> {
-  const data = loadDraftsData();
+  const data = loadDraftsDataStrict();
   return data.drafts;
 }
 
 export function getSessionDraftHydrationState(): SessionDraftHydrationState {
-  const data = loadDraftsData();
+  const data = loadDraftsDataStrict();
   return {
     drafts: data.drafts,
+    revisions: data.revisions ?? {},
     appliedRestoreIds: data.appliedRestoreIds,
   };
 }

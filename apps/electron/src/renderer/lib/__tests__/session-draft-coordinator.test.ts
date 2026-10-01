@@ -1,6 +1,10 @@
 import { describe, expect, it, mock } from 'bun:test'
 import type { Reference } from '@craft-agent/core'
-import { SessionDraftCoordinator } from '../session-draft-coordinator'
+import { SessionDraftCoordinator, type SessionDraftPersistence } from '../session-draft-coordinator'
+
+type DraftContent = Parameters<SessionDraftPersistence['setDraftContent']>[1]
+type DraftMutation = Parameters<SessionDraftPersistence['setDraftContent']>[2]
+type RestoreRequest = Parameters<SessionDraftPersistence['restoreDraftInput']>[1]
 
 const reference = (messageId: string): Reference => ({
   version: 1,
@@ -20,7 +24,10 @@ const reference = (messageId: string): Reference => ({
 
 function createPersistence(overrides: Record<string, unknown> = {}) {
   return {
-    setDraftContent: mock(async () => null),
+    setDraftContent: mock(async (_sessionId: string, input: DraftContent, _mutation?: DraftMutation) => ({
+      ...input,
+      revision: 1,
+    })),
     updateDraftReferences: mock(async (_sessionId: string, input: {
       nextReferences: Reference[]
     }) => ({ text: '', references: input.nextReferences })),
@@ -28,9 +35,18 @@ function createPersistence(overrides: Record<string, unknown> = {}) {
       text: '',
       references: [value],
     })),
-    restoreDraftInput: mock(async (_sessionId: string, input: {
-      draft: { text: string; references?: Reference[] }
-    }) => ({ draft: input.draft, applied: true })),
+    restoreDraftInput: mock(async (_sessionId: string, input: RestoreRequest) => ({
+      draft: {
+        text: [input.local?.content.text, input.draft.text].filter(Boolean).join('\n\n'),
+        references: [
+          ...(input.local?.mutation.references?.nextReferences ?? []),
+          ...(input.draft.references ?? []),
+        ],
+      },
+      applied: true,
+      committed: true,
+      revision: 1,
+    })),
     acknowledgeQueuedInputRestore: mock(async () => {}),
     ...overrides,
   }
@@ -40,10 +56,10 @@ describe('SessionDraftCoordinator', () => {
   it('retries a failed debounced content write without losing the latest draft', async () => {
     let attempts = 0
     const persistence = createPersistence({
-      setDraftContent: mock(async () => {
+      setDraftContent: mock(async (_sessionId: string, input: DraftContent) => {
         attempts += 1
         if (attempts === 1) throw new Error('transient')
-        return null
+        return { ...input, revision: 1 }
       }),
     })
     const coordinator = new SessionDraftCoordinator({
@@ -58,15 +74,22 @@ describe('SessionDraftCoordinator', () => {
 
     expect(attempts).toBe(2)
     expect(coordinator.getText('chat-a')).toBe('latest')
+    expect(persistence.setDraftContent).toHaveBeenCalledWith('chat-a', { text: 'latest' }, expect.objectContaining({
+      id: expect.any(String),
+      baseRevision: 0,
+      base: { text: '' },
+    }))
+    expect(persistence.setDraftContent.mock.calls[1]?.[2]?.id)
+      .toBe(persistence.setDraftContent.mock.calls[0]?.[2]?.id)
     coordinator.dispose()
   })
 
-  it('flushes pending fields before an atomic queued restore and ACKs last', async () => {
+  it('commits pending fields with the atomic queued restore and ACKs last', async () => {
     const calls: string[] = []
     const persistence = createPersistence({
-      setDraftContent: mock(async () => {
+      setDraftContent: mock(async (_sessionId: string, input: DraftContent) => {
         calls.push('content')
-        return null
+        return { ...input, revision: 1 }
       }),
       updateDraftReferences: mock(async (_sessionId: string, input: {
         nextReferences: Reference[]
@@ -74,11 +97,26 @@ describe('SessionDraftCoordinator', () => {
         calls.push('references')
         return { text: '', references: input.nextReferences }
       }),
-      restoreDraftInput: mock(async () => {
+      restoreDraftInput: mock(async (_sessionId: string, input: RestoreRequest) => {
         calls.push('restore')
-        return {
+        expect(input).toMatchObject({
+          restoreId: 'restore-1',
           draft: { text: 'restored', references: [reference('restored')] },
+          local: {
+            content: { text: 'local' },
+            mutation: {
+              id: expect.any(String),
+              baseRevision: 0,
+              base: { text: '' },
+              references: { baseReferences: [], nextReferences: [reference('local')] },
+            },
+          },
+        })
+        return {
+          draft: { text: 'local\n\nrestored', references: [reference('local'), reference('restored')] },
           applied: true,
+          committed: true,
+          revision: 1,
         }
       }),
       acknowledgeQueuedInputRestore: mock(async () => {
@@ -103,10 +141,12 @@ describe('SessionDraftCoordinator', () => {
       messageIds: ['queued-message'],
     })
 
-    expect(calls.indexOf('content')).toBeLessThan(calls.indexOf('restore'))
-    expect(calls.indexOf('references')).toBeLessThan(calls.indexOf('restore'))
+    expect(calls).toEqual(['restore', 'ack'])
+    expect(persistence.setDraftContent).not.toHaveBeenCalled()
+    expect(persistence.updateDraftReferences).not.toHaveBeenCalled()
     expect(calls.at(-1)).toBe('ack')
-    expect(coordinator.getDraft('chat-a')?.text).toBe('restored')
+    expect(coordinator.getDraft('chat-a')?.text).toBe('local\n\nrestored')
+    expect(coordinator.getReferences('chat-a')).toEqual([reference('local'), reference('restored')])
     coordinator.dispose()
   })
 
@@ -221,11 +261,31 @@ describe('SessionDraftCoordinator', () => {
     const writeStarted = new Promise<void>(resolve => { markWriteStarted = resolve })
     const writeReleased = new Promise<void>(resolve => { releaseWrite = resolve })
     const restoredTexts: string[] = []
+    const calls: string[] = []
     const persistence = createPersistence({
-      setDraftContent: mock(async () => {
+      restoreDraftInput: mock(async (_sessionId: string, input: RestoreRequest) => {
+        calls.push('restore')
+        expect(input.local?.content.text).toBe('local')
         markWriteStarted()
         await writeReleased
-        return null
+        return {
+          draft: { text: 'local\n\nrestored', references: [reference('restored')] },
+          applied: true,
+          committed: true,
+          revision: 7,
+        }
+      }),
+      setDraftContent: mock(async (_sessionId: string, input: DraftContent, mutation: DraftMutation) => {
+        calls.push('new-edit')
+        expect(mutation).toMatchObject({ baseRevision: 7, base: { text: 'local\n\nrestored' } })
+        return { ...input, revision: 8 }
+      }),
+      updateDraftReferences: mock(async (_sessionId: string, input: { nextReferences: Reference[] }) => {
+        calls.push('new-references')
+        return { text: 'local\n\nrestored + typed while saving', references: input.nextReferences }
+      }),
+      acknowledgeQueuedInputRestore: mock(async () => {
+        calls.push('ack')
       }),
     })
     const coordinator = new SessionDraftCoordinator({
@@ -236,6 +296,7 @@ describe('SessionDraftCoordinator', () => {
     })
     const hydration = coordinator.beginHydration('workspace-a')
     coordinator.hydrate(hydration, { drafts: {}, appliedRestoreIds: {} })
+    coordinator.updateText('chat-a', 'local')
 
     const restoring = coordinator.restoreInput('workspace-a', 'chat-a', 'project-a', {
       type: 'restore_input',
@@ -244,12 +305,18 @@ describe('SessionDraftCoordinator', () => {
       messageIds: ['message-a'],
     })
     await writeStarted
-    coordinator.updateText('chat-a', 'restored + typed while saving')
+    coordinator.updateText('chat-a', 'local + typed while saving')
+    coordinator.addReference('chat-a', reference('typed while saving'))
     releaseWrite()
     await restoring
 
-    expect(coordinator.getText('chat-a')).toBe('restored + typed while saving')
-    expect(restoredTexts).toEqual(['restored + typed while saving'])
+    expect(coordinator.getText('chat-a')).toBe('local\n\nrestored + typed while saving')
+    expect(restoredTexts).toEqual(['local\n\nrestored + typed while saving'])
+    expect(coordinator.getReferences('chat-a')).toEqual([reference('restored'), reference('typed while saving')])
+    expect(persistence.setDraftContent).toHaveBeenCalledTimes(1)
+    expect(persistence.setDraftContent.mock.calls[0]?.[2]?.id)
+      .not.toBe(persistence.restoreDraftInput.mock.calls[0]?.[1]?.local?.mutation.id)
+    expect(calls).toEqual(['restore', 'new-edit', 'new-references', 'ack'])
     coordinator.dispose()
   })
 
@@ -257,11 +324,11 @@ describe('SessionDraftCoordinator', () => {
     const persistedTexts: string[] = []
     let attempts = 0
     const persistence = createPersistence({
-      setDraftContent: mock(async (_sessionId: string, input: { text: string }) => {
+      setDraftContent: mock(async (_sessionId: string, input: DraftContent) => {
         attempts += 1
         persistedTexts.push(input.text)
         if (attempts === 1) throw new Error('transient')
-        return null
+        return { ...input, revision: 1 }
       }),
     })
     const coordinator = new SessionDraftCoordinator({
@@ -298,6 +365,138 @@ describe('SessionDraftCoordinator', () => {
 
     expect(coordinator.hasDraft('chat-a')).toBe(false)
     expect(persistence.setDraftContent).not.toHaveBeenCalled()
+    coordinator.dispose()
+  })
+})
+
+describe('SessionDraftCoordinator compaction-failure restore (ordered outbox protocol)', () => {
+  it('commits local edits and the recovered snapshot together, preserving both', async () => {
+    // The failed-compaction outbox protocol: the renderer is the ONLY writer
+    // that commits the restore. One host transaction accepts pending local
+    // content/reference edits and merges the snapshot under the live draft.
+    const calls: string[] = []
+    const persistence = createPersistence({
+      setDraftContent: mock(async (_sessionId: string, input: DraftContent) => {
+        calls.push('content')
+        return { ...input, revision: 1 }
+      }),
+      updateDraftReferences: mock(async (_sessionId: string, input: { nextReferences: Reference[] }) => {
+        calls.push('references')
+        return { text: '', references: input.nextReferences }
+      }),
+      restoreDraftInput: mock(async (_sessionId: string, input: RestoreRequest) => {
+        calls.push('atomic-restore')
+        expect(input.planExecutionId).toBe('plan-execution-1')
+        expect(input.local?.content).toEqual({ text: 'live draft' })
+        expect(input.local?.mutation).toMatchObject({
+          id: expect.any(String),
+          baseRevision: 0,
+          base: { text: '' },
+          references: { baseReferences: [], nextReferences: [reference('live')] },
+        })
+        return {
+          draft: {
+            text: `${input.local!.content.text}\n\n${input.draft.text}`,
+            references: [...input.local!.mutation.references!.nextReferences, ...(input.draft.references ?? [])],
+          },
+          applied: true,
+          committed: true,
+          revision: 1,
+        }
+      }),
+      sessionCommand: mock(async (_sessionId: string, command: { type: string; executionId: string }) => {
+        expect(command).toEqual({ type: 'clearPendingPlanExecution', executionId: 'plan-execution-1' })
+        calls.push('plan-ack')
+      }),
+    })
+    const coordinator = new SessionDraftCoordinator({
+      persistence,
+      getProjectId: () => 'project-a',
+      debounceMs: 60_000,
+    })
+    const hydration = coordinator.beginHydration('workspace-a')
+    coordinator.hydrate(hydration, { drafts: {}, appliedRestoreIds: {} })
+    // Local edits typed while the compaction was running — still pending
+    // (debounced) when the failure is delivered.
+    coordinator.updateText('chat-a', 'live draft')
+    coordinator.replaceReferences('chat-a', [reference('live')])
+
+    await coordinator.restoreInput('workspace-a', 'chat-a', 'project-a', {
+      type: 'restore_input',
+      text: 'MSG-consumed',
+      references: [reference('consumed')],
+      queuedRestoreId: 'plan-restore-1',
+      planExecutionId: 'plan-execution-1',
+    })
+
+    expect(calls).toEqual(['atomic-restore', 'plan-ack'])
+    expect(persistence.acknowledgeQueuedInputRestore).not.toHaveBeenCalled()
+    expect(persistence.setDraftContent).not.toHaveBeenCalled()
+    expect(persistence.updateDraftReferences).not.toHaveBeenCalled()
+    expect(coordinator.getText('chat-a')).toBe('live draft\n\nMSG-consumed')
+    const merged = coordinator.getReferences('chat-a').map(r => (r as { quote?: string }).quote).sort()
+    expect(merged).toEqual(['consumed', 'live'])
+    coordinator.dispose()
+  })
+
+  it('a duplicate delivery of the same restore converges without duplicating text', async () => {
+    // Second delivery: the store already applied restoreId — the atomic
+    // restore returns the current (already merged) draft and nothing is
+    // appended a second time.
+    let appliedOnce = false
+    const persistence = createPersistence({
+      restoreDraftInput: mock(async (_sessionId: string, input: { draft: { text: string } }) => {
+        if (appliedOnce) {
+          return { draft: { text: 'live draft\n\nMSG-consumed' }, applied: false, committed: true, revision: 1 }
+        }
+        appliedOnce = true
+        return { draft: { text: `live draft\n\n${input.draft.text}` }, applied: true, committed: true, revision: 1 }
+      }),
+    })
+    const coordinator = new SessionDraftCoordinator({
+      persistence,
+      getProjectId: () => 'project-a',
+      debounceMs: 60_000,
+    })
+    const hydration = coordinator.beginHydration('workspace-a')
+    coordinator.hydrate(hydration, { drafts: {}, appliedRestoreIds: {} })
+    coordinator.updateText('chat-a', 'live draft')
+
+    const effect = { type: 'restore_input' as const, text: 'MSG-consumed', queuedRestoreId: 'plan-restore-1' }
+    await coordinator.restoreInput('workspace-a', 'chat-a', 'project-a', effect)
+    await coordinator.restoreInput('workspace-a', 'chat-a', 'project-a', effect)
+
+    expect(coordinator.getText('chat-a')).toBe('live draft\n\nMSG-consumed')
+    coordinator.dispose()
+  })
+})
+
+describe('SessionDraftCoordinator compaction-failure restore (no queuedRestoreId)', () => {
+  it('merges restored text under the live draft and unions references', async () => {
+    // The compaction-failure channel constructs a plain restore_input effect
+    // (no queuedRestoreId): the coordinator merges the server-restored
+    // snapshot into the LIVE draft — newer typed text stays on top and the
+    // pending debounced empty write is replaced by the merged persist.
+    const persistence = createPersistence()
+    const coordinator = new SessionDraftCoordinator({
+      persistence,
+      getProjectId: () => 'project-a',
+      debounceMs: 60_000,
+    })
+    const hydration = coordinator.beginHydration('workspace-a')
+    coordinator.hydrate(hydration, { drafts: {}, appliedRestoreIds: {} })
+    coordinator.updateText('chat-a', 'newer draft')
+    coordinator.replaceReferences('chat-a', [reference('live')])
+
+    await coordinator.restoreInput('workspace-a', 'chat-a', 'project-a', {
+      type: 'restore_input',
+      text: 'MSG-consumed',
+      references: [reference('consumed')],
+    })
+
+    expect(coordinator.getText('chat-a')).toBe('newer draft\n\nMSG-consumed')
+    const references = coordinator.getReferences('chat-a')
+    expect(references.map(r => (r as { quote?: string }).quote).sort()).toEqual(['consumed', 'live'])
     coordinator.dispose()
   })
 })

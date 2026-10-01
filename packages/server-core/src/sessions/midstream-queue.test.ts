@@ -21,6 +21,7 @@ import {
   shouldAttemptMidStreamSteer,
   canSteerTextPayload,
 } from './SessionManager.ts'
+import { setSessionDraft as setSessionDraftForPlan } from '@craft-agent/shared/config'
 import { formatReferencesForModel } from './message-references'
 
 describe('mid-stream queue runtime invariants', () => {
@@ -155,9 +156,16 @@ describe('mid-stream queue runtime invariants', () => {
     managed.tokenUsage = { inputTokens: 419_000, outputTokens: 10, totalTokens: 419_010, contextTokens: 0, costUsd: 0 }
     await saveSession({ id: managed.id, workspaceRootPath: tmpRoot, createdAt: 1, lastUsedAt: 1, messages: [], tokenUsage: managed.tokenUsage } as any)
     await sm.setPendingPlanExecution(managed.id, '/tmp/plan.md', 'draft')
+    // The record's /compact turn correlation (production: stamped+persisted by
+    // the sendMessage that runs /compact). Only the record's own compaction
+    // turn may ready it.
+    const correlation = { generation: managed.processingGeneration, stopEpoch: managed.stopEpoch ?? 0 }
+    managed.pendingPlanExecution!.compactionTurn = correlation
+    const stored = loadSession(tmpRoot, managed.id)!
+    stored.pendingPlanExecution = managed.pendingPlanExecution as any
+    await saveSession(stored)
     const events: any[] = []
     sm.setEventSink((_channel, _target, event) => events.push(event))
-    ;(sm as any).persistSession = () => {}
 
     await (sm as any).processEvent(managed, { type: 'context_usage', contextUsage: { usedTokens: 12_000, limitTokens: 200_000, limitKind: 'compaction', isEstimate: true, isStale: false, canCompact: true } })
     await (sm as any).processEvent(managed, { type: 'info', message: 'Compacted Conversation', compactionTrigger: 'manual' })
@@ -166,10 +174,15 @@ describe('mid-stream queue runtime invariants', () => {
     expect(managed.tokenUsage.contextUsage?.usedTokens).toBe(12_000)
     expect(events.find(e => e.type === 'usage_update').tokenUsage.contextUsage.usedTokens).toBe(12_000)
     expect(events.find(e => e.type === 'info')).toMatchObject({ statusType: 'compaction_complete' })
+    // The legacy claim path never consumes an identified record; the durable
+    // dispatch is the only modern execution route.
+    const executionId = (getPendingPlanExecution(tmpRoot, managed.id) as { executionId?: string } | null)?.executionId
     expect(await sm.markPendingPlanExecutionDispatched(managed.id)).toBe(false)
     managed.isProcessing = false
-    expect(await sm.markPendingPlanExecutionDispatched(managed.id)).toBe(true)
-    expect(await sm.markPendingPlanExecutionDispatched(managed.id)).toBe(false)
+    // Verify durable admission here without starting a provider turn.
+    ;(sm as any).processNextQueuedMessage = () => {}
+    const dispatched = await sm.dispatchPendingPlanExecution(managed.id, executionId)
+    expect(dispatched).toEqual({ ok: true })
   })
 
   it('does not release pending plan execution for auto or failed compaction outcomes', async () => {
@@ -179,21 +192,43 @@ describe('mid-stream queue runtime invariants', () => {
     ] as const) {
       const managed = buildSession(id)
       await saveSession({ id: managed.id, workspaceRootPath: tmpRoot, createdAt: 1, lastUsedAt: 1, messages: [], tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, contextTokens: 0, costUsd: 0 } } as any)
-      await sm.setPendingPlanExecution(managed.id, '/tmp/plan.md')
+      await sm.setPendingPlanExecution(managed.id, '/tmp/plan.md', 'draft')
+      // Correlate the record's own compaction turn: the manual failure below
+      // must cancel it (and restore the consumed draft), while an automatic
+      // completion never releases it.
+      const correlation = { generation: managed.processingGeneration, stopEpoch: managed.stopEpoch ?? 0 }
+      managed.pendingPlanExecution!.compactionTurn = correlation
+      const stored = loadSession(tmpRoot, managed.id)!
+      stored.pendingPlanExecution = managed.pendingPlanExecution as any
+      await saveSession(stored)
       ;(sm as any).persistSession = () => {}
       await (sm as any).processEvent(managed, event)
       managed.isProcessing = false
       expect(await sm.markPendingPlanExecutionDispatched(managed.id)).toBe(false)
       const pending = getPendingPlanExecution(tmpRoot, managed.id)
-      if (id === 'auto-compact') expect(pending).toMatchObject({ awaitingCompaction: true, executionDispatched: false })
-      else expect(pending).toBeNull()
+      if (id === 'auto-compact') {
+        expect(pending).toMatchObject({ awaitingCompaction: true, executionDispatched: false })
+      } else {
+        // A failed manual compaction leaves a terminally non-executable
+        // outbox (recoverable snapshot) — never released, never cleared by
+        // input. (This suite stubs persistSession, so the live record is the
+        // assertion target; the stored-copy persistence is covered by the
+        // pending-plan suite.)
+        expect(managed.pendingPlanExecution).toMatchObject({ awaitingCompaction: true, executionDispatched: false, failed: true })
+      }
     }
   })
 
   it('keeps the pending plan record while sending the /compact command that releases it', async () => {
     const managed = buildSession('send-compact')
     await saveSession({ id: managed.id, workspaceRootPath: tmpRoot, createdAt: 1, lastUsedAt: 1, messages: [], tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, contextTokens: 0, costUsd: 0 } } as any)
-    await sm.setPendingPlanExecution(managed.id, '/tmp/plan.md')
+    await sm.setPendingPlanExecution(managed.id, '/tmp/plan.md', 'draft snapshot')
+    // Production flow: the draft is atomically consumed (receipt recorded)
+    // before the /compact is submitted — the receipt is what ties THIS
+    // record's compact correlation to the command.
+    setSessionDraftForPlan(managed.id, { text: 'draft snapshot' })
+    const consumed = await sm.consumePendingPlanDraft(managed.id, managed.pendingPlanExecution!.executionId!)
+    expect(consumed?.receipt.text).toBe(true)
     const agent = {
       getModel: () => 'claude-sonnet-4-6',
       setAllSources: () => {},
@@ -206,7 +241,7 @@ describe('mid-stream queue runtime invariants', () => {
     }
     ;(sm as any).getOrCreateAgent = async () => agent
     sm.setEventSink(() => {})
-    await sm.sendMessage(managed.id, '/compact')
+    await sm.sendMessage(managed.id, '/compact', undefined, undefined, { planExecutionId: managed.pendingPlanExecution!.executionId })
     expect(getPendingPlanExecution(tmpRoot, managed.id)).toMatchObject({ awaitingCompaction: false, executionDispatched: false })
   })
 

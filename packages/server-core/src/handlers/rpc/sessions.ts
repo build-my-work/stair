@@ -11,6 +11,7 @@ const VALID_THINKING_LEVELS_LIST = THINKING_LEVEL_IDS.map(id => `'${id}'`).join(
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import { setTransferableHandler } from './transfer'
+import { assertDraftSessionAccess } from './draft-access'
 
 interface ClientSessionWatchState {
   watcher: import('fs').FSWatcher
@@ -330,10 +331,16 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
 
   // Session commands - consolidated handler for session operations
   server.handle(RPC_CHANNELS.sessions.COMMAND, async (
-    _ctx,
+    ctx,
     sessionId: string,
     command: import('@craft-agent/shared/protocol').SessionCommand
   ) => {
+    if ([
+      'setPendingPlanExecution', 'consumePendingPlanDraft', 'dispatchPendingPlanExecution',
+      'markCompactionComplete', 'markPendingPlanExecutionDispatched', 'clearPendingPlanExecution',
+    ].includes(command.type)) {
+      assertDraftSessionAccess(ctx.workspaceId, sessionManager.getSessions(ctx.workspaceId ?? undefined), sessionId)
+    }
     switch (command.type) {
       case 'flag':
         return sessionManager.flagSession(sessionId)
@@ -413,13 +420,22 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
           command.planPath,
           command.draftInputSnapshot,
           command.draftReferencesSnapshot,
+          command.approvalText,
+          command.approvalBadges,
         )
       case 'markCompactionComplete':
         return sessionManager.markCompactionComplete(sessionId)
       case 'markPendingPlanExecutionDispatched':
         return sessionManager.markPendingPlanExecutionDispatched(sessionId)
+      case 'dispatchPendingPlanExecution':
+        // Preserve the calling client's transport context: the durable
+        // acceptance pins browser-tool routing to the approving client, the
+        // same way a first-class SEND_MESSAGE does.
+        return sessionManager.dispatchPendingPlanExecution(sessionId, command.executionId, { callerClientId: ctx.clientId })
+      case 'consumePendingPlanDraft':
+        return sessionManager.consumePendingPlanDraft(sessionId, command.executionId, command.local)
       case 'clearPendingPlanExecution':
-        return sessionManager.clearPendingPlanExecution(sessionId)
+        return sessionManager.clearPendingPlanExecution(sessionId, command.executionId)
       case 'addAnnotation':
         return sessionManager.addMessageAnnotation(sessionId, command.messageId, command.annotation)
       case 'removeAnnotation':
@@ -435,9 +451,10 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
 
   // Get pending plan execution state (for reload recovery)
   server.handle(RPC_CHANNELS.sessions.GET_PENDING_PLAN_EXECUTION, async (
-    _ctx,
+    ctx,
     sessionId: string
   ) => {
+    assertDraftSessionAccess(ctx.workspaceId, sessionManager.getSessions(ctx.workspaceId ?? undefined), sessionId)
     return sessionManager.getPendingPlanExecution(sessionId)
   })
 

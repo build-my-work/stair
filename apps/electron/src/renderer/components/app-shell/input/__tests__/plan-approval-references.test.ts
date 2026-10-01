@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'bun:test'
 
-// Source guard: this package has no effect-capable React DOM harness, while the
-// behavior itself is covered by the pending-plan persistence test.
+// The normal approval routing stays separate from compact preparation. Its
+// asynchronous behavior is covered by plan-preparation.integration.test.ts.
 const source = readFileSync(new URL('../FreeFormInput.tsx', import.meta.url), 'utf8')
 
 describe('plan approval draft references', () => {
@@ -14,12 +14,11 @@ describe('plan approval draft references', () => {
     )
   })
 
-  it('persists and replays the same references across Accept & Compact', () => {
-    expect(source).toContain('draftReferencesSnapshot: draftSnapshot.references')
-    // The reload path is the shared pending-plan dispatcher: the snapshot is
-    // persisted before /compact and replayed through its submit.
-    expect(source).toContain(
-      '}), undefined, undefined, pending.draftReferencesSnapshot)',
-    )
+  it('keeps the reload dispatch handoff on the host', () => {
+    // The reload/dispatch path is host-owned: one RPC performs readiness,
+    // durable acceptance and the model-turn kickoff — the renderer no longer
+    // holds claim→send→clear ownership.
+    expect(source).toContain("type: 'dispatchPendingPlanExecution'")
+    expect(source).not.toContain('markPendingPlanExecutionDispatched')
   })
 })

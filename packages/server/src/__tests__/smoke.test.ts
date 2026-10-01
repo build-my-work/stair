@@ -12,6 +12,7 @@ import { describe, it, expect, afterEach } from 'bun:test'
 import { join } from 'node:path'
 import type { Subprocess } from 'bun'
 import WebSocket from 'ws'
+import { PROTOCOL_VERSION } from '@craft-agent/shared/protocol'
 
 const SERVER_ENTRY = join(import.meta.dir, '..', 'index.ts')
 const STARTUP_TIMEOUT = 15_000
@@ -104,7 +105,7 @@ function connectWs(url: string, token: string): Promise<WebSocket> {
       ws.send(JSON.stringify({
         id: crypto.randomUUID(),
         type: 'handshake',
-        protocolVersion: '1.0',
+        protocolVersion: PROTOCOL_VERSION,
         token,
       }))
     })

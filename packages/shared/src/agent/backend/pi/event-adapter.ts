@@ -793,7 +793,9 @@ export class PiEventAdapter extends BaseEventAdapter {
             compactionTrigger: compactionEvent.reason === 'manual' ? 'manual' : 'auto',
           };
         } else {
-          yield { type: 'compaction_failed' };
+          // Overflow (automatic) compaction failure: never owns the Accept &
+          // Compact pending record.
+          yield { type: 'compaction_failed', compactionTrigger: compactionEvent.reason === 'manual' ? 'manual' : 'automatic' };
           // Defensive handler for the Pi SDK auto-compaction race (cause A
           // in plans/fix-pi-gpt-compaction.md). The raw stack
           // `undefined is not an object (evaluating 'this._autoCompactionAbortController.signal')`

@@ -119,7 +119,7 @@ export interface FreeFormInputProps {
   /** Whether the session is currently processing */
   isProcessing?: boolean
   /** Callback when message is submitted (skillSlugs from @mentions) */
-  onSubmit: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[]) => void
+  onSubmit: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'>) => void
   /** Callback to stop processing. Pass silent=true to skip "Response interrupted" message */
   onStop?: (silent?: boolean) => void
   /** External ref for the input */
@@ -151,6 +151,8 @@ export interface FreeFormInputProps {
   inputValue?: string
   /** Callback when input value changes */
   onInputChange?: (value: string) => void
+  onPreparePendingPlanExecution?: (command: Extract<import('@craft-agent/shared/protocol').SessionCommand, { type: 'setPendingPlanExecution' }>) => Promise<{ executionId?: string; restoreId?: string } | null>
+  onConsumePendingPlanDraft?: (executionId: string, live: { text: string; references: Reference[] }) => Promise<import('@craft-agent/shared/config').PlanDraftConsumption | null>
   /** Persisted attachment draft for this session (seeds local state on session switch) */
   attachmentsValue?: FileAttachment[]
   /** Callback when attachment list changes (add, remove, clear on send) */
@@ -277,6 +279,8 @@ export function FreeFormInput({
   showPermissionModeChip = false,
   inputValue,
   onInputChange,
+  onConsumePendingPlanDraft,
+  onPreparePendingPlanExecution,
   attachmentsValue,
   onAttachmentsChange,
   referencesValue = [],
@@ -578,6 +582,14 @@ export function FreeFormInput({
   const syncToParent = React.useCallback((value: string) => {
     if (!onInputChange) return
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
+    // During acceptance every edit must reach the coordinator, including a
+    // clear followed by identical text inside this otherwise debounced sync.
+    if (planPreparationInFlightRef.current) {
+      syncTimeoutRef.current = null
+      onInputChange(value)
+      prevInputValueRef.current = value
+      return
+    }
     syncTimeoutRef.current = setTimeout(() => {
       onInputChange(value)
       prevInputValueRef.current = value
@@ -737,6 +749,10 @@ export function FreeFormInput({
   // Register its listener before the approval listener can send /compact.
   const processingRef = React.useRef(isProcessing)
   processingRef.current = isProcessing
+  // Latest draft references for the conditional consumption of the
+  // Accept & Compact preparation (closure props go stale across the await).
+  const referencesValueRef = React.useRef(referencesValue)
+  referencesValueRef.current = referencesValue
   const requestPendingPlanRef = React.useRef<(() => void) | null>(null)
 
   React.useEffect(() => {
@@ -744,12 +760,28 @@ export function FreeFormInput({
     const dispatcher = createPendingPlanDispatcher({
       isBusy: () => processingRef.current,
       load: () => window.electronAPI.getPendingPlanExecution(sessionId),
-      claim: () => window.electronAPI.sessionCommand(sessionId, { type: 'markPendingPlanExecutionDispatched' }),
-      submit: pending => onSubmit(buildPlanApprovalMessage({
-        planPath: pending.planPath,
-        draftInput: pending.draftInputSnapshot,
-      }), undefined, undefined, pending.draftReferencesSnapshot),
-      clear: () => window.electronAPI.sessionCommand(sessionId, { type: 'clearPendingPlanExecution' }),
+      // Server-owned handoff: the host performs the atomic readiness recheck,
+      // durable acceptance and model-turn kickoff in one RPC — the renderer
+      // never holds claim→send→clear ownership across separate calls, and
+      // submits the identity it observed so a replaced record is rejected.
+      dispatch: pending => window.electronAPI.sessionCommand(sessionId, {
+        type: 'dispatchPendingPlanExecution',
+        ...(pending.executionId !== undefined ? { executionId: pending.executionId } : {}),
+      }),
+      // A failed record is a restore outbox: re-deliver it to the owning
+      // recovery handler (same channel as the live wire event) so reconnect
+      // or a missed event still drives the ordered restore + ACK.
+      notifyFailed: pending => {
+        window.dispatchEvent(new CustomEvent('craft:compaction-failed', {
+          detail: {
+            sessionId,
+            ...(pending.executionId !== undefined ? { executionId: pending.executionId } : {}),
+            ...(pending.restoreId !== undefined ? { restoreId: pending.restoreId } : {}),
+            ...(pending.draftInputSnapshot !== undefined ? { text: pending.draftInputSnapshot } : {}),
+            ...(pending.draftReferencesSnapshot?.length ? { references: pending.draftReferencesSnapshot } : {}),
+          },
+        }))
+      },
     })
     const request = () => {
       void dispatcher.request().catch(error => {
@@ -770,7 +802,7 @@ export function FreeFormInput({
       if (requestPendingPlanRef.current === request) requestPendingPlanRef.current = null
       dispatcher.dispose()
     }
-  }, [sessionId, onSubmit])
+  }, [sessionId])
 
   // Completion may be published while the host is finishing the current turn.
   // Its idle transition is a second wakeup, not a timing-based guess.
@@ -778,36 +810,177 @@ export function FreeFormInput({
     if (!isProcessing) requestPendingPlanRef.current?.()
   }, [isProcessing, sessionId])
 
+  // In-flight preparation ownership lives for the COMPONENT INSTANCE and is
+  // invalidated only by a real unmount or a session-ownership change — never
+  // by ordinary re-renders. The effect below therefore depends ONLY on the
+  // session: typing, permission-mode changes (which the preparation itself
+  // triggers) and parent re-renders must not recreate the listener or reset
+  // the guard. Live values and callbacks are read through stable refs so a
+  // preparation started on one render consumes with fresh, correct data.
+  const planPreparationInFlightRef = React.useRef<string | null>(null)
+  const activeSessionIdRef = React.useRef(sessionId)
+  activeSessionIdRef.current = sessionId
+  const permissionModeRef = React.useRef({ permissionMode, previousPermissionMode })
+  permissionModeRef.current = { permissionMode, previousPermissionMode }
+  const liveInputRef = React.useRef(input)
+  liveInputRef.current = input
+  const focusedPanelRef = React.useRef(isFocusedPanel)
+  focusedPanelRef.current = isFocusedPanel
+  const preparePlanRef = React.useRef(onPreparePendingPlanExecution)
+  preparePlanRef.current = onPreparePendingPlanExecution
+  const consumePlanDraftRef = React.useRef(onConsumePendingPlanDraft)
+  consumePlanDraftRef.current = onConsumePendingPlanDraft
+  const changeInputRef = React.useRef(onInputChange)
+  changeInputRef.current = onInputChange
+  const submitRef = React.useRef(onSubmit)
+  submitRef.current = onSubmit
+  const changePermissionModeRef = React.useRef(onPermissionModeChange)
+  changePermissionModeRef.current = onPermissionModeChange
+  const changeReferencesRef = React.useRef(onReferencesChange)
+  changeReferencesRef.current = onReferencesChange
+
   React.useEffect(() => {
     if (!sessionId) return
-    let preparing = false
+    // Staleness guard for THIS effect instance: a session switch or unmount
+    // invalidates any in-flight preparation — its resolved RPC must neither
+    // consume the draft nor submit a stale /compact intent.
+    let effectActive = true
+    // Durable-first preparation: snapshot the draft WITHOUT consuming it,
+    // persist the pending record (the host write rejects on IO failure or
+    // when an unresolved intent/outbox already exists), then consume — each
+    // component receipted durably BEFORE its local clear, and only when the
+    // user has not edited it while the RPC was in flight (scoped conditional
+    // consumption). A failure leaves the draft untouched; nothing to roll
+    // back and no newer edit is overwritten.
     const handleApprovePlanWithCompact = async (event: CustomEvent<PlanApprovalEventDetail>) => {
-      if (!shouldHandleScopedInputEvent({ sessionId, isFocusedPanel, targetSessionId: event.detail?.sessionId })) return
-      if (preparing || processingRef.current) return
-      preparing = true
+      if (!shouldHandleScopedInputEvent({ sessionId, isFocusedPanel: focusedPanelRef.current, targetSessionId: event.detail?.sessionId })) return
+      if (planPreparationInFlightRef.current || processingRef.current) return
+      planPreparationInFlightRef.current = sessionId
+      let preparedExecutionId: string | undefined
       try {
-        const draftSnapshot = event.detail?.includeDraftInput !== false
-          ? consumeInputDraftSnapshot()
-          : { text: '', references: [] as Reference[] }
-        if (permissionMode === 'safe') onPermissionModeChange?.(planExecutionMode(previousPermissionMode))
-        // Persist first. Only actual successful manual compaction changes this
-        // readiness; failure/automatic compaction events never authorize a send.
-        await window.electronAPI.sessionCommand(sessionId, {
-          type: 'setPendingPlanExecution',
+        const includeDraft = event.detail?.includeDraftInput !== false
+        const snapshotText = includeDraft ? coerceInputText(richInputRef.current?.value ?? liveInputRef.current).trim() : ''
+        const snapshotReferences = includeDraft ? [...referencesValueRef.current] : [] as Reference[]
+        const { permissionMode: mode, previousPermissionMode: previousMode } = permissionModeRef.current
+        if (mode === 'safe') changePermissionModeRef.current?.(planExecutionMode(previousMode))
+        const preparation = {
+          type: 'setPendingPlanExecution' as const,
           planPath: event.detail?.planPath ?? '',
-          draftInputSnapshot: draftSnapshot.text,
-          draftReferencesSnapshot: draftSnapshot.references,
+          draftInputSnapshot: snapshotText,
+          draftReferencesSnapshot: snapshotReferences,
+          // Renderer-composed localized approval text, stored with the
+          // immutable acceptance so the server-side dispatch preserves the
+          // user's language (headless servers never initialize i18next).
+          approvalText: buildPlanApprovalMessage({ planPath: event.detail?.planPath, draftInput: snapshotText }),
+        }
+        const record = preparePlanRef.current
+          ? await preparePlanRef.current(preparation)
+          : await window.electronAPI.sessionCommand(sessionId, preparation)
+        const executionId = (record as { executionId?: string } | null | undefined)?.executionId
+        preparedExecutionId = executionId
+        // Stale UI intent after an async resolve (session switched or the
+        // input unmounted mid-RPC): do not consume, do not submit.
+        if (!effectActive || activeSessionIdRef.current !== sessionId || !executionId) {
+          if (executionId) await window.electronAPI.sessionCommand(sessionId, { type: 'clearPendingPlanExecution', executionId })
+          return
+        }
+        // Atomic server-side consumption: the host clears the stored draft's
+        // matching components and records the exact receipt in the SAME
+        // drafts-file write, then this input mirrors the result — never the
+        // other way around. Components the user edited while the RPC was in
+        // flight are left alone locally (their text/refs survive in the
+        // input; recovery restores the snapshot under them). An IO failure
+        // rejects: nothing is cleared, no /compact is submitted (without a
+        // receipt the compact cannot ready the plan).
+        const liveText = coerceInputText(richInputRef.current?.value ?? liveInputRef.current)
+        if (!consumePlanDraftRef.current) throw new Error('Plan draft coordinator unavailable')
+        if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
+        syncTimeoutRef.current = null
+        const consumption = await consumePlanDraftRef.current(executionId, {
+          text: liveText,
+          references: [...referencesValueRef.current],
         })
-        onSubmit('/compact', undefined)
+        if (!effectActive || activeSessionIdRef.current !== sessionId || !consumption) {
+          await window.electronAPI.sessionCommand(sessionId, { type: 'clearPendingPlanExecution', executionId })
+          return
+        }
+        // The coordinator has merged the host's result with every later edit.
+        // Mirroring that result also preserves text from another window; a
+        // stale DOM snapshot must never replace the authoritative merge.
+        const nextText = consumption.draft?.text ?? ''
+        if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
+        syncTimeoutRef.current = null
+        setInput(nextText)
+        richInputRef.current?.setValue(nextText)
+        liveInputRef.current = nextText
+        inputRef.current = nextText
+        changeInputRef.current?.(nextText)
+        prevInputValueRef.current = nextText
+        changeReferencesRef.current?.(consumption.draft?.references ?? [])
+        submitRef.current('/compact', undefined, undefined, undefined, { planExecutionId: executionId })
       } catch (error) {
-        console.error('[FreeFormInput] Failed to start plan compaction:', error)
+        if (preparedExecutionId) {
+          await window.electronAPI.sessionCommand(sessionId, {
+            type: 'clearPendingPlanExecution', executionId: preparedExecutionId,
+          }).catch(recoveryError => console.warn('[FreeFormInput] Plan preparation cancellation retained for recovery:', recoveryError))
+          requestPendingPlanRef.current?.()
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        if (/PENDING_PLAN_EXISTS/.test(message)) {
+          // An unresolved intent/outbox owns this session: drive its recovery
+          // (restore + ACK) through the existing dispatcher machinery instead
+          // of replacing — and dropping — its snapshot.
+          console.warn('[FreeFormInput] An Accept & Compact is already pending; driving its recovery:', message)
+          requestPendingPlanRef.current?.()
+        } else {
+          console.error('[FreeFormInput] Failed to start plan compaction (draft preserved):', error)
+        }
       } finally {
-        preparing = false
+        if (planPreparationInFlightRef.current === sessionId) planPreparationInFlightRef.current = null
       }
     }
     window.addEventListener('craft:approve-plan-with-compact', handleApprovePlanWithCompact as unknown as EventListener)
-    return () => window.removeEventListener('craft:approve-plan-with-compact', handleApprovePlanWithCompact as unknown as EventListener)
-  }, [sessionId, isFocusedPanel, permissionMode, previousPermissionMode, onPermissionModeChange, onSubmit, consumeInputDraftSnapshot])
+    return () => {
+      effectActive = false
+      if (planPreparationInFlightRef.current === sessionId) planPreparationInFlightRef.current = null
+      window.removeEventListener('craft:approve-plan-with-compact', handleApprovePlanWithCompact as unknown as EventListener)
+    }
+  }, [sessionId])
+
+  // Synchronize the input's 300ms debounce before coordinator recovery decisions.
+  React.useEffect(() => {
+    const flush = (event: Event) => {
+      const target = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId
+      if (!sessionId || target !== sessionId) return
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
+      syncTimeoutRef.current = null
+      const text = coerceInputText(richInputRef.current?.value ?? liveInputRef.current)
+      changeInputRef.current?.(text)
+      prevInputValueRef.current = text
+    }
+    window.addEventListener('craft:flush-input', flush)
+    return () => window.removeEventListener('craft:flush-input', flush)
+  }, [sessionId, richInputRef])
+
+  // Recovery can confirm a consumed draft and restore its outbox in one
+  // microtask. Keep the imperative input current before the next flush reads
+  // it; waiting for a React render would re-admit the old visible snapshot.
+  React.useEffect(() => {
+    const restore = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; text?: string }>).detail
+      if (!sessionId || detail?.sessionId !== sessionId) return
+      const text = coerceInputText(detail.text)
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
+      syncTimeoutRef.current = null
+      richInputRef.current?.setValue(text)
+      liveInputRef.current = text
+      inputRef.current = text
+      prevInputValueRef.current = text
+      setInput(text)
+    }
+    window.addEventListener('craft:restore-input', restore)
+    return () => window.removeEventListener('craft:restore-input', restore)
+  }, [sessionId, richInputRef])
 
   // Listen for craft:focus-input events (restore focus after popover/dropdown closes)
   React.useEffect(() => {
