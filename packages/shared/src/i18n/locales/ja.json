@@ -1331,7 +1331,7 @@
   "settings.ai.decisions.localServerUnreachable": "{{url}} に到達できません。サーバーを起動して再確認してください。",
   "settings.ai.decisions.model": "モデル",
   "settings.ai.decisions.modelDesc": "固定するモデル ID。空欄でプロバイダーの既定値を使用します。",
-  "settings.ai.decisions.privacyNote": "エージェントが decide に渡すテキストはこのプロバイダーに送信されます。各呼び出しはテキスト本文を含めずに logs/decisions.jsonl (app config folder) に記録されます。",
+  "settings.ai.decisions.privacyNote": "エージェントが decide に渡すテキストはこのプロバイダーに送信されます。各呼び出しはテキスト本文を含めずに logs/decisions.jsonl（アプリの設定フォルダー） に記録されます。",
   "settings.ai.decisions.recheck": "再確認",
   "settings.ai.decisions.removeKey": "キーを削除",
   "settings.ai.decisions.reuseConnection": "{{name}} のキーを使用",

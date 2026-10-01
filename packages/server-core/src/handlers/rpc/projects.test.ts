@@ -8,6 +8,7 @@ import {
   loadProject,
   loadProjectById,
 } from '@craft-agent/shared/projects'
+import { createPage, loadWorkspacePages } from '@craft-agent/shared/pages'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import {
   createSession as createStoredSession,
@@ -151,6 +152,52 @@ describe('Project RPC deletion', () => {
         .rejects.toThrow('Browser cleanup failed')
       expect(loadProject(rootPath, project.slug)).not.toBeNull()
       expect(finishProjectDeletion).toHaveBeenCalledWith(workspace.id, project.id, false)
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
+  it('keeps Page bindings untouched when the Browser deletion gate cannot be acquired', async () => {
+    const rootPath = join(sandbox, 'workspace-gate-failure')
+    const workspace = { ...createWorkspaceAtPath(rootPath, 'Workspace'), rootPath }
+    const project = createProject(rootPath, { name: 'Gate Failure' })
+    const page = createPage(rootPath, { name: 'Linked Page', projectId: project.id })
+    const lookup = spyOn(config, 'getWorkspaceByNameOrId').mockReturnValue(workspace as never)
+    const finishProjectDeletion = mock(async () => {})
+
+    try {
+      const remove = register(
+        workspace,
+        mock(async () => { throw new Error('no browser client connected') }),
+        finishProjectDeletion,
+      ).get(RPC_CHANNELS.projects.DELETE)!
+      await expect(remove(requestContext(), workspace.id, project.slug))
+        .rejects.toThrow('no browser client connected')
+      // The gate failed before any on-disk mutation: the Project survives and
+      // its Page keeps the projectId binding (no half-applied unbind).
+      expect(loadProject(rootPath, project.slug)).not.toBeNull()
+      expect(loadWorkspacePages(rootPath).find(p => p.config.slug === page.slug)?.config.projectId)
+        .toBe(project.id)
+      expect(finishProjectDeletion).toHaveBeenCalledWith(workspace.id, project.id, false)
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
+  it('unbinds linked Pages on successful deletion', async () => {
+    const rootPath = join(sandbox, 'workspace-gate-success')
+    const workspace = { ...createWorkspaceAtPath(rootPath, 'Workspace'), rootPath }
+    const project = createProject(rootPath, { name: 'Gate Success' })
+    const page = createPage(rootPath, { name: 'Linked Page', projectId: project.id })
+    const lookup = spyOn(config, 'getWorkspaceByNameOrId').mockReturnValue(workspace as never)
+
+    try {
+      const remove = register(workspace).get(RPC_CHANNELS.projects.DELETE)!
+      await remove(requestContext(), workspace.id, project.slug)
+      expect(loadProject(rootPath, project.slug)).toBeNull()
+      // unbindProjectFromPages drops the field entirely.
+      expect(loadWorkspacePages(rootPath).find(p => p.config.slug === page.slug)?.config.projectId)
+        .toBeUndefined()
     } finally {
       lookup.mockRestore()
     }

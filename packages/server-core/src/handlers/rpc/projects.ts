@@ -111,12 +111,15 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
         projectSlug,
         async project => {
           deletingProjectId = project.id
+          // Acquire the Browser deletion gate before any on-disk mutation: if the
+          // hosting client is gone and begin throws, the Project (and its Pages)
+          // must survive untouched.
+          await deps.sessionManager.beginBrowserProjectDeletion(workspaceId, project.id)
           // Pages may reference the Project without belonging to it; unbind them
           // instead of leaving dangling links. Sessions keep immutable Project
           // ownership — deleteProject enforces PROJECT_NOT_EMPTY.
           const { unbindProjectFromPages } = await import('@craft-agent/shared/pages')
           touchedPages = unbindProjectFromPages(workspace.rootPath, project.id)
-          await deps.sessionManager.beginBrowserProjectDeletion(workspaceId, project.id)
         },
       )
     } catch (error) {

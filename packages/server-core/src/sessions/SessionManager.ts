@@ -8086,8 +8086,34 @@ export class SessionManager implements ISessionManager {
     // Identity-bearing events are idempotent, including trailing events after Stop.
     if (!payload) {
       // A trailing event for an already-recovered (or Stop-cancelled) steer
-      // must not duplicate; only identity-less steers take the fallback.
-      if (!steer.messageId) this.recoverUnidentifiedSteer(managed, steer)
+      // must not duplicate. A steer without a messageId (a pre-identity backend
+      // or a message-formatted references payload) recovers the original stored
+      // message so structured references ride in the queue entry — the
+      // model-formatted text with its internal `<stair_reference_data>` block
+      // must never be re-queued.
+      if (!steer.messageId) {
+        const original = managed.messages.findLast(message => (
+          message.role === 'user'
+          && formatReferencesForModel(message.content, message.references ?? []) === steer.message
+        ))
+        if (original) {
+          const replayOptions: SendMessageOptions = {
+            ...(original.references?.length ? { references: original.references } : {}),
+            ...(original.badges?.length ? { badges: original.badges } : {}),
+            ...(original.hidden ? { hidden: true } : {}),
+          }
+          original.isQueued = true
+          managed.messageQueue.push({
+            message: original.content,
+            storedAttachments: original.attachments,
+            options: Object.keys(replayOptions).length > 0 ? replayOptions : undefined,
+            messageId: original.id,
+          })
+        } else {
+          managed.messageQueue.push({ message: stripReferencesFromModelInput(steer.message) })
+        }
+        this.persistSession(managed)
+      }
       return
     }
     if (steer.messageId) managed.acceptedSteers?.delete(steer.messageId)
@@ -8106,36 +8132,6 @@ export class SessionManager implements ISessionManager {
     })
     if (before < 0) managed.messageQueue.push(payload)
     else managed.messageQueue.splice(before, 0, payload)
-    this.persistSession(managed)
-  }
-
-  /**
-   * A steer without an identity-bearing payload (a pre-identity backend or a
-   * message-formatted references payload). Recover the original stored message
-   * so structured references ride in the queue entry — the model-formatted text
-   * with its internal `<stair_reference_data>` block must never be re-queued.
-   */
-  private recoverUnidentifiedSteer(managed: ManagedSession, steer: { message: string }): void {
-    const original = managed.messages.findLast(message => (
-      message.role === 'user'
-      && formatReferencesForModel(message.content, message.references ?? []) === steer.message
-    ))
-    if (original) {
-      const replayOptions: SendMessageOptions = {
-        ...(original.references?.length ? { references: original.references } : {}),
-        ...(original.badges?.length ? { badges: original.badges } : {}),
-        ...(original.hidden ? { hidden: true } : {}),
-      }
-      original.isQueued = true
-      managed.messageQueue.push({
-        message: original.content,
-        storedAttachments: original.attachments,
-        options: Object.keys(replayOptions).length > 0 ? replayOptions : undefined,
-        messageId: original.id,
-      })
-    } else {
-      managed.messageQueue.push({ message: stripReferencesFromModelInput(steer.message) })
-    }
     this.persistSession(managed)
   }
 

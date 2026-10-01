@@ -1341,7 +1341,7 @@
   "settings.ai.decisions.localServerUnreachable": "Niedostępny pod {{url}}. Uruchom serwer i sprawdź ponownie.",
   "settings.ai.decisions.model": "Model",
   "settings.ai.decisions.modelDesc": "Przypięty identyfikator modelu. Pozostaw puste, aby użyć domyślnego dostawcy.",
-  "settings.ai.decisions.privacyNote": "Tekst przekazywany przez agenta do decide jest wysyłany do tego dostawcy. Każde wywołanie jest zapisywane w logs/decisions.jsonl (app config folder) bez samego tekstu.",
+  "settings.ai.decisions.privacyNote": "Tekst przekazywany przez agenta do decide jest wysyłany do tego dostawcy. Każde wywołanie jest zapisywane w logs/decisions.jsonl (folderze konfiguracji aplikacji) bez samego tekstu.",
   "settings.ai.decisions.recheck": "Sprawdź ponownie",
   "settings.ai.decisions.removeKey": "Usuń klucz",
   "settings.ai.decisions.reuseConnection": "Użyj klucza z {{name}}",

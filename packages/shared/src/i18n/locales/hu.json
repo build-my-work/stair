@@ -1331,7 +1331,7 @@
   "settings.ai.decisions.localServerUnreachable": "Nem érhető el itt: {{url}}. Indítsd el a szervert, majd ellenőrizd újra.",
   "settings.ai.decisions.model": "Modell",
   "settings.ai.decisions.modelDesc": "Rögzített modellazonosító. Hagyd üresen a szolgáltató alapértelmezéséhez.",
-  "settings.ai.decisions.privacyNote": "Az ügynök által a decide eszköznek átadott szöveg ehhez a szolgáltatóhoz kerül. Minden hívás a logs/decisions.jsonl (app config folder) fájlba naplózódik, maga a szöveg nélkül.",
+  "settings.ai.decisions.privacyNote": "Az ügynök által a decide eszköznek átadott szöveg ehhez a szolgáltatóhoz kerül. Minden hívás a logs/decisions.jsonl (alkalmazás konfigurációs mappája) fájlba naplózódik, maga a szöveg nélkül.",
   "settings.ai.decisions.recheck": "Újraellenőrzés",
   "settings.ai.decisions.removeKey": "Kulcs eltávolítása",
   "settings.ai.decisions.reuseConnection": "{{name}} kulcsának használata",
