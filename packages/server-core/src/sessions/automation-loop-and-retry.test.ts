@@ -24,7 +24,7 @@ describe('automation loop guard', () => {
   afterEach(() => rmSync(tmpRoot, { recursive: true, force: true }))
 
   function sessionWith(id: string, triggeredBy?: Record<string, unknown>) {
-    const managed = createManagedSession({ id, name: id }, workspace() as never, { messagesLoaded: true })
+    const managed = createManagedSession({ id, name: id, projectId: 'proj-test' }, workspace() as never, { messagesLoaded: true })
     if (triggeredBy) managed.triggeredBy = triggeredBy
     ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(id, managed)
     return managed
@@ -106,7 +106,7 @@ describe('source-activation auto-retry', () => {
     const sm = new SessionManager()
     let asked = 0
     ;(sm as any).decisionFeatureActive = () => { asked++; return true }
-    const managed = createManagedSession({ id: 's', name: 's' }, { id: 'w', name: 'w', rootPath: tmpdir(), createdAt: 1 } as never, { messagesLoaded: true })
+    const managed = createManagedSession({ id: 's', name: 's', projectId: 'proj-test' }, { id: 'w', name: 'w', rootPath: tmpdir(), createdAt: 1 } as never, { messagesLoaded: true })
     managed.thinkingLevel = 'max'
 
     managed.turnThinkingOverride = 'high'

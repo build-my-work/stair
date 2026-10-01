@@ -48,12 +48,6 @@ function verifyPackagedRuntimeDependencies(
     'stair',
     'icon.png',
   )
-  const sessionServer = path.join(
-    appRoot,
-    'resources',
-    'session-mcp-server',
-    'index.js',
-  )
   const piServerRoot = path.join(appRoot, 'resources', 'pi-agent-server')
   const piServer = path.join(piServerRoot, 'index.js')
   const koffiPackage = path.join(piServerRoot, 'node_modules', 'koffi', 'package.json')
@@ -136,7 +130,6 @@ function verifyPackagedRuntimeDependencies(
   }
 
   for (const filePath of [
-    sessionServer,
     piServer,
     koffiPackage,
     koffiBinary,

@@ -322,7 +322,10 @@ describe('mid-stream queue runtime invariants', () => {
     await sm.cancelProcessing(managed.id)
     expect(forceAbort).toHaveBeenCalledTimes(1)
     expect(events.find(e => e.type === 'interrupted').queuedMessages).toEqual(['pending'])
-    expect(managed.messages.some(m => m.id === 'a')).toBe(false)
+    // Stair keeps the queued bubble visible until the renderer acknowledges the
+    // restored draft (queuedRestoreId handshake) instead of removing it at once.
+    expect(managed.messages.some(m => m.id === 'a')).toBe(true)
+    expect(managed.messages.find(m => m.id === 'a')?.queuedRestoreId).toBeTruthy()
     expect(managed.messageQueue).toEqual([])
     await (sm as any).processEvent(managed, { type: 'steer_undelivered', ...payload })
     expect(managed.messageQueue).toEqual([])

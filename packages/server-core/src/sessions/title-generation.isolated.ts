@@ -28,6 +28,7 @@ function setup() {
   const manager = new SessionManager()
   const managed = createManagedSession({
     id: 'title-test',
+    projectId: 'proj-test',
     llmConnection: 'chatgpt-plus-test',
     model: 'pi/gpt-5.4',
   }, {

@@ -1,6 +1,7 @@
 export interface PendingPlanExecution {
   planPath: string
   draftInputSnapshot?: string
+  draftReferencesSnapshot?: import('@craft-agent/core').Reference[]
   awaitingCompaction: boolean
   executionDispatched: boolean
 }

@@ -1331,7 +1331,7 @@
   "settings.ai.decisions.localServerUnreachable": "No se puede acceder a {{url}}. Inicia el servidor y vuelve a comprobar.",
   "settings.ai.decisions.model": "Modelo",
   "settings.ai.decisions.modelDesc": "ID de modelo fijado. Déjalo vacío para usar el predeterminado del proveedor.",
-  "settings.ai.decisions.privacyNote": "El texto que el agente pasa a decide se envía a este proveedor. Cada llamada se registra en ~/.craft-agent/logs/decisions.jsonl sin el texto en sí.",
+  "settings.ai.decisions.privacyNote": "El texto que el agente pasa a decide se envía a este proveedor. Cada llamada se registra en logs/decisions.jsonl (app config folder) sin el texto en sí.",
   "settings.ai.decisions.recheck": "Volver a comprobar",
   "settings.ai.decisions.removeKey": "Eliminar clave",
   "settings.ai.decisions.reuseConnection": "Usar la clave de {{name}}",

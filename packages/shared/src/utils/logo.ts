@@ -10,7 +10,6 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 import { CONFIG_DIR } from '../config/paths.ts';
 import { readJsonFileSync } from './files.ts';
-import { CONFIG_DIR } from '../config/paths.ts';
 
 // Cache path for persisted provider domains
 const PROVIDER_DOMAINS_CACHE_PATH = join(CONFIG_DIR, 'provider-domains.json');

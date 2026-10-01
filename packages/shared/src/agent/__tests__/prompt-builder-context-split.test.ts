@@ -46,6 +46,7 @@ describe('PromptBuilder volatile/stable context split (issue #862)', () => {
       ]
       const combined = builder.buildContextParts(OPTS, SOURCE_BLOCK)
       expect(combined).toEqual(composed)
+      expect(combined[0]).toContain("USER'S DATE AND TIME")
     } finally {
       setSystemTime()
     }

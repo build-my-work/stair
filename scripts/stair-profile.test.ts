@@ -252,11 +252,10 @@ describe('Stair 构建入口', () => {
     )
     expect(buildEntry).toContain('await downloadBun(buildConfig)')
     expect(buildEntry).toContain('await downloadUv(buildConfig)')
-    expect(buildEntry).toContain('copySessionServer(buildConfig)')
     expect(buildEntry).toContain('copyPiAgentServer(buildConfig)')
     expect(buildEntry).toContain('copySDK(buildConfig)')
     expect(buildEntry).toContain('copyRipgrep(buildConfig)')
-    expect(buildEntry).toContain('verifyMcpServersExist(buildConfig)')
+    expect(buildEntry).toContain('verifySubprocessServersExist(buildConfig)')
     expect(buildEntry).toContain('verifySDKCopy(buildConfig)')
     expect(buildEntry).toContain('const archFlag = `--${arch}`')
     expect(buildEntry).toContain('...(hasExplicitArch ? [] : [archFlag])')
@@ -330,12 +329,6 @@ describe('Stair 构建入口', () => {
       }).toThrow('too small')
       truncateSync(claudeBinary, 50_000_000)
 
-      expect(() => {
-        afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
-      }).toThrow('session-mcp-server')
-      const sessionServer = join(resourcesPath, 'app/resources/session-mcp-server/index.js')
-      mkdirSync(join(sessionServer, '..'), { recursive: true })
-      writeFileSync(sessionServer, 'session')
       expect(() => {
         afterPack.verifyPackagedRuntimeDependencies(resourcesPath, 'darwin', 'arm64')
       }).toThrow('pi-agent-server')

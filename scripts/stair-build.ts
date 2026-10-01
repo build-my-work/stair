@@ -4,10 +4,9 @@ import {
   copyPiAgentServer,
   copyRipgrep,
   copySDK,
-  copySessionServer,
   downloadBun,
   downloadUv,
-  verifyMcpServersExist,
+  verifySubprocessServersExist,
   verifySDKCopy,
   type Arch,
   type BuildConfig,
@@ -57,9 +56,8 @@ if (buildExitCode !== 0) process.exit(buildExitCode)
 
 await downloadBun(buildConfig)
 await downloadUv(buildConfig)
-copySessionServer(buildConfig)
 copyPiAgentServer(buildConfig)
-verifyMcpServersExist(buildConfig)
+verifySubprocessServersExist(buildConfig)
 copySDK(buildConfig)
 verifySDKCopy(buildConfig)
 copyRipgrep(buildConfig)

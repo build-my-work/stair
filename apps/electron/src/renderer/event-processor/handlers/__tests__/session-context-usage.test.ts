@@ -5,7 +5,7 @@ import type { SessionState } from '../../types'
 const usage = { inputTokens: 419000, outputTokens: 10, totalTokens: 419010, contextTokens: 419000, costUsd: 2, contextWindow: 1000000 }
 const contextUsage = { usedTokens: 12000, limitTokens: 200000, limitKind: 'compaction' as const, isEstimate: true, isStale: false, canCompact: true }
 function state(): SessionState {
-  return { session: { id: 's', workspaceId: 'w', workspaceName: 'Workspace', name: 'Test', messages: [], isProcessing: true, lastMessageAt: 0, tokenUsage: { ...usage, contextUsage } }, streaming: null }
+  return { session: { id: 's', workspaceId: 'w', projectId: 'p', workspaceName: 'Workspace', name: 'Test', messages: [], isProcessing: true, lastMessageAt: 0, tokenUsage: { ...usage, contextUsage } }, streaming: null }
 }
 
 describe('renderer occupancy is separate from cumulative usage', () => {

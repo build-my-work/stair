@@ -4860,7 +4860,8 @@ describe('BrowserPaneManager popup teardown after the popup window was destroyed
   let manager: InstanceType<typeof BrowserPaneManager>
 
   beforeEach(() => {
-    createdWindows.length = 0
+    webContentsViewOptions = []
+    webContentsViews = []
     toolbarLoadFailuresRemaining = 0
     manager = new BrowserPaneManager()
   })

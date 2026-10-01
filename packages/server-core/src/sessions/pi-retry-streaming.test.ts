@@ -24,7 +24,7 @@ function harness() {
   manager.sendEvent = event => { events.push(event) }
   manager.persistSession = () => {}
   manager.monotonic = () => Date.now()
-  const managed = createManagedSession({ id: 'retry-test' }, {
+  const managed = createManagedSession({ id: 'retry-test', projectId: 'proj-test' }, {
     id: 'workspace', slug: 'workspace', name: 'Test', rootPath: '/unused-retry-test', createdAt: Date.now(),
   })
   return { manager, managed, events, fire: (event: AgentEvent) => manager.processEvent(managed, event) }

@@ -1331,7 +1331,7 @@
   "settings.ai.decisions.localServerUnreachable": "无法访问 {{url}}。请启动服务器后重新检查。",
   "settings.ai.decisions.model": "模型",
   "settings.ai.decisions.modelDesc": "固定的模型 ID。留空则使用提供商默认值。",
-  "settings.ai.decisions.privacyNote": "智能体传给 decide 的文本会发送到此提供商。每次调用都会记录到 ~/.craft-agent/logs/decisions.jsonl，但不包含文本本身。",
+  "settings.ai.decisions.privacyNote": "智能体传给 decide 的文本会发送到此提供商。每次调用都会记录到应用配置目录下的 logs/decisions.jsonl，但不包含文本本身。",
   "settings.ai.decisions.recheck": "重新检查",
   "settings.ai.decisions.removeKey": "移除密钥",
   "settings.ai.decisions.reuseConnection": "使用 {{name}} 的密钥",

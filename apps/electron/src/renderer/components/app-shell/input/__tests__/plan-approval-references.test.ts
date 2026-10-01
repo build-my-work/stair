@@ -16,11 +16,10 @@ describe('plan approval draft references', () => {
 
   it('persists and replays the same references across Accept & Compact', () => {
     expect(source).toContain('draftReferencesSnapshot: draftSnapshot.references')
+    // The reload path is the shared pending-plan dispatcher: the snapshot is
+    // persisted before /compact and replayed through its submit.
     expect(source).toContain(
-      'onSubmit(executionMessage, undefined, undefined, draftSnapshot.references)',
-    )
-    expect(source).toContain(
-      'onSubmit(executionMessage, undefined, undefined, pending.draftReferencesSnapshot)',
+      '}), undefined, undefined, pending.draftReferencesSnapshot)',
     )
   })
 })

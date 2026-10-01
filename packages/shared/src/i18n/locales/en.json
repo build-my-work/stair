@@ -1331,7 +1331,7 @@
   "settings.ai.decisions.localServerUnreachable": "Not reachable at {{url}}. Start the server, then re-check.",
   "settings.ai.decisions.model": "Model",
   "settings.ai.decisions.modelDesc": "Pinned model id. Leave empty for the provider default.",
-  "settings.ai.decisions.privacyNote": "Text the agent passes to decide is sent to this provider. Every call is logged to ~/.craft-agent/logs/decisions.jsonl without the text itself.",
+  "settings.ai.decisions.privacyNote": "Text the agent passes to decide is sent to this provider. Every call is logged to logs/decisions.jsonl in the app's config folder without the text itself.",
   "settings.ai.decisions.recheck": "Re-check",
   "settings.ai.decisions.removeKey": "Remove key",
   "settings.ai.decisions.reuseConnection": "Use key from {{name}}",

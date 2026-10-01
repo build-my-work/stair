@@ -13,7 +13,6 @@ import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 
 import { CONFIG_DIR } from '../config/paths.ts';
 import { getBundledAssetsDir, toPortablePath } from '../utils/paths.ts';
 import { debug } from '../utils/debug.ts';
-import { CONFIG_DIR } from '../config/paths.ts';
 
 const DOCS_DIR = join(CONFIG_DIR, 'docs');
 

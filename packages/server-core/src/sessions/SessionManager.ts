@@ -18,7 +18,7 @@ import { basename, dirname, join } from 'path'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
-import { type AgentEvent, type ChatOptions, getPermissionMode, setPermissionMode, setGuardedModeActiveResolver, clampPermissionMode, planExecutionMode, parsePermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, type BrowserWindowFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
+import { type AgentEvent, type ChatOptions, getPermissionMode, setPermissionMode, setGuardedModeActiveResolver, clampPermissionMode, planExecutionMode, parsePermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserWindowFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
@@ -7177,7 +7177,6 @@ export class SessionManager implements ISessionManager {
         attachments: storedAttachments,
         badges: options?.badges,
         ...(references.length > 0 ? { references } : {}),
-        ...(delivery.shouldQueue ? { isQueued: true } : {}),
         // Hidden system-generated messages reach the model but never render as a
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
@@ -8080,9 +8079,17 @@ export class SessionManager implements ISessionManager {
 
   /** Reconcile an accepted steer with its original bubble and full host payload. */
   private recoverUndeliveredSteer(managed: ManagedSession, steer: { message: string; messageId?: string }): void {
-    const payload = steer.messageId ? managed.acceptedSteers?.get(steer.messageId) : { message: steer.message }
+    // Only identity-bearing steers have a recoverable payload. A steer without
+    // a messageId (a pre-identity backend or a references-formatted message)
+    // goes through the references-aware fallback instead.
+    const payload = steer.messageId ? managed.acceptedSteers?.get(steer.messageId) : undefined
     // Identity-bearing events are idempotent, including trailing events after Stop.
-    if (!payload) return
+    if (!payload) {
+      // A trailing event for an already-recovered (or Stop-cancelled) steer
+      // must not duplicate; only identity-less steers take the fallback.
+      if (!steer.messageId) this.recoverUnidentifiedSteer(managed, steer)
+      return
+    }
     if (steer.messageId) managed.acceptedSteers?.delete(steer.messageId)
     const existing = payload.messageId ? managed.messages.find(m => m.id === payload.messageId) : undefined
     if (existing) {
@@ -8099,6 +8106,36 @@ export class SessionManager implements ISessionManager {
     })
     if (before < 0) managed.messageQueue.push(payload)
     else managed.messageQueue.splice(before, 0, payload)
+    this.persistSession(managed)
+  }
+
+  /**
+   * A steer without an identity-bearing payload (a pre-identity backend or a
+   * message-formatted references payload). Recover the original stored message
+   * so structured references ride in the queue entry — the model-formatted text
+   * with its internal `<stair_reference_data>` block must never be re-queued.
+   */
+  private recoverUnidentifiedSteer(managed: ManagedSession, steer: { message: string }): void {
+    const original = managed.messages.findLast(message => (
+      message.role === 'user'
+      && formatReferencesForModel(message.content, message.references ?? []) === steer.message
+    ))
+    if (original) {
+      const replayOptions: SendMessageOptions = {
+        ...(original.references?.length ? { references: original.references } : {}),
+        ...(original.badges?.length ? { badges: original.badges } : {}),
+        ...(original.hidden ? { hidden: true } : {}),
+      }
+      original.isQueued = true
+      managed.messageQueue.push({
+        message: original.content,
+        storedAttachments: original.attachments,
+        options: Object.keys(replayOptions).length > 0 ? replayOptions : undefined,
+        messageId: original.id,
+      })
+    } else {
+      managed.messageQueue.push({ message: stripReferencesFromModelInput(steer.message) })
+    }
     this.persistSession(managed)
   }
 
@@ -10129,10 +10166,11 @@ export class SessionManager implements ISessionManager {
         // persisted user message so an activation that force-aborted the turn still
         // continues; skip only when there is genuinely nothing to resend (preserves
         // the "no bogus empty resend" intent). See bugfix/session-continuation.
+        // The retry always uses the cleaned original: never the model-formatted
+        // text with its internal reference block or retry guidance.
         // A references-only turn (empty text, live citations) still retries.
-        const capturedMessage = event.originalMessage ?? ''
-        const resendMessage = capturedMessage.trim()
-          ? capturedMessage
+        const resendMessage = originalMessage.trim()
+          ? originalMessage
           : lastUserMessageContent(managed.messages)
         if (!resendMessage.trim() && !references?.length) {
           sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but no message to resend (empty capture, no prior user message); skipping auto-retry`)
