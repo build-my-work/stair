@@ -305,11 +305,23 @@ export class SessionDraftCoordinator {
       this.mutatedSessionIds,
     )
     this.drafts = drafts
-    this.persistedReferences.clear()
-    this.confirmedContent.clear()
-    this.serverRevisions.clear()
-    for (const [sessionId, revision] of Object.entries(state.revisions ?? {})) this.serverRevisions.set(sessionId, revision)
+    // A dirty draft was edited against its earlier confirmed base, not against
+    // the authority that just arrived. Preserve that base/version until its
+    // next three-way commit; otherwise unseen restored input becomes a deletion.
+    for (const sessionId of this.persistedReferences.keys()) {
+      if (!this.mutatedSessionIds.has(sessionId)) this.persistedReferences.delete(sessionId)
+    }
+    for (const sessionId of this.confirmedContent.keys()) {
+      if (!this.mutatedSessionIds.has(sessionId)) this.confirmedContent.delete(sessionId)
+    }
+    for (const sessionId of this.serverRevisions.keys()) {
+      if (!this.mutatedSessionIds.has(sessionId)) this.serverRevisions.delete(sessionId)
+    }
+    for (const [sessionId, revision] of Object.entries(state.revisions ?? {})) {
+      if (!this.mutatedSessionIds.has(sessionId)) this.serverRevisions.set(sessionId, revision)
+    }
     for (const [sessionId, draft] of Object.entries(state.drafts)) {
+      if (this.mutatedSessionIds.has(sessionId)) continue
       this.persistedReferences.set(sessionId, draft.references ?? [])
       this.confirmedContent.set(sessionId, { text: draft.text, ...(draft.attachments?.length ? { attachments: draft.attachments } : {}) })
     }

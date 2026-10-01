@@ -288,7 +288,7 @@ class SessionPersistenceQueue {
    * Flush all pending sessions. Call this on app quit.
    */
   async flushAll(): Promise<void> {
-    const sessionIds = [...this.pending.keys()]
+    const sessionIds = [...new Set([...this.pending.keys(), ...this.writeInProgress.keys()])]
     await Promise.all(sessionIds.map(id => this.flush(id)))
   }
 

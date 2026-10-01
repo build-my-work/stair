@@ -2,12 +2,13 @@ import { test, expect, afterAll } from 'bun:test'
 import { copyFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { AgentEvent } from '@craft-agent/core/types'
 
 // Delivery regressions for the durably accepted plan approval, ported from
 // the workbench continuation-handoff review plus the two correction-B cases:
 // the delivery tracker must survive EVERY pre-turn await (agent construction,
 // source servers, pre-turn decisions) and only end at the real execution
-// boundary — the first event from the chat iterator. A crash before that
+// boundary — the producer's input_accepted proof. A crash before that
 // re-queues the approval once by its stable message id (no duplicate bubble);
 // a Stop/delete in the pre-turn window cancels without executing.
 const profile = mkdtempSync(join(tmpdir(), 'stair-plan-delivery-profile-'))
@@ -17,7 +18,7 @@ copyFileSync(join(import.meta.dir, '../../../../apps/electron/resources/config-d
 const { SessionManager, createManagedSession } = await import('./SessionManager.ts')
 const { createWorkspaceAtPath } = await import('@craft-agent/shared/workspaces')
 const { saveSession, loadSession, listSessions, getPendingPlanExecution, sessionPersistenceQueue } = await import('@craft-agent/shared/sessions')
-const { setSessionDraft } = await import('@craft-agent/shared/config')
+const { setSessionDraft, getPlanDraftConsumption } = await import('@craft-agent/shared/config')
 const { PendingSteers } = await import('@craft-agent/shared/agent/backend/claude/pending-steers')
 
 const workspaces: string[] = []
@@ -155,6 +156,9 @@ test('a blocked first iterator delivery keeps the approval recoverable until rea
   await ready(sm, managed, ws)
   let releaseFirst!: () => void
   const firstNextGate = new Promise<void>(resolve => { releaseFirst = resolve })
+  const statusDelivered = Promise.withResolvers<void>()
+  const acceptanceGate = Promise.withResolvers<void>()
+  const acceptanceDelivered = Promise.withResolvers<void>()
   let chatStarted = false
   const agentStub = {
     getModel: () => 'stub',
@@ -163,15 +167,22 @@ test('a blocked first iterator delivery keeps the approval recoverable until rea
     getSessionId: () => 'sdk-session',
     chat: () => {
       chatStarted = true
-      return (async function* () {
+      return (async function* (): AsyncGenerator<AgentEvent> {
         await firstNextGate // first iterator delivery pending: no backend event
-        yield { type: 'status', message: 'started' } as never
+        yield { type: 'status', message: 'started' }
+        statusDelivered.resolve()
+        await acceptanceGate.promise
+        yield { type: 'input_accepted' }
+        acceptanceDelivered.resolve()
+        yield { type: 'complete' }
       })()
     },
   }
   ;(sm as unknown as { getOrCreateAgent: () => Promise<unknown> }).getOrCreateAgent = async () => agentStub as never
   const result = await sm.dispatchPendingPlanExecution(managed.id, managed.pendingPlanExecution?.executionId)
   expect(result).toEqual({ ok: true })
+  const executionId = managed.pendingPlanExecution!.executionId!
+  const approvalMessageId = managed.pendingPlanExecution!.approvalMessageId!
   await sleep(30)
   expect(chatStarted).toBe(true)
   // The tracker must STILL be alive: no event has arrived, so the backend has
@@ -185,13 +196,27 @@ test('a blocked first iterator delivery keeps the approval recoverable until rea
   await sleep(30)
   expect(sends).toHaveLength(1)
 
-  // The original process's first event finally arrives: handoff completes and
-  // the tracker ends — a reload now sees no re-queue.
+  // Status alone is not producer acceptance: the live and durable outbox
+  // must remain recoverable until the explicit proof arrives.
   releaseFirst()
-  await sleep(50)
+  await statusDelivered.promise
+  await sm.flushSession(managed.id)
+  expect(sm.getPendingPlanExecution(managed.id)?.approvalMessageId).toBe(approvalMessageId)
+  expect(loadSession(ws, managed.id)!.pendingPlanExecution?.approvalMessageId).toBe(approvalMessageId)
+  expect(getPlanDraftConsumption(managed.id, executionId)?.text).toBe(true)
+
+  acceptanceGate.resolve()
+  await acceptanceDelivered.promise
+  await sm.flushSession(managed.id)
   expect(sm.getPendingPlanExecution(managed.id)).toBeNull()
   const after = loadSession(ws, managed.id)!
+  expect(after.pendingPlanExecution).toBeUndefined()
+  expect(getPlanDraftConsumption(managed.id, executionId)).toBeNull()
   expect(after.messages.filter((m: { type?: string }) => m.type === 'user')).toHaveLength(1)
+  const deliveredReload = coldRestore(ws, workspace, managed.id)
+  await (deliveredReload.restoredSM as unknown as { ensureMessagesLoaded: (m: unknown) => Promise<void> }).ensureMessagesLoaded(deliveredReload.restored)
+  await sleep(30)
+  expect(deliveredReload.sends).toHaveLength(0)
   void restoredSM
 })
 

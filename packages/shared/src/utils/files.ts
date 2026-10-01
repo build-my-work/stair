@@ -354,8 +354,10 @@ export function getMimeType(filePath: string): string {
 
 /**
  * Read a file and return attachment info
+ * Use the saved attachment type when replaying a file whose name may not
+ * match its MIME type; ordinary file reads still infer it from the extension.
  */
-export function readFileAttachment(filePath: string): FileAttachment | null {
+export function readFileAttachment(filePath: string, fileType?: FileAttachment['type']): FileAttachment | null {
   try {
     const resolved = resolvePath(filePath);
 
@@ -373,7 +375,7 @@ export function readFileAttachment(filePath: string): FileAttachment | null {
       throw new Error(`File too large: ${basename(resolved)} (${Math.round(stats.size / 1024 / 1024)}MB > 20MB limit)`);
     }
 
-    const type = getFileType(resolved);
+    const type = fileType ?? getFileType(resolved);
     const mimeType = getMimeType(resolved);
     const name = basename(resolved);
 

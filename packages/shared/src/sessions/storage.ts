@@ -515,14 +515,25 @@ export function deleteSession(workspaceRootPath: string, sessionId: string): boo
   }
 }
 
+/** Drain earlier file mutations before removing a live session's directory. */
+export async function deleteSessionAsync(workspaceRootPath: string, sessionId: string): Promise<boolean> {
+  return withSessionStorageTransaction(sessionId, async () => {
+    sessionPersistenceQueue.cancel(sessionId);
+    await sessionPersistenceQueue.flush(sessionId);
+    sessionPersistenceQueue.cancel(sessionId);
+    return deleteSession(workspaceRootPath, sessionId);
+  }, false);
+}
+
 /**
  * Clear messages from a session while preserving metadata.
  * Used for /clear command to reset conversation without creating a new session.
  * Also clears the SDK session ID to start a fresh Claude conversation.
  */
 export async function clearSessionMessages(workspaceRootPath: string, sessionId: string): Promise<void> {
-  const session = loadSession(workspaceRootPath, sessionId);
-  if (session) {
+  await withSessionStorageTransaction(sessionId, async () => {
+    const session = loadSession(workspaceRootPath, sessionId);
+    if (!session) return;
     // Clear messages and SDK session ID but preserve metadata
     session.messages = [];
     session.sdkSessionId = undefined;
@@ -535,7 +546,7 @@ export async function clearSessionMessages(workspaceRootPath: string, sessionId:
       costUsd: 0,
     };
     await saveSession(session);
-  }
+  });
 }
 
 /**
@@ -571,11 +582,12 @@ export async function updateSessionSdkId(
   sessionId: string,
   sdkSessionId: string
 ): Promise<void> {
-  const session = loadSession(workspaceRootPath, sessionId);
-  if (session) {
+  await withSessionStorageTransaction(sessionId, async () => {
+    const session = loadSession(workspaceRootPath, sessionId);
+    if (!session) return;
     session.sdkSessionId = sdkSessionId;
     await saveSession(session);
-  }
+  });
 }
 
 /**
@@ -619,27 +631,29 @@ export async function updateSessionMetadata(
     | 'archivedAt'
   >>
 ): Promise<void> {
-  const session = loadSession(workspaceRootPath, sessionId);
-  if (!session) return;
+  await withSessionStorageTransaction(sessionId, async () => {
+    const session = loadSession(workspaceRootPath, sessionId);
+    if (!session) return;
 
-  if (updates.isFlagged !== undefined) session.isFlagged = updates.isFlagged;
-  if (updates.name !== undefined) session.name = updates.name;
-  if (updates.sessionStatus !== undefined) session.sessionStatus = updates.sessionStatus;
-  if (updates.labels !== undefined) session.labels = updates.labels;
-  if (updates.enabledSourceSlugs !== undefined) session.enabledSourceSlugs = updates.enabledSourceSlugs;
-  if (updates.workingDirectory !== undefined) session.workingDirectory = updates.workingDirectory;
-  if (updates.sdkCwd !== undefined) session.sdkCwd = updates.sdkCwd;
-  if (updates.permissionMode !== undefined) session.permissionMode = updates.permissionMode;
-  if ('lastReadMessageId' in updates) session.lastReadMessageId = updates.lastReadMessageId;
-  if ('hasUnread' in updates) session.hasUnread = updates.hasUnread;
-  if ('sharedUrl' in updates) session.sharedUrl = updates.sharedUrl;
-  if ('sharedId' in updates) session.sharedId = updates.sharedId;
-  if (updates.model !== undefined) session.model = updates.model;
-  if (updates.llmConnection !== undefined) session.llmConnection = updates.llmConnection;
-  if (updates.isArchived !== undefined) session.isArchived = updates.isArchived;
-  if ('archivedAt' in updates) session.archivedAt = updates.archivedAt;
+    if (updates.isFlagged !== undefined) session.isFlagged = updates.isFlagged;
+    if (updates.name !== undefined) session.name = updates.name;
+    if (updates.sessionStatus !== undefined) session.sessionStatus = updates.sessionStatus;
+    if (updates.labels !== undefined) session.labels = updates.labels;
+    if (updates.enabledSourceSlugs !== undefined) session.enabledSourceSlugs = updates.enabledSourceSlugs;
+    if (updates.workingDirectory !== undefined) session.workingDirectory = updates.workingDirectory;
+    if (updates.sdkCwd !== undefined) session.sdkCwd = updates.sdkCwd;
+    if (updates.permissionMode !== undefined) session.permissionMode = updates.permissionMode;
+    if ('lastReadMessageId' in updates) session.lastReadMessageId = updates.lastReadMessageId;
+    if ('hasUnread' in updates) session.hasUnread = updates.hasUnread;
+    if ('sharedUrl' in updates) session.sharedUrl = updates.sharedUrl;
+    if ('sharedId' in updates) session.sharedId = updates.sharedId;
+    if ('model' in updates) session.model = updates.model;
+    if (updates.llmConnection !== undefined) session.llmConnection = updates.llmConnection;
+    if (updates.isArchived !== undefined) session.isArchived = updates.isArchived;
+    if ('archivedAt' in updates) session.archivedAt = updates.archivedAt;
 
-  await saveSession(session);
+    await saveSession(session);
+  });
 }
 
 /**
@@ -703,28 +717,25 @@ export async function unarchiveSession(workspaceRootPath: string, sessionId: str
 // ============================================================
 
 /**
- * In-process serialization for pending-plan record mutations. These functions
- * do read-check-write transitions on the session file; without the chain two
- * concurrent callers (two mounted windows, reload recovery plus a live one)
- * could both observe the pre-transition record and both claim (review defect:
- * parallel claims `[true, true]`). Same pattern as the SM lifecycle lock, but
- * owned by storage so every caller is covered.
+ * Serialize session-file read-modify-write operations. Each must load after
+ * both newer queued history and the previous metadata/plan mutation are durable;
+ * otherwise its full-file save can erase an accepted plan or newer messages.
  */
-const pendingPlanTransactions = new Map<string, Promise<unknown>>();
+const sessionStorageTransactions = new Map<string, Promise<unknown>>();
 
-function withPendingPlanTransaction<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
-  const previous = pendingPlanTransactions.get(sessionId) ?? Promise.resolve()
+function withSessionStorageTransaction<T>(sessionId: string, operation: () => Promise<T>, flushBeforeRead = true): Promise<T> {
+  const previous = sessionStorageTransactions.get(sessionId) ?? Promise.resolve()
   const result = previous.catch(() => {}).then(async () => {
     // Read only after newer debounced/in-flight history is durable. Loading
     // the older disk snapshot first would enqueue it over those newer messages.
-    await sessionPersistenceQueue.flush(sessionId, { strict: true })
+    if (flushBeforeRead) await sessionPersistenceQueue.flush(sessionId, { strict: true })
     return operation()
   })
   const settled = result.then(() => {}, () => {})
-  pendingPlanTransactions.set(sessionId, settled)
+  sessionStorageTransactions.set(sessionId, settled)
   void settled.finally(() => {
-    if (pendingPlanTransactions.get(sessionId) === settled) {
-      pendingPlanTransactions.delete(sessionId)
+    if (sessionStorageTransactions.get(sessionId) === settled) {
+      sessionStorageTransactions.delete(sessionId)
     }
   })
   return result
@@ -749,7 +760,7 @@ export async function setPendingPlanExecution(
   referencesValidated?: boolean,
   approvalBadges?: import('@craft-agent/core').ContentBadge[],
 ): Promise<PendingPlanExecutionRecord | null> {
-  return withPendingPlanTransaction(sessionId, async () => {
+  return withSessionStorageTransaction(sessionId, async () => {
     const session = loadSession(workspaceRootPath, sessionId);
     if (!session) return null;
 
@@ -788,7 +799,7 @@ export async function markCompactionComplete(
   sessionId: string,
   correlation?: { generation: number; stopEpoch: number },
 ): Promise<boolean> {
-  return withPendingPlanTransaction(sessionId, async () => {
+  return withSessionStorageTransaction(sessionId, async () => {
     const session = loadSession(workspaceRootPath, sessionId);
     const pending = session?.pendingPlanExecution;
     if (!session || !pending || pending.awaitingCompaction === false || pending.failed) {
@@ -828,7 +839,7 @@ export async function markPendingPlanExecutionDispatched(
   workspaceRootPath: string,
   sessionId: string,
 ): Promise<boolean> {
-  return withPendingPlanTransaction(sessionId, async () => {
+  return withSessionStorageTransaction(sessionId, async () => {
     const session = loadSession(workspaceRootPath, sessionId);
     const pending = session?.pendingPlanExecution;
     if (!session || !pending || pending.awaitingCompaction || pending.executionDispatched || pending.failed) {
@@ -869,7 +880,7 @@ export async function clearPendingPlanExecution(
   sessionId: string,
   executionId?: string,
 ): Promise<void> {
-  await withPendingPlanTransaction(sessionId, async () => {
+  await withSessionStorageTransaction(sessionId, async () => {
     const session = loadSession(workspaceRootPath, sessionId);
     // Nothing pending (the common case: this runs on every user message): no rewrite. Rewriting the
     // whole file here raced concurrent sends on the shared .tmp path and could revert newer writes.

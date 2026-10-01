@@ -22,6 +22,7 @@ import {
   isReference,
   MAX_REFERENCES_PER_MESSAGE,
   referenceKey,
+  mergeReferenceDelta,
   referencesFitSerializedLimits,
   type Reference,
   type StoredAttachment,
@@ -1419,7 +1420,9 @@ function loadDraftsDataStrict(): DraftsData {
  * Consumption is conditional: TEXT is consumed only when the stored draft's
  * text matches the accepted snapshot exactly (the coordinator flushes
  * outstanding local edits before calling, so the store reflects live input);
- * REFERENCES are consumed per-key when present. Idempotent per executionId —
+ * REFERENCES are consumed only when the payload still matches the accepted
+ * snapshot; reselecting an edited quote at the same location is new input.
+ * Idempotent per executionId —
  * a replay returns the recorded receipt and the current draft.
  */
 export function consumeSessionDraftForPlan(
@@ -1443,12 +1446,13 @@ export function consumeSessionDraftForPlan(
 
   const current = data.drafts[sessionId] ?? { text: '' };
   const consumedText = !!snapshot.text.trim() && current.text.trim() === snapshot.text.trim();
-  const snapshotKeys = new Set(snapshot.references.map(reference => referenceKey(reference)));
+  const snapshotByKey = new Map(snapshot.references.map(reference => [referenceKey(reference), JSON.stringify(reference)]));
   const currentReferences = current.references ?? [];
   const consumedKeys = currentReferences
-    .filter(reference => snapshotKeys.has(referenceKey(reference)))
+    .filter(reference => snapshotByKey.get(referenceKey(reference)) === JSON.stringify(reference))
     .map(reference => referenceKey(reference));
-  const remainingReferences = currentReferences.filter(reference => !snapshotKeys.has(referenceKey(reference)));
+  const consumedKeySet = new Set(consumedKeys);
+  const remainingReferences = currentReferences.filter(reference => !consumedKeySet.has(referenceKey(reference)));
 
   persistSessionDraft(data, sessionId, {
     text: consumedText ? '' : current.text,
@@ -1612,18 +1616,7 @@ function applyDraftContentMutation(
       || [...baseReferences, ...nextReferences, ...references].some(reference => reference.projectId !== projectId)) {
       throw new Error('DRAFT_REFERENCE_REJECTED: Invalid local reference mutation');
     }
-    const baseKeys = new Set(baseReferences.map(referenceKey));
-    const nextKeys = new Set(nextReferences.map(referenceKey));
-    const removed = new Set([...baseKeys].filter(key => !nextKeys.has(key)));
-    references = references.filter(reference => !removed.has(referenceKey(reference)));
-    const currentKeys = new Set(references.map(referenceKey));
-    for (const reference of nextReferences) {
-      const key = referenceKey(reference);
-      if (!baseKeys.has(key) && !currentKeys.has(key)) {
-        references.push(reference);
-        currentKeys.add(key);
-      }
-    }
+    references = mergeReferenceDelta(references, baseReferences, nextReferences);
   }
   persistSessionDraft(data, sessionId, { ...merged, ...(references.length ? { references } : {}) });
   data.contentMutations ??= {};
@@ -1649,6 +1642,7 @@ export function setSessionDraftContent(
     return { ...(data.drafts[sessionId] ?? { text: '' }), revision: data.revisions?.[sessionId] ?? 0 };
   }
   if (data.appliedRestoreIds[sessionId]?.length || Object.keys(data.planConsumption?.[sessionId] ?? {}).length
+    || Object.keys(data.planRestoreExecutions?.[sessionId] ?? {}).length
     || Object.values(data.contentWriters?.[sessionId] ?? {}).some(writer => writer.consumption)) {
     throw new Error('DRAFT_VERSION_REQUIRED: Refresh the draft before editing recovered input');
   }
@@ -1731,20 +1725,7 @@ export function reconcileSessionDraftReferences(
   const data = loadDraftsDataStrict();
   const current = data.drafts[sessionId] ?? { text: '' };
   if (current.references?.some(reference => reference.projectId !== projectId)) return null;
-  const baseKeys = new Set(baseReferences.map(referenceKey));
-  const nextKeys = new Set(nextReferences.map(referenceKey));
-  const removedKeys = new Set([...baseKeys].filter(key => !nextKeys.has(key)));
-  const merged = (current.references ?? []).filter(reference => (
-    !removedKeys.has(referenceKey(reference))
-  ));
-  const mergedKeys = new Set(merged.map(referenceKey));
-  for (const reference of nextReferences) {
-    const key = referenceKey(reference);
-    if (!baseKeys.has(key) && !mergedKeys.has(key)) {
-      merged.push(reference);
-      mergedKeys.add(key);
-    }
-  }
+  const merged = mergeReferenceDelta(current.references ?? [], baseReferences, nextReferences);
   if (
     merged.length > MAX_REFERENCES_PER_MESSAGE
     || !referencesFitSerializedLimits(merged)
@@ -1788,12 +1769,13 @@ export function restoreSessionDraftAtomic(
 
   const data = loadDraftsDataStrict();
   const appliedIds = data.appliedRestoreIds[sessionId] ?? [];
-  if (appliedIds.includes(restoreId) && planExecutionId
-    && data.planRestoreExecutions?.[sessionId]?.[restoreId] !== planExecutionId) {
+  const boundExecution = data.planRestoreExecutions?.[sessionId]?.[restoreId];
+  const alreadyApplied = boundExecution !== undefined || appliedIds.includes(restoreId);
+  if (alreadyApplied && planExecutionId && boundExecution !== planExecutionId) {
     throw new Error('DRAFT_RESTORE_CONFLICT: Restore identity belongs to another operation');
   }
   const localApplied = local ? applyDraftContentMutation(data, sessionId, local.content, local.mutation, projectId) : false;
-  if (appliedIds.includes(restoreId)) {
+  if (alreadyApplied) {
     if (localApplied) saveDraftsData(data);
     return { draft: data.drafts[sessionId] ?? null, applied: false, committed: true, revision: data.revisions?.[sessionId] ?? 0 };
   }
@@ -1830,10 +1812,9 @@ export function restoreSessionDraftAtomic(
   data.appliedRestoreIds[sessionId] = [...appliedIds, restoreId].slice(-64);
   if (planExecutionId) {
     data.planRestoreExecutions ??= {};
-    data.planRestoreExecutions[sessionId] = Object.fromEntries(
-      Object.entries({ ...data.planRestoreExecutions[sessionId], [restoreId]: planExecutionId })
-        .filter(([id]) => data.appliedRestoreIds[sessionId]!.includes(id)),
-    );
+    // A plan outbox may remain unacknowledged across arbitrarily many ordinary
+    // restores. Its execution-bound proof lives until the owning Chat is purged.
+    data.planRestoreExecutions[sessionId] = { ...data.planRestoreExecutions[sessionId], [restoreId]: planExecutionId };
   }
   saveDraftsData(data);
   return { draft: result, applied: true, committed: true, revision: data.revisions?.[sessionId] ?? 0 };
@@ -1847,15 +1828,16 @@ export function restoreSessionDraftAtomic(
  */
 export function hasAppliedDraftRestore(sessionId: string, restoreId: string, executionId?: string): boolean {
   const data = loadDraftsDataStrict();
-  return (data.appliedRestoreIds[sessionId] ?? []).includes(restoreId)
-    && (executionId === undefined || data.planRestoreExecutions?.[sessionId]?.[restoreId] === executionId);
+  const boundExecution = data.planRestoreExecutions?.[sessionId]?.[restoreId];
+  return executionId === undefined
+    ? boundExecution !== undefined || (data.appliedRestoreIds[sessionId] ?? []).includes(restoreId)
+    : boundExecution === executionId;
 }
 
 export function deleteSessionDraft(sessionId: string): void {
   const data = loadDraftsDataStrict();
   delete data.drafts[sessionId];
   delete data.appliedRestoreIds[sessionId];
-  if (data.planRestoreExecutions) delete data.planRestoreExecutions[sessionId];
   saveDraftsData(data);
 }
 

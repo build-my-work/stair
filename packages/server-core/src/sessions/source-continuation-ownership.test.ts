@@ -99,6 +99,7 @@ async function setup(id: string, holdSourceClose = false, keepSteeringWhileSourc
           throw new Error('isolated continuation iterator failure')
         }
         if (holdFollowUp && text === followUpText) await followUp
+        yield { type: 'input_accepted' }
         yield { type: 'status', message: 'no-model backend accepted the turn' }
         yield { type: 'complete' }
       })())

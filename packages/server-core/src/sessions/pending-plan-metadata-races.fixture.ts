@@ -1,5 +1,5 @@
-import { afterAll, expect, test } from 'bun:test'
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { afterAll, expect, spyOn, test } from 'bun:test'
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -21,6 +21,8 @@ const { CONFIG_DIR } = await import('../../../shared/src/config/paths.ts')
 if (CONFIG_DIR !== profile) throw new Error('pending-plan metadata fixture requires an isolated config module cache')
 const { SessionManager, createManagedSession } = await import('./SessionManager.ts')
 const { createWorkspaceAtPath } = await import('../../../shared/src/workspaces/storage.ts')
+const { createProject } = await import('../../../shared/src/projects/index.ts')
+const projectFiles = await import('../handlers/rpc/project-files.ts')
 const { saveSessionStrict, loadSession, sessionPersistenceQueue, getSessionFilePath } = await import('../../../shared/src/sessions/index.ts')
 const { setSessionDraft, getSessionDraft, getPlanDraftConsumption } = await import('../../../shared/src/config/storage.ts')
 
@@ -657,7 +659,9 @@ test.each([
     expect(f.sm.getPendingPlanExecution(f.managed.id)?.executionDispatched).toBe(true)
   }
   expect(f.managed.isProcessing).toBe(startupGate)
-  expect(f.managed.messages.find(message => message.id === approval.messageId)?.isQueued).toBe(false)
+  // Scheduling and startup do not deliver the input. The reservation keeps
+  // the queued bubble recoverable until the producer acknowledges acceptance.
+  expect(f.managed.messages.find(message => message.id === approval.messageId)?.isQueued).toBe(true)
   const queue = sessionPersistenceQueue as unknown as QueueWriteHarness
   const original = queue.performWrite
   const cancellationEntered = Promise.withResolvers<void>()
@@ -700,6 +704,7 @@ test.each([
   await f.sm.flushSession(f.managed.id)
   expect(chats).toHaveLength(lateCompleteDuringWrite ? 1 : 0)
   expect(f.managed.messageQueue).toHaveLength(0)
+  expect(f.managed.pendingQueueReplay).toBeUndefined()
   expect(f.sm.getPendingPlanExecution(f.managed.id)?.failed).toBe(true)
   expect(getPlanDraftConsumption(f.managed.id, prepared.executionId!)?.text).toBe(true)
   if (mergedFollowing) {
@@ -728,7 +733,136 @@ test.each([
   }
 }, 5_000)
 
-test('a successful approval first event releases its replay owner and delivers the next full queued message', async () => {
+test('a duplicate dispatch late validation failure cannot revoke an accepted approval or block following input', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'stair-plan-dispatch-workspace-')))
+  workspaces.push(root)
+  const workspace = { ...createWorkspaceAtPath(root, 'Concurrent plan dispatch'), rootPath: root }
+  const project = createProject(root, { name: 'File validation project', workingDirectory: root })
+  const sm = new SessionManager()
+  const managed = createManagedSession({ id: `dispatch-${randomUUID()}`, name: 'Review', projectId: project.id }, workspace, { messagesLoaded: true })
+  ;(sm as unknown as { sessions: Map<string, Managed> }).sessions.set(managed.id, managed)
+  ;(sm as unknown as { decisionFeatureActive: () => boolean }).decisionFeatureActive = () => false
+  managed.triggeredBy = { event: 'isolated-review' }
+  await saveSessionStrict({
+    id: managed.id, name: 'Review', projectId: project.id, workspaceRootPath: root,
+    createdAt: 1, lastUsedAt: 1, messages: [],
+    tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, contextTokens: 0, costUsd: 0 },
+  })
+  const lateValidation = Promise.withResolvers<void>()
+  const validationEntered = Promise.withResolvers<void>()
+  const approvalEntered = Promise.withResolvers<void>()
+  const approvalRelease = Promise.withResolvers<void>()
+  const events: SessionEvent[] = []
+  const calls: string[] = []
+  sm.setEventSink((_channel, _target, event) => {
+    events.push(structuredClone(event))
+    if (event.type === 'user_message' && event.status === 'processing'
+      && managed.pendingPlanExecution?.approvalMessageId === event.message.id) {
+      // The real queue has reserved the accepted approval, but its scheduled
+      // callback has not admitted the model turn yet. Release only the older
+      // RPC's actual, already-read file validation result at this boundary.
+      lateValidation.resolve()
+    }
+  })
+  const agent = {
+    getModel: () => 'claude-sonnet-4-6', setAllSources: () => {}, getSessionId: () => undefined,
+    forceAbort: () => { approvalRelease.resolve() }, redirect: () => false,
+    chat: async function* (message: string): AsyncGenerator<AgentEvent> {
+      calls.push(message)
+      if (calls.length === 1) {
+        yield { type: 'info', message: 'Compacted Conversation', compactionTrigger: 'manual' }
+      } else {
+        if (calls.length === 2) {
+          approvalEntered.resolve()
+          await approvalRelease.promise
+        }
+        yield { type: 'input_accepted' }
+      }
+      yield { type: 'complete' }
+    },
+  }
+  managed.agent = agent as never
+  ;(sm as unknown as { getOrCreateAgent: () => Promise<typeof agent> }).getOrCreateAgent = async () => agent
+  const filePath = join(root, 'source.txt')
+  const quote = 'ORIGINAL-ACCEPTED-SOURCE'
+  writeFileSync(filePath, quote)
+  const source = await projectFiles.readProjectTextFileWithinRoot(root, { projectId: project.id, relativePath: 'source.txt' })
+  const reference: Reference = {
+    version: 1, kind: 'project-file', projectId: project.id, relativePath: 'source.txt',
+    sourceFingerprint: source.sourceFingerprint, fileName: 'source.txt', quote,
+    locator: { type: 'text-quote', exact: quote, start: 0, end: quote.length },
+  }
+  const text = 'ORIGINAL-PLAN-DRAFT'
+  setSessionDraft(managed.id, { text, references: [reference] })
+  const prepared = await sm.setPendingPlanExecution(managed.id, '/accepted.md', text, [reference])
+  expect((await sm.consumePendingPlanDraft(managed.id, prepared.executionId!))?.receipt.text).toBe(true)
+  // Use the public compact send and its real event correlation instead of
+  // manufacturing a ready or failed managed-session record.
+  await sm.sendMessage(managed.id, '/compact', undefined, undefined, { planExecutionId: prepared.executionId! })
+  for (let i = 0; managed.isProcessing && i < 100; i++) await Bun.sleep(1)
+  expect(managed.isProcessing).toBe(false)
+  expect(managed.pendingPlanExecution?.awaitingCompaction).toBe(false)
+  const originalRead = projectFiles.readProjectTextFileWithinRoot
+  let gateOnce = true
+  const pauseRead = spyOn(projectFiles, 'readProjectTextFileWithinRoot').mockImplementation(async (...args) => {
+    const result = await originalRead(...args)
+    if (gateOnce) {
+      gateOnce = false
+      validationEntered.resolve()
+      await lateValidation.promise
+    }
+    return result
+  })
+  let olderDispatch: ReturnType<typeof sm.dispatchPendingPlanExecution> | undefined
+  try {
+    // Both requests use real source bytes. The first read is stale by the
+    // time its RPC resumes; the second request validates the restored file.
+    writeFileSync(filePath, 'INTERMEDIATE-FILE-EDIT')
+    olderDispatch = sm.dispatchPendingPlanExecution(managed.id, prepared.executionId)
+    await validationEntered.promise
+    writeFileSync(filePath, quote)
+    expect(await sm.dispatchPendingPlanExecution(managed.id, prepared.executionId)).toEqual({ ok: true })
+    expect(await olderDispatch).toEqual({ ok: false, reason: 'invalid-references' })
+    expect(managed.pendingPlanExecution?.failed).not.toBe(true)
+    expect(managed.pendingPlanExecution?.executionDispatched).toBe(true)
+    expect(events.some(event => event.type === 'compaction_failed')).toBe(false)
+    expect(getSessionDraft(managed.id)).toBeNull()
+    await approvalEntered.promise
+    const approvalId = managed.pendingPlanExecution!.approvalMessageId!
+    expect(managed.pendingQueueReplay?.entries[0]?.messageId).toBe(approvalId)
+    // Neither a recovery call nor an early scoped ACK can consume this
+    // still-active approval owner's draft or record.
+    await expect(sm.restorePendingPlanDraft(managed.id, prepared.executionId!, prepared.restoreId!))
+      .rejects.toThrow('PENDING_PLAN_STALE')
+    await sm.clearPendingPlanExecution(managed.id, prepared.executionId)
+    expect(sm.getPendingPlanExecution(managed.id)?.executionId).toBe(prepared.executionId)
+    expect(getSessionDraft(managed.id)).toBeNull()
+    await sm.sendMessage(managed.id, 'FOLLOWING-ORDINARY-INPUT')
+    expect(managed.messageQueue).toHaveLength(1)
+    expect(calls).toHaveLength(2)
+    approvalRelease.resolve()
+    for (let i = 0; (calls.length < 3 || managed.isProcessing) && i < 100; i++) await Bun.sleep(1)
+    await sm.flushSession(managed.id)
+    expect(calls).toHaveLength(3)
+    expect(calls.filter(message => message.includes(text))).toHaveLength(1)
+    expect(calls[1]).toContain(quote)
+    expect(calls[2]).toContain('FOLLOWING-ORDINARY-INPUT')
+    expect(managed.messages.filter(message => message.id === approvalId)).toHaveLength(1)
+    expect(managed.pendingQueueReplay).toBeUndefined()
+    expect(managed.messageQueue).toHaveLength(0)
+    expect(managed.isProcessing).toBe(false)
+    expect(sm.getPendingPlanExecution(managed.id)).toBeNull()
+    expect(getSessionDraft(managed.id)).toBeNull()
+    expect(loadSession(root, managed.id)?.messages.filter(message => message.type === 'user').every(message => !message.isQueued)).toBe(true)
+  } finally {
+    lateValidation.resolve()
+    approvalRelease.resolve()
+    if (olderDispatch) await olderDispatch.catch(() => {})
+    pauseRead.mockRestore()
+  }
+}, 10_000)
+
+test('successful approval input acceptance releases its replay owner and delivers the next full queued message', async () => {
   const f = await setup()
   Reflect.deleteProperty(f.sm, 'processNextQueuedMessage')
   ;(f.sm as unknown as { decisionFeatureActive: () => boolean }).decisionFeatureActive = () => false
@@ -736,6 +870,8 @@ test('a successful approval first event releases its replay owner and delivers t
   const entered = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
   const calls: { message: string; attachments?: FileAttachment[] }[] = []
+  const events: SessionEvent[] = []
+  f.sm.setEventSink((_channel, _target, event) => events.push(structuredClone(event)))
   const agent = {
     getModel: () => 'claude-sonnet-4-6', setAllSources: () => {}, getSessionId: () => undefined, forceAbort: () => {},
     chat: async function* (message: string, attachments?: FileAttachment[]): AsyncGenerator<AgentEvent> {
@@ -744,6 +880,7 @@ test('a successful approval first event releases its replay owner and delivers t
         entered.resolve()
         await release.promise
       }
+      yield { type: 'input_accepted' }
       yield { type: 'complete' }
     },
   }
@@ -759,7 +896,7 @@ test('a successful approval first event releases its replay owner and delivers t
   try {
     expect(await f.sm.dispatchPendingPlanExecution(f.managed.id, prepared.executionId)).toEqual({ ok: true })
     await entered.promise
-    expect(f.managed.pendingApprovalReplay?.entries).toHaveLength(1)
+    expect(f.managed.pendingQueueReplay?.entries).toHaveLength(1)
     await f.sm.sendMessage(f.managed.id, 'NEXT-USER-INPUT', [input], [attachment], { references: [reference] })
     expect(f.managed.messageQueue).toHaveLength(1)
     expect(calls).toHaveLength(1)
@@ -778,8 +915,13 @@ test('a successful approval first event releases its replay owner and delivers t
   expect(users[1]?.references).toEqual([reference])
   expect(users[1]?.attachments).toEqual([attachment])
   expect(users.every(message => !message.isQueued)).toBe(true)
+  for (const user of users) {
+    const delivered = events.findLast(event => event.type === 'user_message' && event.message.id === user.id && event.status === 'processing')
+    if (delivered?.type !== 'user_message') throw new Error(`Missing processing event for ${user.id}`)
+    expect(delivered.message.isQueued).toBe(false)
+  }
   expect(f.managed.isProcessing).toBe(false)
   expect(f.managed.messageQueue).toHaveLength(0)
-  expect(f.managed.pendingApprovalReplay).toBeUndefined()
+  expect(f.managed.pendingQueueReplay).toBeUndefined()
   expect(f.sm.getPendingPlanExecution(f.managed.id)).toBeNull()
 }, 5_000)

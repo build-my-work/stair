@@ -719,4 +719,182 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     await coordinator.flushForWorkspaceSwitch(workspace.id)
     expect(getSessionDraft(managed.id)?.references ?? []).toEqual([])
   })
+
+  test('a failed plan stays restored exactly once after 64 actual Stop recoveries', async () => {
+    const fixture = await build('plan-restore-receipt-history')
+    const { sm, managed, workspace } = fixture
+    const snapshot = 'PLAN-RESTORE-HISTORY-SNAPSHOT'
+    setSessionDraft(managed.id, { text: snapshot })
+    const plan = await sm.setPendingPlanExecution(managed.id, '/plan.md', snapshot)
+    await consumeDraft(fixture)
+    await sm.clearPendingPlanExecution(managed.id, plan.executionId)
+    await sm.restorePendingPlanDraft(managed.id, plan.executionId!, plan.restoreId!)
+
+    // The first recovery reached disk but its renderer lost the reply. Keep
+    // that failed outbox unACKed while another window uses ordinary Stop.
+    const trace: string[] = []
+    const coordinator = makeCoordinator(fixture, trace)
+    coordinator.hydrate(coordinator.beginHydration(workspace.id), getSessionDraftHydrationState())
+    coordinatorAdapters.get(coordinator)!.persistence.acknowledgeQueuedInputRestore =
+      async (id, restoreId, ids) => sm.acknowledgeQueuedInputRestore(id, restoreId, ids)
+    const events: Array<{
+      type?: string
+      queuedMessages?: string[]
+      queuedRestoreId?: string
+      queuedMessageIds?: string[]
+    }> = []
+    ;(sm as unknown as { sendEvent: (event: unknown) => void }).sendEvent = event => events.push(event as typeof events[number])
+    // Model delivery is unnecessary: simulate only the iterator closing after
+    // the production Stop calls forceAbort, retaining the real queue producer.
+    managed.agent = { forceAbort: () => { managed.isProcessing = false } } as never
+    for (let index = 0; index < 64; index++) {
+      const id = `ordinary-stop-${index}`
+      const text = `FOLLOWING-STOP-TEXT-${index}`
+      managed.messages.push({ id, role: 'user', content: text, timestamp: index + 10, isQueued: true })
+      managed.messageQueue.push({ message: text, messageId: id })
+      managed.isProcessing = true
+      await sm.cancelProcessing(managed.id)
+      const event = events.filter(candidate => candidate.type === 'interrupted').at(-1)
+      if (!event?.queuedRestoreId || !event.queuedMessageIds?.includes(id)) throw new Error('Actual Stop did not produce queued restore')
+      await coordinator.restoreInput(workspace.id, managed.id, managed.projectId, {
+        type: 'restore_input',
+        text: event.queuedMessages?.join('\n\n') ?? '',
+        queuedRestoreId: event.queuedRestoreId,
+        messageIds: event.queuedMessageIds,
+      })
+      if (managed.messages.some((message: { id: string }) => message.id === id)) throw new Error('Actual queued restore ACK failed')
+    }
+    expect(getPendingPlanExecution(fixture.sandbox, managed.id)?.failed).toBe(true)
+    expect(trace.filter(item => item.startsWith('restore-committed:'))).toHaveLength(64)
+    expect((getSessionDraft(managed.id)?.text ?? '').split(snapshot).length - 1).toBe(1)
+    const replay = await sm.restorePendingPlanDraft(managed.id, plan.executionId!, plan.restoreId!)
+    expect(replay.applied).toBe(false)
+    expect((replay.draft?.text ?? '').split(snapshot).length - 1).toBe(1)
+    await sm.clearPendingPlanExecution(managed.id, plan.executionId)
+    expect(getPendingPlanExecution(fixture.sandbox, managed.id)).toBeNull()
+  })
+
+  test('same-key new quote survives lost consumption reply and another window restoring the old quote', async () => {
+    const fixture = await build('consume-updated-reference-payload')
+    const { sm, managed, workspace, sandbox } = fixture
+    const sourceId = 'reference-payload-source'
+    const source = createManagedSession({ id: sourceId, projectId: managed.projectId }, { ...workspace, rootPath: sandbox }, { messagesLoaded: true })
+    source.messages = [{ id: 'quoted-message', role: 'assistant', content: 'OLD_QUOTE', timestamp: 1 }]
+    internals(sm).sessions.set(sourceId, source)
+    const oldReference: Reference = {
+      version: 1, kind: 'chat-message', projectId: managed.projectId,
+      sessionId: sourceId, messageId: 'quoted-message', role: 'assistant', quote: 'OLD_QUOTE',
+      locator: { type: 'text-quote', exact: 'OLD_QUOTE', start: 0, end: 9 },
+    }
+    const newReference: Reference = {
+      ...oldReference, quote: 'NEW_QUOTE',
+      locator: { type: 'text-quote', exact: 'NEW_QUOTE', start: 0, end: 9 },
+    }
+    const { referenceKey } = await import('@craft-agent/core')
+    expect(referenceKey(oldReference)).toBe(referenceKey(newReference))
+    const snapshot = 'UPDATED-REFERENCE-SNAPSHOT'
+    setSessionDraft(managed.id, { text: snapshot, references: [oldReference] })
+    const plan = await sm.setPendingPlanExecution(managed.id, '/plan.md', snapshot, [oldReference])
+    let loseFirstReply = true
+    const trace: string[] = []
+    const coordinator = makeCoordinator(fixture, trace, {
+      afterConsume: async () => {
+        if (loseFirstReply) {
+          loseFirstReply = false
+          throw new Error('Lost updated-reference consumption reply')
+        }
+      },
+    })
+    coordinator.hydrate(coordinator.beginHydration(workspace.id), getSessionDraftHydrationState())
+    const consume = makeActualAppConsume({ draftCoordinator: coordinator, windowWorkspaceId: workspace.id })
+    await expect(consume(managed.id, plan.executionId, { text: snapshot, references: [oldReference] })).rejects.toThrow('Lost updated-reference consumption reply')
+    // Preview edits preserve the Chat message identity and selection offsets,
+    // while the newly selected quote carries the updated source content.
+    sm.updateMessageContent(sourceId, 'quoted-message', 'NEW_QUOTE')
+    const { validateReferencesForSession } = await import(`${repo}/packages/server-core/src/sessions/message-references.ts`)
+    expect(validateReferencesForSession([newReference], { id: managed.id, workspaceId: workspace.id, projectId: managed.projectId }, (id: string) => (
+      id === sourceId ? { id: sourceId, workspaceId: workspace.id, projectId: managed.projectId, messages: source.messages } : null
+    ))).toEqual([newReference])
+    const callbacksStart = appSource.indexOf('  const handleReferencesChange = useCallback(')
+    const callbacksEnd = appSource.indexOf('  const handleAddBrowserDraftReference', callbacksStart)
+    if (callbacksStart < 0 || callbacksEnd < 0) throw new Error('Actual App reference callbacks not found')
+    const callbacks = new Function('ctx', new Bun.Transpiler({ loader: 'tsx' }).transformSync(`
+      const { draftCoordinator } = ctx;
+      const useCallback = fn => fn;
+      ${appSource.slice(callbacksStart, callbacksEnd)}
+      return { change: handleReferencesChange, add: handleAddDraftReference };
+    `))({ draftCoordinator: coordinator })
+    expect(callbacks.change(managed.id, [])).toBe(true)
+    expect(callbacks.add(managed.id, newReference)).toBe(true)
+    expect(coordinator.getReferences(managed.id)).toEqual([newReference])
+
+    const events: Array<{ type?: string; references?: Reference[] }> = []
+    ;(sm as unknown as { sendEvent: (event: unknown) => void }).sendEvent = event => events.push(event as typeof events[number])
+    await sm.clearPendingPlanExecution(managed.id, plan.executionId)
+    const event = events.find(candidate => candidate.type === 'compaction_failed')
+    expect(event?.references).toEqual([oldReference])
+    const otherTrace: string[] = []
+    const otherWindow = makeCoordinator(fixture, otherTrace)
+    otherWindow.hydrate(otherWindow.beginHydration(workspace.id), getSessionDraftHydrationState())
+    const { recover } = createRecovery(fixture, otherWindow, otherTrace)
+    recover(event)
+    await waitFor(() => otherTrace.includes('ACK-finished'), 'other window restoring original quote and ACK')
+    expect(getSessionDraft(managed.id)?.references).toEqual([oldReference])
+    // Confirm the original ambiguous consume first, then save the new local
+    // quote. A same-key authority must not overwrite a genuine re-add payload.
+    await coordinator.flushContent(managed.id)
+    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    expect(coordinator.getReferences(managed.id)).toEqual([newReference])
+    expect(getSessionDraft(managed.id)?.references).toEqual([newReference])
+  })
+
+  test('local input before hydration preserves another window restored snapshot before ACK', async () => {
+    const fixture = await build('prehydrate-restored-snapshot')
+    const { sm, managed, workspace } = fixture
+    const snapshot = 'SERVER-RECOVERED-SNAPSHOT'
+    const localText = 'LOCAL-TYPING-BEFORE-HYDRATION'
+    const snapshotReference = ref(managed.projectId, 'SNAPSHOT-RECOVERED-REFERENCE')
+    const localReference = ref(managed.projectId, 'LOCAL-PREHYDRATION-REFERENCE')
+    setSessionDraft(managed.id, { text: snapshot, references: [snapshotReference] })
+    const plan = await sm.setPendingPlanExecution(managed.id, '/plan.md', snapshot, [snapshotReference])
+    await consumeDraft(fixture)
+    const events: Array<{ type?: string }> = []
+    ;(sm as unknown as { sendEvent: (event: unknown) => void }).sendEvent = event => events.push(event as typeof events[number])
+    await sm.clearPendingPlanExecution(managed.id, plan.executionId)
+    const event = events.find(candidate => candidate.type === 'compaction_failed')
+    if (!event) throw new Error('Actual cancellation did not expose failed plan')
+
+    const otherTrace: string[] = []
+    const otherWindow = makeCoordinator(fixture, otherTrace)
+    otherWindow.hydrate(otherWindow.beginHydration(workspace.id), getSessionDraftHydrationState())
+    let releaseAck!: () => void
+    const ackGate = { promise: new Promise<void>(resolve => { releaseAck = resolve }) }
+    createRecovery(fixture, otherWindow, otherTrace, ackGate).recover(event)
+    await waitFor(() => otherTrace.some(entry => entry.startsWith('ACK-entered:')), 'other window durable restore before ACK')
+    expect(getSessionDraft(managed.id)?.text).toBe(snapshot)
+
+    const trace: string[] = []
+    const coordinator = makeCoordinator(fixture, trace)
+    const hydration = coordinator.beginHydration(workspace.id)
+    coordinator.updateText(managed.id, localText)
+    coordinator.replaceReferences(managed.id, [localReference])
+    createRecovery(fixture, coordinator, trace).recover(event)
+    // The incoming authority already contains the restored snapshot. The
+    // local edit was made without seeing it, so cannot mean to overwrite it.
+    coordinator.hydrate(hydration, getSessionDraftHydrationState())
+    try {
+      await waitFor(() => trace.includes('ACK-finished'), 'local recovery scoped ACK after hydration')
+      const after = getSessionDraft(managed.id)
+      expect((after?.text ?? '').split(snapshot).length - 1).toBe(1)
+      expect((after?.text ?? '').split(localText).length - 1).toBe(1)
+      expect(after?.references?.map(reference => reference.quote)).toContain(snapshotReference.quote)
+      expect(after?.references?.map(reference => reference.quote)).toContain(localReference.quote)
+      expect(coordinator.getText(managed.id)).toBe(after?.text ?? '')
+      expect(coordinator.getReferences(managed.id)).toEqual(after?.references ?? [])
+      expect(getPendingPlanExecution(fixture.sandbox, managed.id)).toBeNull()
+    } finally {
+      releaseAck()
+      await waitFor(() => otherTrace.includes('ACK-finished'), 'other window late ACK stays scoped')
+    }
+  })
 }

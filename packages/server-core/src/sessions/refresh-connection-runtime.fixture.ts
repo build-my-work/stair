@@ -50,7 +50,8 @@ const { buildRestartRequiredSignature } = await import('./runtime-config.ts')
 //   1. `getOrCreateAgent` deferred refresh whenever `managed.isProcessing` was
 //      true, but `sendMessage` flips that flag *before* calling
 //      `getOrCreateAgent` — which made the refresh branch dead code on the
-//      send path. The new gate uses only `agent.isProcessing()`.
+//      send path. The send-path refresh allows a host-owned startup while
+//      external SAVE defers until that host turn is idle.
 //   2. Saving a connection had no notification path to active sessions, so
 //      capability changes only propagated lazily after the next send.
 //      `refreshConnectionRuntime` now pushes updates from the SAVE handler.
@@ -161,19 +162,42 @@ describe('refreshConnectionRuntime', () => {
     expect(busyAgent.updateRuntimeConfig).not.toHaveBeenCalled()
   })
 
-  it('does not defer just because managed.isProcessing is true (Fix 1 regression)', async () => {
-    // sendMessage flips managed.isProcessing=true *before* calling
-    // getOrCreateAgent → tryRefreshAgentRuntime. The pre-fix gate
-    // `managed.isProcessing || agent.isProcessing()` was therefore always true
-    // on the send path, making the refresh branch dead code. The fix narrows
-    // the gate to `agent.isProcessing()` only — which is what actually means
-    // "an in-flight stream we shouldn't yank."
+  it('defers external SAVE while the host owns a turn even if the backend is idle', async () => {
     const idleAgent = createAgentStub({ isProcessing: false })
-    injectSession(sm, 'sending', tmpRoot, 'slug-A', idleAgent, { isProcessing: true })
+    const managed = injectSession(sm, 'host-owned', tmpRoot, 'slug-A', idleAgent, { isProcessing: true })
+    const originalSignature = managed.backendRuntimeSignature
 
     await sm.refreshConnectionRuntime('slug-A')
 
+    expect(idleAgent.updateRuntimeConfig).not.toHaveBeenCalled()
+    expect(managed.agent).toBe(idleAgent)
+    expect(managed.backendRuntimeSignature).toBe(originalSignature)
+  })
+
+  it('refreshes through the actual send-path getter after the host claims processing (Fix 1 regression)', async () => {
+    // sendMessage claims host ownership before selecting its backend. That
+    // getter must apply drift before chat, despite managed.isProcessing=true.
+    const idleAgent = createAgentStub({ isProcessing: false })
+    const managed = injectSession(sm, 'sending', tmpRoot, 'slug-A', idleAgent, { isProcessing: true })
+    const selected = await (sm as unknown as {
+      getOrCreateAgent(session: ReturnType<typeof injectSession>): Promise<AgentStub>
+    }).getOrCreateAgent(managed)
+
+    expect(selected).toBe(idleAgent)
     expect(idleAgent.updateRuntimeConfig).toHaveBeenCalledTimes(1)
+    expect(idleAgent.updateRuntimeConfig.mock.calls[0]?.[0]).toMatchObject({
+      model: 'test-vision',
+      providerType: 'pi_compat',
+      runtime: {
+        baseUrl: 'https://runtime-refresh.test',
+        piAuthProvider: 'openai',
+        customEndpoint: { api: 'openai-completions' },
+        customModels: [
+          { id: 'test-vision', contextWindow: 128_000, supportsImages: true },
+          { id: 'test-text', contextWindow: 64_000, supportsImages: false },
+        ],
+      },
+    })
   })
 
   it('is a no-op when there is no agent yet (cold session)', async () => {

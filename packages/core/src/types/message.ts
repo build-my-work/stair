@@ -583,6 +583,8 @@ export interface AgentEventUsage {
  * turnId: Correlation ID from the API's message.id, groups all events in an assistant turn
  */
 export type AgentEvent =
+  // Internal producer acknowledgement for the current input, never a UI event.
+  | { type: 'input_accepted' }
   // Failed assistant output is discarded before a retry can produce more text.
   | { type: 'text_discard'; turnId: string }
   | { type: 'retry'; phase: 'backoff'; message: string }

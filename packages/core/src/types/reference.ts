@@ -316,3 +316,23 @@ export function referenceKey(reference: Reference): string {
   }
   return `file:${reference.projectId}:${reference.relativePath}:${reference.sourceFingerprint}:${JSON.stringify(reference.locator)}`;
 }
+
+/** Apply only explicit additions, edits and removals to the current references. */
+export function mergeReferenceDelta(current: Reference[], base: Reference[], next: Reference[]): Reference[] {
+  const baseByKey = new Map(base.map(reference => [referenceKey(reference), reference]));
+  const nextKeys = new Set(next.map(referenceKey));
+  const changed = new Map(next
+    .filter(reference => JSON.stringify(reference) !== JSON.stringify(baseByKey.get(referenceKey(reference))))
+    .map(reference => [referenceKey(reference), reference]));
+  const merged = current
+    .filter(reference => !baseByKey.has(referenceKey(reference)) || nextKeys.has(referenceKey(reference)))
+    .map(reference => changed.get(referenceKey(reference)) ?? reference);
+  const mergedKeys = new Set(merged.map(referenceKey));
+  for (const [key, reference] of changed) {
+    if (!mergedKeys.has(key)) {
+      merged.push(reference);
+      mergedKeys.add(key);
+    }
+  }
+  return merged;
+}

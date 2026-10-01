@@ -274,5 +274,89 @@ permissionTest('failed atomic consumption write leaves the draft and no false re
   }
   expect(read(f).text).toBe('KEEP-UNWRITABLE-STORE-SNAPSHOT')
   expect(store.getPlanDraftConsumption(f.sessionId, executionId)).toBeNull()
+  })
+})
+
+test('bound plan restoration proof survives ordinary restore history eviction and late RPC replay', () => {
+ const f = fixture()
+ const executionId = 'durable-plan-' + randomUUID()
+ const snapshot = 'BOUND-PLAN-RESTORE-SNAPSHOT'
+ store.restoreSessionDraftAtomic(f.sessionId, projectId, f.restoreId, { text: snapshot }, undefined, executionId)
+ for (let index = 0; index < 64; index++) {
+  store.restoreSessionDraftAtomic(f.sessionId, projectId, 'ordinary-' + randomUUID(), { text: `ORDINARY-RESTORE-${index}` })
+ }
+ expect(store.getSessionDraftHydrationState().appliedRestoreIds[f.sessionId]).toHaveLength(64)
+ expect(store.hasAppliedDraftRestore(f.sessionId, f.restoreId, executionId)).toBe(true)
+ const before = read(f)
+ const local = mutation('late-bound-replay-' + randomUUID(), revision(f.sessionId), before)
+ const replay = store.restoreSessionDraftAtomic(f.sessionId, projectId, f.restoreId, { text: snapshot }, {
+  content: { text: before.text + '\nNEW-LOCAL-AFTER-REPLY-LOSS' }, mutation: local,
+ }, executionId)
+ expect(replay.applied).toBe(false)
+ expect(count(read(f).text, snapshot)).toBe(1)
+ expect(read(f).text).toContain('NEW-LOCAL-AFTER-REPLY-LOSS')
+ // Matching old generic transport shape is harmless, while an explicitly
+ // different plan identity must never rebind the durable proof.
+ expect(store.restoreSessionDraftAtomic(f.sessionId, projectId, f.restoreId, { text: snapshot }).applied).toBe(false)
+ expect(() => store.restoreSessionDraftAtomic(f.sessionId, projectId, f.restoreId, { text: snapshot }, undefined, 'different-plan')).toThrow('DRAFT_RESTORE_CONFLICT')
+ expect(count(read(f).text, snapshot)).toBe(1)
+})
+
+test('ordinary draft clear retains bound plan proof until the Chat is purged', () => {
+ const f = fixture()
+ const executionId = 'clear-bound-plan-' + randomUUID()
+ store.restoreSessionDraftAtomic(f.sessionId, projectId, f.restoreId, { text: 'INTENTIONALLY-CLEARED-PLAN' }, undefined, executionId)
+ store.deleteSessionDraft(f.sessionId)
+ expect(store.getSessionDraft(f.sessionId)).toBeNull()
+ expect(store.hasAppliedDraftRestore(f.sessionId, f.restoreId, executionId)).toBe(true)
+ const replay = store.restoreSessionDraftAtomic(f.sessionId, projectId, f.restoreId, { text: 'INTENTIONALLY-CLEARED-PLAN' }, undefined, executionId)
+ expect(replay.applied).toBe(false)
+ expect(store.getSessionDraft(f.sessionId)).toBeNull()
+ store.purgeSessionDraft(f.sessionId)
+ expect(store.hasAppliedDraftRestore(f.sessionId, f.restoreId, executionId)).toBe(false)
+})
+
+test('scoped reference deltas preserve an updated quote with the same identity', () => {
+ const oldReference: Reference = {
+  version: 1, kind: 'chat-message', projectId, sessionId: 'quote-source', messageId: 'quote-message',
+  role: 'assistant', quote: 'OLD_QUOTE', locator: { type: 'text-quote', exact: 'OLD_QUOTE', start: 0, end: 9 },
+ }
+ const newReference: Reference = {
+  ...oldReference, quote: 'NEW_QUOTE', locator: { type: 'text-quote', exact: 'NEW_QUOTE', start: 0, end: 9 },
+ }
+ expect(core.referenceKey(oldReference)).toBe(core.referenceKey(newReference))
+ const f = fixture('', [oldReference])
+ const local = mutation('updated-quote-' + randomUUID(), f.baseRevision, f.base, {
+  baseReferences: [oldReference], nextReferences: [newReference],
  })
+ store.restoreSessionDraftAtomic(f.sessionId, projectId, f.restoreId, { text: '' }, { content: f.base, mutation: local })
+ expect(read(f).references).toEqual([newReference])
+ // An unchanged quote leaves an authoritative update alone. A new explicit
+ // local payload change with the same key must then reach the normal RPC too.
+ expect(store.reconcileSessionDraftReferences(f.sessionId, projectId, [oldReference], [oldReference])?.references).toEqual([newReference])
+ expect(store.reconcileSessionDraftReferences(f.sessionId, projectId, [newReference], [oldReference])?.references).toEqual([oldReference])
+})
+
+test('fresh plan consumption keeps an updated same-key quote outside the accepted snapshot', () => {
+ const oldReference: Reference = {
+  version: 1, kind: 'chat-message', projectId, sessionId: 'fresh-quote-source', messageId: 'fresh-quote-message',
+  role: 'assistant', quote: 'OLD_QUOTE', locator: { type: 'text-quote', exact: 'OLD_QUOTE', start: 0, end: 9 },
+ }
+ const newReference: Reference = {
+  ...oldReference, quote: 'NEW_QUOTE', locator: { type: 'text-quote', exact: 'NEW_QUOTE', start: 0, end: 9 },
+ }
+ const f = fixture('', [oldReference])
+ // The accepted plan still owns OLD_QUOTE. Ordinary remove/add RPCs before
+ // the first consume may durably select different text at the same offsets.
+ store.reconcileSessionDraftReferences(f.sessionId, projectId, [oldReference], [])
+ store.reconcileSessionDraftReferences(f.sessionId, projectId, [], [newReference])
+ expect(read(f).references).toEqual([newReference])
+ const local = mutation('fresh-quote-consume-' + randomUUID(), f.baseRevision, f.base, {
+  baseReferences: [oldReference], nextReferences: [newReference],
+ })
+ const result = store.consumeSessionDraftForPlan(f.sessionId, projectId, 'fresh-plan-' + randomUUID(), {
+  text: '', references: [oldReference],
+ }, { content: f.base, mutation: local })
+ expect(result.receipt.referenceKeys).toEqual([])
+ expect(read(f).references).toEqual([newReference])
 })

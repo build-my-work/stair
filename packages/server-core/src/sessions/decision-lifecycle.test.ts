@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { AgentEvent } from '@craft-agent/core/types'
 import { saveSession } from '../../../shared/src/sessions/storage.ts'
 import * as backendFactory from '../../../shared/src/agent/backend/factory.ts'
 import * as midTurnMessages from '../decisions/mid-turn-messages.ts'
@@ -240,23 +241,61 @@ describe('decision points in the session lifecycle', () => {
   it('merges queued continuations by reference, not by position', async () => {
     const managed = await session('merge')
     const replays: string[] = []
-    ;(sm as any).sendMessage = async (_id: string, message: string) => { replays.push(message) }
+    const gates = new Map(['A', 'S', 'B', 'C\n\nD'].map(message => [message, Promise.withResolvers<void>()]))
+    const replayedIds: string[][] = []
+    const agent = {
+      getModel: () => 'no-model',
+      setAllSources: () => {},
+      getSessionId: () => undefined,
+      chat: async function* (message: string): AsyncGenerator<AgentEvent> {
+        replays.push(message)
+        replayedIds.push([...(managed.lastSentMessageIds ?? [])])
+        await gates.get(message)!.promise
+        yield { type: 'input_accepted' }
+        yield { type: 'complete' }
+      },
+    }
+    ;(sm as any).getOrCreateAgent = async () => agent
     const a = { message: 'A', messageId: 'a' }
     const steer = { message: 'S', messageId: 's' }
     const b = { message: 'B', messageId: 'b', mergeWith: a }
+    managed.messages = [a, steer, b].map(entry => ({ id: entry.messageId, role: 'user' as const, content: entry.message, timestamp: 1, isQueued: true }))
     managed.messageQueue = [a, steer, b]
-    ;(sm as any).processNextQueuedMessage(managed.id)
-    ;(sm as any).processNextQueuedMessage(managed.id)
-    await tick()
-    expect(replays).toEqual(['A', 'S'])
+    try {
+      ;(sm as any).processNextQueuedMessage(managed.id)
+      ;(sm as any).processNextQueuedMessage(managed.id)
+      // The second request cannot enter while A owns its scheduled replay.
+      expect(managed.messages.find(message => message.id === 'a')?.isQueued).toBe(true)
+      expect(managed.messageQueue.map(entry => entry.messageId)).toEqual(['s', 'b'])
+      await waitFor(() => replays.length === 1, 'A admission')
+      expect(replays).toEqual(['A'])
+      expect(managed.messages.find(message => message.id === 'a')?.isQueued).toBe(false)
 
-    const c = { message: 'C', messageId: 'c' }
-    const d = { message: 'D', messageId: 'd', mergeWith: c }
-    managed.messageQueue = [c, d]
-    ;(sm as any).processNextQueuedMessage(managed.id)
-    await tick()
-    expect(replays.at(-1)).toBe('C\n\nD')
-    expect(managed.replayMergedIds?.get('c')).toEqual(['c', 'd'])
+      gates.get('A')!.resolve()
+      await waitFor(() => replays.length === 2, 'S admission')
+      expect(replays).toEqual(['A', 'S'])
+      gates.get('S')!.resolve()
+      await waitFor(() => replays.length === 3, 'B admission')
+      expect(replays).toEqual(['A', 'S', 'B'])
+      expect(replayedIds).toEqual([['a'], ['s'], ['b']])
+      gates.get('B')!.resolve()
+      await waitFor(() => !managed.isProcessing && managed.messageQueue.length === 0, 'the first queue to finish')
+
+      const c = { message: 'C', messageId: 'c' }
+      const d = { message: 'D', messageId: 'd', mergeWith: c }
+      managed.messages.push(...[c, d].map(entry => ({ id: entry.messageId, role: 'user' as const, content: entry.message, timestamp: 1, isQueued: true })))
+      managed.messageQueue = [c, d]
+      ;(sm as any).processNextQueuedMessage(managed.id)
+      expect(managed.replayMergedIds?.get('c')).toEqual(['c', 'd'])
+      expect(managed.messages.filter(message => ['c', 'd'].includes(message.id)).every(message => message.isQueued)).toBe(true)
+      await waitFor(() => replays.length === 4, 'merged C and D admission')
+      expect(replays.at(-1)).toBe('C\n\nD')
+      expect(replayedIds.at(-1)).toEqual(['c', 'd'])
+      expect(managed.messages.filter(message => ['c', 'd'].includes(message.id)).every(message => message.isQueued === false)).toBe(true)
+    } finally {
+      for (const gate of gates.values()) gate.resolve()
+      await waitFor(() => !managed.isProcessing && managed.messageQueue.length === 0, 'all replay turns to finish')
+    }
   })
 
   it('keeps a title the user set while an automatic refresh was generating', async () => {

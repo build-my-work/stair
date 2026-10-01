@@ -1,6 +1,7 @@
 import {
   MAX_REFERENCES_PER_MESSAGE,
   referenceKey,
+  mergeReferenceDelta,
   referencesFitSerializedLimits,
   type Reference,
 } from '@craft-agent/core'
@@ -108,23 +109,7 @@ export function mergeAuthoritativeSessionDraftReferences(
 ):
   | { ok: true; draft: SessionDraft | null }
   | { ok: false; reason: 'reference-boundary' } {
-  const local = existing?.references ?? []
-  const confirmedKeys = new Set(confirmedBefore.map(referenceKey))
-  const localKeys = new Set(local.map(referenceKey))
-  const removedKeys = new Set(
-    [...confirmedKeys].filter(key => !localKeys.has(key)),
-  )
-  const merged = authoritative.filter(reference => (
-    !removedKeys.has(referenceKey(reference))
-  ))
-  const mergedKeys = new Set(merged.map(referenceKey))
-  for (const reference of local) {
-    const key = referenceKey(reference)
-    if (!confirmedKeys.has(key) && !mergedKeys.has(key)) {
-      merged.push(reference)
-      mergedKeys.add(key)
-    }
-  }
+  const merged = mergeReferenceDelta(authoritative, confirmedBefore, existing?.references ?? [])
   const draft = setSessionDraftReferences(existing, targetProjectId, merged)
   return draft || merged.length === 0
     ? { ok: true, draft }

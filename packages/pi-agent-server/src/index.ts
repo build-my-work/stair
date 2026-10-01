@@ -249,6 +249,7 @@ interface OutboundError { type: 'error'; message: string; code?: string; id?: st
 
 type OutboundMessage =
   | OutboundReady
+  | { type: 'prompt_accepted'; id: string }
   | OutboundEvent
   | OutboundPreToolUseReq
   | OutboundToolExecReq
@@ -1460,6 +1461,7 @@ async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): P
     await session.prompt(msg.message, {
       images: msg.images && msg.images.length > 0 ? msg.images : undefined,
       streamingBehavior: 'followUp',
+      preflightResult: accepted => { if (accepted) send({ type: 'prompt_accepted', id: msg.id }); },
     });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);

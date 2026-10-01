@@ -187,6 +187,7 @@ export class PiAgent extends BaseAgent {
 
   // State
   private _isProcessing: boolean = false;
+  private pendingPromptId: string | null = null;
   private abortReason?: AbortReason;
   /** Aborted when the current turn stops; tool checks started in the turn watch it. */
   private turnAbort = new AbortController();
@@ -963,6 +964,13 @@ export class PiAgent extends BaseAgent {
       case 'event':
         // Pi SDK event -- forward through PiEventAdapter
         this.handleSubprocessEvent(msg.event as Record<string, unknown>);
+        break;
+
+      case 'prompt_accepted':
+        if (this._isProcessing && !this.turnAbort.signal.aborted && msg.id === this.pendingPromptId) {
+          this.pendingPromptId = null;
+          this.eventQueue.enqueue({ type: 'input_accepted' });
+        }
         break;
 
       case 'pre_tool_use_request':
@@ -2233,6 +2241,7 @@ export class PiAgent extends BaseAgent {
 
       // Send prompt to subprocess
       const turnId = `turn-${++this.rpcIdCounter}`;
+      this.pendingPromptId = turnId;
       this.send({
         type: 'prompt',
         id: turnId,
@@ -2303,6 +2312,7 @@ export class PiAgent extends BaseAgent {
 
       yield { type: 'complete' };
     } finally {
+      this.pendingPromptId = null;
       this._isProcessing = false;
       if (turnThinkingOverride) {
         try {

@@ -91,6 +91,7 @@ export {
   referenceSerializedByteLength,
   referencesFitSerializedLimits,
   referenceKey,
+  mergeReferenceDelta,
 } from './reference.ts';
 
 // Message persistence mappers
@@ -124,4 +125,3 @@ export type {
   PageThumbnailInfo,
   PageConfig,
 } from './page.ts';
-

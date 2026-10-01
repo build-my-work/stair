@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { StoredMessage } from '@craft-agent/core/types'
+import type { AgentEvent, StoredMessage } from '@craft-agent/core/types'
 import {
   getSessionFilePath,
   loadSession,
@@ -399,25 +399,55 @@ describe('mid-stream queue runtime invariants', () => {
     })
 
     const events: any[] = []
-    sm.setEventSink((_channel, _target, event) => events.push(event))
+    sm.setEventSink((_channel, _target, event) => events.push(structuredClone(event)))
     ;(sm as unknown as { lastTimestamp: number }).lastTimestamp = priorFinalTimestamp
     ;(sm as unknown as { persistSession: () => void }).persistSession = () => {}
-    const sendMessage = mock(async () => {})
-    ;(sm as unknown as { sendMessage: typeof sendMessage }).sendMessage = sendMessage
+    ;(sm as any).decisionFeatureActive = () => false
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const finished = Promise.withResolvers<void>()
+    const replays: string[] = []
+    const agent = {
+      getModel: () => 'no-model',
+      setAllSources: () => {},
+      getSessionId: () => undefined,
+      chat: async function* (message: string): AsyncGenerator<AgentEvent> {
+        replays.push(message)
+        entered.resolve()
+        try {
+          await release.promise
+          yield { type: 'input_accepted' }
+          yield { type: 'complete' }
+        } finally { finished.resolve() }
+      },
+    }
+    ;(sm as any).getOrCreateAgent = async () => agent
 
     ;(sm as unknown as { processNextQueuedMessage: (id: string) => void })
       .processNextQueuedMessage(sessionId)
-    await new Promise<void>(resolve => setImmediate(resolve))
-
     const replayed = managed.messages.find(message => message.id === 'queued-user')
-    expect(replayed?.isQueued).toBe(false)
+    expect(replayed?.isQueued).toBe(true)
     expect(replayed?.timestamp).toBeGreaterThan(priorFinalTimestamp)
-
-    const processingEvent = events.find(event => event.type === 'user_message')
-    expect(processingEvent?.status).toBe('processing')
-    expect(processingEvent?.message.timestamp).toBe(replayed?.timestamp)
-    expect(processingEvent?.optimisticMessageId).toBe('optimistic-user')
-    expect(sendMessage).toHaveBeenCalledTimes(1)
+    const scheduledEvent = events.find(event => event.type === 'user_message')
+    expect(scheduledEvent?.status).toBe('processing')
+    expect(scheduledEvent?.message.isQueued).toBe(true)
+    expect(scheduledEvent?.message.timestamp).toBe(replayed?.timestamp)
+    expect(scheduledEvent?.optimisticMessageId).toBe('optimistic-user')
+    try {
+      await entered.promise
+      expect(replayed?.isQueued).toBe(false)
+      const processingEvent = events.findLast(event => event.type === 'user_message' && event.message.id === 'queued-user')
+      expect(processingEvent?.status).toBe('processing')
+      expect(processingEvent?.message.isQueued).toBe(false)
+      expect(processingEvent?.message.timestamp).toBe(replayed?.timestamp)
+      expect(processingEvent?.optimisticMessageId).toBe('optimistic-user')
+      expect(replays).toEqual(['follow up'])
+      expect(managed.lastSentMessageIds).toEqual(['queued-user'])
+    } finally {
+      release.resolve()
+      await finished.promise
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
   })
 
   it('retains queued messages until the restored draft is acknowledged', async () => {

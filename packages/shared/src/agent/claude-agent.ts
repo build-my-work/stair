@@ -7,6 +7,7 @@ type ContentBlockParam =
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
   | { type: 'document'; source: { type: 'base64'; media_type: string; data: string } };
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { getSystemPrompt } from '../prompts/system.ts';
 import { BaseAgent, type MiniAgentConfig, MINI_AGENT_TOOLS, MINI_AGENT_MCP_KEYS } from './base-agent.ts';
 import type { BackendConfig, PostInitResult, PermissionRequestType, SdkMcpServerConfig } from './backend/types.ts';
@@ -1722,10 +1723,12 @@ This is a branched conversation. All prior messages in this conversation are par
       // persistent iterator alive and resumes the uncompacted history afterwards.
       let turnMessageSource: AsyncIterable<SDKMessage>;
       let persistentTurn: { aborted: boolean } | null = null;
+      const inputId = randomUUID();
       if (this.keepBackgroundTasksAlive && isSlashCommand) {
         debug(`[chat] Detected SDK slash command on persistent input: ${trimmedMessage}`);
         const sdkMessage: SDKUserMessage = {
           type: 'user',
+          uuid: inputId,
           message: { role: 'user', content: trimmedMessage },
           parent_tool_use_id: null,
         };
@@ -1733,6 +1736,7 @@ This is a branched conversation. All prior messages in this conversation are par
         persistentTurn = this.activeTurnState;
       } else if (this.keepBackgroundTasksAlive && !isSlashCommand) {
         const sdkMessage = this.buildSDKUserMessage(effectiveUserMessage, attachments);
+        sdkMessage.uuid = inputId;
         turnMessageSource = await this.beginPersistentTurn(sdkMessage, optionsWithAbort, thinkingOptions);
         persistentTurn = this.activeTurnState;
       } else if (isSlashCommand) {
@@ -1743,15 +1747,20 @@ This is a branched conversation. All prior messages in this conversation are par
         turnMessageSource = this.currentQuery;
       } else if (hasBinaryAttachments) {
         const sdkMessage = this.buildSDKUserMessage(effectiveUserMessage, attachments);
+        sdkMessage.uuid = inputId;
         async function* singleMessage(): AsyncIterable<SDKUserMessage> {
           yield sdkMessage;
         }
         this.currentQuery = query({ prompt: singleMessage(), options: optionsWithAbort });
         turnMessageSource = this.currentQuery;
       } else {
-        // Simple string prompt for text-only messages (may include text file contents)
+        // Keep the existing text prompt, but supply its identity on the SDK wire
+        // so only a reply to this input can acknowledge delivery (also on resume).
         const prompt = this.buildTextPrompt(effectiveUserMessage, attachments);
-        this.currentQuery = query({ prompt, options: optionsWithAbort });
+        async function* singleMessage(): AsyncIterable<SDKUserMessage> {
+          yield { type: 'user', uuid: inputId, message: { role: 'user', content: prompt }, parent_tool_use_id: null };
+        }
+        this.currentQuery = query({ prompt: singleMessage(), options: optionsWithAbort });
         turnMessageSource = this.currentQuery;
       }
 
@@ -1766,6 +1775,7 @@ This is a branched conversation. All prior messages in this conversation are par
 
       // Process SDK messages and convert to AgentEvents
       let receivedComplete = false;
+      let inputAccepted = false;
       // Track whether we received any assistant content (for empty response detection)
       // When SDK returns empty response (e.g., failed resume), we need to detect and recover
       let receivedAssistantContent = false;
@@ -1781,6 +1791,18 @@ This is a branched conversation. All prior messages in this conversation are par
         // Flag-OFF: `turnMessageSource === this.currentQuery` (unchanged). Flag-ON:
         // it's the per-turn channel, so breaking/ending here never closes the query.
         for await (const message of turnMessageSource) {
+          // The installed SDK echoes client UUIDs on live reply frames after
+          // prompt hooks/preflight. Init, control, history and blocked results
+          // cannot prove acceptance. Persistent turns each use a fresh UUID.
+          if (!inputAccepted && !persistentTurn?.aborted && !this.currentQueryAbortController?.signal.aborted
+            && ((message.type === 'assistant' || message.type === 'stream_event') && message.parent_tool_use_id === null
+              || message.type === 'result' && message.num_turns > 0)
+            && !('isReplay' in message && message.isReplay === true)
+            && (message.type !== 'stream_event' || (message.event as { type: string }).type !== 'ping')
+            && (message.user_message_uuid === inputId || message.user_message_uuids?.includes(inputId))) {
+            inputAccepted = true;
+            yield { type: 'input_accepted' };
+          }
           // Track if we got any text content from assistant
           if ('type' in message && message.type === 'assistant' && 'message' in message) {
             const assistantMsg = message.message as { content?: unknown[] };
@@ -2001,10 +2023,11 @@ This is a branched conversation. All prior messages in this conversation are par
           return;
         }
 
-        // Detect empty response when resuming - SDK silently fails resume if session is invalid
-        // In this case, we got a new session ID but no assistant content
+        // An unaccepted empty resume can mean the SDK session is invalid. A
+        // correlated executed result already owns the input even without text;
+        // retrying it would submit the same work twice.
         debug('[SESSION_DEBUG] Post-loop check: wasResuming=', wasResuming, 'receivedAssistantContent=', receivedAssistantContent, '_isRetry=', _isRetry);
-        if (wasResuming && !receivedAssistantContent && !_isRetry) {
+        if (wasResuming && !receivedAssistantContent && !inputAccepted && !_isRetry) {
           debug('[SESSION_DEBUG] >>> DETECTED EMPTY RESPONSE - triggering recovery');
           const wasBranchFork = !!this.branchFromSdkSessionId;
           if (wasBranchFork) {
