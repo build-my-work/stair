@@ -1,0 +1,68 @@
+---
+title: 回归验收体系
+description: Full Run 的 Gate、Run 纪律、模块 Case 与证据要求。逐条 Case 以仓库回归规范为准。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+> **状态**：入口导航（authoritative 规范在仓库）
+> **读取时机**：发起或复核一轮回归、判断某行为"算不算过"之前
+
+Stair 的行为契约由一轮完整回归（Full Run）守护：128 个产品模块 Case + 8 条跨模块不变量。**本页只做结构导航；逐条 Case 的 Expect、执行协议与报告模板以 `docs/stair-full-regression.md` 为唯一权威**，本文与其冲突时以规范为准并修正本文。
+
+## 事实来源
+
+| 内容 | 权威来源 |
+|---|---|
+| 回归规范全文（Case、协议、§19.1 精确 test name 映射） | `docs/stair-full-regression.md` |
+| 源码测试运行器（`validate:ci` 的 test 部分） | `scripts/run-source-tests.ts` |
+| 回归数据夹具生成 | `scripts/stair-regression-fixtures.ts` |
+
+## 四项固定 Gate
+
+```bash
+bun run validate:ci     # 动态发现全部源码测试
+bun run lint
+bun run stair:build     # 本轮唯一一次构建，RELEASE Case 引用其日志
+git diff --check        # whitespace；新文件另做 no-index 检查
+```
+
+Diff 触及 Provider、Connector、鉴权或外部服务适配时追加 `bun run test:external`，否则记 `NOT_REQUIRED`。四项 Gate 全过才进入 E2E。
+
+## Run 纪律
+
+- Run ID `stair-regression-YYYYMMDD-HHMMSS`；开始/结束各记录 HEAD、工作树状态、平台架构、Bun/Node 版本。
+- Run 中不修改源码；源码变化即作废当前 Run，换新 Run ID。
+- 直接测试当前 Stair 数据，不复制不清理；破坏性 Case 后换新对象继续。
+- 只停止确认属于 Stair 的进程；deep link 从应用内 Share/Copy 入口复制，不凭空构造。
+- 特殊协议见规范 §4.5（冲突文件、fingerprint 失效、queued+Stop、布局坏条目、HMR touch-only）。
+
+## 模块与规模
+
+| 模块 | Case | 模块 | Case |
+| --- | --- | --- | --- |
+| APP | 12 | REFERENCE | 12 |
+| PROJECT | 10 | CHAT | 7 |
+| WORKBENCH | 27 | BROWSER | 14 |
+| FILES | 16 | DRAWNIX | 10 |
+| READER / EPUB / PDF | 2 / 7 / 5 | RELEASE | 6 |
+
+`INV-01`—`INV-08`（如"普通导航绝不新增 Auxiliary""跨 Project 不可见不可写"）由对应模块 Case 聚合派生，不单独执行。
+
+## 执行顺序与证据
+
+1. Gate → 2. `stair:dev` 开发版完成 DEV Case → 3. 本轮 `stair:build` 正式包完成 PKG Case → 4. 报告。
+
+`AUTO` Case 引用本轮 `validate:ci`，且必须定位到精确 test file + test name（§19.1 给出逐 Case 映射）；`DERIVED` 只核对依赖结果。视觉/Pointer/动画/Browser 几何保留截图或录屏；FAIL/BLOCKED 必须可复现。最终 `PASS` 只绑定该 Run 的源码状态。
+
+## 限制与说明
+
+日常 Full Run 允许 Windows/Linux 实机 Case 按平台白名单记 `N/A`；正式分发前需补空配置冷启动、目标平台实机与签名公证，缺证据不得宣称跨平台 Release Ready。
+
+<NextSteps
+  items={[
+    { href: '/dev/packaging-updates/', title: '打包与更新', description: 'stair:build 产出与 afterPack 清单。' },
+    { href: '/dev/data-and-security/', title: '数据与安全边界', description: '安全类 Case 的契约细节。' },
+    { href: '/dev/development-setup/', title: '开发环境与脚本', description: '跑 Gate 之前先配好环境。' },
+  ]}
+/>

@@ -24,6 +24,7 @@ import {
   type Platform,
 } from './build/common'
 import {
+  createStairDevelopmentEnvironment,
   createStairEnvironment,
   STAIR_DEFAULT_VITE_PORT,
 } from './stair-profile'
@@ -66,6 +67,17 @@ function moduleUrl(path: string): string {
 }
 
 describe('Stair 脚本环境', () => {
+  it('开发版与正式包使用不同的数据目录和深链', () => {
+    const source = { PATH: '/usr/bin' }
+    const dev = createStairDevelopmentEnvironment(source, REPO_ROOT, '/Users/test')
+    const packaged = createStairEnvironment(source, REPO_ROOT, '/Users/test')
+
+    expect(dev.CRAFT_CONFIG_DIR).toBe('/Users/test/.stair-dev')
+    expect(dev.CRAFT_DEEPLINK_SCHEME).toBe('stair-dev')
+    expect(packaged.CRAFT_CONFIG_DIR).toBe('/Users/test/.stair')
+    expect(packaged.CRAFT_DEEPLINK_SCHEME).toBe('stair')
+  })
+
   it('提供固定产品身份和独立默认值', () => {
     const env = createStairEnvironment(
       { PATH: '/usr/bin' },

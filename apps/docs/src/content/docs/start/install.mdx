@@ -1,0 +1,40 @@
+---
+title: 安装与启动
+description: 从源码构建 Stair，或启动开发模式。
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import NextSteps from '../../../components/NextSteps.astro';
+import Screenshot from '../../../components/Screenshot.astro';
+
+Stair 目前没有公开下载渠道，从源码构建只要几步。构建产物是当前架构的 `Stair.app` 目录包（目前只在 macOS arm64 完成实机验收），数据存放在独立的 `~/.stair` 目录，不会碰你机器上已有的其他应用数据。
+
+## 从源码构建
+
+<Steps>
+1. 安装 [Bun](https://bun.sh)，克隆本仓库。
+2. 在仓库根目录执行 `bun install`。
+3. 执行 `bun run stair:build`，得到当前架构的 `Stair.app` 目录包；开发调试用 `bun run stair:dev`（端口 5193）。
+</Steps>
+
+首次启动会引导你创建 Workspace，并自动附带一个默认 Project，可以直接开始学习。
+
+<Screenshot name="first-launch" caption="首次启动：创建 Workspace 与默认 Project" />
+
+## 与 Craft 共存
+
+Stair 与 Craft 使用完全隔离的数据命名空间、端口和 `stair://` 深链协议，两个应用可以同时运行，互不读取对方数据。
+
+## 限制与说明
+
+- 目前只有 macOS arm64 完成实机验收；Windows 和 Linux 走同一套打包路径，但正式实机验收和签名公证还没做。
+- 构建产物是 ad-hoc 签名、未公证，首次打开可能需要在访达里右键选择"打开"。
+- 自动更新当前是禁用的：应用不检查、不下载、不安装任何更新，升级需要重新构建。
+
+<NextSteps
+  items={[
+    { href: '/start/first-project/', title: '第一个 Project 与 Session', description: '建好学习容器，开始第一次阅读和提问。' },
+    { href: '/help/faq/', title: '常见问题', description: '打不开、签名提示等问题先看这里。' },
+    { href: '/start/welcome/', title: 'Stair 是什么', description: '回到产品总览。' },
+  ]}
+/>

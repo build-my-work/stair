@@ -1,0 +1,38 @@
+---
+title: Reader：EPUB 与 PDF
+description: 目录、进度、划线、导出——学习材料的主要入口。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+import Screenshot from '../../../components/Screenshot.astro';
+
+读一本 EPUB 或一篇 PDF，最怕读完什么都没留下。Reader 把"读"这个环节接进工作台：进度自动记住，划线可管理、可导出，选中的文字能直接变成引用。
+
+## 阅读体验
+
+- **打开即读**：从 Project Files 点开 EPUB 或 PDF，在面板里连续阅读；关掉再开，进度、目录位置和划线原样恢复。
+- **目录**：面板够宽（EPUB ≥ 840 px、PDF ≥ 760 px）时目录显示在正文旁；面板变窄时自动改为悬浮 overlay，不挤压正文。
+- **划线**：选中文字添加划线，正文中显示红色波浪下划线；划线列表里点任意一条都能跳回原文。
+- **导出**：划线可导出为 Markdown——EPUB 按最深层目录分组，附作者和相对路径；PDF 附文件名和页码。复习材料可以直接从导出文件开始。
+- **PDF 页码**：页头、目录和划线列表统一使用 PDF 内置的印刷页码（pageLabels），没有标签时回退物理页码。
+- **长文档**：几百页的 PDF 不会一次全部渲染，跳页时只挂载目标附近的页面，滚动不跳变。
+
+<Screenshot name="reader-epub" caption="EPUB 阅读面板：目录、正文与划线" />
+
+## 限制与说明
+
+- 单本 EPUB/PDF 上限 32 MiB；每本划线和标注合计不超过 1,000 条。
+- 加密、ZIP64、条目数或压缩比异常的 EPUB 会被直接拒收，不解压到任何目录。
+- 阅读状态损坏时自动隔离重来，不阻塞阅读，也不会把旧书的进度套到新书头上。
+
+## 机制一句话
+
+阅读进度按 Project、文件路径和文件指纹三重隔离；书换了版本，旧划线不会错套到新内容上。选中的文字走统一的[引用](/core/citations-notes/)协议。
+
+<NextSteps
+  items={[
+    { href: '/core/citations-notes/', title: '引用与笔记', description: '选中的段落下一步去哪。' },
+    { href: '/core/workbench/', title: '多面板工作台', description: '边读边记的摆法。' },
+    { href: '/guide/reading-loop/', title: '读 → 引 → 思 → 图 → 写', description: '把 Reader 放进完整闭环。' },
+  ]}
+/>

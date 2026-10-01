@@ -1,0 +1,54 @@
+---
+title: 架构不变量
+description: 影响面最大、破坏后最难定位的架构规则。改动相关模块前必读。
+prev: false
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+> **状态**：权威开发规则（authoritative）
+> **读取时机**：修改 Workbench 状态、领域归属、跨 Project 交互或持久化语义之前
+
+本文收拢几条影响面大、破坏后难以定位的架构不变量。各子系统的展开见
+[工作台命令契约](/dev/workbench-commands/)、[持久化](/dev/persistence/)、
+[原生浏览器运行时](/dev/browser-runtime/)、[数据与安全边界](/dev/data-and-security/)。
+
+> **增量适用原则**：这些约束约束新增和正在修改的代码，不要求为统一形式专项重构存量；
+> 但每条不变量对任何触碰它的改动都必须保持。
+
+## 事实来源
+
+| 内容 | 权威来源 |
+|---|---|
+| 命令层（唯一布局写入口） | `apps/electron/src/renderer/workbench/workbench-commands.ts` |
+| Workbench 状态形状 | `apps/electron/src/renderer/workbench/workbench-state.ts` |
+| 布局持久化 RPC | `packages/server-core/src/handlers/rpc/workbench-layout.ts` |
+| 跨模块回归不变量 | `docs/stair-full-regression.md` §18（INV-01—INV-08） |
+
+## 不变量
+
+1. **面板身份不进领域模型。** Panel ID 只是展示状态；Session、Project File、Drawnix 能力的路由一律由 Session 的不可变 `projectId` 决定。把面板位置当业务身份用（"左栏""右栏"）是结构性错误。
+2. **命令层是布局的唯一写入口。** UI 组件不得直接修改 Workbench atom；每条命令必须声明影响哪个 Project、`auxiliary.length` 变化量、Focus 结果和失败结果。通用 `navigate()` 内部不得隐藏布局修改。
+3. **普通导航不新增面板。** 目标已可见则聚焦，否则替换 Primary；只有显式命令（New Session in Panel、Branch、Open in New Panel、presentBrowser）才创建 Auxiliary。文件预览走可复用的 Preview，永不提升为 Primary。
+4. **Workspace → Project → Session 所有权始终成立。** Session 从创建起携带不可变 `projectId`；跨 Project 内容不可见、不可选、不可写——UI 不提供入口，服务端对构造请求仍拒绝。
+5. **只持久化语义描述符。** 布局文档存"什么在哪"，不存 React 状态、原生 Runtime ID 或 reveal intent；Browser Runtime 必须可由描述符重建。
+6. **引用是唯一的跨内容协议。** 文本、EPUB、PDF、网页、聊天选区生成同一个 `Reference` 值；草稿、消息、Add Note、模型输入与 reveal 消费它，各内容模块不各自实现写入协议。
+
+## Review 清单
+
+1. 这次改动有没有绕过命令层直接写布局状态？
+2. 新增的领域字段是否携带 Project 归属？有没有可能跨 Project 读到？
+3. 面板 ID 有没有渗进领域模型或服务端校验之外的地方？
+4. 新增的持久化内容是语义描述符吗？Runtime 或组件状态有没有被序列化？
+
+验证：改命令层至少跑 `workbench-commands.test.ts`、`workbench-layout.test.ts` 与 `typecheck`；
+跨 Project 改动加跑 `project-communication.test.ts`、`default-project.test.ts`。
+精确 test name 映射见 `docs/stair-full-regression.md` §19.1。
+
+<NextSteps
+  items={[
+    { href: '/dev/workbench-commands/', title: '工作台命令契约', description: '不变量 2 的完整命令语义表。' },
+    { href: '/dev/persistence/', title: '持久化', description: '不变量 5 的存储与恢复规则。' },
+    { href: '/dev/regression/', title: '回归验收体系', description: '每条不变量对应的 Case 与证据。' },
+  ]}
+/>

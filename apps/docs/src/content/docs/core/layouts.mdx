@@ -1,0 +1,34 @@
+---
+title: 布局与偏好
+description: 每个 Project 记住自己的学习姿势：面板、顺序、焦点和宽度。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+读小说和做习题册的摆法不一样，学 A 科目和学 B 科目也不一样。布局按 Project 独立保存：每个 Project 有自己的面板组合、Auxiliary 顺序、焦点、Preview 和各面板宽度，切换 Project 就切换摆法，重启应用原样恢复。
+
+## 保存与恢复
+
+- 保存的是布局本身：哪个 Session 在哪个位置、哪个文件开着、焦点在哪。不保存瞬时状态，所以恢复结果是稳定的，不会出现"上次那个临时弹窗又回来了"。
+- 恢复按 Project 逐个清洗：布局文件里混入无效条目时，只丢弃坏的那条，好面板和别的 Project 不受牵连。
+- 面板宽度精确持久化，切换侧栏、Navigator 这些 Shell 开关不会偷改比例。
+- 拖拽排序支持鼠标和纯键盘两种方式；调整宽度时按 `Esc` 可以取消，恢复原比例。
+
+## 显示偏好
+
+- **Compact 模式**：小屏或单面板场景下收敛展示行为，只改外观，不动布局数据。
+- **Reduced Motion**：跟随系统设置关闭非必要动画，状态转换不变。
+- **高倍缩放**：200% 缩放下所有控件保持键盘可达、焦点可见。
+
+## 限制与说明
+
+- Browser 窗口重启后按保存的信息重新打开，URL 恢复。
+- 两个窗口同时改同一 Workspace 的不同 Project 布局：两边改动都会保留，按基线合并，不会互相回滚。
+
+<NextSteps
+  items={[
+    { href: '/core/workbench/', title: '多面板工作台', description: '布局的日常操作。' },
+    { href: '/start/first-project/', title: '第一个 Project 与 Session', description: '每个 Project 从这里开始。' },
+    { href: '/help/faq/', title: '常见问题', description: '布局恢复不对劲时先看这里。' },
+  ]}
+/>

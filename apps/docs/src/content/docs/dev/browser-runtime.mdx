@@ -1,0 +1,47 @@
+---
+title: 原生浏览器运行时
+description: Renderer 与 Electron Main 的所有权切分、几何同步和生命周期规则。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+> **状态**：权威开发规则（authoritative）
+> **读取时机**：修改 Browser 生命周期、几何同步、目标绑定或窗口关闭行为之前
+
+Browser 的原生页面由 Electron Main 独占管理：Runtime（`WebContentsView`）、Bounds、Focus、窗口与页面生命周期都归 Main；Renderer Workbench 只提交 presentation intent 和 DOM Host 几何。Panel 身份与 Runtime 身份分离，通过显式关联绑定——不存在嵌入式展示、reparent 或跨 Project 的 presentation 路径。
+
+## 事实来源
+
+| 内容 | 权威来源 |
+|---|---|
+| Runtime 生命周期与几何 | `apps/electron/src/main/browser-pane-manager.ts` |
+| Renderer 接口契约 | `packages/server-core/src/handlers/window-manager-interface.ts` |
+| Project 隔离测试 | `browser-window-scope.test.ts`、`browser-broadcast.test.ts` |
+
+## 规则
+
+- **几何**：Browser Surface 随窗口 Resize、Navigator 展开/收起、横向 Workbench Overflow 和遮挡状态持续同步；连续滚动和拖拽期间 Bounds 持续更新。Hide/Show 只用于结构变化或真实遮挡（Modal/Dialog），普通几何变化不走 hide/show；Modal 遮挡时指针事件不穿透。Toolbar 与页面视口边界误差不超过 1 px，选区动作不得遮挡或误触页面。
+- **关闭顺序**：关闭 Browser Panel 先销毁 Runtime，再由唯一 Workbench 命令移除 Panel。
+- **park/restore**：切换 Project 先 park 当前 Surface（detach/hide），切回时同进程恢复 Runtime 与页面状态；应用退出销毁全部 Runtime。
+- **重启恢复**：按持久化的语义描述符创建新 Runtime，旧 runtime ID 永不持久化；toolbar 在监听器注册后主动请求当前状态，避免恢复后 URL 空白。
+- **窗口语义**：普通关闭只是隐藏且可恢复；终止（terminate）才销毁页面、Toolbar 与 Runtime。重复隐藏/终止幂等。
+- **目标绑定**：从 Chat 打开显式绑定该 Chat；手动打开只绑定当前 Project。Chat 删除清除手动目标或销毁 Chat-owned 窗口；Project 删除清理其全部 Browser；恢复显示时刷新目标元数据，失败明确显示，不伪装成取消。
+- **选区与书签**：选区走与其他来源相同的 Project-scoped 引用协议；对其他 Project 的 Browser 发起动作被拒绝。书签以 Workspace 为边界持久化。
+
+## Review 清单
+
+1. 有没有引入嵌入式展示、reparent 或隐式 presentation 路径？
+2. 关闭顺序是否保持"先销毁 Runtime，再移除 Panel"？
+3. 几何更新是否只提交可见几何，不夹带布局状态修改？
+4. 目标绑定的增删场景（Chat 删除、Project 删除、重命名、隐藏恢复竞态）是否都有失败出口？
+
+验证：改动至少跑 `browser-pane-manager.test.ts`、`browser-window-scope.test.ts`、
+`browser-broadcast.test.ts` 与 `typecheck`；几何改动补 Pointer/录屏证据（`BROWSER-01`—`BROWSER-05`）。
+
+<NextSteps
+  items={[
+    { href: '/dev/persistence/', title: '持久化', description: '语义描述符存了什么。' },
+    { href: '/dev/workbench-commands/', title: '工作台命令契约', description: 'presentBrowser 与 closePanel 的语义。' },
+    { href: '/dev/overview/', title: '架构不变量', description: '回到总览。' },
+  ]}
+/>

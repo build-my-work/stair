@@ -1,0 +1,81 @@
+---
+title: 工作台命令契约
+description: 唯一布局写入口的完整语义：每条命令影响什么、失败时留下什么。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+> **状态**：权威开发规则（authoritative）
+> **读取时机**：新增或修改任何 Workbench 命令、面板生命周期动作，或为布局相关行为写测试之前
+
+所有布局状态转换都由命令层负责，UI 组件不允许直接改 Workbench atom。每条命令必须明确：影响哪个 Project；`auxiliary.length` 的准确变化量；Focus 结果；Navigator 与聊天目标结果；失败结果。通用 `navigate()` 内部不得隐藏布局修改。
+
+## 事实来源
+
+| 内容 | 权威来源 |
+|---|---|
+| 命令实现 | `apps/electron/src/renderer/workbench/workbench-commands.ts` |
+| 状态形状 | `apps/electron/src/renderer/workbench/workbench-state.ts` |
+| 状态形状测试 | `workbench-commands.test.ts`、`workbench-layout.test.ts`（精确 test name 见 `docs/stair-full-regression.md` §19.1） |
+
+## 状态形状
+
+每个 Window 持有激活的 Project Scope，每个 Project 有一份可 park/restore 的布局：
+
+```ts
+interface WindowWorkbench {
+  workspaceId: string
+  activeProjectId: string
+  layoutsByProject: Record<string, ProjectWorkbench>
+}
+
+interface ProjectWorkbench {
+  primary: WorkbenchPanel | null
+  auxiliary: WorkbenchPanel[]
+  focusedPanelId: string | null
+  previewPanelId: string | null
+}
+```
+
+- Primary 是可替换的 Session 展示位；即使 `primary` 为 null 仍是固定语义槽位，面板增长只以 `auxiliary.length` 衡量。
+- Project File Preview 是可复用 Auxiliary，绝不提升为 Primary。
+- Focus 只是视觉焦点：改变 Focus 不得修改 Navigator 路由、Project Scope、Primary 内容或聊天目标。
+
+## 命令契约
+
+| 命令 | 布局结果 | Focus | Navigator/聊天目标 | 失败结果 |
+| --- | --- | --- | --- | --- |
+| `selectSessionFromNavigator(S)` | `S` 已可见则不变，否则替换/创建 Primary（Aux Δ=0） | 聚焦对应面板 | Navigator 选中 `S`，其他聊天目标不变 | 状态不变 |
+| `createSessionInPrimary(P)` | 新会话进 Primary（Aux Δ=0） | 聚焦 Primary | 当前聊天切到新会话 | 不保留部分创建的会话 |
+| `createSessionInNewPanel(P)` | 焦点面板后插入新 Auxiliary（+1）；无焦点时插入索引 0 | 聚焦新 Auxiliary | 显式选中新会话 | 创建前拒绝跨 Project 或超限 |
+| `branchSessionInNewPanel(src)` | 子会话紧邻来源插入（+1） | 聚焦子会话面板 | 显式选中子会话，来源不变 | 失败不残留子会话或面板 |
+| `openProjectFilePreview(F)` | flush 后复用 Preview；首次创建时 +1 | 聚焦 Preview | 不变 | flush/容量失败保持旧布局 |
+| `openProjectFileInPanel(F)` | 创建或聚焦显式文件 Auxiliary，不占 Preview | 聚焦该面板 | 不变 | 状态不变，展示错误 |
+| `presentBrowser(B)` | 聚焦已有 Browser 面板；仅显式意图才新建 | 仅显式意图改变焦点 | 不变 | 销毁孤儿 Runtime，布局不变 |
+| `focusPanel(id)` | 不变 | 聚焦 `id` | 不变 | 状态不变 |
+| `closePanel(id)` | 文档先 flush 可 veto；关 Browser 先销毁 Runtime；关 Primary 置 null | 右邻 → 左邻 → Primary → null | 不自动选择 fallback | veto 时保持打开 |
+| `switchProject(P)` | park 当前布局，激活 `P` 的布局 | 恢复已存 Focus，无则 null | Navigator 切到 `P`，parked 面板目标保留 | 留在当前 Project |
+| `resizePanel` / `reorderAuxiliaryPanel` | 只改比例或顺序 | 保持 Focus | 不变 | 状态不变 |
+
+## Project 前置条件
+
+- `selectSessionFromNavigator(S)` 解析 `S.projectId`，与激活 Project 不同时，在同一串行事务里 park 当前布局、激活目标 Project，再执行"聚焦已可见，否则替换 Primary"。
+- 其余所有命令只操作当前 Project；调用方必须先显式切换，命令拒绝跨 Project 或 parked layout 目标。
+
+## Review 清单
+
+1. 新命令的 Aux Δ 是多少？有没有可能隐式 +1？
+2. 失败路径是否做到"不保留部分状态"（无孤儿 Session、无孤儿 Runtime、无半提交布局）？
+3. 关闭/替换前的 flush 和 Runtime 销毁是否先于布局变更？
+4. 焦点回退顺序是否符合"右邻 → 左邻 → Primary → null"，Navigator 是否保持了不自动跟随？
+
+验证：命令层改动至少跑 `workbench-commands.test.ts` 与 `typecheck`；
+触碰 Reference/Note 流程加跑 `REFERENCE-04`—`REFERENCE-07` 对应测试。
+
+<NextSteps
+  items={[
+    { href: '/dev/persistence/', title: '持久化', description: '这些布局语义怎么落盘与恢复。' },
+    { href: '/dev/overview/', title: '架构不变量', description: '命令层在整体约束里的位置。' },
+    { href: '/dev/glossary/', title: '术语表', description: 'Primary、Auxiliary、parked layout 的准确定义。' },
+  ]}
+/>

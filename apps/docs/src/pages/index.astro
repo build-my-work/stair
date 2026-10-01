@@ -1,0 +1,28 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { Card, CardGrid } from '@astrojs/starlight/components';
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Stair 文档',
+    description: '产品文档面向使用者，开发文档面向维护者，选一个入口。',
+  }}
+>
+  <p>两个体系，各进各的门：日常使用遇到的问题在产品文档里；想了解内部实现、数据边界和打包机制，去开发文档。</p>
+
+  <CardGrid stagger={false}>
+    <Card
+      title="产品文档"
+      href="/start/welcome/"
+    >
+      安装、核心功能、学习工作流、快捷键与常见问题。使用 Stair 的一切从这里进。
+    </Card>
+    <Card
+      title="开发文档"
+      href="/dev/overview/"
+    >
+      架构总览、数据与安全边界、打包与更新。维护和二次开发从这里进。
+    </Card>
+  </CardGrid>
+</StarlightPage>

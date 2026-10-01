@@ -1,0 +1,38 @@
+---
+title: 多面板工作台
+description: 一个 Primary 加多个 Auxiliary，把材料、笔记和会话摆到同一个屏幕上。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+import Screenshot from '../../../components/Screenshot.astro';
+
+对着一份 PDF 做笔记、顺手问 agent 一个问题——学习的常态是同时看两三样东西，来回切窗口最毁状态。工作台用固定结构解决这个问题：一个 Primary 主面板，加任意多个 Auxiliary 副面板。
+
+<Screenshot name="workbench-panels" caption="Reader、笔记、会话三面板并排的典型学习布局" />
+
+## 日常操作
+
+- **新建会话**：New Session 占据 Primary；New Session in Panel 在旁边新开 Auxiliary。
+- **切换焦点**：`Cmd+Shift+]` / `Cmd+Shift+[` 在面板间循环，焦点到视口外的面板会自动滚入视野。
+- **调整布局**：拖动面板边缘改宽度（`Esc` 取消）；拖动 Auxiliary 上的手柄排序；Primary 固定在最左，不参与重排。
+- **关闭面板**：点面板关闭按钮。关掉的只是面板，Session 和草稿保留；焦点落到相邻面板——如果关的是没在聚焦的面板，焦点不动。
+- **浏览会话列表**：点击已打开的面板只聚焦它；点击未打开的替换 Primary——面板不会越点越多。
+- **后台会话**：其他会话来消息只更新内容，不抢焦点、不动布局。
+
+学习时常见的摆法：左边 Reader 读章节，中间 Project Files 的笔记，右边一个挂着引用的会话。这套布局每个 Project 单独记忆，重启后原样恢复。
+
+## 限制与说明
+
+- Settings、Sources 这类页面不属于工作台面板；文件预览永远走可复用的 Preview，也不会占 Primary。
+- 唯一会被自动清理的是完全空的未命名会话：没有消息、没有草稿、也不再显示在任何面板里。其余 Session 不受关闭面板影响，全部关掉后数据仍在。
+- 面板宽度比例精确持久化，重启后不变。
+
+布局如何随 Project 保存和恢复，见[布局与偏好](/core/layouts/)。
+
+<NextSteps
+  items={[
+    { href: '/core/layouts/', title: '布局与偏好', description: '每个 Project 记住自己的学习姿势。' },
+    { href: '/core/reader/', title: 'Reader：EPUB 与 PDF', description: '工作台里最先打开的那块内容。' },
+    { href: '/start/first-project/', title: '第一个 Project 与 Session', description: '先把容器建好。' },
+  ]}
+/>

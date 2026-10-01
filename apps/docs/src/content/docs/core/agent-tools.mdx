@@ -1,0 +1,38 @@
+---
+title: Agent 工具
+description: agent 能直接读写你打开的导图；引用让它看到的是原文而不是截图。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+Stair 里的 agent 不只是聊天对象。它带着两类能力参与学习：读写你当前打开的 Drawnix 画板，以及接收带原文的引用——这两件事让它给出的回答贴着你的材料，而不是泛泛而谈。
+
+## mindmap_read / mindmap_update
+
+一个具体的用法：复习前问 agent"这张导图有没有漏掉关键的关系"，它可以直接读画板回答，也可以按你的要求补节点。
+
+- `mindmap_read` 读取当前打开画板的实时结构，不依赖磁盘上的旧快照。
+- `mindmap_update` 修改画板：单批最多 50 个操作，批内失败整体回滚，历史保持单一批次。
+- 两个工具都由发起会话所属的 Project 决定路由：画板没打开、Project 已切换或只存在于后台布局时，返回 `MINDMAP_NOT_OPEN`；同一文件开了多个画板视图时返回 `MINDMAP_AMBIGUOUS_BOARD`，关到只剩一个视图自动恢复。
+- agent 永远不会跨 Project 碰你的画板，也不会借工具之手改动工作台布局。
+
+## 引用进模型
+
+通过 Add Chat 发送的引用会把原文一并交给模型（转义后的内容）。输入框和你发出的消息里只显示正文与引用预览，不显示内部数据——引用在聊天里始终是可点击的预览，点击跳回原文。
+
+## 排队与停止
+
+agent 运行中可以继续发消息，它们会排队；点 Stop 后，没发出去的排队消息连同文本、引用和附件一起回到输入草稿，重启应用也不丢、不会自动误发。
+
+## 限制与说明
+
+- 工具能力边界按会话的 Project 划定，面板身份不参与判断——把面板拖来拖去不影响 agent 能访问什么。
+- 引用来源文件在外部被改动导致指纹失效时，发送会明确失败，草稿原样恢复，不会带着过期引用继续对话。
+
+<NextSteps
+  items={[
+    { href: '/core/drawnix/', title: 'Drawnix 白板', description: '这两个工具操作的对象。' },
+    { href: '/core/citations-notes/', title: '引用与笔记', description: '引用怎么发、怎么跳回。' },
+    { href: '/help/faq/', title: '常见问题', description: 'MINDMAP 报错的处理办法。' },
+  ]}
+/>

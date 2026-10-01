@@ -1,0 +1,32 @@
+---
+title: 反馈与支持
+description: 反馈问题前先准备好这些信息；渠道补充中。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+Stair 还在内部打磨阶段，公开反馈渠道尚未建立（此处会随后补上）。但排查问题的方法现在是固定的——按下面的清单准备信息，任何渠道拿到都能直接开始定位。
+
+## 反馈前请准备
+
+1. **构建方式**：`stair:build` 的正式包还是 `stair:dev` 开发版，大概的构建日期。
+2. **复现步骤**：从哪个 Project、哪种面板开始，点了什么，期望发生什么、实际发生什么。
+3. **现场材料**：出问题的文件类型（EPUB？多大？）、能截图的部分截下来。
+4. **重启能否复现**：很多状态问题重启后就变了，这一条信息很值钱。
+
+## 这类问题请优先报
+
+涉及安全边界的行为异常是最高优先级：笔记或文件被写到 Project 工作目录之外、看到别的 Project 的内容、别的应用的数据目录被 Stair 读取或修改。正常使用中不应该出现其中任何一种。
+
+## 先自查
+
+- 报错关键词（如 `MINDMAP_NOT_OPEN`）在[常见问题](/help/faq/)里有解释。
+- 面板焦点、排序类问题先看[快捷键](/help/shortcuts/)，确认不是按键习惯问题。
+
+<NextSteps
+  items={[
+    { href: '/help/faq/', title: '常见问题', description: '大多数"是不是坏了"在这里有答案。' },
+    { href: '/help/shortcuts/', title: '快捷键', description: '面板焦点和取消操作。' },
+    { href: '/start/welcome/', title: 'Stair 是什么', description: '回到产品总览。' },
+  ]}
+/>

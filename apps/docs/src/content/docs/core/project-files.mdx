@@ -1,0 +1,35 @@
+---
+title: Project Files
+description: 每个 Project 自带的文件区：Markdown 笔记、材料、图片，编辑即保存。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+笔记和材料最终都是文件。Project Files 把它们放在所属 Project 里：Markdown 笔记、代码和配置、图片，还有 [EPUB 与 PDF](/core/reader/)和 [Drawnix 白板](/core/drawnix/)，都在同一棵文件树里。
+
+## 日常操作
+
+- **浏览与搜索**：文件树按需加载（单目录超过 500 条会显示截断提示），支持递归搜索，也能直接新建文件和目录。
+- **打开**：单击文件进入唯一的 Preview 面板，再点别的文件原地替换，不会开一堆面板；想长期并排就右键 Open in New Panel。
+- **编辑**：Markdown、文本、JSON、常见代码和配置文件直接编辑，停手 800 毫秒自动保存；关闭面板、切换 Project 或退出应用前都会先把没存的内容写盘。
+- **链接**：笔记里的 Project 相对路径链接点击即跳转对应文件；网页链接遵循你的浏览器偏好。
+- **图片**：PNG 等图片直接预览。
+
+## 冲突了怎么办
+
+如果文件在 Stair 之外被改过（比如用别的编辑器存了同一文件），保存时会明确提示冲突，不会悄悄覆盖任何一边。你可以选择 Reload 放弃内存版本，或用 Save Draft As 把当前内容导出成新文件——不需要先 Reload。
+
+## 限制与说明
+
+- 超过 1 MiB 的文本打开为只读，二进制文件不做解码；包含 NUL 的内容拒绝写入。
+- `javascript:`、`data:`、`file:` 链接和越界的相对路径一律拒绝：文件访问出不了当前 Project 的工作目录，绝对路径、`..`、符号链接都会被服务端拒绝。
+- 保存不改动文件格式：BOM、CRLF/LF、末尾换行和文件权限原样保留；空文件可以保存。
+- 写盘失败时，关闭面板、切换 Project、退出应用这些动作会被拦住，直到内容安全落盘。
+
+<NextSteps
+  items={[
+    { href: '/core/reader/', title: 'Reader：EPUB 与 PDF', description: '文件树里的学习材料怎么读。' },
+    { href: '/core/drawnix/', title: 'Drawnix 白板', description: '`.drawnix` 文件就是画板。' },
+    { href: '/core/citations-notes/', title: '引用与笔记', description: '把文件里的段落变成引用。' },
+  ]}
+/>

@@ -1,0 +1,59 @@
+---
+title: 打包与更新
+description: 构建产物、afterPack 硬校验清单与平台资格。改打包脚本前必读。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+> **状态**：权威开发规则（authoritative）
+> **读取时机**：修改打包脚本、runtime 依赖清单或发布流程之前
+
+## 事实来源
+
+| 内容 | 权威来源 |
+|---|---|
+| 构建入口（架构分发、runtime 暂存） | `scripts/stair-build.ts` |
+| afterPack 硬校验 | `apps/electron/scripts/afterPack.stair.cjs` |
+| 资产校验（validate:ci 内） | `apps/electron/scripts/validate-assets.ts` |
+| 产品身份/打包契约测试 | `scripts/stair-profile.test.ts` |
+
+## 构建产物
+
+当前架构的 `Stair.app` 目录包，内含：Claude SDK 与对应架构 Claude binary、Session MCP、Pi Agent Server、Koffi、Bun、uv、ripgrep、运行时 PNG 图标。
+
+## 构建与校验规则
+
+- `stair-build.ts` 拒绝同时指定两种架构；按目标平台/架构暂存全部 runtime。跨架构 ripgrep 经上游 postinstall 路径重新获取；Bun 下载具备经校验的 `curl`/`gh` 回退。
+- 连续构建先清理上一次的运行时暂存目录；陈旧的或架构不对的 native runtime 不得混进新包。
+- `afterPack` 逐项硬校验，任一失败构建即失败：必需文件存在、Claude SDK 元数据与大小、各二进制的 Mach-O/PE/ELF 目标架构、Bun/Session MCP/Pi/Koffi、ripgrep、运行时 PNG 图标。
+- 打包后核对产品名 `Stair`、bundle id `io.github.build-my-work.stair`、`stair://` scheme、独立资产与禁用 Craft 更新通道。
+
+## 更新
+
+应用当前**不检查、不下载、不安装任何更新**，升级靠重新构建安装。更新通道启用时间未定；相关保护已就位并有测试覆盖——更新退出前先等待未保存文档写盘（flush），写盘失败则中止更新（`auto-update-install.isolated.ts`）。
+
+## 平台资格
+
+| 平台 | 状态 |
+| --- | --- |
+| macOS arm64 | 构建、打包校验、全新安装实机验收完成 |
+| Windows / Linux | 同一打包路径与校验逻辑，有单元测试覆盖；实机验收、签名、公证未执行 |
+
+正式外部分发前需补：空配置复跑 `APP-09`/`PROJECT-10`、目标平台实机执行 `RELEASE-05`/`RELEASE-06`、签名与公证。缺这些证据不得宣称跨平台 Release Ready。当前产物为 ad-hoc 签名、未公证。
+
+## Review 清单
+
+1. runtime 清单有没有增减？afterPack 与 `validate-assets.ts` 是否同步更新？
+2. 新增二进制是否校验了目标架构？跨架构获取路径是否可靠？
+3. 连续构建会不会复用陈旧暂存？
+4. 有没有任何改动重新打开 Craft 更新通道或共用 Craft 命名空间？
+
+验证：打包改动至少跑 `bun run stair:build` 全程 + `scripts/stair-profile.test.ts`，并核对 afterPack 日志。
+
+<NextSteps
+  items={[
+    { href: '/dev/regression/', title: '回归验收体系', description: 'RELEASE Case 与证据要求。' },
+    { href: '/dev/data-and-security/', title: '数据与安全边界', description: '命名空间与身份约束。' },
+    { href: '/dev/overview/', title: '架构不变量', description: '回到总览。' },
+  ]}
+/>

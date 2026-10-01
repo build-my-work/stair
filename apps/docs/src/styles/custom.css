@@ -1,0 +1,30 @@
+/* Stair 文档站主题定制：中文优先字体栈 + zcode 式中性暗色调 */
+
+:root {
+  --sl-font:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans CJK SC', 'Source Han Sans SC', sans-serif;
+  --sl-font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* 默认深色；色相从 Starlight 默认的蓝（224）微调向中性 */
+  --sl-hue: 230;
+}
+
+/* 中文长文行距与密度 */
+.sl-markdown-content {
+  line-height: 1.78;
+}
+
+.sl-markdown-content :is(h1, h2, h3, h4) {
+  letter-spacing: 0.01em;
+}
+
+.sl-markdown-content h2 {
+  margin-top: 2.5rem;
+  padding-top: 0;
+}
+
+/* 表格保持紧凑，配合产品文档里的参数表 */
+.sl-markdown-content table :is(td, th) {
+  padding: 0.5rem 0.75rem;
+}

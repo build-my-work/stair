@@ -1,0 +1,16 @@
+{
+  "name": "@craft-agent/docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev --port 5176",
+    "build": "astro build",
+    "preview": "astro preview --port 5176",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.42.3",
+    "astro": "^7.3.4"
+  }
+}

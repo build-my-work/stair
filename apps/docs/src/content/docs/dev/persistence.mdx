@@ -1,0 +1,57 @@
+---
+title: 持久化
+description: 什么数据存在哪、以什么形态存，以及恢复时的清洗与合并规则。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+> **状态**：权威开发规则（authoritative）
+> **读取时机**：新增持久化字段、修改布局文档结构或恢复/合并逻辑之前
+
+四条原则：每个存储区只保留一个当前 Schema 版本；领域数据与 Workbench 展示状态分开存；只持久化语义描述符，不存 React State 或原生 Runtime 对象；Browser Runtime 必须可由描述符重建。不迁移、不读取旧 Craft/Stair 数据格式，只读写 `~/.stair` 命名空间。
+
+## 事实来源
+
+| 内容 | 权威来源 |
+|---|---|
+| Workbench 布局 RPC（Workspace 根目录 `workbench-layout.json`） | `packages/server-core/src/handlers/rpc/workbench-layout.ts` |
+| 布局恢复/合并（Renderer 侧） | `apps/electron/src/renderer/workbench/workbench-persistence.ts` |
+| Reader 状态 RPC | `packages/server-core/src/handlers/rpc/reader-state.ts` |
+| 回归语义 | `docs/stair-full-regression.md` `WORKBENCH-13`—`WORKBENCH-27`、`READER-01`/`READER-02` |
+
+## 存储清单
+
+| 数据 | 位置与形态 | 要点 |
+| --- | --- | --- |
+| Project/Session 领域数据 | `~/.stair` 内领域存储 | Session 创建即携带不可变 `projectId` |
+| Reader 状态 | Project 自有 `reader-state/v1` 目录 | 原子写、同文档串行 mutation、1 秒进度去抖；按 Project+路径+指纹隔离；损坏或超限（4 MiB）隔离后重新开始 |
+| 划线与标注 | Reader 状态内 | 每文档上限 1,000 条；PDF 每条最多 512 个 rect |
+| 书签 | Workspace 级 | 重启后顺序和 URL 不变 |
+| Browser 语义描述符 | Workspace 级 | 只存描述符，不存 runtime ID；激活时重建 Runtime |
+| Workbench 布局 | Workspace 根目录 `workbench-layout.json` | 按 Project 存 Primary、Auxiliary 顺序、Focus、Preview 与宽度比例 |
+
+## 恢复与合并规则
+
+- 启动恢复逐 Project 清洗条目：无效条目（含未知 `kind`）只丢弃自己，有效邻居、Focus fallback 和其他 Project 布局不受牵连。
+- Workspace 切换时延迟读取旧 layout：过期响应不得覆盖新 Workspace。
+- 瞬时读取失败采用保守合并或重试，不允许把空读取写回磁盘；恢复读取成功前不启用持久化写入。
+- 两个窗口从同一 baseline 分别改不同 Project 并先后写入：服务端按 client baseline 合并，两个变更都保留，不由后写者回滚另一方。
+- Shell Pane（Sidebar/Navigator/Project Files）开关不改写持久化的面板比例；宽度以稳定 Shell 宽度解析，持久化 `widthRatio` 精确不变，渲染像素取整每条边最多 1 px。
+
+## Review 清单
+
+1. 新增字段是语义描述符吗？有没有把组件状态、实例 ID 或 runtime ID 序列化进去？
+2. 恢复逻辑对无效条目是否只丢弃自己？有没有可能把空读取写回磁盘？
+3. 跨 Workspace 的过期响应有没有被挡住？
+4. 改动是否破坏"启动随首帧同步就位，不出现默认→用户布局跳变"？
+
+验证：改布局至少跑 `workbench-persistence.test.ts`、`workbench-layout.test.ts`；
+改 Reader 状态加跑 `epub-state.test.ts`、`pdf-state.test.ts`。
+
+<NextSteps
+  items={[
+    { href: '/dev/workbench-commands/', title: '工作台命令契约', description: '布局语义的生产者。' },
+    { href: '/dev/browser-runtime/', title: '原生浏览器运行时', description: '描述符如何变成活的窗口。' },
+    { href: '/dev/data-and-security/', title: '数据与安全边界', description: '命名空间与访问控制。' },
+  ]}
+/>

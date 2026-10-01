@@ -1,0 +1,86 @@
+---
+/**
+ * 覆盖默认 SiteTitle：标题旁加「产品功能 / 技术文档」两个导航入口，
+ * 按当前路径所在体系高亮。
+ */
+import { logos } from 'virtual:starlight/user-images';
+import config from 'virtual:starlight/user-config';
+const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
+
+const pathname = Astro.url.pathname;
+const isDev = pathname.includes('/dev');
+const entries = [
+  { href: '/start/welcome/', label: '产品功能', active: !isDev && pathname !== '/' },
+  { href: '/dev/overview/', label: '技术文档', active: isDev },
+];
+---
+
+<a href={siteTitleHref} class="site-title sl-flex">
+  {
+    config.logo && logos.dark && (
+      <>
+        <img
+          class:list={{ 'light:sl-hidden print:hidden': !('src' in config.logo) }}
+          alt={config.logo.alt}
+          src={logos.dark.src}
+          width={logos.dark.width}
+          height={logos.dark.height}
+        />
+        {!('src' in config.logo) && (
+          <img
+            class="dark:sl-hidden print:block"
+            alt={config.logo.alt}
+            src={logos.light?.src}
+            width={logos.light?.width}
+            height={logos.light?.height}
+          />
+        )}
+      </>
+    )
+  }
+  <span class:list={{ 'sr-only': config.logo?.replacesTitle }} translate="no">
+    {siteTitle}
+  </span>
+</a>
+
+<nav class="header-switch sl-flex" aria-label="文档体系">
+  {
+    entries.map((entry) => (
+      <a href={entry.href} class:list={{ active: entry.active }} aria-current={entry.active ? 'page' : undefined}>
+        {entry.label}
+      </a>
+    ))
+  }
+</nav>
+
+<style>
+  .header-switch {
+    align-items: center;
+    gap: 0.25rem;
+    margin-inline-start: 0.75rem;
+  }
+  .header-switch a {
+    font-size: var(--sl-text-xs);
+    padding: 0.2rem 0.625rem;
+    border-radius: 999px;
+    color: var(--sl-color-gray-3);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .header-switch a:hover {
+    color: var(--sl-color-text);
+    background: var(--sl-color-gray-5);
+  }
+  .header-switch a.active {
+    color: var(--sl-color-white);
+    background: var(--sl-color-bg-accent);
+  }
+  @media (max-width: 50rem) {
+    .header-switch {
+      margin-inline-start: 0.25rem;
+    }
+    .header-switch a {
+      padding: 0.2rem 0.4rem;
+    }
+  }
+</style>

@@ -1,0 +1,27 @@
+---
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+interface NextStep {
+  href: string;
+  title: string;
+  description: string;
+}
+
+interface Props {
+  items: NextStep[];
+}
+
+const { items } = Astro.props;
+---
+
+<h2>下一步</h2>
+
+<CardGrid stagger={false}>
+  {
+    items.map((item) => (
+      <Card title={item.title} href={item.href}>
+        <p>{item.description}</p>
+      </Card>
+    ))
+  }
+</CardGrid>

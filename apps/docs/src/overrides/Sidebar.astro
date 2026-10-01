@@ -1,0 +1,23 @@
+---
+/**
+ * 按所在体系切换侧边栏：/dev/ 下的页面只显示「开发文档」分组，
+ * 其余页面只显示产品分组。两个体系共用一个站点，导航互不混入。
+ */
+import SidebarPersister from '@astrojs/starlight/components/SidebarPersister.astro';
+import SidebarSublist from '@astrojs/starlight/components/SidebarSublist.astro';
+import MobileMenuFooter from '@astrojs/starlight/components/MobileMenuFooter.astro';
+
+const route = Astro.locals.starlightRoute;
+const isDevSection = Astro.url.pathname.includes('/dev');
+route.sidebar = isDevSection
+  ? route.sidebar.filter((entry) => entry.label === '开发文档')
+  : route.sidebar.filter((entry) => entry.label !== '开发文档');
+---
+
+<SidebarPersister>
+  <SidebarSublist sublist={route.sidebar} />
+</SidebarPersister>
+
+<div class="md:sl-hidden">
+  <MobileMenuFooter />
+</div>

@@ -1,0 +1,33 @@
+---
+title: 快捷键
+description: 面板焦点的固定快捷键和键盘可达的操作。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+Stair 目前固定的快捷键只有两个：
+
+| 操作 | 按键 | 说明 |
+| --- | --- | --- |
+| 焦点到下一个面板 | `Cmd+Shift+]` | 按 Primary → Auxiliary 顺序移动，首尾循环 |
+| 焦点到上一个面板 | `Cmd+Shift+[` | 反向循环 |
+
+两个焦点键对视口外的面板同样有效，焦点移过去时工作台会自动把面板滚入视野，不会出现"键盘进去了、眼睛看不到"的陷阱。
+
+## 键盘可达的其他操作
+
+这些不走固定快捷键，而是通过键盘焦点完成：
+
+- **面板排序**：Tab 到 Auxiliary 的排序手柄后，用键盘完成拖拽排序；Primary 没有排序手柄，也不可重排。
+- **取消**：调整面板宽度时按 `Esc` 恢复原比例；阅读时按 `Esc` 关闭选区工具条。
+- **系统 Reduced Motion** 开启时动画自动收敛；200% 缩放下上述操作全部保持键盘可达。
+
+新增快捷键时会更新本页。觉得哪个高频操作缺快捷键，请到[反馈](/start/feedback/)里提。
+
+<NextSteps
+  items={[
+    { href: '/core/workbench/', title: '多面板工作台', description: '这些键操作的对象。' },
+    { href: '/help/faq/', title: '常见问题', description: '先自查再反馈。' },
+    { href: '/start/feedback/', title: '反馈与支持', description: '缺什么键，提。' },
+  ]}
+/>

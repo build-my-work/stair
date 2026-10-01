@@ -24,3 +24,15 @@ export function createStairEnvironment(
     CRAFT_INSTANCE_NUMBER: '',
   }
 }
+
+export function createStairDevelopmentEnvironment(
+  source: Readonly<Record<string, string | undefined>> = process.env,
+  repoRoot = join(import.meta.dir, '..'),
+  homeDir = homedir(),
+): Record<string, string> {
+  return {
+    ...createStairEnvironment(source, repoRoot, homeDir),
+    CRAFT_CONFIG_DIR: source.CRAFT_CONFIG_DIR?.trim() || join(homeDir, '.stair-dev'),
+    CRAFT_DEEPLINK_SCHEME: 'stair-dev',
+  }
+}

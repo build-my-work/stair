@@ -1,0 +1,56 @@
+---
+/**
+ * 截图占位组件。真图就位后，把同名文件放进 src/assets/screens/
+ * （命名：YYYYMMDD-<name>.png，日期取截图当天），并把本组件替换为
+ * astro:assets 的 <Image> 引用即可，无需改动页面其余部分。
+ */
+interface Props {
+  name: string;
+  caption?: string;
+  ratio?: string;
+}
+
+const { name, caption, ratio = '16 / 9' } = Astro.props;
+---
+
+<figure class="stair-screenshot-placeholder">
+  <div class="stair-screenshot-box" style={`aspect-ratio: ${ratio};`}>
+    <span class="stair-screenshot-label">截图占位</span>
+    <code>src/assets/screens/YYYYMMDD-{name}.png</code>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .stair-screenshot-placeholder {
+    margin: 1.5rem 0;
+  }
+
+  .stair-screenshot-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border: 1px dashed var(--sl-color-gray-5);
+    border-radius: 0.75rem;
+    background: var(--sl-color-gray-6, var(--sl-color-bg));
+  }
+
+  .stair-screenshot-label {
+    font-size: 0.8125rem;
+    color: var(--sl-color-gray-3);
+  }
+
+  .stair-screenshot-box code {
+    font-size: 0.75rem;
+    color: var(--sl-color-gray-4);
+  }
+
+  figcaption {
+    margin-top: 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--sl-color-gray-3);
+    text-align: center;
+  }
+</style>

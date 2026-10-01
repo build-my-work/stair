@@ -4,7 +4,7 @@
 
 - 适用范围：Stair 当前已交付的全部产品模块，以及后续功能、修复、重构、依赖和打包迭代。
 - 基线来源：[`stair-rebuild-plan.md`](./stair-rebuild-plan.md)。
-- 日常 Full Run 直接验证当前工作区源码、当前 Stair 数据和当前 Project，不创建隔离数据副本。
+- 日常 Full Run 直接验证当前工作区源码，以及开发版 `~/.stair-dev` 和正式包 `~/.stair` 各自的当前数据与 Project，不创建数据副本。
 - 全新配置首次启动和 Windows/Linux 实机验证属于发布资格补充，不阻塞日常 Full Run。
 
 本文是未来迭代的验收入口。`stair-rebuild-plan.md` 中的历史通过记录只说明当时的代码状态，不能替代当前工作树的重新验证。
@@ -88,7 +88,7 @@ Case 按主要产品所有者归类，而不是按开发顺序或执行环境归
 ### 4.1 Run 边界与 Preflight
 
 - Run ID使用 `stair-regression-YYYYMMDD-HHMMSS`。
-- 直接测试当前工作区、当前 Stair数据和当前 Workspace/Project；不复制、清理或恢复测试数据。
+- 直接测试当前工作区，以及开发版和正式包各自的当前 Workspace/Project；不复制、清理或恢复测试数据。
 - 开始时记录 `git rev-parse HEAD`、`git status --short`、Host/架构、Bun和 Node版本；结束时再次记录 HEAD和工作树状态。
 - Run中不修改源码。若源码发生变化，结束当前 Run并创建新 Run ID。
 - 确认 Stair可启动、Computer Use可用；涉及聊天的 Case再确认至少一个真实 Provider连接可用。
@@ -106,7 +106,7 @@ Case 按主要产品所有者归类，而不是按开发顺序或执行环境归
 
 ### 4.3 测试数据
 
-直接使用当前 Stair中的 Workspace、Project和数据。Case需要特殊对象时，在当前 Project中创建，并允许保留现场。至少准备：
+分别使用开发版与正式包中的当前 Workspace、Project和数据。Case需要特殊对象时，在对应环境的当前 Project中创建，并允许保留现场。至少准备：
 
 - 两个 Project，以及每个 Project中的普通 Session。
 - 可编辑 Markdown、第二个 Preview文件、冲突文件、空文件、BOM/CRLF文件、dotfile、常见代码文件和包含 NUL的二进制。
@@ -121,7 +121,7 @@ Case 按主要产品所有者归类，而不是按开发顺序或执行环境归
 
 1. 记录当前源码和环境，完成第 5.1 节源码门禁。
 2. 启动开发版，按状态依赖完成全部 `DEV` Case；执行顺序可以跨模块复用现场，但必须逐 Case记录。
-3. 停止开发版，启动本轮新构建的正式包，完成全部 `PKG` Case。
+3. 启动本轮新构建的正式包，完成全部 `PKG` Case；开发版可同时运行，以验证两个实例互不影响。
 4. 核对 Gate、Case结果、失败证据和退出日志，形成报告。
 
 明确写为 `AUTO` 的 Case统一引用本轮 `validate:ci`；`DERIVED` Case只核对依赖结果，不重复执行动作。
@@ -180,29 +180,29 @@ git diff --check
 ### 5.2 开发版 E2E
 
 1. 精确停止已有 Stair开发进程。
-2. 执行 `bun run stair:dev`，保持终端和 Main日志可读。
-3. 使用当前数据完成全部 `DEV` 和 `DEV+FAULT` Case；`AUTO`结果来自 5.1，不重复操作。
+2. 执行 `bun run stair:dev`，确认默认使用 `~/.stair-dev`、`stair-dev://` 和 5193，并保持终端和 Main日志可读。
+3. 使用开发版当前数据完成全部 `DEV` 和 `DEV+FAULT` Case；`AUTO`结果来自 5.1，不重复操作。
 4. 故障数据可以保留，必要时换新的测试对象继续。
 
 ### 5.3 正式包 E2E
 
-1. 停止开发版和残留 Stair进程。
+1. 确认没有残留的正式包进程；开发版可以保持运行。
 2. 启动本轮 `stair:build` 生成的当前 Host/架构目录包，并记录实际可执行文件路径。
-3. 继续使用当前 Stair数据，完成全部 `PKG` Case。
+3. 使用正式包当前 `~/.stair` 数据完成全部 `PKG` Case，不复用开发版数据。
 4. 退出后检查残留进程和 Main日志。
 
 ## 6. APP：产品身份与应用生命周期
 
 - `APP-01`：运行 Stair profile、branding、user-data 和 deep-link 测试。
-  - Expect：产品名、`~/.stair`、5193、`stair://`、图标和禁用自动更新的约束通过。
+  - Expect：开发版默认使用 `~/.stair-dev`、5193 和 `stair-dev://`；正式包继续使用 `~/.stair` 和 `stair://`；产品名、图标和禁用自动更新的约束通过。
 - `APP-02`：使用当前 Stair数据启动开发版，检查设置页、日志和已恢复的 Workspace/Session。
-  - Expect：只从 `~/.stair` 读取并恢复 Stair状态；配置、日志、Electron userData和端口均属于 Stair。
-- `APP-03`：记录已有 Craft数据摘要，同时运行 Craft与 Stair，并分别打开两者的有效产品深链。
-  - Expect：Stair使用 `~/.stair`、5193和 `stair://`；两个应用可同时工作，深链进入各自产品，Craft数据摘要不变化。
+  - Expect：只从 `~/.stair-dev` 读取并恢复开发版状态；配置、日志和 Electron userData 不写入正式包的 `~/.stair`。
+- `APP-03`：同时运行 Stair 开发版与正式包，并分别打开 `stair-dev://` 和 `stair://` 的有效深链；记录已有 Craft数据摘要。
+  - Expect：两个 Stair 进程与窗口同时保持运行，开发版使用 `~/.stair-dev` 和 5193，正式包使用 `~/.stair`；深链进入对应实例，Craft数据摘要不变化。
 - `APP-04`：创建 Workspace、Project、Session和设置后重启。
   - Expect：Stair状态完整恢复，不出现重复、丢失或跨 Workspace数据。
-- `APP-05`：使用 `stair://` 深链打开有效 Session/路由，再使用格式错误或非 Stair scheme。
-  - Expect：Stair scheme正确路由；无效或非 Stair scheme不污染 Stair当前状态。
+- `APP-05`：在开发版使用 `stair-dev://` 深链打开有效 Session/路由，再使用格式错误或非开发版 scheme。
+  - Expect：开发版 scheme正确路由；无效或非开发版 scheme不污染当前状态，也不接管正式包深链。
 - `APP-06`：打开两个 Panels，保留未发送草稿和 Project Files 筛选；记录源码内容摘要后，只用 `touch` 触发 Renderer HMR。
   - Expect：HMR 前后源码内容摘要一致；React Root 复用；Panels、Focus、草稿和筛选全部保持。
 - `APP-07`：打开并关闭 EPUB/PDF iframe，覆盖 `ERR_ABORTED`/子框架卸载场景。
@@ -216,7 +216,7 @@ git diff --check
 - `APP-11`：分别在应用未运行和已运行时打开有效 `stair://` 深链，并重复启动正式包。
   - Expect：冷启动和运行中均路由到正确目标；重复启动只聚焦既有实例，不产生重复主实例或错误协议处理。
 - `APP-12`：退出正式包，检查残留进程、端口和日志。
-  - Expect：所有 Runtime销毁；无 Stair父子进程、5193监听、未处理异常或退出期写入失败。
+  - Expect：正式包的 Runtime与父子进程全部退出，无未处理异常或退出期写入失败；并行运行的开发版与 5193 监听不受影响。
 
 ## 7. PROJECT：Workspace、Project 与 Session
 

@@ -1,0 +1,42 @@
+---
+title: Stair 是什么
+description: 为学习场景打造的桌面工作台——读材料、做加工、产出你自己的理解。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+import Screenshot from '../../../components/Screenshot.astro';
+
+学一门新东西的时候，工具一多就散了：材料是 PDF 和 EPUB，笔记开在另一个窗口，想问 AI 还得把原文复制过去。等应用都打开，刚才冒出来的问题已经想不起来了。学习的损耗往往不在"学"本身，而在这些切换里。
+
+Stair 是为学习场景打造的桌面工作台：把阅读、笔记、白板和 agent 会话放进同一个 Project，目标只有一个——**提高学习的效率和质量**。
+
+**效率来自场景不分家。** 读书时划一段话，一键变成笔记或一个提问；agent 就在旁边的面板里，材料不用搬运，上下文不断。
+
+**质量来自守住一条线。** AI 负责检索、整理、草拟，组织语言的仍然是你。读完一段，先写一句自己的理解，再去看 AI 怎么说——这个小动作就是 Stair 想帮你保住的。
+
+<Screenshot name="workbench-overview" caption="学习中的工作台：左侧 Reader，右侧笔记与 agent 面板" />
+
+## 学习的三个环节，各有对应的功能
+
+- **输入**：[Reader](/core/reader/) 打开 EPUB 和 PDF（独立目录、页码、标注），[内置浏览器](/core/browser/)看网页资料，网页选区同样可以引用。
+- **加工**：选中文字一键引用，发给 agent 或写进笔记（[引用与笔记](/core/citations-notes/)）；[Drawnix 导图](/core/drawnix/)负责搭结构；[Project Files](/core/project-files/) 管理所有 Markdown，800 毫秒自动保存。
+- **输出**：一段自己写的解释、一张改过的导图、一个还没解决的问题——它们都以文件和会话的形式留在 Project 里，[布局](/core/layouts/)也随 Project 记住，明天打开接着学。
+
+{/* 工作台是承载以上一切的框架：多面板工作台 */}
+
+## Stair 怎么看"学得更好"
+
+三个设计取向，都来自学习里的具体行为：
+
+1. **读到的要变成自己的。** 划线只是开始：Add Note 把它写进笔记，Add Chat 把它变成提问——选区动作都通向"写"，而不止于保存。
+2. **问题是学习材料。** 你问出的问题带着你的困惑和理解的边界，值得留着。会话保留在 Project 里，可以回跳、引用、接着追问。
+3. **整体和局部要来回走。** 只钻细节会迷路，只看框架会很空。目录看整体，选区和引用钻局部，导图把两者挂在一起。
+
+{/* 判断的原始出处是 docs/stair-product-ideas.md 条目 002/003/004 */}
+
+<NextSteps
+  items={[
+    { href: '/guide/reading-loop/', title: '读 → 引 → 思 → 图 → 写', description: '用一个完整的学习闭环，看这些功能如何配合。' },
+    { href: '/core/citations-notes/', title: '引用与笔记', description: 'Stair 最核心的单个功能：选中即引用，引用可跳回。' },
+  ]}
+/>

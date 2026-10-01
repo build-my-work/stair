@@ -1,0 +1,64 @@
+---
+title: 数据与安全边界
+description: 命名空间、路径协议、引用校验链与归档校验的完整规则。全部有自动化验收。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+> **状态**：权威开发规则（authoritative）
+> **读取时机**：修改文件访问、Add Note 写入、引用协议或 EPUB/Reader 校验之前
+
+## 事实来源
+
+| 内容 | 权威来源 |
+|---|---|
+| Project File 服务端 RPC（路径协议、原子保存） | `packages/server-core/src/handlers/rpc/project-files.ts` |
+| Add Note 服务端写入（目录句柄） | `packages/server-core/src/handlers/rpc/project-notes.ts` |
+| EPUB 归档校验 | `packages/server-core/src/project-files/epub-archive-validator.ts` |
+| 产品身份与命名空间 | `packages/shared/src/stair-branding.ts`、`scripts/stair-profile.ts` |
+| 深链路由 | `deep-link-routing.test.ts`、`stair-user-data.test.ts` |
+
+## 命名空间
+
+- 应用数据全部在 `~/.stair`：配置、日志、Electron userData、阅读状态。与 Craft 完全隔离，可同时运行，互不读写。
+- 深链 `stair://`、开发端口 5193 独立注册；无效或非 Stair scheme 不污染当前状态；bundle id 为 `io.github.build-my-work.stair`；自动更新禁用且不检查、不下载、不安装。
+
+## Project 路径协议
+
+Project File 的服务端 RPC 只接受当前 Workspace 中 Project 显式配置的 `workingDirectory` 内的相对路径，不回退到 Workspace、Session 或应用数据目录。
+
+- 拒绝：绝对路径、`..` 穿越、符号链接与 Windows junction、特殊文件、越界路径、跨 Workspace 的 Project 请求。
+- 并发一致性：SHA-256 比较、同一 fingerprint 串行保存、临时文件原子替换，失败清理临时文件且不改变目标。
+- 保真：BOM、CRLF/LF、末尾换行与权限位逐字保留；NUL 内容拒绝；空文件可保存。
+- flush 失败 veto 后续破坏性动作：替换 Preview、关闭 Panel、切换 Project/Workspace、窗口关闭、更新安装。
+
+## Add Note 的目录句柄
+
+写入固定在一个已验证的父目录句柄上完成：POSIX 用 `openat` + `O_NOFOLLOW`，Windows 用相对根句柄的 `NtCreateFile` 并拒绝 reparse point。读取、追加、同步都在同一句柄上进行——授权后路径被换成符号链接也无法越界；并发追加串行化，不丢失内容。
+
+## 引用校验链
+
+从选中到进入模型依次校验：Workspace → Project → Session 归属 → 来源文件 fingerprint → 引用数量 → 序列化字节数。模型只接收转义后的不可信引用数据；可见文本与引用上下文分开预算，引用 marker 与 JSON 永不在消息或摘要边界被截断切开。来源 fingerprint 失效时发送明确失败，草稿原样恢复。
+
+## EPUB/Reader 校验
+
+- EPUB ZIP 服务端验证：首条 `mimetype`、container、路径穿越、加密、ZIP64、条目数（≤ 5,000）、压缩/解压体积（32 MiB / 256 MiB、单 entry 32 MiB）、膨胀比（≤ 100）；危险归档拒绝解压到 Project 或应用目录。
+- EPUB/PDF 二进制上限 32 MiB；Reader 状态按文档 4 MiB 预算，损坏状态隔离后重新开始，不阻塞阅读器；文件 fingerprint 变化后旧 locator 与高亮不会错误应用到新内容。
+
+## Review 清单
+
+1. 新的文件访问是否全部经过 Project `workingDirectory` 授权？有没有绕过句柄直接拼路径？
+2. 新的越界场景有没有对应的服务端拒绝与测试？
+3. 引用链上新加的校验点，失败时是否做到"明确失败 + 草稿恢复"，而不是静默丢弃？
+4. 有没有任何路径会把数据写进 `~/.stair` 之外或用户工作目录之外？
+
+验证：改动至少跑 `project-files.test.ts`、`project-notes.test.ts`、
+`epub-archive-validator.test.ts` 与 `typecheck`。
+
+<NextSteps
+  items={[
+    { href: '/dev/regression/', title: '回归验收体系', description: '以上每条规则对应的 Case 与证据要求。' },
+    { href: '/dev/persistence/', title: '持久化', description: '数据落盘的形态与恢复规则。' },
+    { href: '/dev/overview/', title: '架构不变量', description: '回到总览。' },
+  ]}
+/>

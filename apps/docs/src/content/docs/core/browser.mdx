@@ -1,0 +1,34 @@
+---
+title: 内置浏览器
+description: 查资料的网页窗口：选区可引用、书签按 Workspace 保存、链接走你的偏好。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+学习绕不开查网页资料。内置浏览器是一个独立的原生窗口，网页里选中的文字和 PDF 里一样，可以直接变成引用发给 agent 或写进笔记——不用再手动复制粘贴网址和段落。
+
+## 打开与归属
+
+- **三个入口**：顶部 Browser 入口手动打开（归属当前 Project）；从聊天里打开链接（归属那个会话）；或把链接偏好设为内置后，点任何文档网页链接。
+- **归属的意义**：Browser 记住自己为哪个 Project 或会话服务。切换 Project 时，顶部入口只列出当前 Project 的窗口，别的 Project 的 Browser 不会被误选或误写。
+
+## 日常操作
+
+- **选区三动作**：Add Chat / New Chat / Add Note，引用包含 Project、URL 和完整选区，点击引用可以跳回网页原位。
+- **书签**：按 Workspace 保存，重启后顺序和 URL 不变。
+- **链接偏好**：网页链接交给系统浏览器还是留在 Stair 内打开，可以切换；聊天、笔记和文档里的链接都遵守这个偏好。
+- **关闭与恢复**：点窗口关闭只是隐藏，从顶部入口再点一次就回来，URL、滚动位置和目标都还在；只有明确终止才销毁页面。
+- **重启恢复**：应用重启后，Browser 面板按保存的语义描述符重建，URL 会恢复。
+
+## 限制与说明
+
+- 绑定了某个会话的 Browser，在那个会话被删除后会一并清理；删除 Project 会清掉它名下的全部 Browser；对别的 Project 的 Browser 发起操作会被拒绝。
+- 原生窗口的位置由主进程管理：连续拖拽和缩放时不残留旧位置的影子，指针点击始终落在指针所在的页面上。
+
+<NextSteps
+  items={[
+    { href: '/core/citations-notes/', title: '引用与笔记', description: '网页选区的三个去向。' },
+    { href: '/core/workbench/', title: '多面板工作台', description: 'Browser 回来后怎么摆。' },
+    { href: '/help/faq/', title: '常见问题', description: '窗口恢复类问题先看这里。' },
+  ]}
+/>

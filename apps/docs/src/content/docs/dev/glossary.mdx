@@ -1,0 +1,39 @@
+---
+title: 术语表
+description: 读开发文档和源码前先对齐的概念。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+> **状态**：参考文档；术语的最终定义以源码与 `docs/stair-full-regression.md` 为准
+
+| 术语 | 含义 |
+| --- | --- |
+| Workspace | 运行与安全边界，持有数据命名空间和激活的 Project |
+| Project | 稳定的产品范围；材料、笔记、会话、布局的归属单位 |
+| Session | 与 agent 的一次对话线程，创建起携带不可变 `projectId` |
+| Primary | 可替换的 Session 展示位；即使内容为空也是固定语义槽位 |
+| Auxiliary | Primary 之外的显式面板，有序数组；面板增长只以它的长度衡量 |
+| Preview | 可复用的文件预览 Auxiliary；普通点击原地复用，绝不升为 Primary |
+| Navigator | 左侧导航表面，只拥有 Collection/Filter 与显式导航意图 |
+| Focus | 视觉焦点；改变它不修改路由、Project、Primary 或聊天目标 |
+| Branch | 从现有会话派生子会话，插入来源面板之后 |
+| Chat Target | 来源面板（文件/Browser）记住的"新建会话默认去向" |
+| 引用（Reference） | Project-scoped 的结构化引用：projectId + 原文 + 可回跳 locator |
+| locator | 引用内用于跳回原文位置的定位结构（EPUB 用 CFI，PDF 用页与 rect） |
+| fingerprint | 来源文件内容的 SHA-256；变化即引用失效 |
+| Document Controller | 统一的文档保存控制器：dirty、800ms 自动保存、flush、关闭 veto |
+| parked layout | 切走 Project 时被挂起的布局；恢复时原样还原 |
+| 语义描述符 | 布局持久化的形态：描述"什么在哪"，不含 React 状态或 runtime ID |
+| Runtime（Browser） | Electron Main 持有的 `WebContentsView` 原生运行时，可销毁可重建 |
+| INV | Invariant，跨模块不变量；由模块 Case 聚合派生，不单独执行 |
+| Gate | 每轮回归必须通过的固定门禁（validate:ci / lint / stair:build / whitespace） |
+| Full Run | 一次完整的回归验收：128 个模块 Case + 8 条不变量 |
+
+<NextSteps
+  items={[
+    { href: '/dev/overview/', title: '架构总览', description: '这些概念怎么组织成系统。' },
+    { href: '/dev/workbench-commands/', title: '工作台命令契约', description: '面板相关术语的动态语义。' },
+    { href: '/dev/development-setup/', title: '开发环境与脚本', description: '环境与代码结构。' },
+  ]}
+/>

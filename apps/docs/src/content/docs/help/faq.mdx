@@ -1,0 +1,51 @@
+---
+title: 常见问题
+description: 大部分"是不是坏了"的答案。
+next: false
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+## 文件打开是只读的
+
+普通文本超过 1 MiB（1,048,576 字节）后进入只读保护，避免大文件编辑拖垮界面。需要编辑就拆分文件；Drawnix 白板的上限是 8 MiB。
+
+## 目录一会儿在旁边、一会儿悬浮
+
+面板宽度决定的：EPUB 目录在面板 ≥ 840 px 时内嵌显示，PDF 为 760 px；更窄时改为悬浮 overlay，不挤压正文。拖宽面板即可切回内嵌。
+
+## New Chat 点了却失败了
+
+New Chat 在点击时记下来源面板，创建完成前来源被替换、关闭，或者你切到了别的 Project，这次创建会整体回滚——不会留下空会话。回到来源重新点一次即可。
+
+## agent 报 `MINDMAP_NOT_OPEN`
+
+目标画板没打开，或者只存在于没激活的后台布局里。把 `.drawnix` 文件打开再让 agent 操作。报 `MINDMAP_AMBIGUOUS_BOARD` 是同一文件开了多个画板视图，关到剩一个就好。
+
+## 我的数据存在哪
+
+`~/.stair`。与 Craft 完全隔离，两者可以同时运行。
+
+## 能导入旧版 Craft 或 Stair 的数据吗
+
+不做通用迁移。唯一例外：旧记录里缺失 Project 身份字段时，按固定规则回填到默认 Project；显式错误或跨 Workspace 的数据仍被拒绝。
+
+## 关掉的 Browser 窗口去哪了
+
+点窗口关闭只是隐藏，从顶部 Browser 入口再点一次就恢复，URL 和滚动位置都在。只有明确终止才真正销毁页面。
+
+## 划线能导出吗
+
+能，导出为 Markdown：EPUB 划线按最深层目录分组，附作者和相对路径；PDF 划线附文件名和页码。
+
+## 外部编辑器改了文件，Stair 里保存冲突了
+
+这是保护行为，两边都不会被悄悄覆盖。选 Reload 接受磁盘版本，或 Save Draft As 把内存版本另存。
+
+<NextSteps
+  items={[
+    { href: '/start/feedback/', title: '反馈与支持', description: '这里没有答案的问题。' },
+    { href: '/help/shortcuts/', title: '快捷键', description: '键盘操作全集。' },
+    { href: '/start/welcome/', title: 'Stair 是什么', description: '回到产品总览。' },
+  ]}
+/>

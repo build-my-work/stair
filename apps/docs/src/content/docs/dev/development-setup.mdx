@@ -1,0 +1,73 @@
+---
+title: 开发环境与脚本
+description: 环境要求、安装、常用脚本、端口与代码结构。首次克隆或环境报坏时读。
+---
+
+import NextSteps from '../../../components/NextSteps.astro';
+
+> **读取时机**：首次克隆、环境缺依赖、脚本行为与本文不符时
+
+## 环境要求
+
+- [Bun](https://bun.sh)：CI 固定 1.3.10；本地大版本对齐即可。
+- Node、Python 3 + uv（`test:doc-tools` 的文档工具冒烟测试需要）。
+- 完整实机验收目前只在 macOS arm64 完成；Windows/Linux 有相同打包路径与单元测试覆盖。
+
+## 安装
+
+```bash
+git clone <repo-url> thinking-agent
+cd thinking-agent
+bun install
+bun run stair:dev     # 启动 Stair 开发版（端口 5193）
+```
+
+`bunfig.toml` 固定 `linker = "hoisted"`：依赖提升到根 `node_modules`（Vite/esbuild 打包需要），新增 app/package 不会自动出现在子目录的 node_modules 里。
+
+## 常用脚本
+
+| 命令 | 用途 |
+| --- | --- |
+| `bun run stair:dev` | Stair 开发版（5193），入口 `scripts/stair-dev.ts` |
+| `bun run stair:build` | 当前架构目录包；回归 Gate 之一 |
+| `bun run stair:dist` | 完整分发构建 |
+| `bun run validate:ci` | 源码门禁：typecheck + guards + i18n + 源码测试 + 文档工具 + 构建资产校验 |
+| `bun run lint` | IPC raw-send / tool-name guards + 各包 ESLint |
+| `bun run docs:dev` / `docs:build` / `docs:preview` | 本文档站（5176） |
+
+## 端口与命名空间
+
+| 值 | 归属 |
+| --- | --- |
+| 5193 / `stair://` | Stair 开发端口与深链（`scripts/stair-profile.ts`） |
+| 5173 / 5174 / 5175 | Craft / viewer / webui 开发端口 |
+| 5176 | 本文档站 |
+| 9100 | RPC 服务 |
+| `~/.stair` | Stair 数据命名空间；绝不读写 Craft 命名空间 |
+
+## 代码结构
+
+| 路径 | 内容 |
+| --- | --- |
+| `apps/electron/src/main` | 主进程：窗口、Browser Runtime、生命周期 |
+| `apps/electron/src/renderer/workbench` | 工作台命令层与布局持久化 |
+| `apps/electron/src/renderer/components/project-files` | 文件/EPUB/PDF/Drawnix 面板 |
+| `packages/server-core/src/handlers/rpc` | 服务端 RPC（project-files、project-notes、reader-state、workbench-layout） |
+| `packages/server-core/src/project-files` | 归档校验等服务端文件能力 |
+| `packages/shared` | 领域共享（含 `stair-branding.ts` 产品身份） |
+| `scripts/stair-*.ts` | profile、dev、build、regression fixtures |
+
+## 不变量
+
+- 依赖与命令的事实源是当前 checkout 的 `package.json` 与脚本；文档与代码冲突时，先核对代码并修正文档，不要继续执行已失效命令。
+- `typecheck:all` 与 `validate:ci` 是显式项目清单：新增 app/package 必须手动追加，不会被自动发现。
+- HMR 回归协议：只 `touch` 触发且前后源码 SHA-256 一致；Renderer 复用同一 React Root，热更不得清空面板、焦点、草稿或筛选状态。
+- 版本 pin（Bun CI 版本、runtime 二进制）由维护者统一升级，贡献者不要顺手改。
+
+<NextSteps
+  items={[
+    { href: '/dev/regression/', title: '回归验收体系', description: '改完代码跑什么。' },
+    { href: '/dev/overview/', title: '架构不变量', description: '改代码前先读约束。' },
+    { href: '/dev/glossary/', title: '术语表', description: '读源码前的概念对齐。' },
+  ]}
+/>

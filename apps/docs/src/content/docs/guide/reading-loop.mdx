@@ -1,0 +1,41 @@
+---
+title: 读 → 引 → 思 → 图 → 写
+description: 用 Stair 跑通一个完整的学习闭环：从 EPUB 选区到笔记、导图和输出。
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import NextSteps from '../../../components/NextSteps.astro';
+
+读完一本书却只能说出"挺好的"，通常是因为中间产物没有接住：划过的线不再打开，问过的问题答完即弃。这一页演示 Stair 怎么接住它们——每一次划线、每一个问题都有地方去。
+
+## 五步
+
+<Steps>
+1. **读**：在 Reader 打开 EPUB 或 PDF，按章节推进，遇到值得记的段落先划出来。
+2. **引**：对选区执行 Add Note，来源、位置和原文一起写进笔记；有疑问的段落用 Add Chat 加进会话草稿，发给 agent。
+3. **思**：回到笔记，用自己的话改写；agent 的回答当素材，读完补一句自己的理解。
+4. **图**：在 Drawnix 画一张章节导图，把零散的笔记挂到结构上。agent 可以读写当前打开的画板，"把这几条挂到第二章下面"是可以直接说的。
+5. **写**：回到笔记补全结论，或让 agent 基于引用草拟一稿，你来改。
+</Steps>
+
+## 一个例子
+
+比如你在读一本讲记忆方法的书：第二章提到间隔重复，你划下来，Add Note 进笔记，顺手问 agent "间隔重复和主动回忆的区别是什么"；晚上整理时画一张导图，把这条笔记和 agent 的回答一起挂到"方法"节点下；最后把导图文件的链接加到笔记开头，正文写你自己的比较。
+
+## 设计取向
+
+整个流程里，agent 负责检索、整理和草拟；组织语言的仍然是你。这是 Stair 的设计取向：AI 降低表达成本、提供脚手架，但不替你完成最关键的认知加工——否则表面上产出了文字，实际只是换了一种形式的输入。
+
+## 限制与说明
+
+Agent 工具对导图的读写有这些边界（完整说明见 [Agent 工具](/core/agent-tools/)）：
+
+- 目标画板必须已经打开；来源未打开、Project 已切换或只存在于后台布局时，工具返回 `MINDMAP_NOT_OPEN`，不会跨 Project 写入。
+- 同一文件开了多个画板视图时返回 `MINDMAP_AMBIGUOUS_BOARD`，关到只剩一个视图后自动恢复。
+
+<NextSteps
+  items={[
+    { href: '/core/citations-notes/', title: '引用与笔记', description: '闭环第 2 步的详细说明：三个动作和它们的边界。' },
+    { href: '/start/welcome/', title: 'Stair 是什么', description: '回到产品总览。' },
+  ]}
+/>
