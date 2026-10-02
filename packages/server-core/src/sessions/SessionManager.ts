@@ -4138,7 +4138,7 @@ export class SessionManager implements ISessionManager {
       const sourceDir = normalizePath(getSessionStoragePath(workspaceRootPath, validatedBranch.sourceSessionId))
       const branchDir = normalizePath(getSessionStoragePath(workspaceRootPath, storedSession.id))
       try {
-        const sourceRealDir = await realpath(sourceDir)
+        let sourceRealDir: string | undefined
         branchedStored.messages = []
         for (const message of sourceMessages) {
           // Text, tool arguments and references describe the original event.
@@ -4181,7 +4181,7 @@ export class SessionManager implements ISessionManager {
                   }
                   throw error
                 }
-                const ownedRelative = relative(sourceRealDir, sourceRealPath)
+                const ownedRelative = relative(sourceRealDir ??= await realpath(sourceDir), sourceRealPath)
                 if (ownedRelative === '..' || ownedRelative.startsWith(`..${sep}`) || isAbsolute(ownedRelative)) {
                   throw new Error('Invalid branch attachment path')
                 }
