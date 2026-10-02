@@ -515,20 +515,21 @@ export function FreeFormInput({
   }, [showAttachmentSizeProblem])
 
   // Seed from parent when `attachmentsValue` changes (e.g., switching sessions).
-  // `skipPersistRef` tells the save effect below that the next `attachments` change
-  // is a prop-driven seed, not user intent — otherwise we'd echo the seed back to
+  // Track the seeded list itself so effect replay and parent echoes stay silent
+  // without suppressing the next user edit. Otherwise we'd echo the seed back to
   // the parent and risk persisting A's attachments under B's sessionId.
   const attachmentsRefsKey = React.useMemo(() => {
     if (!attachmentsValue) return ''
     return attachmentsValue.map(a => a.path).join('|')
   }, [attachmentsValue])
   const prevAttachmentsRefsKey = React.useRef(attachmentsRefsKey)
-  const skipPersistRef = React.useRef(true) // treat initial mount as a prop-seed
+  const seededAttachmentsRef = React.useRef(attachments)
+  const previousAttachmentsRef = React.useRef(attachments)
   React.useEffect(() => {
     if (attachmentsValue === undefined) return
     if (attachmentsRefsKey === prevAttachmentsRefsKey.current) return
     prevAttachmentsRefsKey.current = attachmentsRefsKey
-    skipPersistRef.current = true
+    seededAttachmentsRef.current = attachmentsValue
     setAttachments(attachmentsValue)
   }, [attachmentsValue, attachmentsRefsKey])
 
@@ -538,10 +539,11 @@ export function FreeFormInput({
   const onAttachmentsChangeRef = React.useRef(onAttachmentsChange)
   onAttachmentsChangeRef.current = onAttachmentsChange
   React.useEffect(() => {
-    if (skipPersistRef.current) {
-      skipPersistRef.current = false
-      return
-    }
+    // Mount/effect replay is not an attachment edit. In StrictMode an initial
+    // empty list must not cancel the parent's pending hydration or clear disk.
+    if (previousAttachmentsRef.current === attachments) return
+    previousAttachmentsRef.current = attachments
+    if (seededAttachmentsRef.current === attachments) return
     onAttachmentsChangeRef.current?.(attachments)
   }, [attachments])
 
@@ -615,6 +617,14 @@ export function FreeFormInput({
 
   const [isDraggingOver, setIsDraggingOver] = React.useState(false)
   const [loadingCount, setLoadingCount] = React.useState(0)
+  // FileReader/thumbnail work belongs to this mounted session, including when
+  // the same freeform component is reused for A -> B -> A.
+  const attachmentReadOwner = React.useMemo(() => ({ sessionId, active: false }), [sessionId])
+  React.useLayoutEffect(() => {
+    attachmentReadOwner.active = true
+    setLoadingCount(0)
+    return () => { attachmentReadOwner.active = false }
+  }, [attachmentReadOwner])
   const [sourceDropdownOpen, setSourceDropdownOpen] = React.useState(false)
   const [isFocused, setIsFocused] = React.useState(false)
   const [modelDropdownOpen, setModelDropdownOpen] = React.useState(false)
@@ -1031,7 +1041,7 @@ export function FreeFormInput({
   // Listen for craft:paste-files events (for global paste when input not focused)
   React.useEffect(() => {
     const handlePasteFiles = async (e: CustomEvent<{ files: File[]; sessionId?: string }>) => {
-      if (disabled) return
+      if (disabled || !attachmentReadOwner.active) return
 
       const targetSessionId = e.detail?.sessionId
       if (!shouldHandleScopedInputEvent({ sessionId, isFocusedPanel, targetSessionId })) return
@@ -1059,22 +1069,24 @@ export function FreeFormInput({
         }
         try {
           const attachment = await readFileAsAttachment(file, fileNames[i])
+          if (!attachmentReadOwner.active) return
           if (attachment) {
             setAttachments(prev => [...prev, attachment])
           }
         } catch (error) {
+          if (!attachmentReadOwner.active) return
           console.error('[FreeFormInput] Failed to process pasted file:', error)
         }
         setLoadingCount(prev => prev - 1)
       }
 
       // Focus the input after adding attachments
-      richInputRef.current?.focus()
+      if (focusedPanelRef.current) richInputRef.current?.focus()
     }
 
     window.addEventListener('craft:paste-files', handlePasteFiles as unknown as EventListener)
     return () => window.removeEventListener('craft:paste-files', handlePasteFiles as unknown as EventListener)
-  }, [disabled, sessionId, isFocusedPanel, richInputRef, refuseOversizedAttachment])
+  }, [disabled, sessionId, isFocusedPanel, richInputRef, refuseOversizedAttachment, attachmentReadOwner])
 
   // Build active commands list for slash command menu
   const activeCommands = React.useMemo(() => {
@@ -1238,16 +1250,19 @@ export function FreeFormInput({
 
   // Shared helper: read a File, add as attachment, decrement loading count
   const processFileAttachment = async (file: File, overrideName?: string) => {
+    if (!attachmentReadOwner.active) return
     if (refuseOversizedAttachment({ name: overrideName || file.name, size: file.size, type: file.type.startsWith('image/') ? 'image' : undefined })) {
       setLoadingCount(prev => prev - 1)
       return
     }
     try {
       const attachment = await readFileAsAttachment(file, overrideName)
+      if (!attachmentReadOwner.active) return
       if (attachment) {
         setAttachments(prev => [...prev, attachment])
       }
     } catch (error) {
+      if (!attachmentReadOwner.active) return
       console.error('[FreeFormInput] Failed to read file:', error)
     }
     setLoadingCount(prev => prev - 1)
@@ -1271,7 +1286,7 @@ export function FreeFormInput({
     }
 
     // Reset input so re-selecting the same file triggers onChange again
-    e.target.value = ''
+    if (attachmentReadOwner.active) e.target.value = ''
   }
 
   const handleRemoveAttachment = (index: number) => {
