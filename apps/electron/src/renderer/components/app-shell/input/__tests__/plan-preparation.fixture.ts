@@ -170,7 +170,7 @@ test('text and a new reference typed during the actual consume RPC response surv
   await preparing
   expect(f.ui.text).toBe('New text entered during RPC')
   expect(f.referencesValueRef.current).toEqual([newer])
-  await f.coordinator.flushForWorkspaceSwitch(f.workspace.id)
+  await f.coordinator.flushPendingDrafts(f.workspace.id)
   expect(getSessionDraft(f.id)?.text).toBe('New text entered during RPC')
   expect(getSessionDraft(f.id)?.references).toEqual([newer])
 })

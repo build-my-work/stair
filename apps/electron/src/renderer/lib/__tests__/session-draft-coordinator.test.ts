@@ -53,6 +53,76 @@ function createPersistence(overrides: Record<string, unknown> = {}) {
 }
 
 describe('SessionDraftCoordinator', () => {
+  it('does not rewrite a confirmed draft when identical text is synchronized again', async () => {
+    const persistence = createPersistence()
+    const coordinator = new SessionDraftCoordinator({
+      persistence, getProjectId: () => 'project-a', debounceMs: 60_000,
+    })
+    try {
+      coordinator.hydrate(coordinator.beginHydration('workspace-a'), {
+        drafts: {}, appliedRestoreIds: {},
+      })
+      coordinator.updateText('chat-a', 'same complete input')
+      await coordinator.flushPendingDrafts('workspace-a')
+      coordinator.updateText('chat-a', 'same complete input')
+      await coordinator.flushPendingDrafts('workspace-a')
+      expect(persistence.setDraftContent).toHaveBeenCalledTimes(1)
+    } finally { coordinator.dispose() }
+  })
+
+  it('preserves an explicit empty edit made before draft hydration', () => {
+    const coordinator = new SessionDraftCoordinator({
+      persistence: createPersistence(), getProjectId: () => 'project-a', debounceMs: 60_000,
+    })
+    try {
+      const hydration = coordinator.beginHydration('workspace-a')
+      coordinator.updateText('chat-a', '')
+      coordinator.hydrate(hydration, {
+        drafts: { 'chat-a': { text: 'old stored input' } }, appliedRestoreIds: {},
+      })
+      expect(coordinator.getText('chat-a')).toBe('')
+    } finally { coordinator.dispose() }
+  })
+
+  it('flushes a visible edit made while an earlier draft write is still pending', async () => {
+    let visible = 'stored input'
+    let releaseWrite!: () => void
+    let startWrite!: () => void
+    const started = new Promise<void>(resolve => { startWrite = resolve })
+    const released = new Promise<void>(resolve => { releaseWrite = resolve })
+    const writes: string[] = []
+    const persistence = createPersistence({
+      setDraftContent: async (_id: string, content: DraftContent) => {
+        writes.push(content.text)
+        if (writes.length === 1) {
+          startWrite()
+          await released
+        }
+        return { ...content, revision: writes.length }
+      },
+    })
+    const coordinator = new SessionDraftCoordinator({
+      persistence, getProjectId: () => 'project-a', debounceMs: 60_000,
+      onBeforeRestore: id => {
+        if (coordinator.getText(id) !== visible) coordinator.updateText(id, visible)
+      },
+    })
+    try {
+      coordinator.hydrate(coordinator.beginHydration('workspace-a'), {
+        drafts: { 'chat-a': { text: visible } }, appliedRestoreIds: {},
+      })
+      visible = 'first edit'
+      coordinator.updateText('chat-a', visible)
+      const flush = coordinator.flushPendingDrafts('workspace-a')
+      await started
+      visible = 'first edit plus the still un-debounced final tail'
+      releaseWrite()
+      await flush
+      expect(writes.at(-1)).toBe(visible)
+      expect(coordinator.getText('chat-a')).toBe(visible)
+    } finally { coordinator.dispose() }
+  })
+
   it('flushes an un-debounced visible edit before initial hydration can publish old text', () => {
     let visible = 'new visible edit'
     const coordinator = new SessionDraftCoordinator({
@@ -259,7 +329,7 @@ describe('SessionDraftCoordinator', () => {
       .rejects.toThrow('switching Workspace')
 
     let flushed = false
-    const flush = coordinator.flushForWorkspaceSwitch('workspace-a').then(() => {
+    const flush = coordinator.flushPendingDrafts('workspace-a').then(() => {
       flushed = true
     })
     await Bun.sleep(5)
@@ -331,7 +401,7 @@ describe('SessionDraftCoordinator', () => {
       messageIds: ['message-a'],
     })
 
-    await coordinator.flushForWorkspaceSwitch('workspace-a')
+    await coordinator.flushPendingDrafts('workspace-a')
 
     expect(persistence.restoreDraftInput).toHaveBeenCalledTimes(1)
     expect(persistence.acknowledgeQueuedInputRestore).toHaveBeenCalledWith(

@@ -28,7 +28,10 @@ import type { WindowCloseRequest } from '../../shared/types'
  *
  * This hook should be called once at the app root level.
  */
-export function useWindowCloseHandler(isSessionWorkbenchVisible = false) {
+export function useWindowCloseHandler(
+  isSessionWorkbenchVisible = false,
+  flushDrafts?: () => Promise<void>,
+) {
   const { hasOpenLayers, closeTop } = useDismissibleLayerRegistry()
   const { hasOpenModals, closeTopModal } = useModalRegistry()
   const workbench = useAtomValue(workbenchAtom)
@@ -41,12 +44,13 @@ export function useWindowCloseHandler(isSessionWorkbenchVisible = false) {
       flushOpenProjectFiles(),
       flushWorkbenchLayoutPersistence(),
     ])
+      .then(() => flushDrafts?.())
       .then(() => window.electronAPI.completeProjectFilesFlush(requestId))
       .catch(error => window.electronAPI.completeProjectFilesFlush(
         requestId,
         error instanceof Error ? error.message : String(error),
       ))
-  }), [])
+  }), [flushDrafts])
 
   useEffect(() => {
     const cleanup = window.electronAPI.onCloseRequested((request: WindowCloseRequest) => {
@@ -89,6 +93,7 @@ export function useWindowCloseHandler(isSessionWorkbenchVisible = false) {
           flushOpenProjectFiles(),
           flushWorkbenchLayoutPersistence(),
         ]))
+        .then(() => flushDrafts?.())
         .then(() => window.electronAPI.confirmCloseWindow())
         .catch(error => {
           window.electronAPI.debugLog(
@@ -100,5 +105,5 @@ export function useWindowCloseHandler(isSessionWorkbenchVisible = false) {
     })
 
     return cleanup
-  }, [hasOpenLayers, closeTop, hasOpenModals, closeTopModal, panels, focusedPanelId, closePanel, workbench.activeProjectId, isSessionWorkbenchVisible])
+  }, [hasOpenLayers, closeTop, hasOpenModals, closeTopModal, panels, focusedPanelId, closePanel, workbench.activeProjectId, isSessionWorkbenchVisible, flushDrafts])
 }

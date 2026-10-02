@@ -2408,6 +2408,25 @@ export default function App() {
     }
   }, [onboarding, initializeSessions])
 
+  const flushDraftsBeforeClose = useCallback(async () => {
+    for (const [sessionId, meta] of store.get(sessionMetaMapAtom)) {
+      if (meta.workspaceId === windowWorkspaceId) {
+        window.dispatchEvent(new CustomEvent('craft:flush-input', { detail: { sessionId } }))
+      }
+    }
+    // Workspace switching already owns this admission gate. A quit/close must
+    // cancel pending Browser selections without reopening that older transition.
+    const ownsTransition = !workspaceSwitchingRef.current
+    if (ownsTransition) draftCoordinator.beginWorkspaceTransition()
+    try {
+      await draftCoordinator.flushPendingDrafts(windowWorkspaceId)
+    } finally {
+      if (ownsTransition && !workspaceSwitchingRef.current) {
+        draftCoordinator.rollbackWorkspaceTransition()
+      }
+    }
+  }, [draftCoordinator, store, windowWorkspaceId])
+
   // Handle workspace selection
   // - Default: switch workspace in same window (in-window switching)
   // - With openInNewWindow=true: open in new window (or focus existing)
@@ -2430,7 +2449,7 @@ export default function App() {
       // 1. Durably flush pending composer fields before changing the RPC Workspace.
       try {
         await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-        await draftCoordinator.flushForWorkspaceSwitch(windowWorkspaceId)
+        await draftCoordinator.flushPendingDrafts(windowWorkspaceId)
 
         // 2. Update the main process's window-workspace mapping.
         await window.electronAPI.switchWorkspace(workspaceId)
@@ -2660,7 +2679,7 @@ export default function App() {
     return (
       <DismissibleLayerProvider>
         <ModalProvider>
-          <WindowCloseHandler />
+          <WindowCloseHandler flushDrafts={flushDraftsBeforeClose} />
           <ReauthScreen
             onLogin={handleReauthLogin}
             onReset={handleReauthReset}
@@ -2682,7 +2701,7 @@ export default function App() {
     return (
       <DismissibleLayerProvider>
         <ModalProvider>
-          <WindowCloseHandler />
+          <WindowCloseHandler flushDrafts={flushDraftsBeforeClose} />
           <OnboardingWizard
             state={onboarding.state}
             onContinue={onboarding.handleContinue}
@@ -2713,7 +2732,7 @@ export default function App() {
     return (
       <DismissibleLayerProvider>
         <ModalProvider>
-          <WindowCloseHandler />
+          <WindowCloseHandler flushDrafts={flushDraftsBeforeClose} />
           <WorkspacePicker
             onSelectWorkspace={async (id) => {
               await window.electronAPI.switchWorkspace(id)
@@ -2758,7 +2777,7 @@ export default function App() {
           remoteWorkspaceId={windowRemoteWorkspaceId}
         >
           {/* Handle window close requests (X button, Cmd+W) - close modal first if open */}
-          <WorkbenchWindowCloseHandler />
+          <WorkbenchWindowCloseHandler flushDrafts={flushDraftsBeforeClose} />
 
           {/* Splash screen overlay - fades out when fully ready */}
           {showSplash && (
@@ -2835,19 +2854,20 @@ export default function App() {
  * Component that handles window close requests.
  * Must be inside ModalProvider to access the modal registry.
  */
-function WindowCloseHandler() {
-  useWindowCloseHandler()
+function WindowCloseHandler({ flushDrafts }: { flushDrafts: () => Promise<void> }) {
+  useWindowCloseHandler(false, flushDrafts)
   return null
 }
 
 /** Ready-state close handling may close only a currently visible Session Panel. */
-function WorkbenchWindowCloseHandler() {
+function WorkbenchWindowCloseHandler({ flushDrafts }: { flushDrafts: () => Promise<void> }) {
   const navigationState = useNavigationState()
   const isMultiSelectActive = useIsMultiSelectActive()
   useWindowCloseHandler(
     isSessionsNavigation(navigationState)
       && navigationState.viewMode !== 'board'
       && !isMultiSelectActive,
+    flushDrafts,
   )
   return null
 }

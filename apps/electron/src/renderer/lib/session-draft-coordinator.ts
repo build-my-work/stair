@@ -183,6 +183,10 @@ export class SessionDraftCoordinator {
     for (const [key, request] of this.pendingConsumptions) {
       if (key.startsWith(`${sessionId}:`) && !text.startsWith(request.before.text)) request.ownsConsumedPrefix = false
     }
+    // Keep explicit empty edits before hydration, but synchronizing a known
+    // unchanged draft must not restart persistence while a flush is settling.
+    if ((this.drafts.has(sessionId) || this.mutatedSessionIds.has(sessionId))
+      && this.getText(sessionId) === text) return
     if (this.getText(sessionId) !== text) {
       this.textEditVersions.set(sessionId, (this.textEditVersions.get(sessionId) ?? 0) + 1)
     }
@@ -828,8 +832,9 @@ export class SessionDraftCoordinator {
     this.browserAdmissionOpen = true
   }
 
-  async flushForWorkspaceSwitch(workspaceId: string | null): Promise<void> {
+  async flushPendingDrafts(workspaceId: string | null): Promise<void> {
     while (true) {
+      for (const sessionId of this.drafts.keys()) this.onBeforeRestore(sessionId)
       const deferred = this.takeDeferredRestores(workspaceId)
       if (deferred.length > 0) {
         const results = await Promise.allSettled(deferred.map(pending => this.restoreInput(
@@ -848,6 +853,9 @@ export class SessionDraftCoordinator {
       await this.waitForTasks()
       await this.flushPendingTimers()
       await this.waitForTasks()
+      // A visible composer may still have its 300ms debounce pending while a
+      // storage RPC finishes. Admit that edit before deciding the flush is done.
+      for (const sessionId of this.drafts.keys()) this.onBeforeRestore(sessionId)
       if (
         !this.deferredRestores.some(pending => pending.workspaceId === workspaceId)
         && this.draftTasks.size === 0

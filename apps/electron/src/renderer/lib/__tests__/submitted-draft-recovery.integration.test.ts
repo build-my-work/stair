@@ -130,7 +130,7 @@ if (process.env.STAIR_SUBMITTED_DRAFT_CHILD !== '1') {
     expect(current.getText(id)).toBe('LOCAL')
     expect(current.getAttachmentRefs(id)).toEqual([attachment])
     expect(current.getReferences(id)).toEqual([reference('disk'), reference('local')])
-    await current.flushForWorkspaceSwitch('workspace-a')
+    await current.flushPendingDrafts('workspace-a')
     expect(config.getSessionDraft(id)?.text).toBe('DISK\n\nLOCAL')
     expect(config.getSessionDraft(id)?.attachments).toEqual([attachment])
     expect(config.getSessionDraft(id)?.references).toEqual([reference('disk'), reference('local')])

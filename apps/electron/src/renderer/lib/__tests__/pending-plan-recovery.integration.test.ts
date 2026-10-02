@@ -273,7 +273,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     await dispatcher.request()
     await Bun.sleep(40)
     coordinator.updateText(managed.id, coordinator.getText(managed.id) + '!')
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     coordinator.dispose()
     dispatcher.dispose()
     expect(getSessionDraft(managed.id)?.text).toContain('SNAPSHOT-reconnect-token')
@@ -448,7 +448,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     expect(deferred[0]!.effect.queuedRestoreId).toBe(managed.pendingPlanExecution!.restoreId)
     expect(trace.some(t => t.startsWith('ACK-entered:'))).toBe(false)
     coordinator.deferRestore(workspace.id, managed.id, deferred[0]!.effect)
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     expect(coordinatorAdapters.get(coordinator)!.controls.acks).toEqual([{ sessionId: managed.id, executionId: expected }])
     expect(getSessionDraft(managed.id)?.text).toContain(snapshot)
     expect(getSessionDraft(managed.id)?.text).toContain('NEW-DEFERRED-INPUT')
@@ -476,7 +476,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     createRecovery(fixture, coordinator, trace).recover(await fail(fixture))
     coordinator.cancelHydration(hydration)
     expect(await restoration).toBeNull()
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     expect(coordinatorAdapters.get(coordinator)!.controls.acks).toEqual([])
     expect(coordinatorAdapters.get(coordinator)!.controls.restores).toEqual([])
     expect(getPendingPlanExecution(fixture.sandbox, managed.id)?.failed).toBe(true)
@@ -503,7 +503,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     coordinator.finishWorkspaceTransition()
     coordinator.resetForWorkspace()
     releaseReply()
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     expect(coordinatorAdapters.get(coordinator)!.controls.acks).toEqual([])
     expect(getPendingPlanExecution(fixture.sandbox, managed.id)?.failed).toBe(true)
     const retryTrace: string[] = []
@@ -542,7 +542,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     expect(result.receipt.referenceKeys).toHaveLength(1)
     expect(coordinator.getText(managed.id)).toBe('NEW-TEXT-DURING-CONSUME')
     expect(coordinator.getReferences(managed.id)).toEqual([newerRef])
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     expect(getSessionDraft(managed.id)?.text).toBe('NEW-TEXT-DURING-CONSUME')
     expect(getSessionDraft(managed.id)?.references).toEqual([newerRef])
     expect(getPlanDraftConsumption(managed.id, executionId)).toEqual(result.receipt)
@@ -570,7 +570,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     const result = await pending
     expect(result.receipt.text).toBe(true)
     expect(coordinator.getText(managed.id)).toBe(snapshot)
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     expect(getSessionDraft(managed.id)?.text).toBe(snapshot)
   })
 
@@ -634,7 +634,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     releaseConsume()
     expect((await pending).receipt.text).toBe(true)
     expect(coordinator.getText(managed.id)).toBe(newText)
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     expect(getSessionDraft(managed.id)?.text).toBe(newText)
   })
 
@@ -657,7 +657,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     releaseConsume()
     expect((await pending).receipt.text).toBe(true)
     expect(coordinator.getText(managed.id)).toBe(suffix)
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     expect(getSessionDraft(managed.id)?.text).toBe(suffix)
   })
 
@@ -692,7 +692,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     releaseConsume()
     expect((await pending).receipt.referenceKeys).toHaveLength(1)
     expect(coordinator.getReferences(managed.id)).toEqual([reference])
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     expect(getSessionDraft(managed.id)?.references).toEqual([reference])
   })
 
@@ -716,7 +716,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     releaseConsume()
     expect((await pending).receipt.referenceKeys).toHaveLength(1)
     expect(coordinator.getReferences(managed.id)).toEqual([])
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     expect(getSessionDraft(managed.id)?.references ?? []).toEqual([])
   })
 
@@ -843,7 +843,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     // Confirm the original ambiguous consume first, then save the new local
     // quote. A same-key authority must not overwrite a genuine re-add payload.
     await coordinator.flushContent(managed.id)
-    await coordinator.flushForWorkspaceSwitch(workspace.id)
+    await coordinator.flushPendingDrafts(workspace.id)
     expect(coordinator.getReferences(managed.id)).toEqual([newReference])
     expect(getSessionDraft(managed.id)?.references).toEqual([newReference])
   })

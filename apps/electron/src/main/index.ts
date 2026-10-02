@@ -1418,12 +1418,12 @@ app.on('before-quit', async (event) => {
     } catch (error) {
       isQuitting = false
       windowManager?.setAppQuitting(false)
-      mainLog.error('[Project Files] App quit cancelled because a document could not be saved:', error)
+      mainLog.error('[Window] App quit cancelled because pending changes could not be saved:', error)
       void dialog.showMessageBox({
         type: 'error',
         title: i18n.t('projectFileEditor.saveFailed'),
-        message: i18n.t('projectFileEditor.saveFailedTitle'),
-        detail: i18n.t('projectFileEditor.conflictTitle'),
+        message: i18n.t('projectFileEditor.unsaved'),
+        detail: error instanceof Error ? error.message : String(error),
       })
       return
     }
