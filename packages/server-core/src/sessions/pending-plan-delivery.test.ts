@@ -80,6 +80,45 @@ test('cold ready pending record can dispatch before explicit message hydration',
   expect(sends).toHaveLength(1)
 })
 
+test('successful compact hands off the accepted plan without a mounted renderer', async () => {
+  const { sm, managed, ws } = await setup('compact-background-handoff')
+  await ready(sm, managed, ws)
+  managed.isProcessing = true
+  const sends: string[] = []
+  sm.sendMessage = (async (_id: string, message: string) => { sends.push(message) }) as never
+  await (sm as unknown as {
+    onProcessingStopped(id: string, reason: 'complete', generation: number): Promise<void>
+  }).onProcessingStopped(managed.id, 'complete', managed.processingGeneration)
+  await sleep(30)
+  expect(sends).toEqual(['Plan approved, please execute.\n\n---\n\n**Additional user context**\n\nadditional detail'])
+  const stored = loadSession(ws, managed.id)!
+  expect(stored.pendingPlanExecution?.executionDispatched).toBe(true)
+  expect(stored.messages.filter(message => message.type === 'user')).toHaveLength(1)
+  expect(await sm.dispatchPendingPlanExecution(managed.id, stored.pendingPlanExecution?.executionId))
+    .toEqual({ ok: false, reason: 'already-dispatched' })
+})
+
+test.each(['awaiting', 'failed', 'other-turn', 'stopped-turn'] as const)(
+  'ordinary completion cannot dispatch a %s plan record', async state => {
+    const { sm, managed, ws } = await setup(`compact-background-${state}`)
+    await ready(sm, managed, ws)
+    const record = managed.pendingPlanExecution!
+    if (state === 'awaiting') record.awaitingCompaction = true
+    if (state === 'failed') record.failed = true
+    if (state === 'other-turn') managed.processingGeneration++
+    if (state === 'stopped-turn') managed.stopEpoch = (managed.stopEpoch ?? 0) + 1
+    managed.isProcessing = true
+    const sends: string[] = []
+    sm.sendMessage = (async (_id: string, message: string) => { sends.push(message) }) as never
+    await (sm as unknown as {
+      onProcessingStopped(id: string, reason: 'complete', generation: number): Promise<void>
+    }).onProcessingStopped(managed.id, 'complete', managed.processingGeneration)
+    await sleep(30)
+    expect(sends).toEqual([])
+    expect(managed.pendingPlanExecution?.executionDispatched).toBe(false)
+  },
+)
+
 test('accepted approval remains crash recoverable while backend initialization stalls', async () => {
   const { sm, managed, ws, workspace } = await setup('approval-init-stall')
   await ready(sm, managed, ws)

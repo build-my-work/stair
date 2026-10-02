@@ -9920,6 +9920,24 @@ export class SessionManager implements ISessionManager {
       this.applyExternalSessionMetadata(managed, pendingHeader)
     }
 
+    // A correlated manual compact continues on the host even when its input
+    // Panel has been unmounted. The renderer remains a reload/reconnect wakeup;
+    // the existing atomic dispatch rejects duplicate claims and Stop races.
+    const compactedPlan = managed.pendingPlanExecution
+    if (reason === 'complete' && compactedPlan && !compactedPlan.awaitingCompaction
+      && !compactedPlan.executionDispatched && !compactedPlan.failed
+      && compactedPlan.compactionTurn?.generation === generation
+      && compactedPlan.compactionTurn.stopEpoch === cleanupStopEpoch
+      && managed.messageQueue.length === 0 && !managed.pendingQueueReplay) {
+      try {
+        const handoff = await this.dispatchPendingPlanExecution(sessionId, compactedPlan.executionId)
+        if (handoff.ok) return
+      } catch (error) {
+        sessionLog.warn(`Session ${sessionId}: compacted plan handoff failed; retained for recovery`, error)
+      }
+      if (!ownsCleanup()) return
+    }
+
     // 5. Check queue and process or complete
     if (managed.messageQueue.length > 0) {
       // Has queued messages - process next

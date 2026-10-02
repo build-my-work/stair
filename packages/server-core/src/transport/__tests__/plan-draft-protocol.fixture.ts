@@ -313,7 +313,7 @@ test('a current client completes identified consumption, compaction and durable 
   expect(f.managed.isProcessing).toBe(false)
   expect(f.sm.getPendingPlanExecution(f.id)?.awaitingCompaction).toBe(false)
   const dispatched = await client.invoke(RPC_CHANNELS.sessions.COMMAND, f.id, { type: 'dispatchPendingPlanExecution', executionId: pending.executionId })
-  expect(dispatched).toEqual({ ok: true })
+  expect(dispatched).toEqual({ ok: false, reason: 'already-dispatched' })
   await sessionPersistenceQueue.flushAll()
   const stored = loadSession(f.sandbox, f.id)!
   expect(stored.pendingPlanExecution?.executionDispatched).toBe(true)

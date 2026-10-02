@@ -378,7 +378,7 @@ test('a failed dispatch removes its approval from a concurrent metadata successo
 
 test.each([
   ['Stop before the manual-success write finishes cancels the same compaction', true],
-  ['Stop after an idle completed manual compact preserves the ready plan', false],
+  ['Stop after completed manual compact cancels the scheduled approval', false],
 ] as const)('%s', async (_name, pauseReadiness) => {
   const f = await setup()
   const text = 'CONSUMED-BEFORE-COMPACT'
@@ -440,8 +440,10 @@ test.each([
       await sending
       expect(f.managed.isProcessing).toBe(false)
       expect(f.sm.getPendingPlanExecution(f.managed.id)?.awaitingCompaction).toBe(false)
+      expect(f.sm.getPendingPlanExecution(f.managed.id)?.executionDispatched).toBe(true)
       await f.sm.cancelProcessing(f.managed.id)
-      expect(await f.sm.dispatchPendingPlanExecution(f.managed.id, prepared.executionId)).toEqual({ ok: true })
+      expect(await f.sm.dispatchPendingPlanExecution(f.managed.id, prepared.executionId)).toEqual({ ok: false, reason: 'failed' })
+      expect(f.managed.messageQueue).toHaveLength(0)
     }
   } finally {
     release.resolve()
@@ -796,12 +798,6 @@ test('a duplicate dispatch late validation failure cannot revoke an accepted app
   setSessionDraft(managed.id, { text, references: [reference] })
   const prepared = await sm.setPendingPlanExecution(managed.id, '/accepted.md', text, [reference])
   expect((await sm.consumePendingPlanDraft(managed.id, prepared.executionId!))?.receipt.text).toBe(true)
-  // Use the public compact send and its real event correlation instead of
-  // manufacturing a ready or failed managed-session record.
-  await sm.sendMessage(managed.id, '/compact', undefined, undefined, { planExecutionId: prepared.executionId! })
-  for (let i = 0; managed.isProcessing && i < 100; i++) await Bun.sleep(1)
-  expect(managed.isProcessing).toBe(false)
-  expect(managed.pendingPlanExecution?.awaitingCompaction).toBe(false)
   const originalRead = projectFiles.readProjectTextFileWithinRoot
   let gateOnce = true
   const pauseRead = spyOn(projectFiles, 'readProjectTextFileWithinRoot').mockImplementation(async (...args) => {
@@ -813,16 +809,27 @@ test('a duplicate dispatch late validation failure cannot revoke an accepted app
     }
     return result
   })
-  let olderDispatch: ReturnType<typeof sm.dispatchPendingPlanExecution> | undefined
+  const dispatchOutcomes: Awaited<ReturnType<typeof sm.dispatchPendingPlanExecution>>[] = []
+  const originalDispatch = sm.dispatchPendingPlanExecution.bind(sm)
+  sm.dispatchPendingPlanExecution = async (...args) => {
+    const result = await originalDispatch(...args)
+    dispatchOutcomes.push(result)
+    return result
+  }
+  let compacting: ReturnType<typeof sm.sendMessage> | undefined
   try {
-    // Both requests use real source bytes. The first read is stale by the
-    // time its RPC resumes; the second request validates the restored file.
+    // The host's automatic handoff validates real bytes after the public
+    // compact succeeds. A later renderer dispatch validates the restored
+    // file and wins while the host's older read is paused.
     writeFileSync(filePath, 'INTERMEDIATE-FILE-EDIT')
-    olderDispatch = sm.dispatchPendingPlanExecution(managed.id, prepared.executionId)
+    compacting = sm.sendMessage(managed.id, '/compact', undefined, undefined, { planExecutionId: prepared.executionId! })
     await validationEntered.promise
+    expect(managed.isProcessing).toBe(false)
+    expect(managed.pendingPlanExecution?.awaitingCompaction).toBe(false)
     writeFileSync(filePath, quote)
     expect(await sm.dispatchPendingPlanExecution(managed.id, prepared.executionId)).toEqual({ ok: true })
-    expect(await olderDispatch).toEqual({ ok: false, reason: 'invalid-references' })
+    await compacting
+    expect(dispatchOutcomes).toContainEqual({ ok: false, reason: 'invalid-references' })
     expect(managed.pendingPlanExecution?.failed).not.toBe(true)
     expect(managed.pendingPlanExecution?.executionDispatched).toBe(true)
     expect(events.some(event => event.type === 'compaction_failed')).toBe(false)
@@ -857,7 +864,7 @@ test('a duplicate dispatch late validation failure cannot revoke an accepted app
   } finally {
     lateValidation.resolve()
     approvalRelease.resolve()
-    if (olderDispatch) await olderDispatch.catch(() => {})
+    if (compacting) await compacting.catch(() => {})
     pauseRead.mockRestore()
   }
 }, 10_000)

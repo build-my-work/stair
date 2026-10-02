@@ -219,7 +219,7 @@ describe('mid-stream queue runtime invariants', () => {
     }
   })
 
-  it('keeps the pending plan record while sending the /compact command that releases it', async () => {
+  it('keeps the pending plan through /compact and durably hands off after success', async () => {
     const managed = buildSession('send-compact')
     await saveSession({ id: managed.id, workspaceRootPath: tmpRoot, createdAt: 1, lastUsedAt: 1, messages: [], tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, contextTokens: 0, costUsd: 0 } } as any)
     await sm.setPendingPlanExecution(managed.id, '/tmp/plan.md', 'draft snapshot')
@@ -229,20 +229,27 @@ describe('mid-stream queue runtime invariants', () => {
     setSessionDraftForPlan(managed.id, { text: 'draft snapshot' })
     const consumed = await sm.consumePendingPlanDraft(managed.id, managed.pendingPlanExecution!.executionId!)
     expect(consumed?.receipt.text).toBe(true)
+    const executionId = managed.pendingPlanExecution!.executionId
     const agent = {
       getModel: () => 'claude-sonnet-4-6',
       setAllSources: () => {},
       getSessionId: () => 'sdk-session',
       chat: async function* () {
+        expect(managed.pendingPlanExecution).toMatchObject({ executionId, awaitingCompaction: true, executionDispatched: false })
         yield { type: 'context_usage', contextUsage: { usedTokens: 12_000, limitTokens: 200_000, limitKind: 'compaction', isEstimate: true, isStale: false, canCompact: true } }
         yield { type: 'info', message: 'Compacted Conversation', compactionTrigger: 'manual' }
         yield { type: 'complete' }
       },
     }
     ;(sm as any).getOrCreateAgent = async () => agent
+    // Inspect the durable approval admission without starting a provider turn.
+    ;(sm as any).processNextQueuedMessage = () => {}
     sm.setEventSink(() => {})
     await sm.sendMessage(managed.id, '/compact', undefined, undefined, { planExecutionId: managed.pendingPlanExecution!.executionId })
-    expect(getPendingPlanExecution(tmpRoot, managed.id)).toMatchObject({ awaitingCompaction: false, executionDispatched: false })
+    const pending = getPendingPlanExecution(tmpRoot, managed.id)
+    expect(pending).toMatchObject({ executionId, awaitingCompaction: false, executionDispatched: true })
+    expect(managed.messages.filter(message => message.id === pending?.approvalMessageId)).toHaveLength(1)
+    expect(managed.messageQueue[0]).toMatchObject({ messageId: pending?.approvalMessageId })
   })
 
   it('the actual host sendMessage loop consumes Claude recovery before stopping at complete', async () => {

@@ -141,8 +141,10 @@ test('L04/P03 control: plan identities, refs, consume receipt and exactly-one co
   const stored = loadSession(workspaceA.rootPath, managed.id)!
   const approvals = stored.messages.filter((m: any) => m.id === stored.pendingPlanExecution?.approvalMessageId)
   observations.wirePlan = { pending, readPending, consumed, dispatches, storedPlan: stored.pendingPlanExecution, approvals }
-  expect(dispatches.filter(x => x.ok)).toHaveLength(1)
-  expect(dispatches.filter(x => x.reason === 'already-dispatched')).toHaveLength(1)
+  // The host already admitted the approval when the compact turn ended.
+  // Both later renderer wakeups must converge on that single admission.
+  expect(stored.pendingPlanExecution?.executionDispatched).toBe(true)
+  expect(dispatches.filter(x => x.reason === 'already-dispatched')).toHaveLength(2)
   expect(approvals).toHaveLength(1)
   expect(approvals[0].references).toEqual([reference])
   expect(approvals[0].isQueued).toBe(true)
