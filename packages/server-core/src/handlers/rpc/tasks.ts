@@ -255,19 +255,22 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
         return { slug: spec.id, orchestratorSessionId, validation, taskLabelId: setup.taskLabelId }
       }
 
+      // Both existing-session paths reconcile ownership and runtime settings from the saved spec.
+      const reconcile = {
+        workspaceId: ws.id,
+        projectId: spec.project,
+        name: spec.title,
+        ...(spec.cwd ? { workingDirectory: spec.cwd } : {}),
+        ...(spec.defaults?.model ? { model: spec.defaults.model } : {}),
+        ...(spec.defaults?.llmConnection ? { llmConnection: spec.defaults.llmConnection } : {}),
+        ...(spec.defaults?.permissionMode ? { permissionMode: spec.defaults.permissionMode } : {}),
+      }
+
       // Edit-mode bind: the user saved this spec onto an existing, visible tile (e.g. a quick-add
       // session). Bind that session to the slug. Unlike adoption this HARD-ERRORS on failure — it
       // must never fall through to createSession, which would leave a duplicate orchestrator tile.
       if (req.attachToExistingSession) {
-        const bound = await deps.sessionManager.bindExistingSessionToTask(req.attachToExistingSession, spec.id, {
-          workspaceId: ws.id,
-          projectId: spec.project,
-          name: spec.title,
-          ...(spec.cwd ? { workingDirectory: spec.cwd } : {}),
-          ...(spec.defaults?.model ? { model: spec.defaults.model } : {}),
-          ...(spec.defaults?.llmConnection ? { llmConnection: spec.defaults.llmConnection } : {}),
-          ...(spec.defaults?.permissionMode ? { permissionMode: spec.defaults.permissionMode } : {}),
-        })
+        const bound = await deps.sessionManager.bindExistingSessionToTask(req.attachToExistingSession, spec.id, reconcile)
         if (!bound) {
           throw new Error(
             `Cannot attach task "${spec.id}" to session ${req.attachToExistingSession}: ` +
@@ -281,17 +284,7 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
       // draft in place instead of creating a second top-level session (#bug1). Falls back to a fresh
       // session if the draft is gone / already adopted / bound to another slug.
       if (req.orchestratorSessionId) {
-        const adopted = await deps.sessionManager.adoptGeneratedTaskOrchestrator(req.orchestratorSessionId, spec.id, {
-          workspaceId: ws.id,
-          projectId: spec.project,
-          name: spec.title,
-          ...(spec.cwd ? { workingDirectory: spec.cwd } : {}),
-          ...(spec.defaults?.model ? { model: spec.defaults.model } : {}),
-          // Reconcile the connection + permission mode from the saved spec (bind already does this) so an
-          // orch model/mode changed after generation actually takes effect on the promoted orchestrator.
-          ...(spec.defaults?.llmConnection ? { llmConnection: spec.defaults.llmConnection } : {}),
-          ...(spec.defaults?.permissionMode ? { permissionMode: spec.defaults.permissionMode } : {}),
-        })
+        const adopted = await deps.sessionManager.adoptGeneratedTaskOrchestrator(req.orchestratorSessionId, spec.id, reconcile)
         if (adopted) {
           return await finish(req.orchestratorSessionId)
         }

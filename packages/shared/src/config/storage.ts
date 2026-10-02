@@ -1603,6 +1603,10 @@ function draftContentFingerprint(content: DraftContent): string {
   })).digest('hex');
 }
 
+function draftAttachmentFingerprint(attachment: DraftAttachmentRef): string {
+  return createHash('sha256').update(JSON.stringify(normalizeDraftAttachment(attachment))).digest('hex');
+}
+
 /** Apply a captured base-to-next edit, never a blind stale-window replacement. */
 function applyDraftContentMutation(
   data: DraftsData,
@@ -1671,8 +1675,8 @@ function applyDraftContentMutation(
       }
       if (checkpoint.pending && data.lastContentMutationIds?.[sessionId] === checkpoint.id) {
         if (draftContentFingerprint(current) !== checkpoint.pending.appliedHash) throw new Error('Invalid pending content ownership');
-        const removed = new Set(checkpoint.pending.removedAttachmentHashes);
-        const attachments = (current.attachments ?? []).filter(attachment => !removed.has(createHash('sha256').update(JSON.stringify(normalizeDraftAttachment(attachment))).digest('hex')));
+        const removedAttachmentHashes = new Set(checkpoint.pending.removedAttachmentHashes);
+        const attachments = (current.attachments ?? []).filter(attachment => !removedAttachmentHashes.has(draftAttachmentFingerprint(attachment)));
         merged = { text: checkpoint.pending.remainingText, ...(attachments.length ? { attachments } : {}) };
       }
     } else if (pendingReceipt || (writer && writer.sequence >= pendingWrite.mutation.sequence!)) {
@@ -1703,12 +1707,14 @@ function applyDraftContentMutation(
     data.contentWriters[sessionId] ??= {};
     if (ordinaryContentWrite) {
       const remaining = mutation.baseRevision === currentRevision ? { text: '' } : mergeDraftContent(current, mutation.base, { text: '' });
-      const remainingAttachments = new Set((remaining.attachments ?? []).map(attachment => createHash('sha256').update(JSON.stringify(normalizeDraftAttachment(attachment))).digest('hex')));
+      const remainingAttachmentHashes = new Set((remaining.attachments ?? []).map(draftAttachmentFingerprint));
       settledWrite = {
         id: mutation.id, sequence: mutation.sequence!, fingerprint,
         pending: {
           appliedHash: draftContentFingerprint(merged), remainingText: remaining.text,
-          removedAttachmentHashes: (merged.attachments ?? []).map(attachment => createHash('sha256').update(JSON.stringify(normalizeDraftAttachment(attachment))).digest('hex')).filter(hash => !remainingAttachments.has(hash)),
+          removedAttachmentHashes: (merged.attachments ?? [])
+            .map(draftAttachmentFingerprint)
+            .filter(hash => !remainingAttachmentHashes.has(hash)),
         },
       };
       data.lastContentMutationIds ??= {};

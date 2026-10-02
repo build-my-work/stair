@@ -324,29 +324,36 @@ export class SessionDraftCoordinator {
       if (!this.mutatedSessionIds.has(sessionId)) this.serverRevisions.set(sessionId, revision)
     }
     for (const [sessionId, draft] of Object.entries(state.drafts)) {
-      if (this.mutatedSessionIds.has(sessionId)) {
-        const local = this.drafts.get(sessionId) ?? { text: '' }
-        const content = mergeDraftContent(this.contentOf(draft), this.confirmedContent.get(sessionId) ?? { text: '' }, this.contentOf(local))
-        const merged = mergeAuthoritativeSessionDraftReferences(
-          { ...local, attachments: content.attachments }, this.getProjectId(sessionId) ?? '',
-          this.persistedReferences.get(sessionId) ?? [], draft.references ?? [],
-        )
-        if (merged.ok) {
-          this.assignDraft(sessionId, merged.draft)
-          if (JSON.stringify(local.attachments ?? []) !== JSON.stringify(merged.draft?.attachments ?? [])
-            || JSON.stringify(local.references ?? []) !== JSON.stringify(merged.draft?.references ?? [])) {
-            hydratedSessionIds.push(sessionId)
-          }
-          // The edited text still has its earlier confirmed base/version.
-          // Let its three-way host write incorporate unseen persisted text;
-          // seeding that merged text here would apply the old prefix twice.
-          this.scheduleContentPersistence(sessionId)
-          this.scheduleReferencePersistence(sessionId, this.persistedReferences.get(sessionId) ?? [])
-        }
+      if (!this.mutatedSessionIds.has(sessionId)) {
+        this.persistedReferences.set(sessionId, draft.references ?? [])
+        this.confirmedContent.set(sessionId, { text: draft.text, ...(draft.attachments?.length ? { attachments: draft.attachments } : {}) })
         continue
       }
-      this.persistedReferences.set(sessionId, draft.references ?? [])
-      this.confirmedContent.set(sessionId, { text: draft.text, ...(draft.attachments?.length ? { attachments: draft.attachments } : {}) })
+
+      const local = this.drafts.get(sessionId) ?? { text: '' }
+      const content = mergeDraftContent(
+        this.contentOf(draft),
+        this.confirmedContent.get(sessionId) ?? { text: '' },
+        this.contentOf(local),
+      )
+      const merged = mergeAuthoritativeSessionDraftReferences(
+        { ...local, attachments: content.attachments },
+        this.getProjectId(sessionId) ?? '',
+        this.persistedReferences.get(sessionId) ?? [],
+        draft.references ?? [],
+      )
+      if (!merged.ok) continue
+
+      this.assignDraft(sessionId, merged.draft)
+      if (JSON.stringify(local.attachments ?? []) !== JSON.stringify(merged.draft?.attachments ?? [])
+        || JSON.stringify(local.references ?? []) !== JSON.stringify(merged.draft?.references ?? [])) {
+        hydratedSessionIds.push(sessionId)
+      }
+      // The edited text still has its earlier confirmed base/version.
+      // Let its three-way host write incorporate unseen persisted text;
+      // seeding that merged text here would apply the old prefix twice.
+      this.scheduleContentPersistence(sessionId)
+      this.scheduleReferencePersistence(sessionId, this.persistedReferences.get(sessionId) ?? [])
     }
     for (const [sessionId, authoritative] of this.pendingReferenceBroadcasts) {
       if (this.applyAuthoritativeReferences(sessionId, authoritative)) {
@@ -596,11 +603,12 @@ export class SessionDraftCoordinator {
       // A duplicate ACK can be the first reply for this renderer after the
       // host consumed its pending write. That write is still in our map, so
       // the current composer remains post-clear input, not a consumed base.
-      const consumedBase: SessionDraft = persisted.localApplied || settlesPendingWrite
-        ? (captured.mutation.clientId === this.contentWriterId
+      let consumedBase = before
+      if (persisted.localApplied || settlesPendingWrite) {
+        consumedBase = captured.mutation.clientId === this.contentWriterId
           ? { text: '' }
-          : confirmedBefore)
-        : before
+          : confirmedBefore
+      }
       this.confirmContentWrite(sessionId, consumedBase, persisted.draft, persisted.revision)
       const authoritative = persisted.draft?.references ?? []
       const merged = mergeAuthoritativeSessionDraftReferences(
