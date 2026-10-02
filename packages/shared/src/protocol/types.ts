@@ -192,10 +192,11 @@ export type PushTarget =
 // Protocol constants
 // ---------------------------------------------------------------------------
 
-// Version 2 requires atomic plan-draft consumption and identity-scoped
-// compaction/recovery. Older clients clear input before preparation, so the
-// existing handshake major-version gate must reject them before any RPC.
-export const PROTOCOL_VERSION = '2.0'
+// Version 3 requires causal draft consumption of an ACK-lost pending write,
+// in addition to atomic plan-draft consumption and identity-scoped recovery.
+// Version 2 hosts ignore that causal proof but still mutate the draft, so the
+// handshake major-version gate must reject mixed peers before any RPC.
+export const PROTOCOL_VERSION = '3.0'
 
 /** Heartbeat interval in ms. Server pings every 30s. */
 export const HEARTBEAT_INTERVAL_MS = 30_000

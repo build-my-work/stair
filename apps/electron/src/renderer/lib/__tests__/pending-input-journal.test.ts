@@ -15,7 +15,16 @@ const entry: PendingInput = {
   clientMessageId: 'request-a', createdAt: 1, text: 'body',
   attachments: [{ path: 'paste.txt', name: 'original.txt', content: { type: 'text', mimeType: 'text/plain', size: 7, text: 'payload' } }],
   references: [{ version: 1, kind: 'chat-message', projectId: 'project-a', sessionId: 'source', messageId: 'message', role: 'assistant', quote: 'quote', locator: { type: 'text-quote', exact: 'quote', start: 0, end: 5 } }],
-  consumption: { content: { text: '' }, mutation: { id: 'consume-a', clientId: 'writer-a', sequence: 1, baseRevision: 0, base: { text: 'body' } } },
+  consumption: {
+    content: { text: '' },
+    mutation: {
+      id: 'consume-a', clientId: 'writer-a', sequence: 2, baseRevision: 0, base: { text: '' },
+      pendingWrite: {
+        content: { text: 'body' },
+        mutation: { id: 'write-a', clientId: 'writer-a', sequence: 1, baseRevision: 0, base: { text: '' } },
+      },
+    },
+  },
 }
 
 describe('pending send durability', () => {

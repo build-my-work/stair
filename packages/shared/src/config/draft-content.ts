@@ -15,6 +15,11 @@ export interface DraftContentMutation {
     baseReferences: NonNullable<SessionDraft['references']>;
     nextReferences: NonNullable<SessionDraft['references']>;
   };
+  /** An earlier content write whose reply was still pending when this input was submitted. */
+  pendingWrite?: {
+    content: DraftContent;
+    mutation: Omit<DraftContentMutation, 'references' | 'pendingWrite'>;
+  };
 }
 
 /** Preserve both edits when a stale window cannot safely replace the server text. */

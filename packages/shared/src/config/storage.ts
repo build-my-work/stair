@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, readdirSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { createHash } from 'node:crypto';
-import { mergeDraftContent, type DraftContentMutation } from './draft-content.ts';
+import { mergeDraftContent, type DraftContent, type DraftContentMutation } from './draft-content.ts';
 import { getCredentialManager } from '../credentials/index.ts';
 import { getOrCreateLatestSession, type SessionConfig } from '../sessions/index.ts';
 import {
@@ -1228,12 +1228,22 @@ interface DraftsData {
   drafts: Record<string, SessionDraft>;
   revisions?: Record<string, number>;
   contentMutations?: Record<string, Array<{ id: string; fingerprint: string; revision: number }>>;
+  /** Content ownership survives reference-only writes, but not another content edit. */
+  lastContentMutationIds?: Record<string, string>;
   /** One checkpoint per renderer, retained until the owning Chat is purged. */
   contentWriters?: Record<string, Record<string, {
     sequence: number;
     id: string;
     fingerprint: string;
     consumption?: { executionId: string; receipt: PlanDraftConsumptionReceipt };
+    /** Only the latest ordinary write can still be in flight in its renderer. */
+    contentWrite?: {
+      id: string;
+      sequence: number;
+      fingerprint: string;
+      /** Absent once a successor has settled this write. No inline attachment copies. */
+      pending?: { appliedHash: string; remainingText: string; removedAttachmentHashes: string[] };
+    };
   }>>;
   appliedRestoreIds: Record<string, string[]>;
   planRestoreExecutions?: Record<string, Record<string, string>>;
@@ -1402,6 +1412,15 @@ function loadDraftsDataStrict(): DraftsData {
         || typeof consumption.receipt.text !== 'boolean' || !Array.isArray(consumption.receipt.referenceKeys)
         || !consumption.receipt.referenceKeys.every(key => typeof key === 'string')
         || !Number.isFinite(consumption.receipt.consumedAt))) throw new Error('Invalid draft writer consumption checkpoint');
+      const contentWrite = writer.contentWrite;
+      if (contentWrite && (typeof contentWrite.id !== 'string' || typeof contentWrite.fingerprint !== 'string'
+        || !Number.isSafeInteger(contentWrite.sequence) || contentWrite.sequence < 1
+        || (contentWrite.pending && (typeof contentWrite.pending.appliedHash !== 'string'
+          || typeof contentWrite.pending.remainingText !== 'string'
+          || !Array.isArray(contentWrite.pending.removedAttachmentHashes)
+          || !contentWrite.pending.removedAttachmentHashes.every(hash => typeof hash === 'string'))))) {
+        throw new Error('Invalid draft content write checkpoint');
+      }
     }
   }
   const planRestoreExecutions = raw.planRestoreExecutions ?? {};
@@ -1409,7 +1428,10 @@ function loadDraftsDataStrict(): DraftsData {
     if (!records || typeof records !== 'object' || Array.isArray(records)
       || Object.values(records).some(value => typeof value !== 'string')) throw new Error('Invalid plan restore receipts');
   }
-  return { drafts, revisions, contentMutations, contentWriters, appliedRestoreIds, planRestoreExecutions, appliedReferenceRequests, planConsumption, updatedAt: raw.updatedAt ?? 0 };
+  const lastContentMutationIds = raw.lastContentMutationIds ?? {};
+  if (typeof lastContentMutationIds !== 'object' || Array.isArray(lastContentMutationIds)
+    || Object.values(lastContentMutationIds).some(id => typeof id !== 'string')) throw new Error('Invalid draft content ownership');
+  return { drafts, revisions, contentMutations, contentWriters, lastContentMutationIds, appliedRestoreIds, planRestoreExecutions, appliedReferenceRequests, planConsumption, updatedAt: raw.updatedAt ?? 0 };
 }
 
 /**
@@ -1525,6 +1547,7 @@ export function getSessionDraft(sessionId: string): SessionDraft | null {
 export function setSessionDraft(sessionId: string, draft: SessionDraft): void {
   if (!isSessionDraft(draft)) throw new Error('Invalid session draft');
   const data = loadDraftsDataStrict();
+  if (data.lastContentMutationIds) delete data.lastContentMutationIds[sessionId];
   persistSessionDraft(data, sessionId, draft);
   saveDraftsData(data);
 }
@@ -1535,6 +1558,9 @@ function persistSessionDraft(
   draft: SessionDraft,
 ): SessionDraft | null {
   if (!isSessionDraft(draft)) throw new Error('Invalid session draft');
+  if (data.lastContentMutationIds?.[sessionId] && draftContentFingerprint(data.drafts[sessionId] ?? { text: '' }) !== draftContentFingerprint(draft)) {
+    delete data.lastContentMutationIds[sessionId];
+  }
   data.revisions ??= {};
   data.revisions[sessionId] = (data.revisions[sessionId] ?? 0) + 1;
   if (isEmptyDraft(draft)) {
@@ -1570,6 +1596,13 @@ function normalizeDraftAttachment(ref: DraftAttachmentRef): DraftAttachmentRef {
   return base;
 }
 
+function draftContentFingerprint(content: DraftContent): string {
+  return createHash('sha256').update(JSON.stringify({
+    text: content.text,
+    ...(content.attachments?.length ? { attachments: content.attachments.map(normalizeDraftAttachment) } : {}),
+  })).digest('hex');
+}
+
 /** Apply a captured base-to-next edit, never a blind stale-window replacement. */
 function applyDraftContentMutation(
   data: DraftsData,
@@ -1577,6 +1610,7 @@ function applyDraftContentMutation(
   content: Pick<SessionDraft, 'text' | 'attachments'>,
   mutation: DraftContentMutation,
   projectId?: string,
+  ordinaryContentWrite = false,
 ): boolean {
   if (!mutation.id || mutation.id.length > 200 || !Number.isSafeInteger(mutation.baseRevision)
     || mutation.baseRevision < 0 || !isSessionDraft(mutation.base) || !isSessionDraft(content)) {
@@ -1585,6 +1619,18 @@ function applyDraftContentMutation(
   if ((mutation.clientId !== undefined || mutation.sequence !== undefined)
     && (!mutation.clientId || mutation.clientId.length > 200 || !Number.isSafeInteger(mutation.sequence) || mutation.sequence! < 1)) {
     throw new Error('Invalid draft writer identity');
+  }
+  const pendingWrite = mutation.pendingWrite;
+  if (pendingWrite && (!pendingWrite.mutation || !isSessionDraft(pendingWrite.content)
+    || !isSessionDraft(pendingWrite.mutation.base) || !pendingWrite.mutation.id || pendingWrite.mutation.id.length > 200
+    || !mutation.clientId || pendingWrite.mutation.clientId !== mutation.clientId
+    || !Number.isSafeInteger(pendingWrite.mutation.sequence) || pendingWrite.mutation.sequence! < 1
+    || pendingWrite.mutation.sequence! >= mutation.sequence!
+    || !Number.isSafeInteger(pendingWrite.mutation.baseRevision) || pendingWrite.mutation.baseRevision < 0
+    || pendingWrite.mutation.baseRevision > mutation.baseRevision
+    || 'references' in pendingWrite.mutation || 'pendingWrite' in pendingWrite.mutation
+    || content.text !== '' || content.attachments?.length || ordinaryContentWrite)) {
+    throw new Error('Invalid pending draft content write');
   }
   const currentRevision = data.revisions?.[sessionId] ?? 0;
   if (mutation.baseRevision > currentRevision) throw new Error('DRAFT_VERSION_CONFLICT: Unknown draft version');
@@ -1609,9 +1655,33 @@ function applyDraftContentMutation(
     throw new Error('DRAFT_REQUEST_EXPIRED: Refresh before retrying an old draft request');
   }
   const current = data.drafts[sessionId] ?? { text: '' };
-  const merged = mutation.baseRevision === currentRevision
+  let merged = mutation.baseRevision === currentRevision
     ? content
     : mergeDraftContent(current, mutation.base, content);
+  const writer = mutation.clientId ? data.contentWriters?.[sessionId]?.[mutation.clientId] : undefined;
+  let settledWrite: NonNullable<NonNullable<DraftsData['contentWriters']>[string][string]['contentWrite']> | undefined;
+  if (pendingWrite) {
+    const pendingFingerprint = createHash('sha256').update(JSON.stringify({ content: pendingWrite.content, mutation: pendingWrite.mutation })).digest('hex');
+    const pendingReceipt = receipts.find(receipt => receipt.id === pendingWrite.mutation.id);
+    if (pendingReceipt && pendingReceipt.fingerprint !== pendingFingerprint) throw new Error('DRAFT_REQUEST_CONFLICT: Pending content write changed');
+    const checkpoint = writer?.contentWrite;
+    if (checkpoint?.id === pendingWrite.mutation.id) {
+      if (checkpoint.sequence !== pendingWrite.mutation.sequence || checkpoint.fingerprint !== pendingFingerprint) {
+        throw new Error('DRAFT_REQUEST_CONFLICT: Pending content write changed');
+      }
+      if (checkpoint.pending && data.lastContentMutationIds?.[sessionId] === checkpoint.id) {
+        if (draftContentFingerprint(current) !== checkpoint.pending.appliedHash) throw new Error('Invalid pending content ownership');
+        const removed = new Set(checkpoint.pending.removedAttachmentHashes);
+        const attachments = (current.attachments ?? []).filter(attachment => !removed.has(createHash('sha256').update(JSON.stringify(normalizeDraftAttachment(attachment))).digest('hex')));
+        merged = { text: checkpoint.pending.remainingText, ...(attachments.length ? { attachments } : {}) };
+      }
+    } else if (pendingReceipt || (writer && writer.sequence >= pendingWrite.mutation.sequence!)) {
+      // Older hosts did not retain the proof needed to distinguish this write
+      // from remote edits. Never guess from matching text alone.
+      throw new Error('DRAFT_REQUEST_EXPIRED: Pending content receipt unavailable');
+    }
+    settledWrite = { id: pendingWrite.mutation.id, sequence: pendingWrite.mutation.sequence!, fingerprint: pendingFingerprint };
+  }
   let references = current.references ?? [];
   if (mutation.references) {
     const { baseReferences, nextReferences } = mutation.references;
@@ -1623,12 +1693,28 @@ function applyDraftContentMutation(
     references = mergeReferenceDelta(references, baseReferences, nextReferences);
   }
   persistSessionDraft(data, sessionId, { ...merged, ...(references.length ? { references } : {}) });
+  // Even a legacy identity-free writer re-entering identical bytes replaces
+  // ownership; references alone do not. Modern writers establish theirs below.
+  if (ordinaryContentWrite && data.lastContentMutationIds) delete data.lastContentMutationIds[sessionId];
   data.contentMutations ??= {};
   data.contentMutations[sessionId] = [...receipts, { id: mutation.id, fingerprint, revision: data.revisions![sessionId]! }].slice(-64);
   if (mutation.clientId) {
     data.contentWriters ??= {};
     data.contentWriters[sessionId] ??= {};
-    data.contentWriters[sessionId][mutation.clientId] = { ...data.contentWriters[sessionId][mutation.clientId], sequence: mutation.sequence!, id: mutation.id, fingerprint };
+    if (ordinaryContentWrite) {
+      const remaining = mutation.baseRevision === currentRevision ? { text: '' } : mergeDraftContent(current, mutation.base, { text: '' });
+      const remainingAttachments = new Set((remaining.attachments ?? []).map(attachment => createHash('sha256').update(JSON.stringify(normalizeDraftAttachment(attachment))).digest('hex')));
+      settledWrite = {
+        id: mutation.id, sequence: mutation.sequence!, fingerprint,
+        pending: {
+          appliedHash: draftContentFingerprint(merged), remainingText: remaining.text,
+          removedAttachmentHashes: (merged.attachments ?? []).map(attachment => createHash('sha256').update(JSON.stringify(normalizeDraftAttachment(attachment))).digest('hex')).filter(hash => !remainingAttachments.has(hash)),
+        },
+      };
+      data.lastContentMutationIds ??= {};
+      data.lastContentMutationIds[sessionId] = mutation.id;
+    }
+    data.contentWriters[sessionId][mutation.clientId] = { ...writer, sequence: mutation.sequence!, id: mutation.id, fingerprint, ...(settledWrite ? { contentWrite: settledWrite } : {}) };
   }
   return true;
 }
@@ -1642,7 +1728,7 @@ export function setSessionDraftContent(
   if (mutation) {
     // References have their own scoped RPC. Consumption/recovery may join them.
     if (mutation.references) throw new Error('Use the scoped reference mutation');
-    if (applyDraftContentMutation(data, sessionId, content, mutation)) saveDraftsData(data);
+    if (applyDraftContentMutation(data, sessionId, content, mutation, undefined, true)) saveDraftsData(data);
     return { ...(data.drafts[sessionId] ?? { text: '' }), revision: data.revisions?.[sessionId] ?? 0 };
   }
   if (data.appliedRestoreIds[sessionId]?.length || Object.keys(data.planConsumption?.[sessionId] ?? {}).length
@@ -1651,6 +1737,7 @@ export function setSessionDraftContent(
     throw new Error('DRAFT_VERSION_REQUIRED: Refresh the draft before editing recovered input');
   }
   const current = data.drafts[sessionId];
+  if (data.lastContentMutationIds) delete data.lastContentMutationIds[sessionId];
   const result = persistSessionDraft(data, sessionId, {
     text: content.text,
     ...(content.attachments?.length ? { attachments: content.attachments } : {}),
@@ -1848,6 +1935,7 @@ export function deleteSessionDraft(sessionId: string): void {
   const data = loadDraftsDataStrict();
   delete data.drafts[sessionId];
   delete data.appliedRestoreIds[sessionId];
+  if (data.lastContentMutationIds) delete data.lastContentMutationIds[sessionId];
   saveDraftsData(data);
 }
 
@@ -1862,6 +1950,7 @@ export function purgeSessionDraft(sessionId: string): void {
   if (data.revisions) delete data.revisions[sessionId];
   if (data.contentMutations) delete data.contentMutations[sessionId];
   if (data.contentWriters) delete data.contentWriters[sessionId];
+  if (data.lastContentMutationIds) delete data.lastContentMutationIds[sessionId];
   saveDraftsData(data);
 }
 

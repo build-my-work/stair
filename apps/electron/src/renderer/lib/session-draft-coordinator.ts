@@ -540,6 +540,7 @@ export class SessionDraftCoordinator {
     this.onBeforeRestore(sessionId)
     const request = this.captureContentMutation(sessionId, true)
     const before = fields ? { ...request.before, ...fields } : request.before
+    const pendingWrite = this.pendingContentWrites.get(sessionId)
     return {
       content: { text: '' },
       mutation: {
@@ -549,6 +550,10 @@ export class SessionDraftCoordinator {
         // a supposedly independent edit when a reference write advances it.
         ...request.mutation,
         references: { baseReferences: before.references ?? [], nextReferences: [] },
+        // The journal must retain this dependency across renderer restart.
+        // The host settles its receipt atomically with consumption; replaying
+        // a possibly uncommitted write could append it to another window's draft.
+        ...(pendingWrite ? { pendingWrite: { content: pendingWrite.content, mutation: pendingWrite.mutation } } : {}),
       },
     }
   }
@@ -565,23 +570,36 @@ export class SessionDraftCoordinator {
       if (!await this.waitForHydration(workspaceId, generation, hydrationGeneration)) return false
       this.onBeforeRestore(sessionId)
       const before = this.drafts.get(sessionId) ?? { text: '' }
+      const confirmedBefore: SessionDraft = {
+        ...(this.confirmedContent.get(sessionId) ?? { text: '' }),
+        references: this.persistedReferences.get(sessionId) ?? [],
+      }
       const persisted = await this.persistence.restoreDraftInput(sessionId, {
         restoreId: `consume-${clientMessageId}`, draft: { text: '' }, local: captured,
       })
       if (this.workspaceGeneration !== generation) return false
       if (persisted.committed === false) throw new Error('Input consumption did not commit')
       if (persisted.localApplied === undefined) throw new Error('Input consumption receipt is unsupported by this host')
+      const settlesPendingWrite = !!captured.mutation.pendingWrite
+        && this.pendingContentWrites.get(sessionId)?.mutation.id === captured.mutation.pendingWrite.mutation.id
+      if (settlesPendingWrite) {
+        this.pendingContentWrites.delete(sessionId)
+      }
       this.onBeforeRestore(sessionId)
       // This renderer already cleared the submitted snapshot synchronously.
       // Anything present now belongs to a later edit, even if it was typed
       // before this lock/RPC began. A reloaded renderer still displays the
-      // captured disk draft, so its base is the journal's original snapshot.
+      // hydrated disk draft, which may include an earlier unacknowledged write.
+      // Its confirmed hydration is the base; edits since hydration remain local.
       // A stale/duplicate mutation consumed nothing: use the current baseline
       // to avoid appending an edit already accepted by a newer writer sequence.
-      const consumedBase: SessionDraft = persisted.localApplied
+      // A duplicate ACK can be the first reply for this renderer after the
+      // host consumed its pending write. That write is still in our map, so
+      // the current composer remains post-clear input, not a consumed base.
+      const consumedBase: SessionDraft = persisted.localApplied || settlesPendingWrite
         ? (captured.mutation.clientId === this.contentWriterId
           ? { text: '' }
-          : { ...captured.mutation.base, references: captured.mutation.references?.baseReferences })
+          : confirmedBefore)
         : before
       this.confirmContentWrite(sessionId, consumedBase, persisted.draft, persisted.revision)
       const authoritative = persisted.draft?.references ?? []
