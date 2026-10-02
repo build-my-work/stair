@@ -719,7 +719,7 @@ async function ensureSession(): Promise<AgentSession> {
       const submitPlan = selected.type === 'plan'
         ? parent.messages.slice(0, selectedIndex).reverse().find(message =>
           message.type === 'tool' && message.toolName?.includes('SubmitPlan') &&
-          message.toolInput?.planPath === selected.planPath)
+          (!selected.toolUseId || message.toolUseId === selected.toolUseId))
         : undefined;
       const matches = parentBranch.filter(entry => {
         if (entry.type !== 'message') return false;
@@ -731,7 +731,11 @@ async function ensureSession(): Promise<AgentSession> {
       });
       let anchorId = initConfig.branchFromSdkTurnId;
       if (anchorId) {
-        if (!matches.some(entry => entry.id === anchorId)) {
+        // Old host branches rewrote paths inside assistant text. The recorded
+        // entry identity remains authoritative; still reject a user/tool anchor.
+        const recorded = parentBranch.find(entry => entry.id === anchorId);
+        const assistantAnchor = selected.type === 'assistant' && recorded?.type === 'message' && recorded.message.role === 'assistant';
+        if (!assistantAnchor && !matches.some(entry => entry.id === anchorId)) {
           throw new Error(`Pi branch preflight failed: anchor does not match the selected message in active parent: ${anchorId}`);
         }
       } else {

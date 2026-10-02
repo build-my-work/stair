@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -123,6 +123,18 @@ describe('Pi branch cutoff through the real worker and installed SDK', () => {
     expect(JSON.stringify(SessionManager.open(file).getBranch())).not.toContain('FUTURE-INPUT');
   }, 15000);
 
+  it('respects a recorded legacy anchor when the old host branch rewrote reply paths', async () => {
+    const f = fixture();
+    const file = join(f.parentPath, 'session.jsonl');
+    const lines = readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    lines[1].content = 'Legacy host representation contains a relocated path';
+    writeFileSync(file, lines.map(value => JSON.stringify(value)).join('\n') + '\n');
+    const { result } = await worker(f, { branchFromSdkTurnId: f.anchor });
+    expect(result.type).toBe('ensure_session_ready_result');
+    const child = SessionManager.findById(f.cwd, result.sessionId, join(f.childPath, '.pi-sessions'))!;
+    expect(JSON.stringify(SessionManager.open(child).getBranch())).not.toContain('FUTURE-INPUT');
+  }, 15000);
+
   it('rejects a missing anchor or parent lineage instead of falling back to full history', async () => {
     const f = fixture();
     const missingAnchor = await worker(f, { branchFromSdkTurnId: 'missing-entry' });
@@ -155,7 +167,7 @@ describe('Pi branch cutoff through the real worker and installed SDK', () => {
     writeFileSync(join(f.parentPath, 'session.jsonl'), [
       { id: 'parent', workspaceRootPath: f.cwd, sdkCwd: f.cwd, sdkSessionId: f.manager.getSessionId() },
       { id: 'submit-tool', type: 'tool', toolName: 'mcp__session__SubmitPlan', toolUseId: 'submit-this-plan', toolInput: { planPath } },
-      { id: 'selected-host-plan', type: 'plan', content: 'Plan content', planPath, timestamp: 5 },
+      { id: 'selected-host-plan', type: 'plan', content: 'Plan content', planPath: join(f.parentPath, 'plans', 'relocated.md'), timestamp: 5 },
     ].map(value => JSON.stringify(value)).join('\n') + '\n');
     const { result } = await worker(f, { branchFromMessageId: 'selected-host-plan' });
     expect(result.type).toBe('ensure_session_ready_result');

@@ -18,7 +18,7 @@ import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-c
 import { createScopedLogger, CONSOLE_LOGGER, type PlatformServices, type Logger } from '@craft-agent/server-core/runtime'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'path'
 import { existsSync } from 'fs'
-import { readFile, writeFile, mkdir, realpath } from 'fs/promises'
+import { readFile, writeFile, mkdir, realpath, copyFile } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
 import { type AgentEvent, type ChatOptions, getPermissionMode, setPermissionMode, setGuardedModeActiveResolver, clampPermissionMode, planExecutionMode, parsePermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserWindowFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
 import {
@@ -4135,20 +4135,70 @@ export class SessionManager implements ISessionManager {
 
       const sourceMessages = validatedBranch.sourceSession.messages.slice(0, validatedBranch.branchIdx + 1)
 
-      // Re-map embedded paths: source messages were loaded with expandSessionPath(sourceDir),
-      // so they contain absolute paths to the *source* session directory. When saved to the
-      // branch session, makeSessionPathPortable uses the *branch* dir — which won't match.
-      // Fix: replace source dir paths with branch dir paths so tokenization works on save.
       const sourceDir = normalizePath(getSessionStoragePath(workspaceRootPath, validatedBranch.sourceSessionId))
       const branchDir = normalizePath(getSessionStoragePath(workspaceRootPath, storedSession.id))
-      if (sourceDir !== branchDir) {
-        branchedStored.messages = sourceMessages.map(m => {
-          const json = JSON.stringify(m)
-          if (!json.includes(sourceDir)) return m
-          return JSON.parse(json.replaceAll(sourceDir, branchDir)) as StoredMessage
-        })
-      } else {
-        branchedStored.messages = sourceMessages
+      try {
+        const sourceRealDir = await realpath(sourceDir)
+        branchedStored.messages = []
+        for (const message of sourceMessages) {
+          // Text, tool arguments and references describe the original event.
+          // Relocate only owned files; replacing paths throughout JSON changes quotes.
+          const copied: StoredMessage = { ...message }
+          if (message.type === 'plan' && !copied.toolUseId) {
+            copied.toolUseId = branchedStored.messages.slice().reverse().find(previous =>
+              previous.type === 'tool' && previous.toolName?.includes('SubmitPlan'))?.toolUseId
+          }
+          if (message.planPath?.startsWith(`${sourceDir}/`)) {
+            const planRelative = relative(sourceDir, message.planPath)
+            if (planRelative === '..' || planRelative.startsWith(`..${sep}`) || isAbsolute(planRelative)) {
+              throw new Error('Invalid branch plan path')
+            }
+            copied.planPath = join(branchDir, planRelative)
+            await mkdir(dirname(copied.planPath), { recursive: true })
+            // The card's captured plan is authoritative, including legacy cards
+            // whose old branch lost the file or whose source file later changed.
+            await writeFile(copied.planPath, message.content, 'utf-8')
+          }
+          if (message.attachments) {
+            copied.attachments = []
+            for (const attachment of message.attachments) {
+              const copiedAttachment = { ...attachment }
+              for (const key of ['storedPath', 'thumbnailPath', 'markdownPath'] as const) {
+                const sourcePath = attachment[key]
+                if (!sourcePath?.startsWith(`${sourceDir}/`)) continue
+                const attachmentRelative = relative(sourceDir, sourcePath)
+                if (attachmentRelative === '..' || attachmentRelative.startsWith(`..${sep}`) || isAbsolute(attachmentRelative)) {
+                  throw new Error('Invalid branch attachment path')
+                }
+                let sourceRealPath: string
+                try {
+                  sourceRealPath = await realpath(sourcePath)
+                } catch (error) {
+                  // Derived previews can expire independently of the attachment.
+                  if (key !== 'storedPath' && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+                    delete copiedAttachment[key]
+                    continue
+                  }
+                  throw error
+                }
+                const ownedRelative = relative(sourceRealDir, sourceRealPath)
+                if (ownedRelative === '..' || ownedRelative.startsWith(`..${sep}`) || isAbsolute(ownedRelative)) {
+                  throw new Error('Invalid branch attachment path')
+                }
+                const destination = join(branchDir, attachmentRelative)
+                await mkdir(dirname(destination), { recursive: true })
+                await copyFile(sourcePath, destination)
+                copiedAttachment[key] = destination
+              }
+              copied.attachments.push(copiedAttachment)
+            }
+          }
+          branchedStored.messages.push(copied)
+        }
+      } catch (error) {
+        // No runtime session has been registered yet. Remove only this new child.
+        deleteStoredSession(workspaceRootPath, storedSession.id)
+        throw new Error(`Could not copy branch history: ${error instanceof Error ? error.message : String(error)}`)
       }
 
       branchedStored.branchFromMessageId = validatedBranch.sourceMessageId
@@ -5381,6 +5431,7 @@ export class SessionManager implements ISessionManager {
             content: planContent,
             timestamp: this.monotonic(),
             planPath,
+            toolUseId: submitPlanMsg?.toolUseId,
           }
 
           // Add to session messages
