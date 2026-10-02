@@ -1198,15 +1198,15 @@ app.whenReady().then(async () => {
     // as quitting so before-quit's guard returns early instead of cancelling
     // Squirrel.Mac's quit with preventDefault (#891).
     setBeforeUpdateInstallHook(async () => {
-      await flushRendererProjectFilesBeforeQuit()
+      await flushPendingChangesBeforeQuit()
       isQuitting = true
       windowManager?.setAppQuitting(true)
       try {
         await performQuitCleanup()
       } catch (error) {
         // Preserve the existing update handoff once teardown has begun. Only the
-        // Project File flush above may safely veto before resources are disposed.
-        mainLog.error('[auto-update] Quit cleanup failed after document flush:', error)
+        // Pending changes flush above may safely veto before resources are disposed.
+        mainLog.error('[auto-update] Quit cleanup failed after pending changes flush:', error)
       }
     })
     // If quitAndInstall throws after the cleanup above already ran, the process
@@ -1301,8 +1301,8 @@ function captureAndSaveWindowState(reason: 'before-quit' | 'pre-update'): number
   return windows.length
 }
 
-// Flush sessions and release all quit-time resources. Shared by the normal quit
-// path (before-quit) and the update-install handoff (beforeUpdateInstallHook), so
+// Release quit-time resources after pending changes have been saved. Shared by
+// normal quit (before-quit) and update install (beforeUpdateInstallHook), so
 // the two cleanup sequences can't drift (#891).
 let quitCleanupRan = false
 async function performQuitCleanup(): Promise<void> {
@@ -1315,12 +1315,6 @@ async function performQuitCleanup(): Promise<void> {
   quitCleanupRan = true
 
   if (sessionManager) {
-    try {
-      await sessionManager.flushAllSessions()
-      mainLog.info('Flushed all pending session writes')
-    } catch (error) {
-      mainLog.error('Failed to flush sessions:', error)
-    }
     // Clean up SessionManager resources (file watchers, timers, etc.)
     sessionManager.cleanup()
   }
@@ -1355,19 +1349,24 @@ async function performQuitCleanup(): Promise<void> {
   releaseServerLock()
 }
 
-async function flushRendererProjectFilesBeforeQuit(): Promise<void> {
+async function flushPendingChangesBeforeQuit(): Promise<void> {
   const server = moduleRpcServer
   const resolveClientId = moduleClientResolver
-  if (!server || !resolveClientId) return
-  const clientIds = new Set<string>()
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (window.isDestroyed() || window.webContents.isDestroyed()) continue
-    const clientId = resolveClientId(window.webContents.id)
-    if (clientId) clientIds.add(clientId)
+  if (server && resolveClientId) {
+    const clientIds = new Set<string>()
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (window.isDestroyed() || window.webContents.isDestroyed()) continue
+      const clientId = resolveClientId(window.webContents.id)
+      if (clientId) clientIds.add(clientId)
+    }
+    await Promise.all(
+      [...clientIds].map(clientId => requestClientProjectFilesFlush(server, clientId)),
+    )
   }
-  await Promise.all(
-    [...clientIds].map(clientId => requestClientProjectFilesFlush(server, clientId)),
-  )
+  if (sessionManager) {
+    await sessionManager.flushAllSessions()
+    mainLog.info('Flushed all pending session writes')
+  }
 }
 
 // Save window state and clean up resources before quitting
@@ -1414,7 +1413,7 @@ app.on('before-quit', async (event) => {
   // and Squirrel.Mac's quit proceeds uninterrupted so the update installs (#891).
   if (sessionManager) {
     try {
-      await flushRendererProjectFilesBeforeQuit()
+      await flushPendingChangesBeforeQuit()
     } catch (error) {
       isQuitting = false
       windowManager?.setAppQuitting(false)

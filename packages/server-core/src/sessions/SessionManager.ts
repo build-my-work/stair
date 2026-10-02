@@ -3206,7 +3206,7 @@ export class SessionManager implements ISessionManager {
 
   // Flush all pending sessions (call on app quit).
   async flushAllSessions(): Promise<void> {
-    await sessionPersistenceQueue.flushAll()
+    await sessionPersistenceQueue.flushAll({ strict: true })
   }
 
   // ============================================

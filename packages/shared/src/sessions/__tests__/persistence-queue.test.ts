@@ -255,6 +255,82 @@ describe('session persistence queue durability regressions', () => {
     queue.cancel('sticky-failure')
   })
 
+  it('strict shutdown retries a failed snapshot even after the pending entry was removed', async () => {
+    const queue = new SessionPersistenceQueue(60_000)
+    const { path, session } = makeFailingTmpDirFixture('shutdown-retry')
+    session.messages = [{ id: 'reply', type: 'assistant', content: 'COMPLETED-BEFORE-QUIT', timestamp: 2 }]
+    try {
+      queue.enqueue(session)
+      await queue.flush(session.id)
+      expect(queue.hasPending(session.id)).toBe(false)
+      await expect(queue.flushAll({ strict: true })).rejects.toThrow()
+      await expect(queue.flushAll({ strict: true })).rejects.toThrow()
+      expect(existsSync(path)).toBe(false)
+
+      rmSync(path + '.tmp', { recursive: true, force: true })
+      await expect(queue.flushAll({ strict: true })).resolves.toBeUndefined()
+      expect(readFileSync(path, 'utf-8')).toContain('COMPLETED-BEFORE-QUIT')
+      await expect(queue.flushAll({ strict: true })).resolves.toBeUndefined()
+    } finally {
+      queue.cancel(session.id)
+    }
+  })
+
+  it('shutdown never retries an older failed snapshot over a newer pending write', async () => {
+    const queue = new SessionPersistenceQueue(60_000)
+    const { path, session } = makeFailingTmpDirFixture('shutdown-newer')
+    try {
+      queue.enqueue({ ...session, name: 'OLDER-FAILED' })
+      await queue.flush(session.id)
+      rmSync(path + '.tmp', { recursive: true, force: true })
+      queue.enqueue({ ...session, name: 'LATEST-PENDING' })
+      await queue.flushAll({ strict: true })
+      const saved = readFileSync(path, 'utf-8')
+      expect(saved).toContain('LATEST-PENDING')
+      expect(saved).not.toContain('OLDER-FAILED')
+    } finally {
+      queue.cancel(session.id)
+    }
+  })
+
+  it('shutdown waits for a newer in-flight write without replaying the older failure', async () => {
+    const queue = new SessionPersistenceQueue(60_000)
+    const { path, session } = makeFailingTmpDirFixture('shutdown-inflight')
+    queue.enqueue({ ...session, name: 'OLDER-FAILED' })
+    await queue.flush(session.id)
+    rmSync(path + '.tmp', { recursive: true, force: true })
+
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const originalRename = fsPromises.rename
+    const rename = spyOn(fsPromises, 'rename').mockImplementation(async (from, to) => {
+      if (String(to) === path) {
+        entered.resolve()
+        await release.promise
+      }
+      return originalRename(from, to)
+    })
+    queue.enqueue({ ...session, name: 'LATEST-IN-FLIGHT' })
+    const writing = queue.flush(session.id)
+    await entered.promise
+    let completed = false
+    const shutdown = queue.flushAll({ strict: true }).then(() => { completed = true })
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      expect(completed).toBe(false)
+      release.resolve()
+      await Promise.all([writing, shutdown])
+      const saved = readFileSync(path, 'utf-8')
+      expect(saved).toContain('LATEST-IN-FLIGHT')
+      expect(saved).not.toContain('OLDER-FAILED')
+    } finally {
+      release.resolve()
+      await Promise.allSettled([writing, shutdown])
+      rename.mockRestore()
+      queue.cancel(session.id)
+    }
+  })
+
   it('two concurrent plain flushes of one failing write both keep the no-reject contract', async () => {
     const queue = new SessionPersistenceQueue(60_000)
     const { path, session } = makeFailingTmpDirFixture('best-effort-failure')

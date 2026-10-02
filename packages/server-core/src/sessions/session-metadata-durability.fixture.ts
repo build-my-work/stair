@@ -1,8 +1,9 @@
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, spyOn, test } from 'bun:test'
 import { copyFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
+import * as fsPromises from 'node:fs/promises'
 import type { StoredSession } from '../../../shared/src/sessions/types.ts'
 
 if (process.env.CRAFT_METADATA_DURABILITY_TEST_CHILD !== '1') throw new Error('metadata fixture requires isolated entry')
@@ -150,4 +151,43 @@ test('shutdown flush waits for a write already taken out of the pending queue', 
     await Promise.all([writing, shutdown])
   }
   expect(loadSession(f.root, f.id)?.name).toBe('LATEST-BEFORE-QUIT')
+})
+
+test('shutdown rejects failed completed-message persistence and retries without another input', async () => {
+  const f = await setup()
+  const latest = loadSession(f.root, f.id)!
+  latest.messages = [
+    {
+      id: 'accepted-input', type: 'user', content: 'ACCEPTED-BODY', timestamp: 2,
+      references: [{ version: 1, kind: 'web-selection', projectId: f.managed.projectId!,
+        url: 'https://stair.invalid/fixture', title: 'Fixture', quote: 'RETAINED-QUOTE',
+        locator: { type: 'web-text-quote', exact: 'RETAINED-QUOTE' } }],
+      attachments: [{ id: 'attachment', type: 'text', name: 'fixture.txt', mimeType: 'text/plain',
+        size: 4, storedPath: join(f.root, 'sessions', f.id, 'attachments', 'fixture.txt') }],
+    },
+    { id: 'completed-reply', type: 'assistant', content: 'COMPLETED-REPLY', timestamp: 3 },
+  ]
+  const originalRename = fsPromises.rename
+  let failWrite = true
+  const rename = spyOn(fsPromises, 'rename').mockImplementation(async (from, to) => {
+    if (failWrite && String(to) === join(f.root, 'sessions', f.id, 'session.jsonl')) {
+      throw new Error('Controlled completed-message persistence failure')
+    }
+    return originalRename(from, to)
+  })
+  try {
+    sessionPersistenceQueue.enqueue(latest)
+    await sessionPersistenceQueue.flush(f.id)
+    expect(sessionPersistenceQueue.hasPending(f.id)).toBe(false)
+    await expect(f.sm.flushAllSessions()).rejects.toThrow('Controlled completed-message persistence failure')
+    expect(loadSession(f.root, f.id)?.messages).toEqual([])
+
+    failWrite = false
+    await f.sm.flushAllSessions()
+    expect(loadSession(f.root, f.id)?.messages).toEqual(latest.messages)
+  } finally {
+    failWrite = false
+    rename.mockRestore()
+    sessionPersistenceQueue.cancel(f.id)
+  }
 })

@@ -58,15 +58,15 @@ function mergeHeaderWithExternalMetadata(localHeader: SessionHeader, diskHeader:
  *
  * Error policy is deliberate: ordinary debounced writes are best-effort
  * (logged, never rejected — a transient IO failure must not take down event
- * processing), but callers that depend on durability (pending-plan claim and
- * handoff) flush with `{ strict: true }`, which surfaces the failure of the
- * session's last write so the caller can keep its state retryable instead of
- * reporting success that disk never saw.
+ * processing), but callers that depend on durability (pending-plan claim,
+ * handoff, and app shutdown) flush with `{ strict: true }`, which surfaces the
+ * failure of the session's last write so the caller can keep its state
+ * retryable instead of reporting success that disk never saw.
  */
 class SessionPersistenceQueue {
   private pending = new Map<string, PendingWrite>()
   private writeInProgress = new Map<string, Promise<void>>()
-  private writeErrors = new Map<string, unknown>()
+  private writeErrors = new Map<string, { error: unknown; data: StoredSession }>()
   private lastWrittenHeaderSignature = new Map<string, string>()
   private debounceMs: number
 
@@ -219,7 +219,7 @@ class SessionPersistenceQueue {
       // the session's newest persisted state is not on disk. STICKY until a
       // write actually succeeds or the session is explicitly cancelled —
       // never deleted merely because it was reported.
-      this.writeErrors.set(sessionId, error)
+      this.writeErrors.set(sessionId, { error, data: entry.data })
       throw error
     }
   }
@@ -263,8 +263,8 @@ class SessionPersistenceQueue {
    */
   private async assertLastWriteSucceeded(sessionId: string): Promise<void> {
     const failure = this.writeErrors.get(sessionId)
-    if (failure !== undefined) {
-      throw failure
+    if (failure) {
+      throw failure.error
     }
   }
 
@@ -285,11 +285,24 @@ class SessionPersistenceQueue {
   }
 
   /**
-   * Flush all pending sessions. Call this on app quit.
+   * Flush all pending sessions. Strict shutdown also retries failed snapshots
+   * whose debounced writes already left the pending queue. A newer pending or
+   * in-flight write always wins over the older failed snapshot.
    */
-  async flushAll(): Promise<void> {
-    const sessionIds = [...new Set([...this.pending.keys(), ...this.writeInProgress.keys()])]
-    await Promise.all(sessionIds.map(id => this.flush(id)))
+  async flushAll(options?: { strict?: boolean }): Promise<void> {
+    if (options?.strict) {
+      for (const [id, failure] of this.writeErrors) {
+        if (!this.pending.has(id) && !this.writeInProgress.has(id)) {
+          this.enqueue(failure.data)
+        }
+      }
+    }
+    const sessionIds = [...new Set([
+      ...this.pending.keys(),
+      ...this.writeInProgress.keys(),
+      ...(options?.strict ? this.writeErrors.keys() : []),
+    ])]
+    await Promise.all(sessionIds.map(id => this.flush(id, options)))
   }
 
   /**
