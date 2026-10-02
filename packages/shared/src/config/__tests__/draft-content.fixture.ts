@@ -302,6 +302,22 @@ test('bound plan restoration proof survives ordinary restore history eviction an
  expect(count(read(f).text, snapshot)).toBe(1)
 })
 
+test('outgoing-input journal consumption and restoration receipts survive ordinary history eviction', () => {
+ const f = fixture()
+ const consumeId = 'consume-' + randomUUID()
+ const restoreId = 'rejected-' + randomUUID()
+ store.restoreSessionDraftAtomic(f.sessionId, projectId, consumeId, { text: '' })
+ store.restoreSessionDraftAtomic(f.sessionId, projectId, restoreId, { text: 'OUTGOING-INPUT' })
+ for (let index = 0; index < 65; index++) {
+  store.restoreSessionDraftAtomic(f.sessionId, projectId, 'ordinary-' + randomUUID(), { text: `ORDINARY-${index}` })
+ }
+ const before = read(f)
+ expect(store.hasAppliedDraftRestore(f.sessionId, consumeId)).toBe(true)
+ expect(store.hasAppliedDraftRestore(f.sessionId, restoreId)).toBe(true)
+ expect(store.restoreSessionDraftAtomic(f.sessionId, projectId, restoreId, { text: 'OUTGOING-INPUT' }).applied).toBe(false)
+ expect(read(f)).toEqual(before)
+})
+
 test('ordinary draft clear retains bound plan proof until the Chat is purged', () => {
  const f = fixture()
  const executionId = 'clear-bound-plan-' + randomUUID()

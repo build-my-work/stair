@@ -413,10 +413,10 @@ describe('mid-stream queue runtime invariants', () => {
       getSessionId: () => undefined,
       chat: async function* (message: string): AsyncGenerator<AgentEvent> {
         replays.push(message)
+        yield { type: 'input_accepted' }
         entered.resolve()
         try {
           await release.promise
-          yield { type: 'input_accepted' }
           yield { type: 'complete' }
         } finally { finished.resolve() }
       },
@@ -619,9 +619,15 @@ describe('mid-stream queue runtime invariants', () => {
     ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, managed)
     const events: any[] = []
     const targets: any[] = []
+    let resolveReconnectRestore!: () => void
+    const reconnectRestore = new Promise<void>(resolve => { resolveReconnectRestore = resolve })
     sm.setEventSink((_channel, target, event) => {
       targets.push(target)
       events.push(event)
+      if (target.to === 'client' && target.clientId === 'reconnected-client'
+        && event.type === 'interrupted' && event.queuedRestoreId === 'restore-after-restart') {
+        resolveReconnectRestore()
+      }
     })
 
     await sm.getSession(sessionId)
@@ -648,6 +654,7 @@ describe('mid-stream queue runtime invariants', () => {
     ;(sm as unknown as {
       onClientConnected: (clientId: string, workspaceId: string | null) => void
     }).onClientConnected('reconnected-client', workspaceId)
+    await reconnectRestore
     expect(events.filter(event => (
       event.type === 'interrupted'
       && event.queuedRestoreId === 'restore-after-restart'

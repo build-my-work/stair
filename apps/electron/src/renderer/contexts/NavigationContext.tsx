@@ -186,6 +186,10 @@ export function NavigationProvider({
   const isPopstateSwitchRef = useRef(false)
   const pendingNavigationRef = useRef<{ route: Route; options?: NavigateOptions } | null>(null)
   const suppressAutoSelectRef = useRef(false)
+  const [restoredWorkspaceId, setRestoredWorkspaceId] = useState<string | null>(null)
+  const currentWorkspaceRef = useRef(workspaceId)
+  currentWorkspaceRef.current = workspaceId
+  const navigationRequestRef = useRef(0)
   const previousVisibleSessionIdsRef = useRef<Set<string> | null>(null)
 
   const updateCanGoBackForward = useCallback(() => {
@@ -309,6 +313,9 @@ export function NavigationProvider({
   ): Promise<boolean> => {
     const parsedState = parseRouteToNavigationState(route)
     if (!parsedState) return false
+    const request = ++navigationRequestRef.current
+    const isCurrent = () => currentWorkspaceRef.current === workspaceId
+      && navigationRequestRef.current === request
     if (workspaceId && defaultProjectId) {
       initializeWorkbench({ workspaceId, defaultProjectId })
     }
@@ -318,6 +325,7 @@ export function NavigationProvider({
       if (activeProjectId) {
         try {
           await flushOpenProjectFilesForProject(activeProjectId)
+          if (!isCurrent()) return false
         } catch {
           return false
         }
@@ -331,6 +339,7 @@ export function NavigationProvider({
       })) {
         return false
       }
+      if (!isCurrent()) return false
       if (workspaceId) {
         storage.set(storage.KEYS.lastSelectedSessionId, meta.id, workspaceId)
       }
@@ -489,6 +498,7 @@ export function NavigationProvider({
   }, [guardedModeAvailable, onCreateSession, onInputChange, openSessionPanel, showSessionInPrimary, store, switchWorkbenchProject, syncSemanticUrl, updateSessionMeta, workspaceId])
 
   const navigate = useCallback(async (route: Route, options?: NavigateOptions) => {
+    navigationRequestRef.current += 1
     if (!options?.skipAutoSelect) suppressAutoSelectRef.current = false
     if (!isReady || !defaultProjectId) {
       pendingNavigationRef.current = { route, options }
@@ -624,6 +634,7 @@ export function NavigationProvider({
 
     const firstRestore = restoredWorkspaceRef.current === null
     restoredWorkspaceRef.current = workspaceId
+    const request = navigationRequestRef.current
     let params = new URLSearchParams(window.location.search)
     if (params.get('ws') !== workspaceSlug && !isPopstateSwitchRef.current) {
       params = new URLSearchParams(storage.get<string>(storage.KEYS.workspaceUrl, '', workspaceSlug))
@@ -643,9 +654,17 @@ export function NavigationProvider({
     isPopstateSwitchRef.current = false
     void (async () => {
       await restoreWorkbenchLayouts({ workspaceId, defaultProjectId })
-      if (!await applyViewRoute(route, { pushHistory })) {
-        await applyViewRoute(routes.view.allSessions(), { pushHistory })
+      if (currentWorkspaceRef.current !== workspaceId) return
+      // A user navigation that arrived during the disk read owns the view.
+      if (navigationRequestRef.current === request) {
+        if (!await applyViewRoute(route, { pushHistory })
+          && currentWorkspaceRef.current === workspaceId
+          && navigationRequestRef.current === request + 1) {
+          await applyViewRoute(routes.view.allSessions(), { pushHistory })
+        }
       }
+      if (currentWorkspaceRef.current !== workspaceId) return
+      setRestoredWorkspaceId(workspaceId)
       if (firstRestore) {
         history.replaceState({ seq: 0 }, '', window.location.href)
         historySeqRef.current = 0
@@ -741,7 +760,8 @@ export function NavigationProvider({
   }, [baseNavigationState, setSession])
 
   useEffect(() => {
-    if (suppressAutoSelectRef.current || !isReady || !workspaceId) return
+    if (suppressAutoSelectRef.current || !isReady || !isSessionsReady || !workspaceId
+      || restoredWorkspaceId !== workspaceId) return
     // A route-restoration effect in this commit may already have selected a detail.
     // Read the live route so this render's stale state cannot overwrite the restored deep link.
     const liveState = baseNavigationStateRef.current
@@ -750,7 +770,7 @@ export function NavigationProvider({
     if (isSessionsNavigation(resolved) && resolved.details) {
       void applyViewRoute(buildRouteFromNavigationState(resolved) as ViewRoute, { pushHistory: false })
     }
-  }, [applyViewRoute, baseNavigationState, isReady, resolveAutoSelection, workspaceId])
+  }, [applyViewRoute, baseNavigationState, isReady, isSessionsReady, resolveAutoSelection, restoredWorkspaceId, workspaceId])
 
   return (
     <NavigationContext.Provider

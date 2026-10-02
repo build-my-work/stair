@@ -57,7 +57,7 @@ describe('Task Project ownership guards', () => {
     const lookup = spyOn(config, 'getWorkspaceByNameOrId').mockReturnValue(workspace as never)
     const createdOptions: Array<Record<string, unknown>> = []
     const sessionManager = {
-      getSession: async () => null,
+      getSessions: () => [],
       adoptGeneratedTaskOrchestrator: async () => false,
       createSession: async (_workspaceId: string, options: Record<string, unknown>) => {
         createdOptions.push(options)
@@ -86,7 +86,7 @@ describe('Task Project ownership guards', () => {
     const workspace = { ...createWorkspaceAtPath(rootPath, 'Workspace'), rootPath }
     const lookup = spyOn(config, 'getWorkspaceByNameOrId').mockReturnValue(workspace as never)
     const sessionManager = {
-      getSession: async () => null,
+      getSessions: () => [],
       bindExistingSessionToTask: async () => false,
     }
 

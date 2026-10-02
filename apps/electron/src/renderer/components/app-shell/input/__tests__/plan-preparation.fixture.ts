@@ -46,7 +46,7 @@ const makeInput = new Function('ctx', 'coerceInputText', 'shouldHandleScopedInpu
 const appCode = new Bun.Transpiler({ loader: 'tsx' }).transformSync(`
 const { draftCoordinator, windowWorkspaceId } = ctx;
 const useCallback = (fn) => fn;
-${sourceBetween(appSource, '  const handleConsumePendingPlanDraft = useCallback', '  const handleInputChange = useCallback')}
+${sourceBetween(appSource, '  const handleConsumePendingPlanDraft = useCallback', '  const handleEditMessage = useCallback')}
 return handleConsumePendingPlanDraft;
 `)
 const makeAppConsume = new Function('ctx', appCode)

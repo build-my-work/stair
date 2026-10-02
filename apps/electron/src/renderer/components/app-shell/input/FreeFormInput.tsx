@@ -119,7 +119,7 @@ export interface FreeFormInputProps {
   /** Whether the session is currently processing */
   isProcessing?: boolean
   /** Callback when message is submitted (skillSlugs from @mentions) */
-  onSubmit: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'>) => void
+  onSubmit: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'> & { consumeDraft?: boolean }) => boolean | void
   /** Callback to stop processing. Pass silent=true to skip "Response interrupted" message */
   onStop?: (silent?: boolean) => void
   /** External ref for the input */
@@ -685,26 +685,16 @@ export function FreeFormInput({
   }, [sessionId, isFocusedPanel, syncToParent, richInputRef])
 
   const clearInputDraft = React.useCallback(() => {
+    richInputRef.current?.setValue('')
+    liveInputRef.current = ''
+    inputRef.current = ''
     setInput('')
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
     onInputChange?.('')
     prevInputValueRef.current = ''
-  }, [onInputChange])
+  }, [onInputChange, richInputRef])
 
   const handleToggleModelVision = useModelVisionToggle()
-
-  const consumeInputDraftSnapshot = React.useCallback((): {
-    text: string
-    references: Reference[]
-  } => {
-    const snapshot = {
-      text: input.trim(),
-      references: [...referencesValue],
-    }
-    clearInputDraft()
-    onReferencesChange?.([])
-    return snapshot
-  }, [clearInputDraft, input, onReferencesChange, referencesValue])
 
   type PlanApprovalEventDetail = {
     sessionId?: string
@@ -725,25 +715,30 @@ export function FreeFormInput({
 
       const shouldIncludeDraft = e.detail?.includeDraftInput !== false
       const draftSnapshot = shouldIncludeDraft
-        ? consumeInputDraftSnapshot()
-        : { text: '', references: [] }
+        ? { text: coerceInputText(richInputRef.current?.value ?? liveInputRef.current).trim(), references: [...referencesValue], attachments: [...attachments] }
+        : { text: '', references: [], attachments: [] }
       const text = buildPlanApprovalMessage({
         planPath: e.detail?.planPath,
         draftInput: draftSnapshot.text,
       })
 
-      // Leave Explore mode so the plan can run without prompts (back to Guarded if the session
-      // came from it). Only switch if currently in safe mode - if user is in 'ask' mode, respect their choice
+      if (onSubmit(text, draftSnapshot.attachments.length ? draftSnapshot.attachments : undefined, undefined, draftSnapshot.references, { consumeDraft: shouldIncludeDraft }) === false) return
+      if (shouldIncludeDraft) {
+        clearInputDraft()
+        setAttachments([])
+        onAttachmentsChange?.([])
+        onReferencesChange?.([])
+      }
+      // Admission is synchronous; switch permissions before its asynchronous
+      // host submission starts, while a storage failure keeps the draft intact.
       if (permissionMode === 'safe') {
         onPermissionModeChange?.(planExecutionMode(previousPermissionMode))
       }
-
-      onSubmit(text, undefined, undefined, draftSnapshot.references)
     }
 
     window.addEventListener('craft:approve-plan', handleApprovePlan as EventListener)
     return () => window.removeEventListener('craft:approve-plan', handleApprovePlan as EventListener)
-  }, [sessionId, permissionMode, previousPermissionMode, onPermissionModeChange, onSubmit, consumeInputDraftSnapshot])
+  }, [sessionId, permissionMode, previousPermissionMode, onPermissionModeChange, onSubmit, clearInputDraft, referencesValue, attachments, onAttachmentsChange, onReferencesChange, richInputRef])
 
   // Live completion and reload recovery share one persisted-state dispatcher.
   // Register its listener before the approval listener can send /compact.
@@ -955,7 +950,7 @@ export function FreeFormInput({
       if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
       syncTimeoutRef.current = null
       const text = coerceInputText(richInputRef.current?.value ?? liveInputRef.current)
-      changeInputRef.current?.(text)
+      if (text !== prevInputValueRef.current) changeInputRef.current?.(text)
       prevInputValueRef.current = text
     }
     window.addEventListener('craft:flush-input', flush)
@@ -1470,12 +1465,16 @@ export function FreeFormInput({
 
     const attachmentSnapshot = attachments
 
-    onSubmit(
+    if (onSubmit(
       input.trim(),
       attachmentSnapshot.length > 0 ? attachmentSnapshot : undefined,
       mentions.skills.length > 0 ? mentions.skills : undefined,
       referencesValue.length > 0 ? referencesValue : undefined,
-    )
+      { consumeDraft: true },
+    ) === false) return false
+    richInputRef.current?.setValue('')
+    liveInputRef.current = ''
+    inputRef.current = ''
     setInput('')
     setAttachments([])
     // Clear draft immediately (cancel any pending debounced sync)
@@ -1491,7 +1490,7 @@ export function FreeFormInput({
     })
 
     return true
-  }, [input, attachments, referencesValue, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onReferencesChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir, showAttachmentSizeProblem])
+  }, [input, attachments, referencesValue, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onReferencesChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir, showAttachmentSizeProblem, richInputRef])
 
   // Listen for craft:submit-input events (simulate pressing the Send button)
   React.useEffect(() => {

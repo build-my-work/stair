@@ -130,12 +130,12 @@ export interface ISessionManager {
   adoptGeneratedTaskOrchestrator(
     sessionId: string,
     taskSlug: string,
-    reconcile?: { name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
+    reconcile?: { workspaceId?: string; projectId?: string; name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
   ): Promise<boolean>
   bindExistingSessionToTask(
     sessionId: string,
     taskSlug: string,
-    reconcile?: { name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
+    reconcile?: { workspaceId?: string; projectId?: string; name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
   ): Promise<boolean>
   setSessionConnection(sessionId: string, connectionSlug: string): Promise<void>
   updateSessionModel(sessionId: string, workspaceId: string, model: string | null, connection?: string): Promise<void>
@@ -160,6 +160,7 @@ export interface ISessionManager {
   getBackgroundTaskOutput(sessionId: string, taskId: string, kind?: 'agent' | 'shell' | 'workflow'): Promise<BackgroundTaskOutput | null>
   /** Stop one background task (shell, agent or workflow) of the session through its live agent. */
   stopBackgroundTask(sessionId: string, taskId: string): Promise<StopBackgroundTaskResult>
+  reconcileInput(sessionId: string, clientMessageId: string): Promise<{ state: 'owned'; messageId: string } | { state: 'not_accepted' }>
   acknowledgeQueuedInputRestore(
     sessionId: string,
     restoreId: string,

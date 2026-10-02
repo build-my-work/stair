@@ -262,7 +262,7 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
           // Treat as a defensive failure rather than silently dropping.
           if (!acked) {
             acked = true
-            reject(new Error('sendMessage completed without persisting a user message'))
+            reject(new Error('INPUT_NOT_ACCEPTED: sendMessage completed without persisting a user message'))
           }
         })
         .catch(err => {
@@ -270,7 +270,7 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
           if (!acked) {
             // Pre-persist error — surface synchronously to the caller.
             acked = true
-            reject(err)
+            reject(new Error(`INPUT_NOT_ACCEPTED: ${err instanceof Error ? err.message : String(err)}`))
             return
           }
           // Post-persist error — route via the event stream as today.
@@ -279,10 +279,16 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
             sessionId,
             error: err instanceof Error ? err.message : 'Unknown error'
           } as SessionEvent)
-          pushTyped(server, RPC_CHANNELS.sessions.EVENT, { to: 'client', clientId: callerClientId }, {
-            type: 'complete',
-            sessionId
-          } as SessionEvent)
+          // A midstream send can fail after durable admission while another turn
+          // still owns the Session. Only finish an idle Session here; its active
+          // turn owns the correlated completion and must not be marked idle early.
+          const currentSession = sessionManager.getSessions().find(session => session.id === sessionId)
+          if (currentSession && !currentSession.isProcessing) {
+            pushTyped(server, RPC_CHANNELS.sessions.EVENT, { to: 'client', clientId: callerClientId }, {
+              type: 'complete',
+              sessionId
+            } as SessionEvent)
+          }
         })
     })
   })
@@ -338,10 +344,13 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
     if ([
       'setPendingPlanExecution', 'consumePendingPlanDraft', 'dispatchPendingPlanExecution',
       'markCompactionComplete', 'markPendingPlanExecutionDispatched', 'clearPendingPlanExecution',
+      'reconcileInput',
     ].includes(command.type)) {
       assertDraftSessionAccess(ctx.workspaceId, sessionManager.getSessions(ctx.workspaceId ?? undefined), sessionId)
     }
     switch (command.type) {
+      case 'reconcileInput':
+        return sessionManager.reconcileInput(sessionId, command.clientMessageId)
       case 'flag':
         return sessionManager.flagSession(sessionId)
       case 'unflag':

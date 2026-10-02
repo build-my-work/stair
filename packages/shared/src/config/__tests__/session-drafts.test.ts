@@ -412,6 +412,7 @@ describe('session draft storage', () => {
       first: {
         applied: true,
         committed: true,
+        localApplied: false,
         revision: 2,
         draft: {
           text: 'typed first\n\nqueued text',
@@ -422,6 +423,7 @@ describe('session draft storage', () => {
       replay: {
         applied: false,
         committed: true,
+        localApplied: false,
         revision: 2,
         draft: {
           text: 'typed first\n\nqueued text',

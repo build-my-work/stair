@@ -67,7 +67,7 @@ export class SessionDraftCoordinator {
   private readonly serverRevisions = new Map<string, number>()
   private readonly contentTasks = new Map<string, Promise<unknown>>()
   private readonly pendingContentWrites = new Map<string, { content: DraftContent; mutation: DraftContentMutation; before: SessionDraft }>()
-  private readonly pendingRestores = new Map<string, { content: DraftContent; mutation: DraftContentMutation; before: SessionDraft; restoreId: string; input: SessionDraft; planExecutionId?: string }>()
+  private readonly pendingRestores = new Map<string, { content: DraftContent; mutation: DraftContentMutation; before: SessionDraft; restoreId: string; input: SessionDraft; planExecutionId?: string; messageIds?: string[] }>()
   private readonly pendingConsumptions = new Map<string, { content: DraftContent; mutation: DraftContentMutation; before: SessionDraft; textEditVersion: number; ownsConsumedPrefix: boolean; reenteredReferenceKeys: Set<string> }>()
   private readonly contentTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly referenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -299,6 +299,9 @@ export class SessionDraftCoordinator {
       || this.hydrationGeneration !== handle.generation
     ) return null
 
+    // The mounted composer may still own its last 300 ms of typing. Let it
+    // publish only dirty input before deciding which disk drafts can hydrate.
+    for (const sessionId of Object.keys(state.drafts)) this.onBeforeRestore(sessionId)
     const { drafts, hydratedSessionIds } = mergeHydratedSessionDrafts(
       this.drafts,
       state.drafts,
@@ -321,7 +324,27 @@ export class SessionDraftCoordinator {
       if (!this.mutatedSessionIds.has(sessionId)) this.serverRevisions.set(sessionId, revision)
     }
     for (const [sessionId, draft] of Object.entries(state.drafts)) {
-      if (this.mutatedSessionIds.has(sessionId)) continue
+      if (this.mutatedSessionIds.has(sessionId)) {
+        const local = this.drafts.get(sessionId) ?? { text: '' }
+        const content = mergeDraftContent(this.contentOf(draft), this.confirmedContent.get(sessionId) ?? { text: '' }, this.contentOf(local))
+        const merged = mergeAuthoritativeSessionDraftReferences(
+          { ...local, attachments: content.attachments }, this.getProjectId(sessionId) ?? '',
+          this.persistedReferences.get(sessionId) ?? [], draft.references ?? [],
+        )
+        if (merged.ok) {
+          this.assignDraft(sessionId, merged.draft)
+          if (JSON.stringify(local.attachments ?? []) !== JSON.stringify(merged.draft?.attachments ?? [])
+            || JSON.stringify(local.references ?? []) !== JSON.stringify(merged.draft?.references ?? [])) {
+            hydratedSessionIds.push(sessionId)
+          }
+          // The edited text still has its earlier confirmed base/version.
+          // Let its three-way host write incorporate unseen persisted text;
+          // seeding that merged text here would apply the old prefix twice.
+          this.scheduleContentPersistence(sessionId)
+          this.scheduleReferencePersistence(sessionId, this.persistedReferences.get(sessionId) ?? [])
+        }
+        continue
+      }
       this.persistedReferences.set(sessionId, draft.references ?? [])
       this.confirmedContent.set(sessionId, { text: draft.text, ...(draft.attachments?.length ? { attachments: draft.attachments } : {}) })
     }
@@ -333,6 +356,8 @@ export class SessionDraftCoordinator {
     this.pendingReferenceBroadcasts.clear()
     for (const sessionId of hydratedSessionIds) {
       this.onReferencesChanged(sessionId, this.getReferences(sessionId))
+      this.onAttachmentsChanged(sessionId)
+      this.onTextRestored(sessionId, this.getText(sessionId))
     }
     this.hydratedWorkspaceId = handle.workspaceId
     handle.resolve()
@@ -425,6 +450,7 @@ export class SessionDraftCoordinator {
     projectId: string | undefined,
     effect: RestoreInputEffect,
   ): Promise<SessionDraft | null> {
+    const workspaceGeneration = this.workspaceGeneration
     const hydrationGeneration = this.hydrationGeneration
     return this.runDraftTask(generation => this.serializeContentTask(sessionId, async () => {
       if (!await this.waitForHydration(workspaceId, generation, hydrationGeneration)) return null
@@ -444,7 +470,7 @@ export class SessionDraftCoordinator {
       let restored: SessionDraft | null
       if (effect.queuedRestoreId) {
         const key = `${sessionId}:${effect.queuedRestoreId}`
-        const request = this.pendingRestores.get(key) ?? { ...this.captureContentMutation(sessionId, true), restoreId: effect.queuedRestoreId, input, planExecutionId: effect.planExecutionId }
+        const request = this.pendingRestores.get(key) ?? { ...this.captureContentMutation(sessionId, true), restoreId: effect.queuedRestoreId, input, planExecutionId: effect.planExecutionId, messageIds: effect.messageIds }
         this.pendingRestores.set(key, request)
         const persisted = await this.persistence.restoreDraftInput(sessionId, {
           restoreId: effect.queuedRestoreId,
@@ -486,6 +512,9 @@ export class SessionDraftCoordinator {
         const result = restoreSessionDraftContent(this.drafts.get(sessionId), projectId, input.text, input.references ?? [], input.attachments ?? [])
         if (!result.ok) throw new Error('Draft recovery exceeded reference boundaries')
         this.setDraft(sessionId, result.draft)
+        this.onTextRestored(sessionId, this.getText(sessionId))
+        this.onReferencesChanged(sessionId, this.getReferences(sessionId))
+        this.onAttachmentsChanged(sessionId)
         this.scheduleContentPersistence(sessionId)
         this.scheduleReferencePersistence(sessionId, this.persistedReferences.get(sessionId) ?? [])
         await this.performContentWrite(sessionId, generation)
@@ -497,6 +526,72 @@ export class SessionDraftCoordinator {
       this.onReferencesChanged(sessionId, restored.references ?? [])
       this.onAttachmentsChanged(sessionId)
       return restored
+    })).catch(error => {
+      if (this.workspaceGeneration === workspaceGeneration && effect.queuedRestoreId
+        && this.pendingRestores.has(`${sessionId}:${effect.queuedRestoreId}`)) {
+        this.scheduleContentPersistence(sessionId)
+      }
+      throw error
+    })
+  }
+
+  /** Reserve the exact consumption operation before the composer clears. */
+  captureSubmittedDraft(sessionId: string, fields?: Pick<SessionDraft, 'attachments' | 'references'>): { content: DraftContent; mutation: DraftContentMutation } {
+    this.onBeforeRestore(sessionId)
+    const request = this.captureContentMutation(sessionId, true)
+    const before = fields ? { ...request.before, ...fields } : request.before
+    return {
+      content: { text: '' },
+      mutation: {
+        ...request.mutation,
+        base: this.contentOf(before),
+        references: { baseReferences: before.references ?? [], nextReferences: [] },
+      },
+    }
+  }
+
+  /** Replay the journal's original consume operation, including after restart. */
+  async consumeSubmittedDraft(
+    workspaceId: string,
+    sessionId: string,
+    clientMessageId: string,
+    captured: { content: DraftContent; mutation: DraftContentMutation },
+  ): Promise<boolean> {
+    const hydrationGeneration = this.hydrationGeneration
+    return this.runDraftTask(generation => this.serializeContentTask(sessionId, async () => {
+      if (!await this.waitForHydration(workspaceId, generation, hydrationGeneration)) return false
+      this.onBeforeRestore(sessionId)
+      const before = this.drafts.get(sessionId) ?? { text: '' }
+      const persisted = await this.persistence.restoreDraftInput(sessionId, {
+        restoreId: `consume-${clientMessageId}`, draft: { text: '' }, local: captured,
+      })
+      if (this.workspaceGeneration !== generation) return false
+      if (persisted.committed === false) throw new Error('Input consumption did not commit')
+      if (persisted.localApplied === undefined) throw new Error('Input consumption receipt is unsupported by this host')
+      this.onBeforeRestore(sessionId)
+      // This renderer already cleared the submitted snapshot synchronously.
+      // Anything present now belongs to a later edit, even if it was typed
+      // before this lock/RPC began. A reloaded renderer still displays the
+      // captured disk draft, so its base is the journal's original snapshot.
+      // A stale/duplicate mutation consumed nothing: use the current baseline
+      // to avoid appending an edit already accepted by a newer writer sequence.
+      const consumedBase: SessionDraft = persisted.localApplied
+        ? (captured.mutation.clientId === this.contentWriterId
+          ? { text: '' }
+          : { ...captured.mutation.base, references: captured.mutation.references?.baseReferences })
+        : before
+      this.confirmContentWrite(sessionId, consumedBase, persisted.draft, persisted.revision)
+      const authoritative = persisted.draft?.references ?? []
+      const merged = mergeAuthoritativeSessionDraftReferences(
+        this.drafts.get(sessionId), this.getProjectId(sessionId) ?? '', consumedBase.references ?? [], authoritative,
+      )
+      if (!merged.ok) throw new Error('Input consumption exceeded reference boundaries')
+      this.assignDraft(sessionId, merged.draft)
+      this.persistedReferences.set(sessionId, authoritative)
+      this.onTextRestored(sessionId, this.getText(sessionId))
+      this.onReferencesChanged(sessionId, this.getReferences(sessionId))
+      this.onAttachmentsChanged(sessionId)
+      return true
     }))
   }
 
@@ -620,12 +715,23 @@ export class SessionDraftCoordinator {
         ...(request.planExecutionId ? { planExecutionId: request.planExecutionId } : {}),
       })
       if (this.workspaceGeneration !== generation) return
+      if (recovered.committed === false) throw new Error('Draft recovery did not commit')
       this.onBeforeRestore(sessionId)
       this.confirmContentWrite(sessionId, request.before, recovered.draft, recovered.revision)
       const merged = mergeAuthoritativeSessionDraftReferences(this.drafts.get(sessionId), this.getProjectId(sessionId) ?? '', request.before.references ?? [], recovered.draft?.references ?? [])
       if (!merged.ok) throw new Error('Draft recovery exceeded reference boundaries')
       this.assignDraft(sessionId, merged.draft)
       this.persistedReferences.set(sessionId, recovered.draft?.references ?? [])
+      request.before = this.drafts.get(sessionId) ?? { text: '' }
+      this.onTextRestored(sessionId, request.before.text)
+      this.onReferencesChanged(sessionId, request.before.references ?? [])
+      this.onAttachmentsChanged(sessionId)
+      if (request.planExecutionId) {
+        if (!this.persistence.sessionCommand) throw new Error('Plan recovery acknowledgement unavailable')
+        await this.persistence.sessionCommand(sessionId, { type: 'clearPendingPlanExecution', executionId: request.planExecutionId })
+      } else if (request.messageIds?.length) {
+        await this.persistence.acknowledgeQueuedInputRestore(sessionId, request.restoreId, request.messageIds)
+      }
       this.pendingRestores.delete(key)
     }
     while (this.workspaceGeneration === generation) {
@@ -637,7 +743,9 @@ export class SessionDraftCoordinator {
       // writes return an explicit empty draft with a revision.
       const authoritative = persisted ?? request.before
       if (authoritative.text !== request.content.text) this.onBeforeRestore(sessionId)
+      const previousAttachments = JSON.stringify(this.getAttachmentRefs(sessionId))
       this.confirmContentWrite(sessionId, request.before, authoritative, persisted?.revision)
+      if (previousAttachments !== JSON.stringify(this.getAttachmentRefs(sessionId))) this.onAttachmentsChanged(sessionId)
       this.pendingContentWrites.delete(sessionId)
       if (authoritative.text !== request.content.text) this.onTextRestored(sessionId, this.getText(sessionId))
       if (JSON.stringify(this.contentOf(this.drafts.get(sessionId))) === JSON.stringify(this.confirmedContent.get(sessionId))) return

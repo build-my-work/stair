@@ -53,6 +53,94 @@ function createPersistence(overrides: Record<string, unknown> = {}) {
 }
 
 describe('SessionDraftCoordinator', () => {
+  it('flushes an un-debounced visible edit before initial hydration can publish old text', () => {
+    let visible = 'new visible edit'
+    const coordinator = new SessionDraftCoordinator({
+      persistence: createPersistence(), getProjectId: () => 'project-a', debounceMs: 60_000,
+      onBeforeRestore: id => coordinator.updateText(id, visible),
+      onTextRestored: (_id, text) => { visible = text },
+    })
+    try {
+      const handle = coordinator.beginHydration('workspace-a')
+      coordinator.hydrate(handle, { drafts: { 'chat-a': { text: 'old disk input' } }, appliedRestoreIds: {} })
+      expect(visible).toBe('new visible edit')
+      expect(coordinator.getText('chat-a')).toBe('new visible edit')
+    } finally { coordinator.dispose() }
+  })
+
+  it('retries a failed restore, publishes its complete input, and acknowledges only after persistence', async () => {
+    let attempts = 0
+    let visible = ''
+    const references: Reference[][] = []
+    let attachmentsChanged = 0
+    const input = { text: 'unsent', references: [reference('quote')], attachments: [{ path: '/fixture/file.txt', name: 'file.txt' }] }
+    const persistence = createPersistence({
+      restoreDraftInput: mock(async () => {
+        if (++attempts === 1) throw new Error('transient')
+        return { draft: input, applied: true, committed: true, revision: 1 }
+      }),
+    })
+    const coordinator = new SessionDraftCoordinator({
+      persistence, getProjectId: () => 'project-a', debounceMs: 1, warn: () => {},
+      onTextRestored: (_id, text) => { visible = text },
+      onReferencesChanged: (_id, refs) => references.push(refs),
+      onAttachmentsChanged: () => { attachmentsChanged += 1 },
+    })
+    try {
+      const handle = coordinator.beginHydration('workspace-a')
+      coordinator.hydrate(handle, { drafts: {}, appliedRestoreIds: {} })
+      await expect(coordinator.restoreInput('workspace-a', 'chat-a', 'project-a', {
+        type: 'restore_input', ...input, queuedRestoreId: 'rejected-message', messageIds: ['message'],
+      })).rejects.toThrow('transient')
+      expect(persistence.acknowledgeQueuedInputRestore).not.toHaveBeenCalled()
+      await Bun.sleep(25)
+      expect(attempts).toBe(2)
+      expect(visible).toBe('unsent')
+      expect(references.at(-1)).toEqual(input.references)
+      expect(attachmentsChanged).toBeGreaterThan(0)
+      expect(coordinator.getAttachmentRefs('chat-a')).toEqual(input.attachments)
+      expect(persistence.acknowledgeQueuedInputRestore).toHaveBeenCalledTimes(1)
+    } finally { coordinator.dispose() }
+  })
+
+  it('publishes all hydrated fields to mounted consumers without replacing local edits', () => {
+    const attachments: string[] = []
+    const texts: string[] = []
+    const coordinator = new SessionDraftCoordinator({
+      persistence: createPersistence(), getProjectId: () => 'project-a', debounceMs: 60_000,
+      onAttachmentsChanged: id => attachments.push(id),
+      onTextRestored: (_id, text) => texts.push(text),
+    })
+    try {
+      const handle = coordinator.beginHydration('workspace-a')
+      coordinator.updateText('edited', 'local')
+      coordinator.hydrate(handle, { drafts: {
+        loaded: { text: 'from disk', attachments: [{ path: '/fixture/a.txt', name: 'a.txt' }] },
+        edited: { text: 'old disk' },
+      }, appliedRestoreIds: {} })
+      expect(coordinator.getAttachmentRefs('loaded')).toHaveLength(1)
+      expect(attachments).toEqual(['loaded'])
+      expect(texts).toEqual(['from disk'])
+      expect(coordinator.getText('edited')).toBe('local')
+    } finally { coordinator.dispose() }
+  })
+
+  it('publishes attachments introduced by an authoritative content write even when text is unchanged', async () => {
+    let attachmentUpdates = 0
+    const attachments = [{ path: '/remote.txt', name: 'remote.txt' }]
+    const coordinator = new SessionDraftCoordinator({
+      persistence: createPersistence({ setDraftContent: async (_id: string, content: DraftContent) => ({ ...content, attachments, revision: 1 }) }),
+      getProjectId: () => 'project-a', debounceMs: 60_000,
+      onAttachmentsChanged: () => { attachmentUpdates += 1 },
+    })
+    try {
+      coordinator.updateText('chat-a', 'same')
+      await coordinator.flushContent('chat-a')
+      expect(coordinator.getAttachmentRefs('chat-a')).toEqual(attachments)
+      expect(attachmentUpdates).toBe(1)
+    } finally { coordinator.dispose() }
+  })
+
   it('retries a failed debounced content write without losing the latest draft', async () => {
     let attempts = 0
     const persistence = createPersistence({

@@ -47,6 +47,9 @@ export const SESSION_PERSISTENT_FIELDS = [
   'sharedUrl', 'sharedId',
   // Plan execution
   'pendingPlanExecution',
+  // Durable cancellation identities for lost-response reconciliation.
+  'cancelledInputIds',
+  'restoredInputIds',
   // Archive
   'isArchived', 'archivedAt',
   // Branching
@@ -229,6 +232,10 @@ export interface SessionConfig {
    * Cleared on: successful execution, new user message, or manual clear.
    */
   pendingPlanExecution?: PendingPlanExecutionRecord;
+  /** A reconciled absent input must never be admitted by a late/replayed send. */
+  cancelledInputIds?: string[];
+  /** Retired outbox rows still own their client input identities after restart. */
+  restoredInputIds?: Record<string, string>;
   /** When true, session is hidden from session list (e.g., mini edit sessions) */
   hidden?: boolean;
   /** Whether this session is archived */
@@ -370,6 +377,8 @@ export interface SessionHeader {
    * Cleared on: successful execution, new user message, or manual clear.
    */
   pendingPlanExecution?: PendingPlanExecutionRecord;
+  cancelledInputIds?: string[];
+  restoredInputIds?: Record<string, string>;
   /** When true, session is hidden from session list (e.g., mini edit sessions) */
   hidden?: boolean;
   /** Whether this session is archived */

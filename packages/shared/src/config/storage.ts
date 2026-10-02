@@ -1353,7 +1353,11 @@ function loadDraftsDataStrict(): DraftsData {
     if (!Array.isArray(value) || !value.every(id => typeof id === 'string')) {
       throw new Error('Invalid draft restore receipt');
     }
-    appliedRestoreIds[sessionId] = value.slice(-64);
+    // A renderer's durable outgoing-input journal may be replayed long after
+    // ordinary restore history rolls over (for example, a closed second window).
+    const inputReceipts = value.filter(id => /^(consume|rejected|input)-/.test(id));
+    const ordinaryReceipts = value.filter(id => !/^(consume|rejected|input)-/.test(id));
+    appliedRestoreIds[sessionId] = [...inputReceipts, ...ordinaryReceipts.slice(-64)];
   }
   const appliedReferenceRequests: DraftsData['appliedReferenceRequests'] = {};
   for (const [sessionId, value] of Object.entries(raw.appliedReferenceRequests ?? {})) {
@@ -1744,6 +1748,8 @@ export interface SessionDraftRestoreResult {
   applied: boolean;
   /** A successful empty restore is a durable commit too. */
   committed?: boolean;
+  /** Whether this request's captured content mutation changed authoritative state. */
+  localApplied?: boolean;
   revision?: number;
 }
 
@@ -1777,7 +1783,7 @@ export function restoreSessionDraftAtomic(
   const localApplied = local ? applyDraftContentMutation(data, sessionId, local.content, local.mutation, projectId) : false;
   if (alreadyApplied) {
     if (localApplied) saveDraftsData(data);
-    return { draft: data.drafts[sessionId] ?? null, applied: false, committed: true, revision: data.revisions?.[sessionId] ?? 0 };
+    return { draft: data.drafts[sessionId] ?? null, applied: false, committed: true, localApplied, revision: data.revisions?.[sessionId] ?? 0 };
   }
 
   const current = data.drafts[sessionId] ?? { text: '' };
@@ -1809,7 +1815,11 @@ export function restoreSessionDraftAtomic(
       : {}),
     ...(references.length ? { references } : {}),
   });
-  data.appliedRestoreIds[sessionId] = [...appliedIds, restoreId].slice(-64);
+  const receipts = [...appliedIds, restoreId];
+  data.appliedRestoreIds[sessionId] = [
+    ...receipts.filter(id => /^(consume|rejected|input)-/.test(id)),
+    ...receipts.filter(id => !/^(consume|rejected|input)-/.test(id)).slice(-64),
+  ];
   if (planExecutionId) {
     data.planRestoreExecutions ??= {};
     // A plan outbox may remain unacknowledged across arbitrarily many ordinary
@@ -1817,7 +1827,7 @@ export function restoreSessionDraftAtomic(
     data.planRestoreExecutions[sessionId] = { ...data.planRestoreExecutions[sessionId], [restoreId]: planExecutionId };
   }
   saveDraftsData(data);
-  return { draft: result, applied: true, committed: true, revision: data.revisions?.[sessionId] ?? 0 };
+  return { draft: result, applied: true, committed: true, localApplied, revision: data.revisions?.[sessionId] ?? 0 };
 }
 
 /**

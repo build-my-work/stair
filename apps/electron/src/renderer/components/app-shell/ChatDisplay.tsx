@@ -8,7 +8,6 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { coerceInputText } from "@/lib/input-text"
 import { useDelayedLoading } from "@/hooks/useDelayedLoading"
-import { restoreSessionDraftContent } from '@/lib/reference-draft'
 import {
   parseReadResult,
   parseBashResult,
@@ -195,7 +194,7 @@ function getTurnKey(turn: Turn): string {
 
 interface ChatDisplayProps {
   session: Session | null
-  onSendMessage: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'>) => void
+  onSendMessage: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'> & { consumeDraft?: boolean }) => boolean | void
   onOpenFile: (path: string) => void
   onOpenUrl: (url: string) => void
   // Model selection
@@ -1188,7 +1187,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
   // Handle message submission from InputContainer
   // Backend handles interruption and queueing if currently processing
-  const handleSubmit = (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'>) => {
+  const handleSubmit = (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'> & { consumeDraft?: boolean }) => {
     const hasBaseMessage = message.trim().length > 0
     const followUpSection = formatFollowUpSection(pendingFollowUpAnnotations, {
       includeTopSeparator: hasBaseMessage,
@@ -1200,7 +1199,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
     // Force stick-to-bottom when user sends a message
     isStickToBottomRef.current = true
-    onSendMessage(normalizedMessage, attachments, skillSlugs, references, options)
+    if (onSendMessage(normalizedMessage, attachments, skillSlugs, references, options) === false) return false
 
     // Persist sent marker on follow-up annotations so TurnCard can distinguish
     // sent vs pending follow-ups. If user edits a follow-up later, TurnCard
@@ -1352,33 +1351,19 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Handle stop request from InputContainer
   // silent=true when redirecting (sending new message), silent=false when user clicks Stop button
   const handleStop = (silent = false) => {
-    if (!session?.isProcessing) return
-
-    // When queued messages exist, the backend restores them into the draft.
-    // Re-adding the already-sent prompt here would duplicate it on the next send.
-    // Without a queue, keep the existing Stop behavior so the prompt can be edited.
-    if (!silent && !session.messages.some(m => m.role === 'user' && m.isQueued)) {
-      const lastUserMsg = [...session.messages].reverse().find(m => m.role === 'user' && !m.isQueued)
-      const restoredText = coerceInputText(lastUserMsg?.content)
-      if (lastUserMsg && (restoredText || (lastUserMsg.references?.length ?? 0) > 0)) {
-        const restoreResult = restoreSessionDraftContent(
-          {
-            text: coerceInputText(inputValue),
-            ...(referencesValue?.length ? { references: referencesValue } : {}),
-          },
-          session.projectId,
-          restoredText,
-          lastUserMsg.references ?? [],
-        )
-        if (restoreResult.ok) {
-          onInputChange?.(restoreResult.draft?.text ?? '')
-          onReferencesChange?.(restoreResult.draft?.references ?? [])
-        } else {
-          toast.error(t('reference.couldNotAdd'))
-        }
-      }
+    if (!session) return
+    const hasPendingInput = appShellContext.pendingInputSessionIds?.has(session.id) === true
+    if (hasPendingInput) {
+      void appShellContext.onCancelPendingInput?.(session.id).catch(error => {
+        console.error('[ChatDisplay] Failed to cancel pending input:', error)
+      })
     }
+    if (!session.isProcessing && !hasPendingInput) return
 
+    // Stop also fences a host admission waiting for its first durable write,
+    // before the first user_message can mark this session as processing.
+    // The host owns delivery and restores only input that was not accepted.
+    // Editing an already delivered message is an explicit bubble action.
     window.electronAPI.cancelProcessing(session.id, silent).catch(error => {
       console.error('[ChatDisplay] Failed to cancel processing:', error)
     })
@@ -1730,6 +1715,11 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                         >
                           <MemoizedMessageBubble
                             message={turn.message}
+                            onEdit={appShellContext.onEditMessage && session ? () => {
+                              void appShellContext.onEditMessage!(session.id, turn.message).catch(error => {
+                                toast.error(error instanceof Error ? error.message : String(error))
+                              })
+                            } : undefined}
                             onOpenFile={onOpenFile}
                             onOpenUrl={onOpenUrl}
                             sessionId={session?.id}
@@ -1763,9 +1753,15 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                               const msgs = session?.messages
                               if (!msgs) return
                               const errorIdx = msgs.findIndex(m => m.id === turn.message.id)
-                              const lastUserMsg = msgs.slice(0, errorIdx).findLast(m => m.role === 'user')
+                              const lastUserMsg = msgs.slice(0, errorIdx).findLast(m => m.role === 'user' && !m.hidden && !m.isPending && !m.pendingDelivery && !m.queuedRestoreId)
                               if (lastUserMsg) {
-                                onSendMessage(lastUserMsg.content, undefined, undefined, lastUserMsg.references)
+                                void Promise.all((lastUserMsg.attachments ?? []).map(async stored => {
+                                  const attachment = await window.electronAPI.readUserAttachment(stored.storedPath)
+                                  if (!attachment) throw new Error(`Attachment unavailable: ${stored.name}`)
+                                  return { ...attachment, name: stored.name, mimeType: stored.mimeType,
+                                    storedPath: stored.storedPath, markdownPath: stored.markdownPath }
+                                })).then(attachments => onSendMessage(lastUserMsg.content, attachments, undefined, lastUserMsg.references))
+                                  .catch(error => toast.error(error instanceof Error ? error.message : String(error)))
                               }
                             } : undefined}
                           />
@@ -2047,7 +2043,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               placeholder,
               previousPermissionMode,
               disabled: isInputDisabled,
-              isProcessing: session.isProcessing,
+              isProcessing: session.isProcessing || appShellContext.pendingInputSessionIds?.has(session.id),
               onAnimatedHeightChange: handleAnimatedHeightChange,
               onSubmit: handleSubmit,
               onStop: handleStop,

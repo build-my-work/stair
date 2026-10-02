@@ -259,7 +259,7 @@ export interface ElectronAPI {
   getSessionMessages(sessionId: string): Promise<Session | null>
   createSession(workspaceId: string, options?: CreateSessionOptions): Promise<Session>
   deleteSession(sessionId: string): Promise<void>
-  sendMessage(sessionId: string, message: string, attachments?: FileAttachment[], storedAttachments?: StoredAttachmentType[], options?: SendMessageOptions): Promise<void>
+  sendMessage(sessionId: string, message: string, attachments?: FileAttachment[], storedAttachments?: StoredAttachmentType[], options?: SendMessageOptions): Promise<void | { accepted: true; messageId: string }>
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
   /** A background task's output so far (shell tail, or an agent's latest message + steps); null when there is none */
   getBackgroundTaskOutput(sessionId: string, taskId: string, kind?: 'agent' | 'shell' | 'workflow'): Promise<BackgroundTaskOutput | null>
@@ -285,12 +285,13 @@ export interface ElectronAPI {
   respondToCredential(sessionId: string, requestId: string, response: CredentialResponse): Promise<boolean>
 
   // Consolidated session command handler
+  sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'reconcileInput' }>): Promise<{ state: 'owned'; messageId: string } | { state: 'not_accepted' }>
   sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'markPendingPlanExecutionDispatched' }>): Promise<boolean>
   sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'continueInNewSession' }>): Promise<{ sessionId: string }>
   sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'dispatchPendingPlanExecution' }>): Promise<{ ok: boolean; reason?: 'missing' | 'busy' | 'not-ready' | 'already-dispatched' | 'failed' | 'stale' | 'invalid-references' | 'persist-failed' }>
   sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'setPendingPlanExecution' }>): Promise<{ executionId?: string; restoreId?: string } | null>
   sessionCommand(sessionId: string, command: Extract<SessionCommand, { type: 'consumePendingPlanDraft' }>): Promise<import('@craft-agent/shared/config').PlanDraftConsumption | null>
-  sessionCommand(sessionId: string, command: Exclude<SessionCommand, { type: 'markPendingPlanExecutionDispatched' | 'continueInNewSession' | 'dispatchPendingPlanExecution' | 'setPendingPlanExecution' | 'consumePendingPlanDraft' }>): Promise<void | ShareResult | RefreshTitleResult | { count: number }>
+  sessionCommand(sessionId: string, command: Exclude<SessionCommand, { type: 'reconcileInput' | 'markPendingPlanExecutionDispatched' | 'continueInNewSession' | 'dispatchPendingPlanExecution' | 'setPendingPlanExecution' | 'consumePendingPlanDraft' }>): Promise<void | ShareResult | RefreshTitleResult | { count: number }>
 
   // Server info (REMOTE_ELIGIBLE — returns data from whichever server owns the workspace)
   getServerHomeDir(): Promise<string>
@@ -853,6 +854,7 @@ export interface ElectronAPI {
   saveProjectTextFile(request: import('@craft-agent/shared/project-files').SaveProjectTextFileRequest): Promise<import('@craft-agent/shared/project-files').SaveProjectTextFileResponse>
   saveDrawnixProjectFile(request: import('@craft-agent/shared/project-files').SaveDrawnixProjectFileRequest): Promise<import('@craft-agent/shared/project-files').SaveDrawnixProjectFileResponse>
   setDrawnixBoardCapabilityHandler(handler: ((request: import('@craft-agent/server-core/transport').DrawnixBoardCapabilityRequest) => Promise<import('@craft-agent/server-core/transport').DrawnixBoardCapabilityResponse>) | null): void
+  setDrawnixBoardDiscoveryHandler(handler: ((request: import('@craft-agent/server-core/transport').DrawnixBoardDiscoveryRequest) => import('@craft-agent/server-core/transport').DrawnixBoardDiscoveryResponse) | null): void
   setBrowserApplicationHandler(workspaceId: string | null, handler: ((request: Extract<import('@craft-agent/server-core/transport').BrowserApplicationCapabilityRequest, { action: 'open-chat' | 'add-selection-note' | 'add-selection-to-chat' | 'create-chat-from-selection' }>) => Promise<
     | { ok: true }
     | { ok: true; noteTargetPath: string }

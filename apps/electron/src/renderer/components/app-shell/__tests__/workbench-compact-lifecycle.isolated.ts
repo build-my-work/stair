@@ -112,7 +112,7 @@ afterEach(async () => {
 async function openWorkbench(compact: boolean, withSession = true) {
   selectedSession = withSession ? 'chat-1' : null
   Object.assign(window, { electronAPI: {
-    readProjectTextFile: async () => ({ text: 'Saved on disk', sourceFingerprint: 'sha256:old', metadata: { name: 'note.md', byteLength: 13 } }),
+    readProjectTextFile: async () => ({ text: 'Saved on disk', sourceFingerprint: 'sha256:old', metadata: { projectId: 'project-1', relativePath: 'note.md', name: 'note.md', byteLength: 13 } }),
     saveProjectTextFile: async () => { throw new Error('PROJECT_FILE_CHANGED: conflict') },
     debugLog() {},
   } })

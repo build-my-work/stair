@@ -45,6 +45,7 @@ import {
   CLIENT_BROWSER_INVOKE,
   CLIENT_BROWSER_APPLICATION_INVOKE,
   CLIENT_DRAWNIX_BOARD_INVOKE,
+  CLIENT_DRAWNIX_BOARD_DISCOVER,
   LOCAL_CLIENT_CAPABILITIES,
 } from '@craft-agent/server-core/transport'
 import type {
@@ -53,6 +54,8 @@ import type {
   ConfirmDialogSpec,
   DrawnixBoardCapabilityRequest,
   DrawnixBoardCapabilityResponse,
+  DrawnixBoardDiscoveryRequest,
+  DrawnixBoardDiscoveryResponse,
   FileDialogSpec,
 } from '@craft-agent/server-core/transport'
 import {
@@ -203,6 +206,26 @@ let drawnixBoardHandler:
   | ((request: DrawnixBoardCapabilityRequest) => Promise<DrawnixBoardCapabilityResponse>)
   | null = null
 
+let drawnixBoardDiscoveryHandler:
+  | ((request: DrawnixBoardDiscoveryRequest) => DrawnixBoardDiscoveryResponse)
+  | null = null
+
+client.handleCapability(
+  CLIENT_DRAWNIX_BOARD_DISCOVER,
+  (request: DrawnixBoardDiscoveryRequest): DrawnixBoardDiscoveryResponse => {
+    if (!drawnixBoardDiscoveryHandler) {
+      return {
+        ok: false,
+        error: {
+          code: 'MINDMAP_BOARD_UNAVAILABLE',
+          message: 'The Drawnix board bridge is not ready in this client.',
+        },
+      }
+    }
+    return drawnixBoardDiscoveryHandler(request)
+  },
+)
+
 client.handleCapability(
   CLIENT_DRAWNIX_BOARD_INVOKE,
   async (request: DrawnixBoardCapabilityRequest): Promise<DrawnixBoardCapabilityResponse> => {
@@ -249,6 +272,11 @@ const api = buildClientApi(client, CHANNEL_MAP, (ch) => client.isChannelAvailabl
   handler: ((request: DrawnixBoardCapabilityRequest) => Promise<DrawnixBoardCapabilityResponse>) | null,
 ) => {
   drawnixBoardHandler = handler
+}
+;(api as any).setDrawnixBoardDiscoveryHandler = (
+  handler: ((request: DrawnixBoardDiscoveryRequest) => DrawnixBoardDiscoveryResponse) | null,
+) => {
+  drawnixBoardDiscoveryHandler = handler
 }
 
 // ---------------------------------------------------------------------------

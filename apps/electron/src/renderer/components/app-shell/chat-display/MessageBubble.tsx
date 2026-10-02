@@ -45,6 +45,7 @@ export interface MessageBubbleProps {
   compactMode?: boolean
   /** Callback to resend the user message that preceded an error */
   onRetry?: () => void
+  onEdit?: () => void
 }
 
 /** Info-level notices: icon shape + role color per level (status never by color alone). */
@@ -69,6 +70,7 @@ export function MessageBubble({
   onPopOut,
   compactMode,
   onRetry,
+  onEdit,
 }: MessageBubbleProps) {
   const { t } = useTranslation()
 
@@ -86,6 +88,7 @@ export function MessageBubble({
         onAddSelectionToNewChat={onAddSelectionToNewChat}
         onAddSelectionToNote={onAddSelectionToNote}
         onAddSelectionToNoteTarget={onAddSelectionToNoteTarget}
+        onEdit={onEdit}
         isPending={message.isPending}
         isQueued={message.isQueued}
         onUrlClick={onOpenUrl}
@@ -218,6 +221,11 @@ export const MemoizedMessageBubble = React.memo(MessageBubble, (prev, next) => {
     prev.message.content === next.message.content &&
     prev.message.role === next.message.role &&
     prev.message.references === next.message.references &&
+    prev.message.attachments === next.message.attachments &&
+    prev.message.isPending === next.message.isPending &&
+    prev.message.isQueued === next.message.isQueued &&
+    prev.onEdit === next.onEdit &&
+    prev.onRetry === next.onRetry &&
     prev.onRevealReference === next.onRevealReference &&
     prev.onAddSelectionToChat === next.onAddSelectionToChat &&
     prev.onAddSelectionToNewChat === next.onAddSelectionToNewChat &&

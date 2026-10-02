@@ -10,7 +10,7 @@ describe('plan approval draft references', () => {
     expect(source).toContain('references: [...referencesValue]')
     expect(source).toContain('onReferencesChange?.([])')
     expect(source).toContain(
-      'onSubmit(text, undefined, undefined, draftSnapshot.references)',
+      'onSubmit(text, draftSnapshot.attachments.length ? draftSnapshot.attachments : undefined, undefined, draftSnapshot.references, { consumeDraft: shouldIncludeDraft })',
     )
   })
 

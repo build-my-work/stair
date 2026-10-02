@@ -269,13 +269,17 @@ function countActionableNodes(nodes: Array<{ role: string; disabled?: boolean }>
  * the agent overlay and brings the window up. Returns the line saying what happened.
  */
 async function handChallengeToUser(fns: BrowserWindowFns): Promise<string> {
-  await fns.releaseControl();
+  const released = await fns.releaseControl();
   try {
-    await fns.focusWindow();
-    return 'Browser shown — please complete the verification check.';
+    const focused = await fns.focusWindow(released.resolvedInstanceId);
+    const { win } = await waitForForegroundOpenVisibility({ fns, instanceId: focused.instanceId });
+    if (win?.isVisible) {
+      return 'Browser shown — please complete the verification check.';
+    }
   } catch {
-    return 'The browser window could not be shown — ask the user to open it and complete the verification check.';
+    // The window may close or disconnect while control is being handed back.
   }
+  return 'Browser could not be shown — ask the user to open it and complete the verification check.';
 }
 
 /** Evidence too weak to hand the page over (e.g. a visible Turnstile widget) only earns a note. */

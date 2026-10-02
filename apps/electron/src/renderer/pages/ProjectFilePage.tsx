@@ -102,8 +102,14 @@ export default function ProjectFilePage({
   const { openSessionInNewPanel } = useNavigation()
   const openProjectFilePreview = useSetAtom(openProjectFilePreviewAtom)
   const setProjectFileChatTarget = useSetAtom(setProjectFileChatTargetAtom)
-  const [response, setResponse] = useState<ProjectFileTextResponse | null>(null)
-  const [binaryResponse, setBinaryResponse] = useState<ProjectFileBinaryResponse | null>(null)
+  const [loadedText, setResponse] = useState<ProjectFileTextResponse | null>(null)
+  const [loadedBinary, setBinaryResponse] = useState<ProjectFileBinaryResponse | null>(null)
+  // Effects clear the previous response after render. Gate it synchronously so
+  // neither the reader nor the editor can pair A's bytes with B's identity.
+  const response = loadedText?.metadata.projectId === projectId
+    && loadedText.metadata.relativePath === relativePath ? loadedText : null
+  const binaryResponse = loadedBinary?.metadata.projectId === projectId
+    && loadedBinary.metadata.relativePath === relativePath ? loadedBinary : null
   const [editorContent, setEditorContent] = useState('')
   const [documentState, setDocumentState] = useState<ProjectTextDocumentState>(CLEAN_STATE)
   const [isEditing, setIsEditing] = useState(false)

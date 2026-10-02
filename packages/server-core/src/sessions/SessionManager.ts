@@ -6,8 +6,10 @@ import type {
 } from '@craft-agent/server-core/transport'
 import {
   CLIENT_BROWSER_INVOKE,
+  CLIENT_DRAWNIX_BOARD_DISCOVER,
   CLIENT_DRAWNIX_BOARD_INVOKE,
   requestClientBrowserInvoke,
+  requestClientDrawnixBoardDiscovery,
   requestClientDrawnixBoardInvoke,
 } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
@@ -798,6 +800,8 @@ interface ManagedSession {
   sdkSessionId?: string
   /** Accept & Compact state; persisted with the session header. */
   pendingPlanExecution?: StoredSession['pendingPlanExecution']
+  cancelledInputIds?: string[]
+  restoredInputIds?: Record<string, string>
   // Token usage for display
   tokenUsage?: {
     inputTokens: number
@@ -911,7 +915,7 @@ interface ManagedSession {
     continuationCheck?: Promise<void>
   }>
   // Original host payloads for backends that can return undelivered text steers.
-  // Runtime-only; Pi's native steering does not opt into an acknowledgement protocol.
+  // Runtime-only; Pi retains these until a consumption receipt or cancellation snapshot.
   acceptedSteers?: Map<string, ManagedSession['messageQueue'][number]>
   // Map of taskId -> output info for background task results
   backgroundTaskOutputs: Map<string, { outputFile: string; summary: string; status: string; completedAt: number }>
@@ -928,6 +932,13 @@ interface ManagedSession {
   // Pending auth request tracking (for unified auth flow)
   pendingAuthRequestId?: string
   pendingAuthRequest?: AuthRequest
+  pendingAuthOwner?: { generation: number; stopEpoch: number }
+  // Serialize admission, never the long-running agent iterator or Stop itself.
+  sendAdmissionTail?: Promise<void>
+  pendingSendAdmissions?: Map<() => void, string | undefined>
+  /** Resolves after the initial write or rollback, never after the provider turn. */
+  pendingInputCommits?: Map<string, Promise<void>>
+  stopBarrier?: Promise<void>
   // Auth retry tracking (for mid-session token expiry)
   // Store last sent message/attachments to enable retry after token refresh
   lastSentMessage?: string
@@ -1022,6 +1033,8 @@ interface ManagedSession {
     deadlineMs: number
     /** Persisted references from the interrupted user turn. */
     references?: Reference[]
+    attachments?: FileAttachment[]
+    storedAttachments?: StoredAttachment[]
     /** True after the first matching sendMessage consumes the slot; later matches drop. */
     committed: boolean
     /** Turn generation the continuation was scheduled for: ownership check for undelivered steers and cancellation. */
@@ -1816,8 +1829,11 @@ export class SessionManager implements ISessionManager {
     userMessage: Message,
     configured: 'steer' | 'queue',
   ): Promise<void> {
+    let staged = false
+    let handedOff = false
     try {
       const generation = managed.processingGeneration
+      const stopEpoch = managed.stopEpoch ?? 0
       const [decided] = await Promise.all([
         this.decideMidTurnDelivery(managed, payload.message, configured),
         payload.continuationCheck,
@@ -1827,18 +1843,39 @@ export class SessionManager implements ISessionManager {
         sessionLog.info('[mid-turn] Not steering part of a continued message; it replays with the rest', { sessionId: managed.id, messageId: payload.messageId })
         return
       }
-      const index = managed.messageQueue.indexOf(payload)
       const agent = managed.agent
-      if (index === -1 || this.sessions.get(managed.id) !== managed || !managed.isProcessing
-        || managed.processingGeneration !== generation || !agent?.canSteerNow?.()) return
+      if (!managed.messageQueue.includes(payload) || this.sessions.get(managed.id) !== managed || !managed.isProcessing
+        || managed.processingGeneration !== generation || (managed.stopEpoch ?? 0) !== stopEpoch
+        || managed.stopRequested || managed.stopBarrier || !agent?.canSteerNow?.()
+        || payload.messageId !== userMessage.id || !managed.messages.includes(userMessage) || userMessage.queuedRestoreId) return
+
+      // The queue owns a known unsubmitted input until this write completes.
+      // Once handed to the SDK, a crash must recover it for manual review,
+      // never mistake the older queued row for permission to send it again.
+      staged = true
+      userMessage.pendingDelivery = true
+      this.persistSession(managed)
+      await this.flushSessionStrict(managed.id)
+
+      const index = managed.messageQueue.indexOf(payload)
+      if (index === -1 || this.sessions.get(managed.id) !== managed || managed.agent !== agent || !managed.isProcessing
+        || managed.processingGeneration !== generation || (managed.stopEpoch ?? 0) !== stopEpoch
+        || managed.stopRequested || managed.stopBarrier || !agent.canSteerNow?.()
+        || !managed.messages.includes(userMessage) || userMessage.queuedRestoreId
+        || isInQueuedContinuation(managed.messageQueue, payload)) return
+
       managed.messageQueue.splice(index, 1)
+      if (agent.takePendingSteers && payload.messageId) (managed.acceptedSteers ??= new Map()).set(payload.messageId, payload)
+      handedOff = true
       if (!agent.redirect(payload.message, { messageId: payload.messageId })) {
+        handedOff = false
+        if (payload.messageId) managed.acceptedSteers?.delete(payload.messageId)
         managed.messageQueue.splice(index, 0, payload)  // canSteerNow promised otherwise; keep it queued
         return
       }
-      if (agent.takePendingSteers && payload.messageId) (managed.acceptedSteers ??= new Map()).set(payload.messageId, payload)
       ;(managed.turnSteers ??= []).push(payload.message)
       userMessage.isQueued = false
+      userMessage.pendingDelivery = agent.settlePendingSteers ? true : undefined
       sessionLog.info('mid-stream send steered after decision', { sessionId: managed.id, messageId: payload.messageId })
       this.sendEvent({
         type: 'user_message',
@@ -1850,6 +1887,14 @@ export class SessionManager implements ISessionManager {
       this.persistSession(managed)
     } catch (e) {
       sessionLog.warn(`[mid-turn] Steering a queued message failed for session ${managed.id}:`, e)
+    } finally {
+      // Stop/replay may have taken ownership during the write. Only roll back
+      // our own still-queued, definitely unsubmitted image.
+      if (staged && !handedOff && this.sessions.get(managed.id) === managed
+        && managed.messageQueue.includes(payload) && managed.messages.includes(userMessage) && !userMessage.queuedRestoreId) {
+        userMessage.pendingDelivery = undefined
+        this.persistSession(managed)
+      }
     }
   }
 
@@ -2211,33 +2256,43 @@ export class SessionManager implements ISessionManager {
     if (!this.eventSink || !workspaceId) return
     for (const managed of this.sessions.values()) {
       if (managed.workspace.id !== workspaceId || !managed.messagesLoaded) continue
-      const pendingRestores = new Map<string, Message[]>()
-      for (const message of managed.messages) {
-        if (message.role !== 'user' || !message.isQueued || !message.queuedRestoreId) continue
-        const group = pendingRestores.get(message.queuedRestoreId) ?? []
-        group.push(message)
-        pendingRestores.set(message.queuedRestoreId, group)
-      }
-      for (const [queuedRestoreId, messages] of pendingRestores) {
-        this.eventSink(
-          RPC_CHANNELS.sessions.EVENT,
-          { to: 'client', clientId },
-          {
-            type: 'interrupted',
-            sessionId: managed.id,
-            queuedMessages: messages.map(message => message.content),
-            ...(messages.some(message => message.references?.length)
-              ? { queuedReferences: messages.flatMap(message => message.references ?? []) }
-              : {}),
-            ...(messages.some(message => message.attachments?.length)
-              ? { queuedAttachments: messages.flatMap(message => message.attachments ?? []) }
-              : {}),
-            queuedRestoreId,
-            queuedMessageIds: messages.map(message => message.id),
-          },
-        )
-        this.emittedQueuedRestoreIds.add(`${managed.id}\0${queuedRestoreId}`)
-      }
+      if (!managed.messages.some(message => message.queuedRestoreId)) continue
+      // A failed Stop write may have left only an in-memory outbox. Never let
+      // a reconnect persist its draft receipt ahead of the corresponding row.
+      void (async () => {
+        this.persistSession(managed)
+        await this.flushSessionStrict(managed.id)
+        if (this.sessions.get(managed.id) !== managed || !this.eventSink) return
+        const pendingRestores = new Map<string, Message[]>()
+        for (const message of managed.messages) {
+          if (message.role !== 'user' || !message.isQueued || !message.queuedRestoreId) continue
+          const group = pendingRestores.get(message.queuedRestoreId) ?? []
+          group.push(message)
+          pendingRestores.set(message.queuedRestoreId, group)
+        }
+        for (const [queuedRestoreId, messages] of pendingRestores) {
+          this.eventSink(
+            RPC_CHANNELS.sessions.EVENT,
+            { to: 'client', clientId },
+            {
+              type: 'interrupted',
+              sessionId: managed.id,
+              queuedMessages: messages.map(message => message.content),
+              ...(messages.some(message => message.references?.length)
+                ? { queuedReferences: messages.flatMap(message => message.references ?? []) }
+                : {}),
+              ...(messages.some(message => message.attachments?.length)
+                ? { queuedAttachments: messages.flatMap(message => message.attachments ?? []) }
+                : {}),
+              queuedRestoreId,
+              queuedMessageIds: messages.map(message => message.id),
+            },
+          )
+          this.emittedQueuedRestoreIds.add(`${managed.id}\0${queuedRestoreId}`)
+        }
+      })().catch(error => {
+        sessionLog.error(`Session ${managed.id}: queued-input recovery is waiting for storage`, error)
+      })
     }
   }
 
@@ -2284,40 +2339,91 @@ export class SessionManager implements ISessionManager {
     sid: string,
     request: DrawnixBoardCapabilityRequest,
   ): Promise<DrawnixBoardCapabilityResponse | null> {
-    if (!this.rpcServer) return null
+    const server = this.rpcServer
     const session = this.sessions.get(sid)
-    if (!session) return null
-    const candidates = this.rpcServer.findClientsWithCapability(
+    if (!server || !session) return null
+    const fail = (code: string, message: string): DrawnixBoardCapabilityResponse => {
+      this.drawnixHostBySession.delete(sid)
+      return { ok: false, error: { code, message } }
+    }
+    if (session.projectId !== request.projectId) {
+      return fail('MINDMAP_PROJECT_MISMATCH', 'The Drawnix target must belong to the invoking Session Project.')
+    }
+    const candidates = server.findClientsWithCapability(
       CLIENT_DRAWNIX_BOARD_INVOKE,
       { workspaceId: session.workspace.id },
     )
-    const pinned = this.drawnixHostBySession.get(sid)
-    const ordered = pinned && candidates.includes(pinned)
-      ? [pinned, ...candidates.filter(clientId => clientId !== pinned)]
-      : candidates
-    let retryableFailure: DrawnixBoardCapabilityResponse | null = null
-    for (const clientId of ordered) {
-      const response = await requestClientDrawnixBoardInvoke(
-        this.rpcServer,
-        clientId,
-        request,
-      )
-      if (response.ok) {
-        this.drawnixHostBySession.set(sid, clientId)
-        return response
-      }
-      const canTryAnotherClient = response.error.code === 'MINDMAP_NOT_OPEN'
-        || (
-          request.action === 'create'
-          && response.error.code === 'MINDMAP_PROJECT_NOT_ACTIVE'
-        )
-      if (!canTryAnotherClient) return response
-      if (this.drawnixHostBySession.get(sid) === clientId) {
-        this.drawnixHostBySession.delete(sid)
-      }
-      retryableFailure = response
+    if (candidates.length === 0) return null
+    // An older client may also have the board open. Ignoring it would make a
+    // seemingly unique target unsafe, and probing it with a mutation is worse.
+    if (candidates.some(clientId => !server.hasClientCapability(clientId, CLIENT_DRAWNIX_BOARD_DISCOVER))) {
+      return fail('MINDMAP_DISCOVERY_UNAVAILABLE', 'Update or close older Stair windows before using Drawnix tools.')
     }
-    return retryableFailure
+    try {
+      const discovered = await Promise.all(candidates.map(async clientId => ({
+        clientId,
+        response: await requestClientDrawnixBoardDiscovery(server, clientId, {
+          v: 1,
+          projectId: request.projectId,
+          relativePath: request.relativePath,
+        }),
+      })))
+      if (this.rpcServer !== server || this.sessions.get(sid) !== session || session.projectId !== request.projectId) {
+        return fail('MINDMAP_BOARD_UNAVAILABLE', 'The Session changed while locating its Drawnix canvas. Retry the operation.')
+      }
+      const connected = server.findClientsWithCapability(
+        CLIENT_DRAWNIX_BOARD_INVOKE,
+        { workspaceId: session.workspace.id },
+      )
+      if (connected.length !== candidates.length || connected.some(clientId => !candidates.includes(clientId))) {
+        return fail('MINDMAP_BOARD_UNAVAILABLE', 'The connected Stair windows changed while locating the canvas. Retry the operation.')
+      }
+      let boardCount = 0
+      const targets: string[] = []
+      for (const { clientId, response } of discovered) {
+        if (!response || typeof response.ok !== 'boolean') {
+          return fail('MINDMAP_INVALID_RESPONSE', 'A Stair window returned an invalid Drawnix discovery response.')
+        }
+        if (!response.ok) return fail(response.error.code, response.error.message)
+        if (!Number.isSafeInteger(response.boardCount) || response.boardCount < 0 || typeof response.canCreate !== 'boolean') {
+          return fail('MINDMAP_INVALID_RESPONSE', 'A Stair window returned an invalid Drawnix discovery response.')
+        }
+        boardCount += response.boardCount
+        if (request.action === 'create' ? response.canCreate : response.boardCount === 1) {
+          targets.push(clientId)
+        }
+      }
+      if (boardCount > 1 || targets.length > 1) {
+        return fail(
+          'MINDMAP_AMBIGUOUS_BOARD',
+          request.action === 'create'
+            ? 'Keep the target Project active in only one Stair window before creating its Drawnix canvas.'
+            : `Close duplicate views of ${request.relativePath} before asking the Agent to read or modify it.`,
+        )
+      }
+      if (targets.length === 0) {
+        return fail(
+          request.action === 'create' ? 'MINDMAP_PROJECT_NOT_ACTIVE' : 'MINDMAP_NOT_OPEN',
+          request.action === 'create'
+            ? 'Open the Session Project in Stair before creating its Drawnix mind map.'
+            : `Open ${request.relativePath} in Project Files before asking the Agent to read or modify it.`,
+        )
+      }
+      const clientId = targets[0]!
+      // Never retry a board operation on another client: a mutation may have
+      // completed even if the original client's reply is lost on disconnect.
+      const response = await requestClientDrawnixBoardInvoke(server, clientId, request)
+      if (response.ok) this.drawnixHostBySession.set(sid, clientId)
+      else this.drawnixHostBySession.delete(sid)
+      return response
+    } catch (error) {
+      return fail(
+        typeof (error as { code?: unknown })?.code === 'string'
+          ? (error as { code: string }).code
+          : 'MINDMAP_BOARD_UNAVAILABLE',
+        error instanceof Error ? error.message : String(error),
+      )
+    }
   }
 
   /** Returns a strictly increasing timestamp (ms). When Date.now() collides with
@@ -3001,6 +3107,7 @@ export class SessionManager implements ISessionManager {
     const stored = loadStoredSession(managed.workspace.rootPath, managed.id)
     if (stored) {
       managed.messages = (stored.messages || []).map(storedToMessage)
+      this.markUnacceptedInputForRestore(managed)
       managed.tokenUsage = stored.tokenUsage
       managed.pendingPlanExecution = this.reconcileStoredPendingPlanExecution(managed, stored)
       // Deferred-load fields (intentionally undefined after startup, see
@@ -3148,6 +3255,14 @@ export class SessionManager implements ISessionManager {
       return
     }
 
+    // A credential exchange may finish after Stop, a replacement request, or
+    // a newer turn. Only the live request is allowed to resume this session.
+    const request = managed.pendingAuthRequest
+    const owner = managed.pendingAuthOwner
+    if (!request || managed.pendingAuthRequestId !== result.requestId
+      || request.requestId !== result.requestId || request.sourceSlug !== result.sourceSlug
+      || owner && (owner.generation !== managed.processingGeneration || owner.stopEpoch !== (managed.stopEpoch ?? 0))) return
+
     // Find and update the pending auth-request message
     const authMessage = managed.messages.find(m =>
       m.role === 'auth-request' &&
@@ -3155,6 +3270,7 @@ export class SessionManager implements ISessionManager {
       m.authStatus === 'pending'
     )
 
+    if (!authMessage) return
     if (authMessage) {
       authMessage.authStatus = result.success ? 'completed' :
                                result.cancelled ? 'cancelled' : 'failed'
@@ -3179,6 +3295,7 @@ export class SessionManager implements ISessionManager {
     // Clear pending auth state
     managed.pendingAuthRequestId = undefined
     managed.pendingAuthRequest = undefined
+    managed.pendingAuthOwner = undefined
 
     // Auto-enable the source in the session after successful auth
     if (result.success && result.sourceSlug) {
@@ -3198,7 +3315,7 @@ export class SessionManager implements ISessionManager {
 
     // Send the result as a new message to resume conversation
     // Use empty arrays for attachments since this is a system-generated message
-    await this.sendMessage(sessionId, resultContent, [], [], {})
+    if (!result.cancelled) await this.sendMessage(sessionId, resultContent, [], [], { hidden: true })
 
     sessionLog.info(`Auth request completed for ${result.sourceSlug}: ${result.success ? 'success' : 'failed'}`)
   }
@@ -3491,6 +3608,12 @@ export class SessionManager implements ISessionManager {
     // Lazy-load messages from disk if not yet loaded
     await this.ensureMessagesLoaded(m)
 
+    if (m.messages.some(message => message.queuedRestoreId)) {
+      this.persistSession(m)
+      await this.flushSessionStrict(sessionId)
+      if (this.sessions.get(sessionId) !== m) return null
+    }
+
     if (this.eventSink) {
       const pendingRestores = new Map<string, Message[]>()
       for (const message of m.messages) {
@@ -3555,6 +3678,7 @@ export class SessionManager implements ISessionManager {
     const storedSession = loadStoredSession(managed.workspace.rootPath, managed.id)
     if (storedSession) {
       managed.messages = (storedSession.messages || []).map(storedToMessage)
+      this.markUnacceptedInputForRestore(managed)
       managed.tokenUsage = storedSession.tokenUsage
       managed.pendingPlanExecution = this.reconcileStoredPendingPlanExecution(managed, storedSession)
       managed.lastReadMessageId = storedSession.lastReadMessageId
@@ -5321,6 +5445,7 @@ export class SessionManager implements ISessionManager {
         // Store pending auth request for later resolution
         managed.pendingAuthRequestId = request.requestId
         managed.pendingAuthRequest = request
+        managed.pendingAuthOwner = { generation: managed.processingGeneration, stopEpoch: managed.stopEpoch ?? 0 }
 
         // Interrupt execution (like SubmitPlan)
         if (managed.isProcessing && managed.agent) {
@@ -7819,6 +7944,49 @@ export class SessionManager implements ISessionManager {
     sessionLog.info(`Deleted session ${sessionId}`)
   }
 
+  /** Atomically choose host ownership or cancel a request whose RPC response was lost. */
+  async reconcileInput(sessionId: string, clientMessageId: string): Promise<
+    { state: 'owned'; messageId: string } | { state: 'not_accepted' }
+  > {
+    if (typeof clientMessageId !== 'string' || !clientMessageId || clientMessageId.length > 180) {
+      throw new Error('Invalid input identity')
+    }
+    return this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) throw new Error(`Session ${sessionId} not found`)
+      if (!managed.messagesLoaded && !loadStoredSession(managed.workspace.rootPath, sessionId)) {
+        throw new Error(`Cannot read input ownership for session ${sessionId}`)
+      }
+      await this.ensureMessagesLoaded(managed)
+      if (this.sessions.get(sessionId) !== managed) throw new Error(`Session ${sessionId} was deleted`)
+      // A staged row is not proof of ownership until its first write settles.
+      // Validation with no row may be cancelled immediately, even if its IO is stuck.
+      if (managed.messages.some(message => message.clientMessageId === clientMessageId)) {
+        await managed.pendingInputCommits?.get(clientMessageId)
+      }
+      if (this.sessions.get(sessionId) !== managed) throw new Error(`Session ${sessionId} was deleted`)
+      const owned = managed.messages.find(message => message.role === 'user' && message.clientMessageId === clientMessageId)
+      const restoredMessageId = managed.restoredInputIds && Object.hasOwn(managed.restoredInputIds, clientMessageId)
+        ? managed.restoredInputIds[clientMessageId] : undefined
+      if (owned || restoredMessageId) {
+        this.persistSession(managed)
+        await this.flushSessionStrict(sessionId)
+        return { state: 'owned', messageId: owned?.id ?? restoredMessageId! }
+      }
+      // Keep the tombstone even if the write fails. A retry must durably commit
+      // it before reporting absence, and a late sender must never win meanwhile.
+      if (!managed.cancelledInputIds?.includes(clientMessageId)) {
+        (managed.cancelledInputIds ??= []).push(clientMessageId)
+      }
+      for (const [release, inputId] of managed.pendingSendAdmissions ?? []) {
+        if (inputId === clientMessageId) release()
+      }
+      this.persistSession(managed)
+      await this.flushSessionStrict(sessionId)
+      return { state: 'not_accepted' }
+    })
+  }
+
   async sendMessage(
     sessionId: string,
     message: string,
@@ -7856,1181 +8024,1382 @@ export class SessionManager implements ISessionManager {
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
     }
-    const trackedPlanRecord = existingMessageId && managed.pendingPlanExecution?.approvalMessageId === existingMessageId
-      ? managed.pendingPlanExecution
-      : undefined
-    const trackedApprovalExecutionId = trackedPlanRecord?.executionId
-    const approvalStopEpoch = managed.stopEpoch ?? 0
-    const authRetry = _isAuthRetry ? internalContinuation?.authRetry : undefined
-    const ownsAuthRetry = () => !authRetry || this.sessions.get(sessionId) === managed
-      && managed.processingGeneration === authRetry.generation
-      && (managed.stopEpoch ?? 0) === authRetry.stopEpoch && managed.authRetryInProgress === true
-    if (!ownsAuthRetry()) return
-    const queueReplay = existingMessageId && managed.pendingQueueReplay?.entries[0]?.messageId === existingMessageId
-      ? managed.pendingQueueReplay : undefined
-    this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
-
-    // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
-    // has just scheduled or committed a "[<slug> activated]" retry, drop a matching
-    // duplicate that arrives from a legacy renderer still running the client-side
-    // auto_retry. The first matching caller wins (server timer or legacy RPC,
-    // whichever arrives first), subsequent matching calls within the deadline drop.
-    //
-    // Trust model for the retry's references: the primary path is the
-    // server-owned continuation context, matched by object identity against the
-    // live dedup slot (unforgeable from the RPC surface). The legacy plain/retry
-    // content match below is only a compatibility adapter into the SAME
-    // server-owned snapshot — never an independent source of trust.
-    const autoRetryClaimedAt = Date.now()
-    const pendingAutoRetry = managed.autoRetryPending
-    const legacyMatch = pendingAutoRetry !== undefined
-      && autoRetryClaimedAt < pendingAutoRetry.deadlineMs
-      && (message === pendingAutoRetry.content || message === pendingAutoRetry.retryContent)
-    // A persisted continuation's own queue replay is delivery, not a duplicate RPC.
-    let activationResend = managed.pendingActivationResend !== undefined && managed.pendingActivationResend === message
-      || existingMessageId !== undefined && pendingAutoRetry?.deliveryMessageId === existingMessageId
-        && message === pendingAutoRetry.retryContent
-    if (activationResend) {
-      managed.pendingActivationResend = undefined
-      if (managed.autoRetryPending) managed.autoRetryPending.committed = true
+    const admissionEpoch = managed.stopEpoch ?? 0
+    const clientMessageId = !existingMessageId && !_isAuthRetry ? options?.optimisticMessageId : undefined
+    if (clientMessageId !== undefined && (!clientMessageId || clientMessageId.length > 180)) {
+      throw new Error('Invalid input identity')
     }
-    const continuationReferences = internalContinuation?.activationReferences !== undefined
-      && pendingAutoRetry?.references === internalContinuation.activationReferences
-      ? pendingAutoRetry.references
-      : undefined
-    if (!activationResend && claimAutoRetryPending(managed, message, autoRetryClaimedAt) === 'drop') {
-      sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
-      return
+    const previousAdmission = managed.sendAdmissionTail
+    let resolveAdmission!: () => void
+    const admission = new Promise<void>(resolve => { resolveAdmission = resolve })
+    managed.sendAdmissionTail = admission
+    const releaseAdmission = () => {
+      managed.pendingSendAdmissions?.delete(releaseAdmission)
+      const stopped = (managed.stopEpoch ?? 0) !== admissionEpoch
+      if (managed.sendAdmissionTail === admission) managed.sendAdmissionTail = stopped ? undefined : previousAdmission
+      // Cancelling B in A -> B -> C must not let C overtake the still-valid A.
+      // Stop invalidates the entire epoch, so its new input may start afresh.
+      if (previousAdmission && !stopped) void previousAdmission.then(resolveAdmission)
+      else resolveAdmission()
     }
-    const activationSlot = activationResend || legacyMatch ? pendingAutoRetry : undefined
-    if (activationSlot) {
-      activationResend = true
-      options = { ...options, hidden: true }
-      if (managed.autoRetryTimer) clearTimeout(managed.autoRetryTimer)
-      managed.autoRetryTimer = undefined
-      if (activationSlot.scheduledGeneration === managed.processingGeneration) {
-        this.recoverPendingSteers(managed)
-        const owned = activationSlot.ownedSteers ??= []
-        if (activationSlot.originalContent !== undefined && activationSlot.sourceSlug) {
-          activationSlot.retryContent = buildActivationRetryMessage(
-            activationSlot.originalContent, managed.turnSteers ?? [], activationSlot.sourceSlug,
-          ).retry
-        }
-        const ids = [...(managed.lastSentMessageIds ?? []), ...owned.flatMap(steer => steer.messageId ? [steer.messageId] : [])]
-        activationSlot.references = activationTurnReferences(managed.messages, ids, {
-          references: activationSlot.references,
-        })
+    ;(managed.pendingSendAdmissions ??= new Map()).set(releaseAdmission, clientMessageId)
+    let resolveCommit!: () => void
+    const commit = new Promise<void>(resolve => { resolveCommit = resolve })
+    const finishCommit = () => {
+      if (clientMessageId && managed.pendingInputCommits?.get(clientMessageId) === commit) {
+        managed.pendingInputCommits.delete(clientMessageId)
       }
-      message = activationSlot.retryContent ?? message
+      resolveCommit()
     }
-    if (!activationResend && !_isAuthRetry) managed.turnFromUser = !options?.hidden
-    const pendingAutoRetryReferences = activationSlot?.references ?? continuationReferences
-      ?? (legacyMatch ? pendingAutoRetry?.references : undefined)
-    if (pendingAutoRetryReferences) {
-      options = {
-        ...options,
-        references: pendingAutoRetryReferences,
+    let admittedMessage: Message | undefined
+    let admittedGeneration: number | undefined
+    let durable = false
+    const acknowledge = (messageId: string) => { durable = true; finishCommit(); onAck?.(messageId) }
+    const assertAdmission = () => {
+      if (this.sessions.get(sessionId) !== managed || (managed.stopEpoch ?? 0) !== admissionEpoch
+        || clientMessageId && managed.cancelledInputIds?.includes(clientMessageId)) {
+        throw new Error('INPUT_CANCELLED: input was stopped before delivery')
       }
     }
-
-    // Clear any pending plan execution state when a new user message is sent.
-    // The explicit /compact turn immediately after "Accept & Compact" is the
-    // one exception: that command is what transitions the pending record from
-    // awaiting → ready. Any other message remains a safety valve that cancels
-    // it. The cancellation runs inside the session lifecycle lock so it shares
-    // a serialized boundary with the pending-plan commit (a dispatch whose
-    // validation is awaiting filesystem IO re-checks the live record under the
-    // same lock and aborts when user intent has moved on) — identity-scoped on
-    // the record captured HERE (a replacement created while this send was
-    // starting is never blindly deleted). Records already committed to
-    // execution (dispatched, delivery-tracked) are skipped: their approval is
-    // durably enqueued ahead of this message and delivery owns the cleanup.
-    // A terminally failed record is a durable restore outbox that new input
-    // never clears; only the scoped recovery ACK removes it.
-    const isCompactCommand = /^\/compact(\s|$)/i.test(message.trim())
-    if (!isCompactCommand) {
-      await this.withSessionLifecycleLock(sessionId, async () => {
-        await this.ensureMessagesLoaded(managed)
-        if (this.sessions.get(sessionId) !== managed || !ownsAuthRetry()) return
-        const supersededPlan = managed.pendingPlanExecution
-        if (
-          supersededPlan
-          && !supersededPlan.failed
-          && supersededPlan.approvalMessageId === undefined
-        ) {
-          const receipt = supersededPlan.executionId ? getPlanDraftConsumption(sessionId, supersededPlan.executionId) : null
-          if (receipt?.text || receipt?.referenceKeys.length) {
-            await this.cancelPendingPlanExecution(managed, supersededPlan)
-          } else {
-            await this.commitPendingPlanExecution(managed, undefined)
-            if (supersededPlan.executionId) retirePlanDraftConsumption(sessionId, supersededPlan.executionId)
-          }
-        }
-      })
-    }
-
-    // Ensure messages are loaded before we try to add new ones
-    await this.ensureMessagesLoaded(managed)
-    if (this.sessions.get(sessionId) !== managed || !ownsAuthRetry()) return
-
-    const existingUserMessage = existingMessageId
-      ? managed.messages.find(candidate => (
-          candidate.id === existingMessageId && candidate.role === 'user'
-        ))
-      : undefined
-    if (existingMessageId && !existingUserMessage) {
-      throw new Error(`Existing message ${existingMessageId} not found`)
-    }
-    // Cold replay has only stored metadata. Rebuild the payload from this
-    // session's copied files before admission, preserving display and Office
-    // paths required by the backend. Fresh caller metadata never grants reads.
-    if (!attachments?.length && existingUserMessage?.attachments?.length) {
-      const attachmentsRoot = await realpath(getSessionAttachmentsPath(managed.workspace.rootPath, sessionId))
-      attachments = []
-      storedAttachments = existingUserMessage.attachments
-      for (const stored of storedAttachments) {
-        const [storedPath, markdownPath] = await Promise.all([
-          realpath(stored.storedPath),
-          stored.markdownPath ? realpath(stored.markdownPath) : undefined,
-        ])
-        for (const filePath of [storedPath, markdownPath]) {
-          if (!filePath) continue
-          const within = relative(attachmentsRoot, filePath)
-          if (within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) {
-            throw new Error(`Queued attachment is outside this session: ${stored.name}`)
-          }
-        }
-        const attachment = readFileAttachment(storedPath, stored.type)
-        if (!attachment) throw new Error(`Queued attachment could not be read: ${stored.name}`)
-        attachment.name = stored.name
-        attachment.mimeType = stored.mimeType
-        attachment.storedPath = stored.storedPath
-        if (markdownPath) attachment.markdownPath = stored.markdownPath
-        attachments.push(attachment)
-      }
-    }
-    const referenceValues = existingUserMessage?.references ?? options?.references
-    const shouldReusePersistedReferences = Boolean(
-      existingUserMessage || _isAuthRetry || pendingAutoRetryReferences,
-    )
-
-    if (referenceValues && !shouldReusePersistedReferences) {
-      for (const reference of referenceValues) {
-        if (!isChatMessageReference(reference)) continue
-        const source = this.sessions.get(reference.sessionId)
-        if (source) await this.ensureMessagesLoaded(source)
-      }
-    }
-    const referenceTarget = {
-      id: managed.id,
-      workspaceId: managed.workspace.id,
-      projectId: managed.projectId,
-    }
-    let references: Reference[] = []
-    if (referenceValues) {
-      references = shouldReusePersistedReferences
-        ? normalizeReferencesForSession(referenceValues, referenceTarget)
-        : validateReferencesForSession(
-          referenceValues,
-          referenceTarget,
-          sourceId => {
-            const source = this.sessions.get(sourceId)
-            return source ? {
-              id: source.id,
-              workspaceId: source.workspace.id,
-              projectId: source.projectId,
-              messages: source.messages,
-            } : null
-          },
-        )
-    }
-    if (!shouldReusePersistedReferences) {
-      await validateProjectFileReferencesForSend(references, managed.workspace.rootPath)
-    }
-    if (this.sessions.get(sessionId) !== managed || !ownsAuthRetry()) return
-    if (activationSlot && managed.autoRetryPending !== activationSlot) return
-    if (queueReplay && (managed.pendingQueueReplay !== queueReplay
-      || (managed.stopEpoch ?? 0) !== queueReplay.stopEpoch)) return
-    const currentApproval = managed.pendingPlanExecution
-    if (trackedPlanRecord && (
-      this.sessions.get(sessionId) !== managed
-      || !currentApproval
-      || currentApproval.executionId !== trackedApprovalExecutionId
-      || currentApproval.approvalMessageId !== existingMessageId
-      || currentApproval.failed
-      || !currentApproval.executionDispatched
-      || (managed.stopEpoch ?? 0) !== approvalStopEpoch
-      || managed.stopRequested
-      || queueReplay && managed.pendingQueueReplay !== queueReplay
-    )) return
-    const messageForModel = formatReferencesForModel(message, references)
-    const recoveredActivationSteers = !activationSlot && pendingAutoRetry
-      && (!pendingAutoRetry.committed || (pendingAutoRetry.ownedSteers?.length ?? 0) > 0)
-      ? this.recoverActivationSteers(managed, pendingAutoRetry)
-      : false
-
-    // If currently processing, behavior depends on the connection's
-    // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
-    // defaults to provider-appropriate value):
-    //
-    // - 'steer': try to deliver into the in-flight turn. Pi steers natively;
-    //   Claude emulates via PreToolUse hook. If `redirect()` returns false
-    //   (Claude with no live query, or backend can't steer), the backend has
-    //   already called forceAbort(Redirect) and we queue for replay.
-    // - 'queue': hold the message untouched; the current turn keeps running
-    //   to natural completion; replay as a new turn afterwards. NO call to
-    //   `agent.redirect()`, NO forceAbort, NO interruption.
-    if (managed.isProcessing || managed.pendingQueueReplay && managed.pendingQueueReplay !== queueReplay
-      || (!existingMessageId || recoveredActivationSteers) && managed.messageQueue.length > 0) {
-      const connection = resolveSessionConnection(managed.llmConnection, undefined)
-      // Fallback to 'steer' when no connection is resolvable — preserves
-      // today's exact behavior (call redirect, take whatever it returns).
-      const configured = connection ? resolveMidStreamBehavior(connection) : 'steer'
-      // Mid-turn messages (decision model, toggle `midTurnMessages`): a text message is recorded as
-      // queued right away, like any queued message, and the model decides in the background whether
-      // it corrects the running work and should be steered in (steerQueuedIfDecided). Recording
-      // first keeps send order and leaves the queue the single source of truth.
-      const decideDelivery = !trackedPlanRecord && canSteerTextPayload(attachments, storedAttachments, options) && this.decisionFeatureActive('midTurnMessages')
-      // An approval is its own authorized turn, never a steer into a different
-      // request that won admission while its payload was being hydrated.
-      const behavior = trackedPlanRecord || decideDelivery ? 'queue' : configured
-
-      // Create user message for UI and persist queued delivery state so a
-      // restart can recover messages that have not reached the model yet.
-      const userMessage: Message = existingUserMessage ?? {
-        id: generateMessageId(),
-        role: 'user',
-        content: message,
-        timestamp: this.monotonic(),
-        attachments: storedAttachments,
-        badges: options?.badges,
-        ...(references.length > 0 ? { references } : {}),
-        // Hidden system-generated messages reach the model but never render as a
-        // transcript bubble (e.g. background-task-completion nudge).
-        ...(options?.hidden ? { hidden: true } : {}),
-      }
-      if (!existingUserMessage) managed.messages.push(userMessage)
-      if (activationSlot) activationSlot.deliveryMessageId = userMessage.id
-
-      const agent = managed.agent
-      // Redirect is text-only. Any semantic options/attachments use the normal
-      // host queue, without aborting the current turn or dropping the payload.
-      const textOnly = canSteerTextPayload(attachments, storedAttachments, options)
-      // A manual compaction owns the turn: nothing consumes steers, so queue for
-      // replay after `complete` instead of steering (OSS #1058). Not an interruption.
-      const compactionInFlight = agent?.isCompactionInFlight?.() === true
-      const attemptedSteer = managed.isProcessing && !recoveredActivationSteers
-        && shouldAttemptMidStreamSteer(behavior, textOnly, agent)
-      // Steer the reference-formatted payload so cited context reaches the model.
-      const steered = attemptedSteer && agent
-        ? agent.redirect(messageForModel, { messageId: userMessage.id })
-        : false
-      const payload: ManagedSession['messageQueue'][number] = { message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId }
-      if (steered && agent?.takePendingSteers) {
-        (managed.acceptedSteers ??= new Map()).set(userMessage.id, payload)
-      }
-      if (steered) (managed.turnSteers ??= []).push(message)
-      sessionLog.info('mid-stream send', { sessionId, behavior, steered, textOnly, compactionInFlight, queueLengthBefore: managed.messageQueue.length })
-
-      const delivery = resolveMidStreamDeliveryOutcome(attemptedSteer ? 'steer' : 'queue', steered)
-      userMessage.isQueued = delivery.shouldQueue
-
-      // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
-      // (covers both queue-direct and queue-after-abort paths).
-      this.sendEvent({
-        type: 'user_message',
-        sessionId,
-        message: userMessage,
-        status: delivery.shouldQueue ? 'queued' : 'accepted',
-        optimisticMessageId: options?.optimisticMessageId
-      }, managed.workspace.id)
-
-      if (delivery.shouldQueue) {
-        // Push for FIFO replay on next onProcessingStopped tick. Same shape
-        // for both queue-direct (current turn still running) and
-        // queue-after-abort (backend already aborted) — the replay path in
-        // processNextQueuedMessage is identical.
-        if (queueReplay) {
-          managed.messageQueue.push(...queueReplay.entries)
-          for (const entry of queueReplay.entries) {
-            const queued = managed.messages.find(candidate => candidate.id === entry.messageId)
-            if (queued) queued.isQueued = true
-          }
-        } else {
-          managed.messageQueue.push(payload)
-          if (this.decisionFeatureActive('midTurnMessages')) payload.continuationCheck = this.markQueuedContinuation(managed, payload)
-        }
-        if (decideDelivery) void this.steerQueuedIfDecided(managed, payload, userMessage, configured)
-        // Only claim interruption when a steer attempt actually aborted the
-        // in-flight turn. In 'queue' mode the current turn runs to natural
-        // completion, so the replayed turn must NOT inject the "previous response
-        // was interrupted" reminder (it would falsely tell the model its own
-        // complete answer was cut off → confusion).
-        if (delivery.wasInterrupted) managed.wasInterrupted = true
-      }
-
-      if (queueReplay && managed.pendingQueueReplay === queueReplay) managed.pendingQueueReplay = undefined
-
-      this.persistSession(managed)
-      // Force a synchronous flush so the user message is genuinely on disk
-      // before we tell the renderer "accepted" — `persistSession` only
-      // enqueues with a 500ms debounce. (#616 reliability fix.)
-      await this.flushSession(managed.id)
-      if (this.sessions.get(sessionId) !== managed) return
-      onAck?.(userMessage.id)
-      if (!managed.isProcessing) this.processNextQueuedMessage(sessionId)
-      return
-    }
-
-    // Add user message with stored attachments for persistence
-    // Skip if existingMessageId is provided (message was already created when queued)
-    let userMessage: Message
-    if (existingMessageId) {
-      // Find existing message (already added when queued)
-      userMessage = existingUserMessage!
-    } else {
-      // Create new message
-      userMessage = {
-        id: generateMessageId(),
-        role: 'user',
-        content: message,
-        timestamp: this.monotonic(),
-        attachments: storedAttachments, // Include for persistence (has thumbnailBase64)
-        badges: options?.badges,  // Include content badges (sources, skills with embedded icons)
-        ...(references.length > 0 ? { references } : {}),
-        // Hidden system-generated messages reach the model but never render as a
-        // transcript bubble (e.g. background-task-completion nudge).
-        ...(options?.hidden ? { hidden: true } : {}),
-      }
-      managed.messages.push(userMessage)
-
-      // Update lastMessageRole for badge display. Skip for hidden messages so the
-      // session-list preview isn't briefly driven by an invisible system nudge.
-      if (!options?.hidden) {
-        managed.lastMessageRole = 'user'
-      }
-
-      // Persist + flush before announcing — the user message must be
-      // genuinely on disk before we tell the renderer "accepted", and
-      // `persistSession` is debounced (500ms). #616.
-      this.persistSession(managed)
-      await this.flushSession(managed.id)
-      if (this.sessions.get(sessionId) !== managed) return
-      onAck?.(userMessage.id)
-
-      // Emit user_message event so UI can confirm the optimistic message
-      this.sendEvent({
-        type: 'user_message',
-        sessionId,
-        message: userMessage,
-        status: 'accepted',
-        optimisticMessageId: options?.optimisticMessageId
-      }, managed.workspace.id)
-
-      // If this is the first user message and no title exists, set one immediately
-      // AI generation will enhance it later, but we always have a title from the start
-      // Automation sessions (triggeredBy set) already have a title and skip AI generation entirely
-      const isFirstUserMessage = managed.messages.filter(m => m.role === 'user').length === 1
-      // Smart titles: the first message was small talk; title this one if the name is still automatic.
-      const titlesDeferredMessage = !isFirstUserMessage && !options?.hidden && managed.titleDeferred && managed.name === managed.autoTitle
-      if ((isFirstUserMessage && !managed.name && !managed.triggeredBy) || titlesDeferredMessage) {
-        managed.titleDeferred = false
-        // Replace bracket mentions with their display labels (e.g. [skill:ws:commit] -> "Commit")
-        // so titles show human-readable names instead of raw IDs
-        let titleSource = message
-        if (options?.badges) {
-          for (const badge of options.badges) {
-            if (badge.rawText && badge.label) {
-              titleSource = titleSource.replace(badge.rawText, badge.label)
-            }
-          }
-        }
-        // Sanitize: strip any remaining bracket mentions, XML blocks, tags
-        const sanitized = sanitizeForTitle(titleSource)
-        const initialTitle = sanitized.slice(0, 50) + (sanitized.length > 50 ? '…' : '')
-        managed.name = initialTitle
-        managed.autoTitle = initialTitle
-        this.persistSession(managed)
-        // Flush immediately so disk is authoritative before notifying renderer
-        await this.flushSession(managed.id)
-        this.sendEvent({
-          type: 'title_generated',
-          sessionId,
-          title: initialTitle,
-        }, managed.workspace.id)
-
-        // Generate AI title asynchronously using agent's SDK
-        // (waits briefly for agent creation if needed)
-        void this.generateTitleUnlessSmallTalk(managed, message)
-      }
-    }
-
-    // Persistence/title setup yielded. Another send (including cold approval
-    // recovery) may now own the turn. Preserve this already recorded input and
-    // its message identity in FIFO instead of starting a second iterator.
-    if (this.sessions.get(sessionId) !== managed || !ownsAuthRetry()) return
-    if (queueReplay && (managed.pendingQueueReplay !== queueReplay
-      || (managed.stopEpoch ?? 0) !== queueReplay.stopEpoch)) return
-    if (managed.isProcessing || managed.pendingQueueReplay && managed.pendingQueueReplay !== queueReplay
-      || !existingMessageId && managed.messageQueue.length > 0) {
-      if (queueReplay) {
-        managed.messageQueue.push(...queueReplay.entries)
-        if (managed.pendingQueueReplay === queueReplay) managed.pendingQueueReplay = undefined
-      } else {
-        const payload = { message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId }
-        const arrivalIndex = managed.messages.indexOf(userMessage)
-        const before = managed.messageQueue.findIndex(entry => {
-          const queuedIndex = managed.messages.findIndex(candidate => candidate.id === entry.messageId)
-          return queuedIndex > arrivalIndex
-        })
-        if (before < 0) managed.messageQueue.push(payload)
-        else managed.messageQueue.splice(before, 0, payload)
-      }
-      const queuedIds = new Set(queueReplay?.entries.map(entry => entry.messageId) ?? [userMessage.id])
-      for (const queued of managed.messages) {
-        if (queuedIds.has(queued.id)) queued.isQueued = true
-      }
-      this.sendEvent({ type: 'user_message', sessionId, message: userMessage, status: 'queued', optimisticMessageId: options?.optimisticMessageId }, managed.workspace.id)
-      this.persistSession(managed)
-      await this.flushSession(managed.id)
-      if (this.sessions.get(sessionId) === managed && !managed.isProcessing) this.processNextQueuedMessage(sessionId)
-      return
-    }
-
-    // Evaluate auto-label rules against the user message (common path for both
-    // fresh and queued messages). Regex rules run synchronously here; semantic
-    // rules (decision model) run fire-and-forget so they never delay the turn,
-    // and merge their matches when they arrive.
-    // Hidden messages (auto-retries, system nudges) are not user-authored: they label nothing.
-    if (!options?.hidden) {
-      try {
-        const labelTree = listLabels(managed.workspace.rootPath)
-        this.applyAutoLabelMatches(managed, evaluateAutoLabels(message, labelTree, managed.labels ?? []), labelTree)
-        void this.applySemanticAutoLabels(managed, message, labelTree)
-      } catch (e) {
-        sessionLog.warn(`Auto-label evaluation failed for session ${sessionId}:`, e)
-      }
-    }
-
-    if (activationSlot) activationSlot.deliveryMessageId = userMessage.id
-    managed.lastMessageAt = Date.now()
-    this.setProcessing(managed, true)
-    managed.streamingText = ''
-    managed.streamingTurnId = undefined
-    managed.processingGeneration++
-    if (queueReplay) queueReplay.processingGeneration = managed.processingGeneration
-    if (authRetry) authRetry.generation = managed.processingGeneration
-    managed.authRetryInProgress = false
-    managed.turnStartFinalMessageId = this.getLastFinalAssistantMessageId(managed.messages)
-    // A new turn: an auto-retry of this one already carries the earlier turn's steers.
-    managed.turnSteers = []
-
-    // Reset auth retry flag for this new message (allows one retry per message)
-    // IMPORTANT: Skip reset if this is an auth retry call - the flag is already true
-    // and resetting it would allow infinite retry loops
-    // Admission retires authRetryInProgress; the generation now owns this turn.
-    if (!_isAuthRetry) {
-      managed.authRetryAttempted = false
-    }
-
-    // Store message/attachments for potential retry after auth refresh
-    // (SDK subprocess caches token at startup, so if it expires mid-session,
-    // we need to recreate the agent and retry the message)
-    managed.lastSentMessage = message
-    managed.lastSentAttachments = attachments
-    managed.lastSentStoredAttachments = storedAttachments
-    managed.lastSentOptions = options
-    const replayedIds = existingMessageId ? managed.replayMergedIds?.get(existingMessageId) : undefined
-    if (existingMessageId) managed.replayMergedIds?.delete(existingMessageId)
-    managed.lastSentMessageIds = replayedIds ?? [userMessage.id]
-    if (queueReplay && !trackedPlanRecord && managed.pendingQueueReplay === queueReplay) {
-      managed.pendingQueueReplay = undefined
-      for (const entry of queueReplay.entries) {
-        const original = managed.messages.find(candidate => candidate.id === entry.messageId)
-        if (original) {
-          original.isQueued = false
-          this.sendEvent({ type: 'user_message', sessionId, message: original,
-            status: 'processing', optimisticMessageId: entry.optimisticMessageId }, managed.workspace.id)
-        }
-      }
-      this.persistSession(managed)
-    }
-
-    // Capture the generation to detect if a new request supersedes this one.
-    // This prevents the finally block from clobbering state when a follow-up message arrives.
-    const myGeneration = managed.processingGeneration
-    // A Stop from now on (not a stale stopRequested flag) keeps this turn from starting.
-    const turnStopEpoch = approvalStopEpoch
-
-    // This send IS the pending plan's manual compaction turn: stamp the
-    // correlation (generation + stop epoch) onto the record so the completion
-    // and failure event paths can verify the event belongs to this record's
-    // own /compact — a late or foreign compaction event can then neither
-    // authorize nor cancel it. The stamp is tied to the record's durable
-    // consumption receipt: the Accept & Compact flow atomically consumes the
-    // draft BEFORE submitting /compact, so a receiptless record is not this
-    // flow's compact (e.g. a stale /compact from a replaced acceptance) and
-    // must never become ready off its completion. Persisted strictly and
-    // immediately: the completion event's correlation check reads the stored
-    // record.
-    let compactionAcceptance: ManagedSession['pendingPlanExecution']
-    if (isCompactCommand && managed.pendingPlanExecution && !managed.pendingPlanExecution.failed) {
-      const compactRecord = managed.pendingPlanExecution
-      const receiptPresent = compactRecord.executionId
-        ? (() => { try { return getPlanDraftConsumption(sessionId, compactRecord.executionId!) !== null } catch { return false } })()
-        : false
-      if (!receiptPresent || options?.planExecutionId !== compactRecord.executionId) {
-        sessionLog.info(`Session ${sessionId}: /compact does not correlate to the pending plan (no durable consumption receipt); readiness unaffected`)
-      } else {
-        compactionAcceptance = compactRecord
-        compactRecord.compactionTurn = { generation: myGeneration, stopEpoch: turnStopEpoch }
-        this.persistSession(managed)
-        try {
-          await this.flushSessionStrict(sessionId)
-        } catch (error) {
-          // The compact still runs; without a durable correlation its completion
-          // cannot ready the plan and failure/reload paths recover the draft.
-          sessionLog.error(`Session ${sessionId}: failed to persist pending plan compaction correlation`, error)
-        }
-      }
-    }
-
-    // Pre-enable sources required by invoked skills (Issue #249)
-    // This eliminates the two-turn penalty where the agent discovers missing sources at runtime.
-    // Uses targeted loadSkillBySlug() instead of loadAllSkills() to avoid O(N) filesystem scans.
-    if (options?.skillSlugs?.length) {
-      try {
-        const workspaceRoot = managed.workspace.rootPath
-
-        const requiredSources = new Set<string>()
-        for (const slug of options.skillSlugs) {
-          const skill = loadSkillBySlug(workspaceRoot, slug, managed.workingDirectory)
-          if (skill?.metadata.requiredSources) {
-            for (const src of skill.metadata.requiredSources) {
-              requiredSources.add(src)
-            }
-          }
-        }
-
-        if (requiredSources.size > 0) {
-          const currentSlugs = new Set(managed.enabledSourceSlugs || [])
-          const toEnable: string[] = []
-          const skipped: string[] = []
-          const candidateSlugs = Array.from(requiredSources)
-          const loadedSources = getSourcesBySlugs(workspaceRoot, candidateSlugs)
-          const usableSources = new Set(
-            loadedSources
-              .filter(isSourceUsable)
-              .map(source => source.config.slug)
-          )
-
-          for (const srcSlug of candidateSlugs) {
-            if (currentSlugs.has(srcSlug)) continue
-            if (usableSources.has(srcSlug)) {
-              toEnable.push(srcSlug)
-            } else {
-              skipped.push(srcSlug)
-            }
-          }
-
-          if (skipped.length > 0) {
-            sessionLog.warn(`Skill requires sources that are not usable (missing or unauthenticated): ${skipped.join(', ')}`)
-          }
-
-          if (toEnable.length > 0) {
-            managed.enabledSourceSlugs = [...(managed.enabledSourceSlugs || []), ...toEnable]
-            sessionLog.info(`Pre-enabled sources for skill invocation: ${toEnable.join(', ')}`)
-            this.persistSession(managed)
-            this.sendEvent({
-              type: 'sources_changed',
-              sessionId,
-              enabledSourceSlugs: managed.enabledSourceSlugs,
-            }, managed.workspace.id)
-          }
-        }
-      } catch (e) {
-        sessionLog.warn(`Failed to pre-enable skill sources for session ${sessionId}:`, e)
-      }
-    }
-
     try {
-      // Decision-model checks for this turn run while the agent is set up below.
-      const preTurnDecisions = this.startPreTurnDecisions(managed, message, options, { activationResend, authRetry: _isAuthRetry, attachments })
+      if (managed.stopBarrier) await managed.stopBarrier
+      if (previousAdmission) await previousAdmission
+      assertAdmission()
+      const trackedPlanRecord = existingMessageId && managed.pendingPlanExecution?.approvalMessageId === existingMessageId
+        ? managed.pendingPlanExecution
+        : undefined
+      const trackedApprovalExecutionId = trackedPlanRecord?.executionId
+      const approvalStopEpoch = managed.stopEpoch ?? 0
+      const authRetry = _isAuthRetry ? internalContinuation?.authRetry : undefined
+      const ownsAuthRetry = () => (managed.stopEpoch ?? 0) === admissionEpoch
+        && !(clientMessageId && managed.cancelledInputIds?.includes(clientMessageId))
+        && (!authRetry || this.sessions.get(sessionId) === managed
+        && managed.processingGeneration === authRetry.generation
+        && (managed.stopEpoch ?? 0) === authRetry.stopEpoch && managed.authRetryInProgress === true)
+      if (!ownsAuthRetry()) return
+      const queueReplay = existingMessageId && managed.pendingQueueReplay?.entries[0]?.messageId === existingMessageId
+        ? managed.pendingQueueReplay : undefined
+      this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
 
-      // Start perf span for entire sendMessage flow
-      const sendSpan = perf.span('session.sendMessage', { sessionId })
-
-      const workspaceRootPath = managed.workspace.rootPath
-      const enabledSlugs = managed.enabledSourceSlugs ?? []
-      const hasSources = enabledSlugs.length > 0
-
-      // Load enabled sources up-front so we can refresh tokens BEFORE getOrCreateAgent
-      // runs its internal cold-session build. Otherwise that build sees stale tokens
-      // and emits AUTH_REQUIRED, causing a brief "needs_auth" UI flicker before the
-      // post-build refresh restores state (#710).
-      const sources: LoadedSource[] = hasSources
-        ? getSourcesBySlugs(workspaceRootPath, enabledSlugs)
-        : []
-
-      if (hasSources && managed.tokenRefreshManager) {
-        const refreshResult = await refreshExpiredCredentials(sources, managed.tokenRefreshManager)
-        if (refreshResult.failedSources.length > 0) {
-          sessionLog.warn('[OAuth] Some sources failed token refresh:', refreshResult.failedSources.map(f => f.slug))
+      // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
+      // has just scheduled or committed a "[<slug> activated]" retry, drop a matching
+      // duplicate that arrives from a legacy renderer still running the client-side
+      // auto_retry. The first matching caller wins (server timer or legacy RPC,
+      // whichever arrives first), subsequent matching calls within the deadline drop.
+      //
+      // Trust model for the retry's references: the primary path is the
+      // server-owned continuation context, matched by object identity against the
+      // live dedup slot (unforgeable from the RPC surface). The legacy plain/retry
+      // content match below is only a compatibility adapter into the SAME
+      // server-owned snapshot — never an independent source of trust.
+      const autoRetryClaimedAt = Date.now()
+      const pendingAutoRetry = managed.autoRetryPending
+      const legacyMatch = pendingAutoRetry !== undefined
+        && autoRetryClaimedAt < pendingAutoRetry.deadlineMs
+        && (message === pendingAutoRetry.content || message === pendingAutoRetry.retryContent)
+      // A persisted continuation's own queue replay is delivery, not a duplicate RPC.
+      let activationResend = managed.pendingActivationResend !== undefined && managed.pendingActivationResend === message
+        || existingMessageId !== undefined && pendingAutoRetry?.deliveryMessageId === existingMessageId
+          && message === pendingAutoRetry.retryContent
+      if (activationResend) {
+        managed.pendingActivationResend = undefined
+        if (managed.autoRetryPending) managed.autoRetryPending.committed = true
+      }
+      const continuationReferences = internalContinuation?.activationReferences !== undefined
+        && pendingAutoRetry?.references === internalContinuation.activationReferences
+        ? pendingAutoRetry.references
+        : undefined
+      if (!activationResend && claimAutoRetryPending(managed, message, autoRetryClaimedAt) === 'drop') {
+        sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
+        return
+      }
+      const activationSlot = activationResend || legacyMatch ? pendingAutoRetry : undefined
+      if (activationSlot) {
+        activationResend = true
+        options = { ...options, hidden: true }
+        if (managed.autoRetryTimer) clearTimeout(managed.autoRetryTimer)
+        managed.autoRetryTimer = undefined
+        if (activationSlot.scheduledGeneration === managed.processingGeneration) {
+          this.recoverPendingSteers(managed)
+          const owned = activationSlot.ownedSteers ??= []
+          if (activationSlot.originalContent !== undefined && activationSlot.sourceSlug) {
+            activationSlot.retryContent = buildActivationRetryMessage(
+              activationSlot.originalContent, managed.turnSteers ?? [], activationSlot.sourceSlug,
+            ).retry
+          }
+          const ids = [...(managed.lastSentMessageIds ?? []), ...owned.flatMap(steer => steer.messageId ? [steer.messageId] : [])]
+          activationSlot.references = activationTurnReferences(managed.messages, ids, {
+            references: activationSlot.references,
+          })
         }
-        if (refreshResult.refreshedCount > 0) {
-          sendSpan.mark('oauth.refreshed')
+        message = activationSlot.retryContent ?? message
+        attachments = activationSlot.attachments
+        storedAttachments = activationSlot.storedAttachments
+      }
+      if (!activationResend && !_isAuthRetry) managed.turnFromUser = !options?.hidden
+      const pendingAutoRetryReferences = activationSlot?.references ?? continuationReferences
+        ?? (legacyMatch ? pendingAutoRetry?.references : undefined)
+      if (pendingAutoRetryReferences) {
+        options = {
+          ...options,
+          references: pendingAutoRetryReferences,
         }
       }
 
-      // Get or create the agent (lazy loading). Its internal cold-session build at
-      // ~L2956 now sees fresh tokens (or correctly-needs_auth failed sources, since
-      // ensureFreshToken mirrors the disk write to source.config in-memory).
-      const agent = await this.getOrCreateAgent(managed)
-      sendSpan.mark('agent.ready')
-
-      // Always set all sources for context (even if none are enabled), including built-ins
-      const allSources = loadAllSources(workspaceRootPath)
-      agent.setAllSources(allSources)
-      sendSpan.mark('sources.loaded')
-
-      // Apply source servers if any are enabled
-      if (hasSources) {
-        const sessionPath = getSessionStoragePath(workspaceRootPath, sessionId)
-        // Single fresh build — tokens already refreshed above.
-        const { mcpServers, apiServers, errors } = await buildServersFromSources(sources, sessionPath, managed.tokenRefreshManager, agent.getSummarizeCallback())
-        if (errors.length > 0) {
-          sessionLog.warn(`Source build errors:`, errors)
-        }
-
-        const mcpCount = Object.keys(mcpServers).length
-        const apiCount = Object.keys(apiServers).length
-        if (mcpCount > 0 || apiCount > 0 || enabledSlugs.length > 0) {
-          const usableSources = sources.filter(isSourceUsable)
-          const intendedSlugs = usableSources.map(s => s.config.slug)
-          await agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
-          sessionLog.info(`Applied ${mcpCount} MCP + ${apiCount} API sources to session ${sessionId} (${allSources.length} total)`)
-        }
-        sendSpan.mark('servers.applied')
-      }
-
-      // Continued from another session: the summary this first turn carries may still be generating
-      // (the agent above was set up meanwhile).
-      if (managed.pendingHandoffSummary) await this.waitForHandoffSummary(managed)
-
-      try {
-        sessionLog.info('Starting chat for session:', sessionId)
-        sessionLog.info('Workspace:', JSON.stringify(managed.workspace, null, 2))
-        sessionLog.info('Message:', message)
-        sessionLog.info('Agent model:', agent.getModel())
-        sessionLog.info('process.cwd():', process.cwd())
-
-        // Process the message through the agent
-        sessionLog.info('Calling agent.chat()...')
-        if (attachments?.length) {
-          sessionLog.info('Attachments:', attachments.length)
-        }
-
-        // Skills mentioned via @mentions are resolved by the UI layer (extractBadges
-        // in mentions.ts), which injects fully-qualified names in the rawText.
-        // No transformation needed here.
-
-        // Ensure main process reads tool metadata from the correct session directory.
-        // This must be set before each chat() call since multiple sessions share the process.
-        const chatSessionDir = getSessionStoragePath(workspaceRootPath, sessionId)
-        toolMetadataStore.setSessionDir(chatSessionDir)
-
-        // Transient guidance for this turn (interruption notice, decision-model suggestion) travels
-        // as `turnContext`: the model sees it after the message, in <system-reminder> tags, but it
-        // is not part of the stored message nor of the resend after a source activation.
-        const turnContext: string[] = []
-        // A /compact turn takes no turn context, so the notice waits for the next real turn.
-        if (managed.wasInterrupted && !isCompactCommand) {
-          turnContext.push('<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>')
-          managed.wasInterrupted = false
-        }
-
-        const messageBackendContext = managed.backendRuntimeContext ?? resolveBackendContext({
-          sessionConnectionSlug: managed.llmConnection,
-          workspaceDefaultConnectionSlug: loadWorkspaceConfig(workspaceRootPath)?.defaults?.defaultLlmConnection,
-          managedModel: managed.model,
+      // Clear any pending plan execution state when a new user message is sent.
+      // The explicit /compact turn immediately after "Accept & Compact" is the
+      // one exception: that command is what transitions the pending record from
+      // awaiting → ready. Any other message remains a safety valve that cancels
+      // it. The cancellation runs inside the session lifecycle lock so it shares
+      // a serialized boundary with the pending-plan commit (a dispatch whose
+      // validation is awaiting filesystem IO re-checks the live record under the
+      // same lock and aborts when user intent has moved on) — identity-scoped on
+      // the record captured HERE (a replacement created while this send was
+      // starting is never blindly deleted). Records already committed to
+      // execution (dispatched, delivery-tracked) are skipped: their approval is
+      // durably enqueued ahead of this message and delivery owns the cleanup.
+      // A terminally failed record is a durable restore outbox that new input
+      // never clears; only the scoped recovery ACK removes it.
+      const isCompactCommand = /^\/compact(\s|$)/i.test(message.trim())
+      if (!isCompactCommand) {
+        await this.withSessionLifecycleLock(sessionId, async () => {
+          await this.ensureMessagesLoaded(managed)
+          if (this.sessions.get(sessionId) !== managed || !ownsAuthRetry()) return
+          const supersededPlan = managed.pendingPlanExecution
+          if (
+            supersededPlan
+            && !supersededPlan.failed
+            && supersededPlan.approvalMessageId === undefined
+          ) {
+            const receipt = supersededPlan.executionId ? getPlanDraftConsumption(sessionId, supersededPlan.executionId) : null
+            if (receipt?.text || receipt?.referenceKeys.length) {
+              await this.cancelPendingPlanExecution(managed, supersededPlan)
+            } else {
+              await this.commitPendingPlanExecution(managed, undefined)
+              if (supersededPlan.executionId) retirePlanDraftConsumption(sessionId, supersededPlan.executionId)
+            }
+          }
         })
-        const modelInputAttachments = filterAttachmentsForModelInput(
-          attachments,
-          messageBackendContext.connection,
-          messageBackendContext.resolvedModel,
-        )
-        if (modelInputAttachments.omittedImages.length > 0) {
-          const omittedNames = modelInputAttachments.omittedImages.map(a => a.name).join(', ')
-          sessionLog.info(`Omitting ${modelInputAttachments.omittedImages.length} image attachment(s) from model input for ${messageBackendContext.resolvedModel}: ${omittedNames}`)
-          this.sendEvent({
-            type: 'info',
-            sessionId,
-            message: `Image attachment${modelInputAttachments.omittedImages.length === 1 ? '' : 's'} not sent because image input is disabled for ${messageBackendContext.resolvedModel}.`,
-            level: 'warning',
-          }, managed.workspace.id)
-        }
+      }
 
-        const { thinkingOverride, suggestionHint } = preTurnDecisions ? await preTurnDecisions : { thinkingOverride: null, suggestionHint: null }
-        // Stopped, superseded or deleted while the agent was set up or the pre-turn checks ran: do not
-        // start the turn.
-        const stoppedMeanwhile = (managed.stopEpoch ?? 0) !== turnStopEpoch
-        const superseded = managed.processingGeneration !== myGeneration
-        const deleted = this.sessions.get(sessionId) !== managed
-        if (stoppedMeanwhile || superseded || deleted) {
-          sessionLog.info(`Turn for session ${sessionId} not started: ${deleted ? 'deleted' : superseded ? 'superseded' : 'stopped'} before it began`)
-          sendSpan.mark('chat.not_started')
-          if (deleted) return  // the finally block below cleans up
-          sendSpan.end()
-          if (!superseded) this.onProcessingStopped(sessionId, 'interrupted', myGeneration)
+      // Ensure messages are loaded before we try to add new ones
+      await this.ensureMessagesLoaded(managed)
+      if (this.sessions.get(sessionId) !== managed || !ownsAuthRetry()) return
+
+      assertAdmission()
+      if (!existingMessageId && options?.optimisticMessageId) {
+        const restoredMessageId = managed.restoredInputIds && Object.hasOwn(managed.restoredInputIds, options.optimisticMessageId)
+          ? managed.restoredInputIds[options.optimisticMessageId] : undefined
+        if (restoredMessageId) {
+          this.persistSession(managed)
+          await this.flushSessionStrict(sessionId)
+          assertAdmission()
+          acknowledge(restoredMessageId)
           return
         }
-        if (suggestionHint) turnContext.push(suggestionHint)
-        // A /compact turn takes neither: trailing text would become compaction instructions.
-        const chatOptions: ChatOptions = {
-          ...(thinkingOverride ? { thinkingOverride } : {}),
-          ...(turnContext.length > 0 && !isCompactCommand ? { turnContext: turnContext.join('\n\n') } : {}),
+        const accepted = managed.messages.find(candidate => candidate.role === 'user'
+          && candidate.clientMessageId === options?.optimisticMessageId)
+        if (accepted) {
+          if (accepted.content !== message || JSON.stringify(accepted.references ?? []) !== JSON.stringify(options.references ?? [])
+            || JSON.stringify(accepted.attachments ?? []) !== JSON.stringify(storedAttachments ?? [])) {
+            throw new Error('INPUT_ID_CONFLICT: input identity belongs to a different payload')
+          }
+          this.persistSession(managed)
+          await this.flushSessionStrict(sessionId)
+          assertAdmission()
+          acknowledge(accepted.id)
+          return
+        }
+      }
+
+      const existingUserMessage = existingMessageId
+        ? managed.messages.find(candidate => (
+            candidate.id === existingMessageId && candidate.role === 'user'
+          ))
+        : undefined
+      if (existingMessageId && !existingUserMessage) {
+        throw new Error(`Existing message ${existingMessageId} not found`)
+      }
+      // Cold replay has only stored metadata. Rebuild the payload from this
+      // session's copied files before admission, preserving display and Office
+      // paths required by the backend. Fresh caller metadata never grants reads.
+      if (!attachments?.length && existingUserMessage?.attachments?.length) {
+        const attachmentsRoot = await realpath(getSessionAttachmentsPath(managed.workspace.rootPath, sessionId))
+        attachments = []
+        storedAttachments = existingUserMessage.attachments
+        for (const stored of storedAttachments) {
+          const [storedPath, markdownPath] = await Promise.all([
+            realpath(stored.storedPath),
+            stored.markdownPath ? realpath(stored.markdownPath) : undefined,
+          ])
+          for (const filePath of [storedPath, markdownPath]) {
+            if (!filePath) continue
+            const within = relative(attachmentsRoot, filePath)
+            if (within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) {
+              throw new Error(`Queued attachment is outside this session: ${stored.name}`)
+            }
+          }
+          const attachment = readFileAttachment(storedPath, stored.type)
+          if (!attachment) throw new Error(`Queued attachment could not be read: ${stored.name}`)
+          attachment.name = stored.name
+          attachment.mimeType = stored.mimeType
+          attachment.storedPath = stored.storedPath
+          if (markdownPath) attachment.markdownPath = stored.markdownPath
+          attachments.push(attachment)
+        }
+      }
+      const referenceValues = existingUserMessage?.references ?? options?.references
+      const shouldReusePersistedReferences = Boolean(
+        existingUserMessage || _isAuthRetry || pendingAutoRetryReferences,
+      )
+
+      if (referenceValues && !shouldReusePersistedReferences) {
+        for (const reference of referenceValues) {
+          if (!isChatMessageReference(reference)) continue
+          const source = this.sessions.get(reference.sessionId)
+          if (source) await this.ensureMessagesLoaded(source)
+        }
+      }
+      const referenceTarget = {
+        id: managed.id,
+        workspaceId: managed.workspace.id,
+        projectId: managed.projectId,
+      }
+      let references: Reference[] = []
+      if (referenceValues) {
+        references = shouldReusePersistedReferences
+          ? normalizeReferencesForSession(referenceValues, referenceTarget)
+          : validateReferencesForSession(
+            referenceValues,
+            referenceTarget,
+            sourceId => {
+              const source = this.sessions.get(sourceId)
+              return source ? {
+                id: source.id,
+                workspaceId: source.workspace.id,
+                projectId: source.projectId,
+                messages: source.messages,
+              } : null
+            },
+          )
+      }
+      if (!shouldReusePersistedReferences) {
+        await validateProjectFileReferencesForSend(references, managed.workspace.rootPath)
+      }
+      if (this.sessions.get(sessionId) !== managed || !ownsAuthRetry()) return
+      if (activationSlot && managed.autoRetryPending !== activationSlot) return
+      if (queueReplay && (managed.pendingQueueReplay !== queueReplay
+        || (managed.stopEpoch ?? 0) !== queueReplay.stopEpoch)) return
+      const currentApproval = managed.pendingPlanExecution
+      if (trackedPlanRecord && (
+        this.sessions.get(sessionId) !== managed
+        || !currentApproval
+        || currentApproval.executionId !== trackedApprovalExecutionId
+        || currentApproval.approvalMessageId !== existingMessageId
+        || currentApproval.failed
+        || !currentApproval.executionDispatched
+        || (managed.stopEpoch ?? 0) !== approvalStopEpoch
+        || managed.stopRequested
+        || queueReplay && managed.pendingQueueReplay !== queueReplay
+      )) return
+      const messageForModel = formatReferencesForModel(message, references)
+      const recoveredActivationSteers = !activationSlot && pendingAutoRetry
+        && (!pendingAutoRetry.committed || (pendingAutoRetry.ownedSteers?.length ?? 0) > 0)
+        ? this.recoverActivationSteers(managed, pendingAutoRetry)
+        : false
+
+      // If currently processing, behavior depends on the connection's
+      // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
+      // defaults to provider-appropriate value):
+      //
+      // - 'steer': try to deliver into the in-flight turn. Pi steers natively;
+      //   Claude emulates via PreToolUse hook. If `redirect()` returns false
+      //   (Claude with no live query, or backend can't steer), the backend has
+      //   already called forceAbort(Redirect) and we queue for replay.
+      // - 'queue': hold the message untouched; the current turn keeps running
+      //   to natural completion; replay as a new turn afterwards. NO call to
+      //   `agent.redirect()`, NO forceAbort, NO interruption.
+      if (managed.isProcessing || managed.pendingQueueReplay && managed.pendingQueueReplay !== queueReplay
+        || (!existingMessageId || recoveredActivationSteers) && managed.messageQueue.length > 0) {
+        const connection = resolveSessionConnection(managed.llmConnection, undefined)
+        // Fallback to 'steer' when no connection is resolvable — preserves
+        // today's exact behavior (call redirect, take whatever it returns).
+        const configured = connection ? resolveMidStreamBehavior(connection) : 'steer'
+        // Mid-turn messages (decision model, toggle `midTurnMessages`): a text message is recorded as
+        // queued right away, like any queued message, and the model decides in the background whether
+        // it corrects the running work and should be steered in (steerQueuedIfDecided). Recording
+        // first keeps send order and leaves the queue the single source of truth.
+        const decideDelivery = !trackedPlanRecord && canSteerTextPayload(attachments, storedAttachments, options) && this.decisionFeatureActive('midTurnMessages')
+        // An approval is its own authorized turn, never a steer into a different
+        // request that won admission while its payload was being hydrated.
+        const behavior = trackedPlanRecord || decideDelivery ? 'queue' : configured
+
+        // Create user message for UI and persist queued delivery state so a
+        // restart can recover messages that have not reached the model yet.
+        const userMessage: Message = existingUserMessage ?? {
+          id: generateMessageId(),
+          clientMessageId: options?.optimisticMessageId,
+          role: 'user',
+          content: message,
+          timestamp: this.monotonic(),
+          attachments: storedAttachments,
+          badges: options?.badges,
+          ...(references.length > 0 ? { references } : {}),
+          // Hidden system-generated messages reach the model but never render as a
+          // transcript bubble (e.g. background-task-completion nudge).
+          ...(options?.hidden ? { hidden: true } : {}),
+        }
+        if (!existingUserMessage) {
+          if (clientMessageId) (managed.pendingInputCommits ??= new Map()).set(clientMessageId, commit)
+          managed.messages.push(userMessage)
+          admittedMessage = userMessage
+        }
+        // Publish to a consumable queue/SDK only after this queued image is durable.
+        userMessage.isQueued = true
+        // The next operation may hand this row to an SDK. A crash before the
+        // delivery outcome is saved must recover it for review, never auto-replay.
+        if (!userMessage.hidden) userMessage.pendingDelivery = true
+        const steerGeneration = managed.processingGeneration
+        this.persistSession(managed)
+        await this.flushSessionStrict(managed.id)
+        if (this.sessions.get(sessionId) !== managed) throw new Error('INPUT_CANCELLED: Chat was deleted before acceptance')
+        acknowledge(userMessage.id)
+        if (!ownsAuthRetry() || userMessage.queuedRestoreId) return
+        if (activationSlot) activationSlot.deliveryMessageId = userMessage.id
+
+        const agent = managed.agent
+        // Redirect is text-only. Any semantic options/attachments use the normal
+        // host queue, without aborting the current turn or dropping the payload.
+        const textOnly = canSteerTextPayload(attachments, storedAttachments, options)
+        // A manual compaction owns the turn: nothing consumes steers, so queue for
+        // replay after `complete` instead of steering (OSS #1058). Not an interruption.
+        const compactionInFlight = agent?.isCompactionInFlight?.() === true
+        const attemptedSteer = managed.isProcessing && managed.processingGeneration === steerGeneration && !recoveredActivationSteers
+          && shouldAttemptMidStreamSteer(behavior, textOnly, agent)
+        // Steer the reference-formatted payload so cited context reaches the model.
+        const steered = attemptedSteer && agent
+          ? agent.redirect(messageForModel, { messageId: userMessage.id })
+          : false
+        const payload: ManagedSession['messageQueue'][number] = { message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId }
+        if (steered && agent?.takePendingSteers) {
+          (managed.acceptedSteers ??= new Map()).set(userMessage.id, payload)
+        }
+        if (steered) (managed.turnSteers ??= []).push(message)
+        sessionLog.info('mid-stream send', { sessionId, behavior, steered, textOnly, compactionInFlight, queueLengthBefore: managed.messageQueue.length })
+
+        const delivery = resolveMidStreamDeliveryOutcome(attemptedSteer ? 'steer' : 'queue', steered)
+        userMessage.isQueued = delivery.shouldQueue
+        userMessage.pendingDelivery = steered && agent?.settlePendingSteers ? true : undefined
+
+        // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
+        // (covers both queue-direct and queue-after-abort paths).
+        this.sendEvent({
+          type: 'user_message',
+          sessionId,
+          message: userMessage,
+          status: delivery.shouldQueue ? 'queued' : 'accepted',
+          optimisticMessageId: options?.optimisticMessageId
+        }, managed.workspace.id)
+
+        if (delivery.shouldQueue) {
+          // Push for FIFO replay on next onProcessingStopped tick. Same shape
+          // for both queue-direct (current turn still running) and
+          // queue-after-abort (backend already aborted) — the replay path in
+          // processNextQueuedMessage is identical.
+          if (queueReplay) {
+            managed.messageQueue.push(...queueReplay.entries)
+            for (const entry of queueReplay.entries) {
+              const queued = managed.messages.find(candidate => candidate.id === entry.messageId)
+              if (queued) queued.isQueued = true
+            }
+          } else {
+            managed.messageQueue.push(payload)
+            if (this.decisionFeatureActive('midTurnMessages')) payload.continuationCheck = this.markQueuedContinuation(managed, payload)
+          }
+          if (decideDelivery) void this.steerQueuedIfDecided(managed, payload, userMessage, configured)
+          // Only claim interruption when a steer attempt actually aborted the
+          // in-flight turn. In 'queue' mode the current turn runs to natural
+          // completion, so the replayed turn must NOT inject the "previous response
+          // was interrupted" reminder (it would falsely tell the model its own
+          // complete answer was cut off → confusion).
+          if (delivery.wasInterrupted) managed.wasInterrupted = true
         }
 
-        sendSpan.mark('chat.starting')
-        const chatIterator = agent.chat(messageForModel, modelInputAttachments.attachments, Object.keys(chatOptions).length > 0 ? chatOptions : undefined)
-        sessionLog.info('Got chat iterator, starting iteration...')
+        if (queueReplay && managed.pendingQueueReplay === queueReplay) managed.pendingQueueReplay = undefined
 
-        let approvalHandoffMarked = false
-        for await (const event of chatIterator) {
-          // Handoff may start a new turn before the old SDK iterator settles.
-          // Pending steers were transferred synchronously at the handoff boundary;
-          // trailing old events must not complete or mutate the replacement turn.
-          if (this.sessions.get(sessionId) !== managed || managed.processingGeneration !== myGeneration) {
+        this.persistSession(managed)
+        try {
+          await this.flushSessionStrict(managed.id)
+        } catch (error) {
+          // Initial ownership is already durable and the SDK may have consumed
+          // this input. Keep retrying its outcome; do not reject it as a new send.
+          this.persistSession(managed)
+          this.sendEvent({ type: 'error', sessionId,
+            error: `Input was accepted, but saving its delivery state failed: ${error instanceof Error ? error.message : String(error)}`,
+          }, managed.workspace.id)
+        }
+        if (!managed.isProcessing && ownsAuthRetry() && !managed.stopBarrier) this.processNextQueuedMessage(sessionId)
+        return
+      }
+
+      // Add user message with stored attachments for persistence
+      // Skip if existingMessageId is provided (message was already created when queued)
+      let userMessage: Message
+      if (existingMessageId) {
+        // Find existing message (already added when queued)
+        userMessage = existingUserMessage!
+      } else {
+        // Create new message
+        userMessage = {
+          id: generateMessageId(),
+          clientMessageId: options?.optimisticMessageId,
+          role: 'user',
+          content: message,
+          timestamp: this.monotonic(),
+          attachments: storedAttachments, // Include for persistence (has thumbnailBase64)
+          badges: options?.badges,  // Include content badges (sources, skills with embedded icons)
+          ...(references.length > 0 ? { references } : {}),
+          // Hidden system-generated messages reach the model but never render as a
+          // transcript bubble (e.g. background-task-completion nudge).
+          ...(options?.hidden ? { hidden: true } : {}),
+        }
+        if (clientMessageId) (managed.pendingInputCommits ??= new Map()).set(clientMessageId, commit)
+        managed.messages.push(userMessage)
+        admittedMessage = userMessage
+        if (!options?.hidden && !isCompactCommand) userMessage.pendingDelivery = true
+
+        // Update lastMessageRole for badge display. Skip for hidden messages so the
+        // session-list preview isn't briefly driven by an invisible system nudge.
+        if (!options?.hidden) {
+          managed.lastMessageRole = 'user'
+        }
+
+        // Persist + flush before announcing — the user message must be
+        // genuinely on disk before we tell the renderer "accepted", and
+        // `persistSession` is debounced (500ms). #616.
+        this.persistSession(managed)
+        await this.flushSessionStrict(managed.id)
+        if (this.sessions.get(sessionId) !== managed) throw new Error('INPUT_CANCELLED: Chat was deleted before acceptance')
+        acknowledge(userMessage.id)
+        if (!ownsAuthRetry() || userMessage.queuedRestoreId) return
+
+        // Emit user_message event so UI can confirm the optimistic message
+        this.sendEvent({
+          type: 'user_message',
+          sessionId,
+          message: userMessage,
+          status: 'accepted',
+          optimisticMessageId: options?.optimisticMessageId
+        }, managed.workspace.id)
+
+        // If this is the first user message and no title exists, set one immediately
+        // AI generation will enhance it later, but we always have a title from the start
+        // Automation sessions (triggeredBy set) already have a title and skip AI generation entirely
+        const isFirstUserMessage = managed.messages.filter(m => m.role === 'user').length === 1
+        // Smart titles: the first message was small talk; title this one if the name is still automatic.
+        const titlesDeferredMessage = !isFirstUserMessage && !options?.hidden && managed.titleDeferred && managed.name === managed.autoTitle
+        if ((isFirstUserMessage && !managed.name && !managed.triggeredBy) || titlesDeferredMessage) {
+          managed.titleDeferred = false
+          // Replace bracket mentions with their display labels (e.g. [skill:ws:commit] -> "Commit")
+          // so titles show human-readable names instead of raw IDs
+          let titleSource = message
+          if (options?.badges) {
+            for (const badge of options.badges) {
+              if (badge.rawText && badge.label) {
+                titleSource = titleSource.replace(badge.rawText, badge.label)
+              }
+            }
+          }
+          // Sanitize: strip any remaining bracket mentions, XML blocks, tags
+          const sanitized = sanitizeForTitle(titleSource)
+          const initialTitle = sanitized.slice(0, 50) + (sanitized.length > 50 ? '…' : '')
+          managed.name = initialTitle
+          managed.autoTitle = initialTitle
+          this.persistSession(managed)
+          // Flush immediately so disk is authoritative before notifying renderer
+          await this.flushSession(managed.id)
+          this.sendEvent({
+            type: 'title_generated',
+            sessionId,
+            title: initialTitle,
+          }, managed.workspace.id)
+
+          // Generate AI title asynchronously using agent's SDK
+          // (waits briefly for agent creation if needed)
+          void this.generateTitleUnlessSmallTalk(managed, message)
+        }
+      }
+
+      // Persistence/title setup yielded. Another send (including cold approval
+      // recovery) may now own the turn. Preserve this already recorded input and
+      // its message identity in FIFO instead of starting a second iterator.
+      if (this.sessions.get(sessionId) !== managed || !ownsAuthRetry()) return
+      if (queueReplay && (managed.pendingQueueReplay !== queueReplay
+        || (managed.stopEpoch ?? 0) !== queueReplay.stopEpoch)) return
+      if (managed.isProcessing || managed.pendingQueueReplay && managed.pendingQueueReplay !== queueReplay
+        || !existingMessageId && managed.messageQueue.length > 0) {
+        if (queueReplay) {
+          managed.messageQueue.push(...queueReplay.entries)
+          if (managed.pendingQueueReplay === queueReplay) managed.pendingQueueReplay = undefined
+        } else {
+          const payload = { message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId }
+          const arrivalIndex = managed.messages.indexOf(userMessage)
+          const before = managed.messageQueue.findIndex(entry => {
+            const queuedIndex = managed.messages.findIndex(candidate => candidate.id === entry.messageId)
+            return queuedIndex > arrivalIndex
+          })
+          if (before < 0) managed.messageQueue.push(payload)
+          else managed.messageQueue.splice(before, 0, payload)
+        }
+        const queuedIds = new Set(queueReplay?.entries.map(entry => entry.messageId) ?? [userMessage.id])
+        for (const queued of managed.messages) {
+          if (queuedIds.has(queued.id)) queued.isQueued = true
+        }
+        this.sendEvent({ type: 'user_message', sessionId, message: userMessage, status: 'queued', optimisticMessageId: options?.optimisticMessageId }, managed.workspace.id)
+        this.persistSession(managed)
+        await this.flushSession(managed.id)
+        if (this.sessions.get(sessionId) === managed && !managed.isProcessing) this.processNextQueuedMessage(sessionId)
+        return
+      }
+
+      // Evaluate auto-label rules against the user message (common path for both
+      // fresh and queued messages). Regex rules run synchronously here; semantic
+      // rules (decision model) run fire-and-forget so they never delay the turn,
+      // and merge their matches when they arrive.
+      // Hidden messages (auto-retries, system nudges) are not user-authored: they label nothing.
+      if (!options?.hidden) {
+        try {
+          const labelTree = listLabels(managed.workspace.rootPath)
+          this.applyAutoLabelMatches(managed, evaluateAutoLabels(message, labelTree, managed.labels ?? []), labelTree)
+          void this.applySemanticAutoLabels(managed, message, labelTree)
+        } catch (e) {
+          sessionLog.warn(`Auto-label evaluation failed for session ${sessionId}:`, e)
+        }
+      }
+
+      if (activationSlot) activationSlot.deliveryMessageId = userMessage.id
+      managed.lastMessageAt = Date.now()
+      this.setProcessing(managed, true)
+      managed.streamingText = ''
+      managed.streamingTurnId = undefined
+      managed.processingGeneration++
+      admittedGeneration = managed.processingGeneration
+      if (queueReplay) queueReplay.processingGeneration = managed.processingGeneration
+      if (authRetry) authRetry.generation = managed.processingGeneration
+      managed.authRetryInProgress = false
+      managed.turnStartFinalMessageId = this.getLastFinalAssistantMessageId(managed.messages)
+      // A new turn: an auto-retry of this one already carries the earlier turn's steers.
+      managed.turnSteers = []
+
+      // Reset auth retry flag for this new message (allows one retry per message)
+      // IMPORTANT: Skip reset if this is an auth retry call - the flag is already true
+      // and resetting it would allow infinite retry loops
+      // Admission retires authRetryInProgress; the generation now owns this turn.
+      if (!_isAuthRetry) {
+        managed.authRetryAttempted = false
+      }
+
+      // Store message/attachments for potential retry after auth refresh
+      // (SDK subprocess caches token at startup, so if it expires mid-session,
+      // we need to recreate the agent and retry the message)
+      managed.lastSentMessage = message
+      managed.lastSentAttachments = attachments
+      managed.lastSentStoredAttachments = storedAttachments
+      managed.lastSentOptions = options
+      const replayedIds = existingMessageId ? managed.replayMergedIds?.get(existingMessageId) : undefined
+      if (existingMessageId) managed.replayMergedIds?.delete(existingMessageId)
+      managed.lastSentMessageIds = replayedIds ?? [userMessage.id]
+      if (!trackedPlanRecord && !options?.hidden && !isCompactCommand) {
+        for (const id of managed.lastSentMessageIds) {
+          const original = managed.messages.find(candidate => candidate.id === id)
+          if (original) original.pendingDelivery = true
+        }
+        this.persistSession(managed)
+        await this.flushSessionStrict(sessionId)
+        assertAdmission()
+      }
+      // The turn now owns delivery. Later input may queue while startup awaits IO.
+      releaseAdmission()
+
+      // Capture the generation to detect if a new request supersedes this one.
+      // This prevents the finally block from clobbering state when a follow-up message arrives.
+      const myGeneration = managed.processingGeneration
+      // A Stop from now on (not a stale stopRequested flag) keeps this turn from starting.
+      const turnStopEpoch = approvalStopEpoch
+
+      // This send IS the pending plan's manual compaction turn: stamp the
+      // correlation (generation + stop epoch) onto the record so the completion
+      // and failure event paths can verify the event belongs to this record's
+      // own /compact — a late or foreign compaction event can then neither
+      // authorize nor cancel it. The stamp is tied to the record's durable
+      // consumption receipt: the Accept & Compact flow atomically consumes the
+      // draft BEFORE submitting /compact, so a receiptless record is not this
+      // flow's compact (e.g. a stale /compact from a replaced acceptance) and
+      // must never become ready off its completion. Persisted strictly and
+      // immediately: the completion event's correlation check reads the stored
+      // record.
+      let compactionAcceptance: ManagedSession['pendingPlanExecution']
+      if (isCompactCommand && managed.pendingPlanExecution && !managed.pendingPlanExecution.failed) {
+        const compactRecord = managed.pendingPlanExecution
+        const receiptPresent = compactRecord.executionId
+          ? (() => { try { return getPlanDraftConsumption(sessionId, compactRecord.executionId!) !== null } catch { return false } })()
+          : false
+        if (!receiptPresent || options?.planExecutionId !== compactRecord.executionId) {
+          sessionLog.info(`Session ${sessionId}: /compact does not correlate to the pending plan (no durable consumption receipt); readiness unaffected`)
+        } else {
+          compactionAcceptance = compactRecord
+          compactRecord.compactionTurn = { generation: myGeneration, stopEpoch: turnStopEpoch }
+          this.persistSession(managed)
+          try {
+            await this.flushSessionStrict(sessionId)
+          } catch (error) {
+            // The compact still runs; without a durable correlation its completion
+            // cannot ready the plan and failure/reload paths recover the draft.
+            sessionLog.error(`Session ${sessionId}: failed to persist pending plan compaction correlation`, error)
+          }
+        }
+      }
+
+      // Pre-enable sources required by invoked skills (Issue #249)
+      // This eliminates the two-turn penalty where the agent discovers missing sources at runtime.
+      // Uses targeted loadSkillBySlug() instead of loadAllSkills() to avoid O(N) filesystem scans.
+      if (options?.skillSlugs?.length) {
+        try {
+          const workspaceRoot = managed.workspace.rootPath
+
+          const requiredSources = new Set<string>()
+          for (const slug of options.skillSlugs) {
+            const skill = loadSkillBySlug(workspaceRoot, slug, managed.workingDirectory)
+            if (skill?.metadata.requiredSources) {
+              for (const src of skill.metadata.requiredSources) {
+                requiredSources.add(src)
+              }
+            }
+          }
+
+          if (requiredSources.size > 0) {
+            const currentSlugs = new Set(managed.enabledSourceSlugs || [])
+            const toEnable: string[] = []
+            const skipped: string[] = []
+            const candidateSlugs = Array.from(requiredSources)
+            const loadedSources = getSourcesBySlugs(workspaceRoot, candidateSlugs)
+            const usableSources = new Set(
+              loadedSources
+                .filter(isSourceUsable)
+                .map(source => source.config.slug)
+            )
+
+            for (const srcSlug of candidateSlugs) {
+              if (currentSlugs.has(srcSlug)) continue
+              if (usableSources.has(srcSlug)) {
+                toEnable.push(srcSlug)
+              } else {
+                skipped.push(srcSlug)
+              }
+            }
+
+            if (skipped.length > 0) {
+              sessionLog.warn(`Skill requires sources that are not usable (missing or unauthenticated): ${skipped.join(', ')}`)
+            }
+
+            if (toEnable.length > 0) {
+              managed.enabledSourceSlugs = [...(managed.enabledSourceSlugs || []), ...toEnable]
+              sessionLog.info(`Pre-enabled sources for skill invocation: ${toEnable.join(', ')}`)
+              this.persistSession(managed)
+              this.sendEvent({
+                type: 'sources_changed',
+                sessionId,
+                enabledSourceSlugs: managed.enabledSourceSlugs,
+              }, managed.workspace.id)
+            }
+          }
+        } catch (e) {
+          sessionLog.warn(`Failed to pre-enable skill sources for session ${sessionId}:`, e)
+        }
+      }
+
+      try {
+        // Decision-model checks for this turn run while the agent is set up below.
+        const preTurnDecisions = this.startPreTurnDecisions(managed, message, options, { activationResend, authRetry: _isAuthRetry, attachments })
+
+        // Start perf span for entire sendMessage flow
+        const sendSpan = perf.span('session.sendMessage', { sessionId })
+
+        const workspaceRootPath = managed.workspace.rootPath
+        const enabledSlugs = managed.enabledSourceSlugs ?? []
+        const hasSources = enabledSlugs.length > 0
+
+        // Load enabled sources up-front so we can refresh tokens BEFORE getOrCreateAgent
+        // runs its internal cold-session build. Otherwise that build sees stale tokens
+        // and emits AUTH_REQUIRED, causing a brief "needs_auth" UI flicker before the
+        // post-build refresh restores state (#710).
+        const sources: LoadedSource[] = hasSources
+          ? getSourcesBySlugs(workspaceRootPath, enabledSlugs)
+          : []
+
+        if (hasSources && managed.tokenRefreshManager) {
+          const refreshResult = await refreshExpiredCredentials(sources, managed.tokenRefreshManager)
+          if (refreshResult.failedSources.length > 0) {
+            sessionLog.warn('[OAuth] Some sources failed token refresh:', refreshResult.failedSources.map(f => f.slug))
+          }
+          if (refreshResult.refreshedCount > 0) {
+            sendSpan.mark('oauth.refreshed')
+          }
+        }
+
+        // Get or create the agent (lazy loading). Its internal cold-session build at
+        // ~L2956 now sees fresh tokens (or correctly-needs_auth failed sources, since
+        // ensureFreshToken mirrors the disk write to source.config in-memory).
+        const agent = await this.getOrCreateAgent(managed)
+        sendSpan.mark('agent.ready')
+
+        // Always set all sources for context (even if none are enabled), including built-ins
+        const allSources = loadAllSources(workspaceRootPath)
+        agent.setAllSources(allSources)
+        sendSpan.mark('sources.loaded')
+
+        // Apply source servers if any are enabled
+        if (hasSources) {
+          const sessionPath = getSessionStoragePath(workspaceRootPath, sessionId)
+          // Single fresh build — tokens already refreshed above.
+          const { mcpServers, apiServers, errors } = await buildServersFromSources(sources, sessionPath, managed.tokenRefreshManager, agent.getSummarizeCallback())
+          if (errors.length > 0) {
+            sessionLog.warn(`Source build errors:`, errors)
+          }
+
+          const mcpCount = Object.keys(mcpServers).length
+          const apiCount = Object.keys(apiServers).length
+          if (mcpCount > 0 || apiCount > 0 || enabledSlugs.length > 0) {
+            const usableSources = sources.filter(isSourceUsable)
+            const intendedSlugs = usableSources.map(s => s.config.slug)
+            await agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
+            sessionLog.info(`Applied ${mcpCount} MCP + ${apiCount} API sources to session ${sessionId} (${allSources.length} total)`)
+          }
+          sendSpan.mark('servers.applied')
+        }
+
+        // Continued from another session: the summary this first turn carries may still be generating
+        // (the agent above was set up meanwhile).
+        if (managed.pendingHandoffSummary) await this.waitForHandoffSummary(managed)
+
+        try {
+          sessionLog.info('Starting chat for session:', sessionId)
+          sessionLog.info('Workspace:', JSON.stringify(managed.workspace, null, 2))
+          sessionLog.info('Message:', message)
+          sessionLog.info('Agent model:', agent.getModel())
+          sessionLog.info('process.cwd():', process.cwd())
+
+          // Process the message through the agent
+          sessionLog.info('Calling agent.chat()...')
+          if (attachments?.length) {
+            sessionLog.info('Attachments:', attachments.length)
+          }
+
+          // Skills mentioned via @mentions are resolved by the UI layer (extractBadges
+          // in mentions.ts), which injects fully-qualified names in the rawText.
+          // No transformation needed here.
+
+          // Ensure main process reads tool metadata from the correct session directory.
+          // This must be set before each chat() call since multiple sessions share the process.
+          const chatSessionDir = getSessionStoragePath(workspaceRootPath, sessionId)
+          toolMetadataStore.setSessionDir(chatSessionDir)
+
+          // Transient guidance for this turn (interruption notice, decision-model suggestion) travels
+          // as `turnContext`: the model sees it after the message, in <system-reminder> tags, but it
+          // is not part of the stored message nor of the resend after a source activation.
+          const turnContext: string[] = []
+          // A /compact turn takes no turn context, so the notice waits for the next real turn.
+          if (managed.wasInterrupted && !isCompactCommand) {
+            turnContext.push('<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>')
+            managed.wasInterrupted = false
+          }
+
+          const messageBackendContext = managed.backendRuntimeContext ?? resolveBackendContext({
+            sessionConnectionSlug: managed.llmConnection,
+            workspaceDefaultConnectionSlug: loadWorkspaceConfig(workspaceRootPath)?.defaults?.defaultLlmConnection,
+            managedModel: managed.model,
+          })
+          const modelInputAttachments = filterAttachmentsForModelInput(
+            attachments,
+            messageBackendContext.connection,
+            messageBackendContext.resolvedModel,
+          )
+          if (modelInputAttachments.omittedImages.length > 0) {
+            const omittedNames = modelInputAttachments.omittedImages.map(a => a.name).join(', ')
+            sessionLog.info(`Omitting ${modelInputAttachments.omittedImages.length} image attachment(s) from model input for ${messageBackendContext.resolvedModel}: ${omittedNames}`)
+            this.sendEvent({
+              type: 'info',
+              sessionId,
+              message: `Image attachment${modelInputAttachments.omittedImages.length === 1 ? '' : 's'} not sent because image input is disabled for ${messageBackendContext.resolvedModel}.`,
+              level: 'warning',
+            }, managed.workspace.id)
+          }
+
+          const { thinkingOverride, suggestionHint } = preTurnDecisions ? await preTurnDecisions : { thinkingOverride: null, suggestionHint: null }
+          // Stopped, superseded or deleted while the agent was set up or the pre-turn checks ran: do not
+          // start the turn.
+          const stoppedMeanwhile = (managed.stopEpoch ?? 0) !== turnStopEpoch
+          const superseded = managed.processingGeneration !== myGeneration
+          const deleted = this.sessions.get(sessionId) !== managed
+          if (stoppedMeanwhile || superseded || deleted) {
+            sessionLog.info(`Turn for session ${sessionId} not started: ${deleted ? 'deleted' : superseded ? 'superseded' : 'stopped'} before it began`)
+            sendSpan.mark('chat.not_started')
+            if (deleted) return  // the finally block below cleans up
+            sendSpan.end()
+            if (!superseded) await this.onProcessingStopped(sessionId, 'interrupted', myGeneration)
+            return
+          }
+          if (suggestionHint) turnContext.push(suggestionHint)
+          // A /compact turn takes neither: trailing text would become compaction instructions.
+          const chatOptions: ChatOptions = {
+            ...(thinkingOverride ? { thinkingOverride } : {}),
+            ...(turnContext.length > 0 && !isCompactCommand ? { turnContext: turnContext.join('\n\n') } : {}),
+          }
+
+          sendSpan.mark('chat.starting')
+          const chatIterator = agent.chat(messageForModel, modelInputAttachments.attachments, Object.keys(chatOptions).length > 0 ? chatOptions : undefined)
+          sessionLog.info('Got chat iterator, starting iteration...')
+
+          let approvalHandoffMarked = false
+          for await (const event of chatIterator) {
+            // Handoff may start a new turn before the old SDK iterator settles.
+            // Pending steers were transferred synchronously at the handoff boundary;
+            // trailing old events must not complete or mutate the replacement turn.
+            if (this.sessions.get(sessionId) !== managed || managed.processingGeneration !== myGeneration) {
+              sendSpan.mark('chat.superseded')
+              sendSpan.end()
+              return
+            }
+            // Only a producer's acknowledgement proves this input was accepted.
+            // Preflight/startup failures also emit errors and complete events.
+            if (event.type === 'input_accepted' && !approvalHandoffMarked) {
+              approvalHandoffMarked = true
+              if ((managed.stopEpoch ?? 0) !== turnStopEpoch || managed.stopRequested) continue
+              if (!trackedPlanRecord) {
+                if (queueReplay && managed.pendingQueueReplay === queueReplay) managed.pendingQueueReplay = undefined
+                for (const id of managed.lastSentMessageIds ?? []) {
+                  const original = managed.messages.find(candidate => candidate.id === id)
+                  if (!original) continue
+                  original.pendingDelivery = undefined
+                  original.isQueued = false
+                  this.sendEvent({ type: 'user_message', sessionId, message: original, status: 'processing',
+                    optimisticMessageId: original.clientMessageId ?? queueReplay?.entries.find(entry => entry.messageId === id)?.optimisticMessageId }, managed.workspace.id)
+                }
+                this.persistSession(managed)
+                try { await this.flushSessionStrict(sessionId) }
+                catch (error) {
+                  sessionLog.error(`Session ${sessionId}: accepted input receipt could not be saved; retaining live acceptance`, error)
+                  this.persistSession(managed)
+                }
+              }
+              if (activationSlot?.deliveryMessageId === userMessage.id
+                && (managed.stopEpoch ?? 0) === turnStopEpoch && !managed.stopRequested) {
+                const delivered = activationSlot.ownedSteers ?? []
+                activationSlot.ownedSteers = []
+                for (const steer of delivered) {
+                  const original = managed.messages.find(candidate => candidate.id === steer.messageId)
+                  if (!original) continue
+                  original.isQueued = false
+                  this.sendEvent({ type: 'user_message', sessionId, message: original,
+                    status: 'processing', optimisticMessageId: steer.optimisticMessageId }, managed.workspace.id)
+                }
+                if (delivered.length > 0) this.persistSession(managed)
+              }
+              if (existingMessageId && managed.pendingPlanExecution?.approvalMessageId === existingMessageId) {
+                await this.withSessionLifecycleLock(sessionId, async () => {
+                  const deliveredRecord = managed.pendingPlanExecution
+                  if (this.sessions.get(sessionId) !== managed || deliveredRecord?.approvalMessageId !== existingMessageId
+                    || deliveredRecord.executionId !== trackedApprovalExecutionId || deliveredRecord.failed
+                    || managed.processingGeneration !== myGeneration || (managed.stopEpoch ?? 0) !== turnStopEpoch
+                    || managed.stopRequested) return
+                  if (queueReplay && managed.pendingQueueReplay === queueReplay) managed.pendingQueueReplay = undefined
+                  for (const entry of queueReplay?.entries ?? []) {
+                    const original = managed.messages.find(candidate => candidate.id === entry.messageId)
+                    if (original) {
+                      original.isQueued = false
+                      this.sendEvent({ type: 'user_message', sessionId, message: original,
+                        status: 'processing', optimisticMessageId: entry.optimisticMessageId }, managed.workspace.id)
+                    }
+                  }
+                  // Acceptance cannot be rolled back after the provider owns the
+                  // input. Keep live ownership retired even if the strict write
+                  // fails; subsequent history writes retry the same cleared image.
+                  managed.pendingPlanExecution = undefined
+                  if (trackedApprovalExecutionId) (managed.pendingPlanReceiptRetirements ??= new Set()).add(trackedApprovalExecutionId)
+                  this.persistSession(managed)
+                  try {
+                    await this.flushSessionStrict(sessionId)
+                  } catch (error) {
+                    sessionLog.error(`Session ${sessionId}: failed to persist accepted approval handoff; retrying with turn history`, error)
+                    this.persistSession(managed)
+                  }
+                })
+              }
+            }
+            if (event.type === 'input_accepted') continue
+            if (event.type === 'steer_accepted') {
+              const payload = managed.acceptedSteers?.get(event.messageId)
+              const original = payload && managed.messages.find(candidate => candidate.id === event.messageId)
+              if (original && original.pendingDelivery && !original.queuedRestoreId) {
+                managed.acceptedSteers?.delete(event.messageId)
+                original.pendingDelivery = undefined
+                original.isQueued = false
+                this.persistSession(managed)
+                this.sendEvent({ type: 'user_message', sessionId, message: original,
+                  status: 'processing', optimisticMessageId: payload.optimisticMessageId }, managed.workspace.id)
+              }
+              continue
+            }
+            // Log events (skip noisy text_delta)
+            if (event.type !== 'text_delta') {
+              if (event.type === 'tool_start') {
+                sessionLog.info(`tool_start: ${event.toolName} (${event.toolUseId})`)
+              } else if (event.type === 'tool_result') {
+                sessionLog.info(`tool_result: ${event.toolUseId} isError=${event.isError}`)
+              } else {
+                sessionLog.info('Got event:', event.type)
+              }
+            }
+
+            // Process the event first, carrying the ORIGINATING turn context
+            // captured when this send's execution started — compaction
+            // completion/failure correlation compares against the turn that
+            // EMITTED the event, never a correlation re-derived from the live
+            // record/generation at event time.
+            await this.processEvent(managed, event, { generation: myGeneration, stopEpoch: turnStopEpoch })
+
+            // Fallback: Capture SDK session ID if the onSdkSessionIdUpdate callback didn't fire.
+            // Primary capture happens in getOrCreateAgent() via onSdkSessionIdUpdate callback,
+            // which immediately flushes to disk. This fallback handles edge cases where the
+            // callback might not fire (e.g., SDK version mismatch, callback not supported).
+            if (!managed.sdkSessionId) {
+              const sdkId = agent.getSessionId()
+              if (sdkId) {
+                managed.sdkSessionId = sdkId
+                sessionLog.info(`Captured SDK session ID via fallback: ${sdkId}`)
+                // Also flush here since we're in fallback mode
+                this.persistSession(managed)
+                sessionPersistenceQueue.flush(managed.id)
+              }
+            }
+
+            // Handle complete event - SDK always sends this (even after interrupt)
+            // This is the central place where processing ends
+            if (event.type === 'complete') {
+              // Skip normal completion handling if auth retry is in progress
+              // The retry will handle its own completion
+              if (managed.authRetryInProgress) {
+                sessionLog.info('Chat completed but auth retry is in progress, skipping normal completion handling')
+                sendSpan.mark('chat.complete.auth_retry_pending')
+                sendSpan.end()
+                return  // Exit function - retry will handle completion
+              }
+
+              // Auth/plan handoff paths already stopped processing and emitted a complete
+              // event to the renderer. Ignore the backend's trailing complete to avoid
+              // double cleanup and duplicate UI completion events.
+              if (!managed.isProcessing) {
+                sessionLog.info('Chat completed after explicit handoff/stop; skipping normal completion handling')
+                sendSpan.mark('chat.complete.already_stopped')
+                sendSpan.end()
+                return
+              }
+
+              sessionLog.info('Chat completed via complete event')
+
+              // Check if we got an assistant response in this turn
+              // If not, the SDK may have hit context limits or other issues
+              const lastAssistantMsg = [...managed.messages].reverse().find(m =>
+                m.role === 'assistant' && !m.isIntermediate
+              )
+              const lastUserMsg = [...managed.messages].reverse().find(m => m.role === 'user')
+
+              // If the last user message is newer than any assistant response, we got no reply
+              // This can happen due to context overflow or API issues
+              if (lastUserMsg && (!lastAssistantMsg || lastUserMsg.timestamp > lastAssistantMsg.timestamp)) {
+                sessionLog.warn(`Session ${sessionId} completed without assistant response - possible context overflow or API issue`)
+
+                // Check if there's a captured API error that explains the silent failure.
+                // Pass explicit session path to avoid reading from the wrong session
+                // (_sessionDir singleton can be clobbered by concurrent sessions).
+                const sessionErrorPath = getSessionStoragePath(managed.workspace.rootPath, managed.id)
+                const apiError = getLastApiError(sessionErrorPath)
+
+                if (apiError && apiError.status === 400) {
+                  const isImageError = apiError.message?.includes('image exceeds')
+
+                  const errorMessage: Message = {
+                    id: generateMessageId(),
+                    role: 'error',
+                    content: isImageError
+                      ? `Image Too Large: ${apiError.message}`
+                      : `Request Error: ${apiError.message}`,
+                    timestamp: this.monotonic(),
+                    errorCode: isImageError ? 'image_too_large' : 'invalid_request',
+                    errorTitle: isImageError ? 'Image Too Large' : 'Invalid Request',
+                    errorDetails: isImageError
+                      ? ['An image in the conversation exceeds the 5 MB API limit.',
+                         'This session cannot recover — the image is embedded in the history.',
+                         'Please start a new session to continue.']
+                      : [apiError.message],
+                    errorCanRetry: false,
+                  }
+                  managed.messages.push(errorMessage)
+                  this.sendEvent({
+                    type: 'typed_error',
+                    sessionId,
+                    error: {
+                      code: isImageError ? 'image_too_large' as const : 'invalid_request' as const,
+                      title: errorMessage.errorTitle!,
+                      message: apiError.message,
+                      actions: [],
+                      canRetry: false,
+                      details: errorMessage.errorDetails,
+                    },
+                  }, managed.workspace.id)
+                }
+              }
+
+              sendSpan.mark('chat.complete')
+              sendSpan.end()
+              // The backend also ends a turn the user stopped with `complete`. Reporting that as a
+              // completion marked a stopped task step done with no output (found 2026-10-11).
+              const stoppedDuringTurn = (managed.stopEpoch ?? 0) !== turnStopEpoch
+              await this.onProcessingStopped(sessionId, stoppedDuringTurn ? 'interrupted' : 'complete', myGeneration)
+              return  // Exit function, skip finally block (onProcessingStopped handles cleanup)
+            }
+
+            // NOTE: We no longer break early on !isProcessing or stopRequested.
+            // After soft interrupt (forceAbort), the backend sets turnComplete=true which causes
+            // the generator to yield remaining queued events and then complete naturally.
+            // This ensures we don't lose in-flight messages.
+          }
+
+          if (managed.processingGeneration !== myGeneration) {
             sendSpan.mark('chat.superseded')
             sendSpan.end()
             return
           }
-          // Only a producer's acknowledgement proves this input was accepted.
-          // Preflight/startup failures also emit errors and complete events.
-          if (event.type === 'input_accepted' && !approvalHandoffMarked) {
-            approvalHandoffMarked = true
-            if (activationSlot?.deliveryMessageId === userMessage.id
-              && (managed.stopEpoch ?? 0) === turnStopEpoch && !managed.stopRequested) {
-              const delivered = activationSlot.ownedSteers ?? []
-              activationSlot.ownedSteers = []
-              for (const steer of delivered) {
-                const original = managed.messages.find(candidate => candidate.id === steer.messageId)
-                if (!original) continue
-                original.isQueued = false
-                this.sendEvent({ type: 'user_message', sessionId, message: original,
-                  status: 'processing', optimisticMessageId: steer.optimisticMessageId }, managed.workspace.id)
-              }
-              if (delivered.length > 0) this.persistSession(managed)
-            }
-            if (existingMessageId && managed.pendingPlanExecution?.approvalMessageId === existingMessageId) {
-              await this.withSessionLifecycleLock(sessionId, async () => {
-                const deliveredRecord = managed.pendingPlanExecution
-                if (this.sessions.get(sessionId) !== managed || deliveredRecord?.approvalMessageId !== existingMessageId
-                  || deliveredRecord.executionId !== trackedApprovalExecutionId || deliveredRecord.failed
-                  || managed.processingGeneration !== myGeneration || (managed.stopEpoch ?? 0) !== turnStopEpoch
-                  || managed.stopRequested) return
-                if (queueReplay && managed.pendingQueueReplay === queueReplay) managed.pendingQueueReplay = undefined
-                for (const entry of queueReplay?.entries ?? []) {
-                  const original = managed.messages.find(candidate => candidate.id === entry.messageId)
-                  if (original) {
-                    original.isQueued = false
-                    this.sendEvent({ type: 'user_message', sessionId, message: original,
-                      status: 'processing', optimisticMessageId: entry.optimisticMessageId }, managed.workspace.id)
-                  }
-                }
-                // Acceptance cannot be rolled back after the provider owns the
-                // input. Keep live ownership retired even if the strict write
-                // fails; subsequent history writes retry the same cleared image.
-                managed.pendingPlanExecution = undefined
-                if (trackedApprovalExecutionId) (managed.pendingPlanReceiptRetirements ??= new Set()).add(trackedApprovalExecutionId)
-                this.persistSession(managed)
-                try {
-                  await this.flushSessionStrict(sessionId)
-                } catch (error) {
-                  sessionLog.error(`Session ${sessionId}: failed to persist accepted approval handoff; retrying with turn history`, error)
-                  this.persistSession(managed)
-                }
-              })
-            }
-          }
-          if (event.type === 'input_accepted') continue
-          // Log events (skip noisy text_delta)
-          if (event.type !== 'text_delta') {
-            if (event.type === 'tool_start') {
-              sessionLog.info(`tool_start: ${event.toolName} (${event.toolUseId})`)
-            } else if (event.type === 'tool_result') {
-              sessionLog.info(`tool_result: ${event.toolUseId} isError=${event.isError}`)
-            } else {
-              sessionLog.info('Got event:', event.type)
-            }
-          }
-
-          // Process the event first, carrying the ORIGINATING turn context
-          // captured when this send's execution started — compaction
-          // completion/failure correlation compares against the turn that
-          // EMITTED the event, never a correlation re-derived from the live
-          // record/generation at event time.
-          await this.processEvent(managed, event, { generation: myGeneration, stopEpoch: turnStopEpoch })
-
-          // Fallback: Capture SDK session ID if the onSdkSessionIdUpdate callback didn't fire.
-          // Primary capture happens in getOrCreateAgent() via onSdkSessionIdUpdate callback,
-          // which immediately flushes to disk. This fallback handles edge cases where the
-          // callback might not fire (e.g., SDK version mismatch, callback not supported).
-          if (!managed.sdkSessionId) {
-            const sdkId = agent.getSessionId()
-            if (sdkId) {
-              managed.sdkSessionId = sdkId
-              sessionLog.info(`Captured SDK session ID via fallback: ${sdkId}`)
-              // Also flush here since we're in fallback mode
-              this.persistSession(managed)
-              sessionPersistenceQueue.flush(managed.id)
-            }
-          }
-
-          // Handle complete event - SDK always sends this (even after interrupt)
-          // This is the central place where processing ends
-          if (event.type === 'complete') {
-            // Skip normal completion handling if auth retry is in progress
-            // The retry will handle its own completion
-            if (managed.authRetryInProgress) {
-              sessionLog.info('Chat completed but auth retry is in progress, skipping normal completion handling')
-              sendSpan.mark('chat.complete.auth_retry_pending')
-              sendSpan.end()
-              return  // Exit function - retry will handle completion
-            }
-
-            // Auth/plan handoff paths already stopped processing and emitted a complete
-            // event to the renderer. Ignore the backend's trailing complete to avoid
-            // double cleanup and duplicate UI completion events.
-            if (!managed.isProcessing) {
-              sessionLog.info('Chat completed after explicit handoff/stop; skipping normal completion handling')
-              sendSpan.mark('chat.complete.already_stopped')
-              sendSpan.end()
-              return
-            }
-
-            sessionLog.info('Chat completed via complete event')
-
-            // Check if we got an assistant response in this turn
-            // If not, the SDK may have hit context limits or other issues
-            const lastAssistantMsg = [...managed.messages].reverse().find(m =>
-              m.role === 'assistant' && !m.isIntermediate
-            )
-            const lastUserMsg = [...managed.messages].reverse().find(m => m.role === 'user')
-
-            // If the last user message is newer than any assistant response, we got no reply
-            // This can happen due to context overflow or API issues
-            if (lastUserMsg && (!lastAssistantMsg || lastUserMsg.timestamp > lastAssistantMsg.timestamp)) {
-              sessionLog.warn(`Session ${sessionId} completed without assistant response - possible context overflow or API issue`)
-
-              // Check if there's a captured API error that explains the silent failure.
-              // Pass explicit session path to avoid reading from the wrong session
-              // (_sessionDir singleton can be clobbered by concurrent sessions).
-              const sessionErrorPath = getSessionStoragePath(managed.workspace.rootPath, managed.id)
-              const apiError = getLastApiError(sessionErrorPath)
-
-              if (apiError && apiError.status === 400) {
-                const isImageError = apiError.message?.includes('image exceeds')
-
-                const errorMessage: Message = {
-                  id: generateMessageId(),
-                  role: 'error',
-                  content: isImageError
-                    ? `Image Too Large: ${apiError.message}`
-                    : `Request Error: ${apiError.message}`,
-                  timestamp: this.monotonic(),
-                  errorCode: isImageError ? 'image_too_large' : 'invalid_request',
-                  errorTitle: isImageError ? 'Image Too Large' : 'Invalid Request',
-                  errorDetails: isImageError
-                    ? ['An image in the conversation exceeds the 5 MB API limit.',
-                       'This session cannot recover — the image is embedded in the history.',
-                       'Please start a new session to continue.']
-                    : [apiError.message],
-                  errorCanRetry: false,
-                }
-                managed.messages.push(errorMessage)
-                this.sendEvent({
-                  type: 'typed_error',
-                  sessionId,
-                  error: {
-                    code: isImageError ? 'image_too_large' as const : 'invalid_request' as const,
-                    title: errorMessage.errorTitle!,
-                    message: apiError.message,
-                    actions: [],
-                    canRetry: false,
-                    details: errorMessage.errorDetails,
-                  },
-                }, managed.workspace.id)
-              }
-            }
-
-            sendSpan.mark('chat.complete')
+          // Loop exited - either via complete event (normal) or generator ended after soft interrupt
+          if (!managed.isProcessing) {
+            sessionLog.info('Chat loop exited after explicit handoff/stop')
+            sendSpan.mark('chat.exit.already_stopped')
             sendSpan.end()
-            // The backend also ends a turn the user stopped with `complete`. Reporting that as a
-            // completion marked a stopped task step done with no output (found 2026-10-11).
-            const stoppedDuringTurn = (managed.stopEpoch ?? 0) !== turnStopEpoch
-            this.onProcessingStopped(sessionId, stoppedDuringTurn ? 'interrupted' : 'complete', myGeneration)
-            return  // Exit function, skip finally block (onProcessingStopped handles cleanup)
+          } else if (managed.stopRequested) {
+            sessionLog.info('Chat loop completed after stop request - events drained successfully')
+            await this.onProcessingStopped(sessionId, 'interrupted', myGeneration)
+          } else {
+            sessionLog.info('Chat loop exited unexpectedly')
           }
-
-          // NOTE: We no longer break early on !isProcessing or stopRequested.
-          // After soft interrupt (forceAbort), the backend sets turnComplete=true which causes
-          // the generator to yield remaining queued events and then complete naturally.
-          // This ensures we don't lose in-flight messages.
-        }
-
-        if (managed.processingGeneration !== myGeneration) {
-          sendSpan.mark('chat.superseded')
-          sendSpan.end()
-          return
-        }
-        // Loop exited - either via complete event (normal) or generator ended after soft interrupt
-        if (!managed.isProcessing) {
-          sessionLog.info('Chat loop exited after explicit handoff/stop')
-          sendSpan.mark('chat.exit.already_stopped')
-          sendSpan.end()
-        } else if (managed.stopRequested) {
-          sessionLog.info('Chat loop completed after stop request - events drained successfully')
-          this.onProcessingStopped(sessionId, 'interrupted', myGeneration)
-        } else {
-          sessionLog.info('Chat loop exited unexpectedly')
-        }
-      } catch (error) {
-        if (managed.processingGeneration !== myGeneration) {
-          sendSpan.mark('chat.superseded')
-          sendSpan.end()
-          return
-        }
-        // Check if this is an abort error (expected when interrupted)
-        const isAbortError = error instanceof Error && (
-          error.name === 'AbortError' ||
-          error.message === 'Request was aborted.' ||
-          error.message.includes('aborted')
-        )
-
-        if (isAbortError) {
-          // Extract abort reason if available (safety net for unexpected abort propagation)
-          const reason = (error as DOMException).cause as AbortReason | undefined
-
-          sessionLog.info(`Chat aborted (reason: ${reason || 'unknown'})`)
-          sendSpan.mark('chat.aborted')
-          sendSpan.setMetadata('abort_reason', reason || 'unknown')
-          sendSpan.end()
-
-          // UI handoff paths (plan submission, auth request) handle their own cleanup
-          // by setting isProcessing = false directly. All other abort reasons route
-          // through onProcessingStopped for queue draining.
-          if (reason === AbortReason.UserStop || reason === AbortReason.Redirect || reason === undefined) {
-            this.onProcessingStopped(sessionId, 'interrupted', myGeneration)
+        } catch (error) {
+          if (managed.processingGeneration !== myGeneration) {
+            sendSpan.mark('chat.superseded')
+            sendSpan.end()
+            return
           }
-        } else {
-          sessionLog.error('Error in chat:', error)
-          sessionLog.error('Error message:', error instanceof Error ? error.message : String(error))
-          sessionLog.error('Error stack:', error instanceof Error ? error.stack : 'No stack')
+          // Check if this is an abort error (expected when interrupted)
+          const isAbortError = error instanceof Error && (
+            error.name === 'AbortError' ||
+            error.message === 'Request was aborted.' ||
+            error.message.includes('aborted')
+          )
 
-          // Report chat/SDK errors via runtime hooks (Electron can forward to Sentry)
-          sessionRuntimeHooks.captureException(error, { errorSource: 'chat', sessionId })
+          if (isAbortError) {
+            // Extract abort reason if available (safety net for unexpected abort propagation)
+            const reason = (error as DOMException).cause as AbortReason | undefined
 
-          sendSpan.mark('chat.error')
-          sendSpan.setMetadata('error', error instanceof Error ? error.message : String(error))
-          sendSpan.end()
-          this.sendEvent({
-            type: 'error',
-            sessionId,
-            error: error instanceof Error ? error.message : 'Unknown error'
-          }, managed.workspace.id)
-          // Handle error via centralized handler
-          this.onProcessingStopped(sessionId, 'error', myGeneration)
+            sessionLog.info(`Chat aborted (reason: ${reason || 'unknown'})`)
+            sendSpan.mark('chat.aborted')
+            sendSpan.setMetadata('abort_reason', reason || 'unknown')
+            sendSpan.end()
+
+            // UI handoff paths (plan submission, auth request) handle their own cleanup
+            // by setting isProcessing = false directly. All other abort reasons route
+            // through onProcessingStopped for queue draining.
+            if (reason === AbortReason.UserStop || reason === AbortReason.Redirect || reason === undefined) {
+              await this.onProcessingStopped(sessionId, 'interrupted', myGeneration)
+            }
+          } else {
+            sessionLog.error('Error in chat:', error)
+            sessionLog.error('Error message:', error instanceof Error ? error.message : String(error))
+            sessionLog.error('Error stack:', error instanceof Error ? error.stack : 'No stack')
+
+            // Report chat/SDK errors via runtime hooks (Electron can forward to Sentry)
+            sessionRuntimeHooks.captureException(error, { errorSource: 'chat', sessionId })
+
+            sendSpan.mark('chat.error')
+            sendSpan.setMetadata('error', error instanceof Error ? error.message : String(error))
+            sendSpan.end()
+            this.sendEvent({
+              type: 'error',
+              sessionId,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            }, managed.workspace.id)
+            // Handle error via centralized handler
+            await this.onProcessingStopped(sessionId, 'error', myGeneration)
+          }
+        } finally {
+          // Only handle cleanup for unexpected exits (loop break without complete event)
+          // Normal completion returns early after calling onProcessingStopped
+          // Errors are handled in catch block
+          if (managed.isProcessing && managed.processingGeneration === myGeneration) {
+            sessionLog.info('Finally block cleanup - unexpected exit')
+            sendSpan.mark('chat.unexpected_exit')
+            sendSpan.end()
+            await this.onProcessingStopped(sessionId, 'interrupted', myGeneration)
+          }
         }
       } finally {
-        // Only handle cleanup for unexpected exits (loop break without complete event)
-        // Normal completion returns early after calling onProcessingStopped
-        // Errors are handled in catch block
-        if (managed.isProcessing && managed.processingGeneration === myGeneration) {
-          sessionLog.info('Finally block cleanup - unexpected exit')
-          sendSpan.mark('chat.unexpected_exit')
-          sendSpan.end()
-          this.onProcessingStopped(sessionId, 'interrupted', myGeneration)
+        try {
+          // Agent setup, pre-turn work and an iterator that ends without a manual
+          // success are all failed compactions. None may strand a consumed draft.
+          if (compactionAcceptance && compactionAcceptance.awaitingCompaction && !compactionAcceptance.failed
+            && compactionAcceptance.compactionTurn?.generation === myGeneration) {
+            await this.withSessionLifecycleLock(sessionId, async () => {
+              if (this.sessions.get(sessionId) !== managed || managed.pendingPlanExecution !== compactionAcceptance) return
+              if (!compactionAcceptance.awaitingCompaction || compactionAcceptance.failed) return
+              await this.cancelPendingPlanExecution(managed, compactionAcceptance)
+            })
+          }
+        } finally {
+          // Setup can fail before the inner chat try/finally is reached. Every
+          // admitted turn must settle without leaving a warm session stuck busy.
+          if (this.sessions.get(sessionId) === managed && managed.isProcessing
+            && managed.processingGeneration === myGeneration) {
+            await this.onProcessingStopped(sessionId, 'error', myGeneration)
+          }
         }
       }
+    } catch (error) {
+      if (!durable && admittedMessage && !admittedMessage.queuedRestoreId) {
+        managed.messages = managed.messages.filter(candidate => candidate !== admittedMessage)
+        managed.messageQueue = managed.messageQueue.filter(entry => entry.messageId !== admittedMessage?.id)
+        this.persistSession(managed)
+      }
+      if (admittedGeneration !== undefined && managed.processingGeneration === admittedGeneration && managed.isProcessing) {
+        await this.onProcessingStopped(sessionId, 'error', admittedGeneration)
+      }
+      throw error
     } finally {
-      try {
-        // Agent setup, pre-turn work and an iterator that ends without a manual
-        // success are all failed compactions. None may strand a consumed draft.
-        if (compactionAcceptance && compactionAcceptance.awaitingCompaction && !compactionAcceptance.failed
-          && compactionAcceptance.compactionTurn?.generation === myGeneration) {
-          await this.withSessionLifecycleLock(sessionId, async () => {
-            if (this.sessions.get(sessionId) !== managed || managed.pendingPlanExecution !== compactionAcceptance) return
-            if (!compactionAcceptance.awaitingCompaction || compactionAcceptance.failed) return
-            await this.cancelPendingPlanExecution(managed, compactionAcceptance)
-          })
-        }
-      } finally {
-        // Setup can fail before the inner chat try/finally is reached. Every
-        // admitted turn must settle without leaving a warm session stuck busy.
-        if (this.sessions.get(sessionId) === managed && managed.isProcessing
-          && managed.processingGeneration === myGeneration) {
-          await this.onProcessingStopped(sessionId, 'error', myGeneration)
-        }
-      }
+      finishCommit()
+      releaseAdmission()
     }
   }
 
   async cancelProcessing(sessionId: string, silent = false): Promise<void> {
     const managed = this.sessions.get(sessionId)
+    if (managed?.stopBarrier) return managed.stopBarrier
     const stopRecord = managed?.pendingPlanExecution
     // The delivery tracker survives until producer acknowledgement. Hard Stop
     // also owns a queued approval or a replay still waiting for turn admission.
     const stoppingApproval = !silent && stopRecord?.executionDispatched && stopRecord.approvalMessageId && !stopRecord.failed
     if (!managed || !managed.isProcessing && !managed.autoRetryTimer && !managed.autoRetryPending?.ownedSteers?.length
-      && managed.messageQueue.length === 0 && !stoppingApproval && !managed.pendingQueueReplay && !managed.authRetryInProgress) {
+      && managed.messageQueue.length === 0 && !stoppingApproval && !managed.pendingQueueReplay && !managed.authRetryInProgress && !managed.pendingAuthRequest
+      && !managed.pendingSendAdmissions?.size) {
       return // Not processing, nothing to cancel
     }
 
-    sessionLog.info('Cancelling processing for session:', sessionId, silent ? '(silent)' : '')
+    let releaseStop!: () => void
+    let rejectStop!: (error: unknown) => void
+    const stopBarrier = new Promise<void>((resolve, reject) => { releaseStop = resolve; rejectStop = reject })
+    // The initiating caller gets the same failure through this method. Mark
+    // the shared promise observed even when no duplicate Stop/send awaits it.
+    void stopBarrier.catch(() => {})
+    managed.stopBarrier = stopBarrier
+    try {
+      sessionLog.info('Cancelling processing for session:', sessionId, silent ? '(silent)' : '')
 
-    // Close turn admission before any durability await. An agent startup
-    // finishing while cancellation writes must not start the stopped turn.
-    const stoppedEpoch = managed.stopEpoch ?? 0
-    const stoppedGeneration = managed.processingGeneration
-    managed.stopRequested = true
-    managed.stopEpoch = stoppedEpoch + 1
-    managed.authRetryInProgress = false
-    this.recoverPendingQueueReplay(managed)
-    // Transfer undelivered accepted input before aborting its backend, so the
-    // queued-input restore below retains each original payload.
-    this.recoverActivationSteers(managed)
-    this.recoverPendingSteers(managed)
-    if (stoppingApproval) {
-      // The plan outbox restores its consumed snapshot. Restoring the
-      // approval control message through the ordinary queue would duplicate it.
-      managed.messageQueue = managed.messageQueue.filter(entry => entry.messageId !== stopRecord.approvalMessageId)
-      const approval = managed.messages.find(message => message.id === stopRecord.approvalMessageId)
-      if (approval) approval.isQueued = false
-    }
-    // Detach every stopped payload before abort or IO can let completion drain it.
-    // Collect queued message text for input restoration before clearing
-    const queuedTexts = managed.messageQueue.map(q => q.message)
-    const queuedReferences = managed.messageQueue.flatMap(q => q.options?.references ?? [])
-    const queuedAttachments = managed.messageQueue.flatMap(q => q.storedAttachments ?? [])
-
-    const queuedMessageIds = Array.from(new Set(
-      managed.messageQueue.map(q => q.messageId).filter((id): id is string => !!id)
-    ))
-    const queuedMessageIdSet = new Set(queuedMessageIds)
-
-    // Clear queue - user explicitly stopped, don't process queued messages
-    managed.messageQueue = []
-
-    // Explicit Stop restores queued input into the draft. Keep the persisted
-    // bubbles until the renderer confirms that draft persistence succeeded.
-    // Silent redirects have no restore/ack handshake and retain their existing
-    // queue cleanup behavior.
-    const queuedRestoreId = !silent && queuedMessageIds.length > 0
-      ? randomUUID()
-      : undefined
-    const pendingRestoreMessageIds: string[] = []
-    if (queuedRestoreId) {
+      // Close turn admission before any durability await. An agent startup
+      // finishing while cancellation writes must not start the stopped turn.
+      const stoppedEpoch = managed.stopEpoch ?? 0
+      const stoppedGeneration = managed.processingGeneration
+      managed.stopRequested = true
+      managed.stopEpoch = stoppedEpoch + 1
+      // Unblock a new epoch even if an old validation read never returns.
+      for (const release of [...(managed.pendingSendAdmissions?.keys() ?? [])]) release()
+      managed.authRetryInProgress = false
+      if (managed.pendingAuthRequest) {
+        const requestId = managed.pendingAuthRequestId
+        const card = managed.messages.find(message => message.role === 'auth-request'
+          && message.authRequestId === requestId && message.authStatus === 'pending')
+        if (card) card.authStatus = 'cancelled'
+        managed.pendingAuthRequest = undefined
+        managed.pendingAuthRequestId = undefined
+        managed.pendingAuthOwner = undefined
+        if (requestId) this.sendEvent({ type: 'auth_completed', sessionId, requestId, success: false, cancelled: true }, managed.workspace.id)
+        this.persistSession(managed)
+      }
+      // A Pi cancellation receipt is ordered after all earlier consumption receipts.
+      // New turn admission waits for this barrier, so an old abort cannot hit it.
+      const stoppedAgent = managed.agent
+      // Keep background agents alive where the backend supports reply-only Stop.
+      if (stoppedAgent && !stoppedAgent.stopTurn?.()) {
+        stoppedAgent.forceAbort(AbortReason.UserStop)
+      }
+      if (stoppedAgent?.settlePendingSteers) {
+        const undelivered = await stoppedAgent.settlePendingSteers()
+        if (this.sessions.get(sessionId) !== managed) return
+        const ids = new Set(undelivered.map(steer => steer.messageId))
+        for (const id of managed.acceptedSteers?.keys() ?? []) {
+          if (ids.has(id)) continue
+          const delivered = managed.messages.find(message => message.id === id)
+          if (delivered) delivered.pendingDelivery = undefined
+          managed.acceptedSteers?.delete(id)
+        }
+        for (const steer of undelivered) this.recoverUndeliveredSteer(managed, steer)
+      }
+      this.recoverPendingQueueReplay(managed)
       for (const message of managed.messages) {
-        if (message.role === 'user' && message.isQueued && queuedMessageIdSet.has(message.id)) {
-          message.queuedRestoreId = queuedRestoreId
-          pendingRestoreMessageIds.push(message.id)
+        if (message.role !== 'user' || (!message.pendingDelivery && !message.isQueued) || message.hidden || message.queuedRestoreId) continue
+        message.pendingDelivery = undefined
+        message.isQueued = true
+        if (!managed.messageQueue.some(entry => entry.messageId === message.id)) {
+          managed.messageQueue.push({ message: message.content, messageId: message.id,
+            storedAttachments: message.attachments, options: { references: message.references } })
         }
       }
-    } else if (queuedMessageIds.length > 0) {
-      managed.messages = managed.messages.filter(m => !queuedMessageIdSet.has(m.id))
-    }
-
-    // Track interruption so the next user message gets a context note
-    // telling the LLM the previous response was cut short
-    managed.wasInterrupted = true
-
-    // Only show "Response interrupted" message when user explicitly clicked Stop
-    // Silent mode is used when redirecting (sending new message while processing)
-    let interruptedMessage: Message | undefined
-    if (!silent) {
-      interruptedMessage = {
-        id: generateMessageId(),
-        role: 'info',
-        content: 'Response interrupted',
-        timestamp: this.monotonic(),
+      managed.messageQueue.sort((a, b) => managed.messages.findIndex(m => m.id === a.messageId) - managed.messages.findIndex(m => m.id === b.messageId))
+      // Transfer undelivered accepted input before aborting its backend, so the
+      // queued-input restore below retains each original payload.
+      this.recoverActivationSteers(managed)
+      this.recoverPendingSteers(managed)
+      if (stoppingApproval) {
+        // The plan outbox restores its consumed snapshot. Restoring the
+        // approval control message through the ordinary queue would duplicate it.
+        managed.messageQueue = managed.messageQueue.filter(entry => entry.messageId !== stopRecord.approvalMessageId)
+        const approval = managed.messages.find(message => message.id === stopRecord.approvalMessageId)
+        if (approval) approval.isQueued = false
       }
-      managed.messages.push(interruptedMessage)
-    }
+      // Detach every stopped payload before abort or IO can let completion drain it.
+      // Collect queued message text for input restoration before clearing
+      const queuedTexts = managed.messageQueue.map(q => q.message)
+      const queuedReferences = managed.messageQueue.flatMap(q => q.options?.references ?? [])
+      const queuedAttachments = managed.messageQueue.flatMap(q => q.storedAttachments ?? [])
 
-    // Interrupt the backend only after stopped input has been detached, before any recovery IO.
-    // Keep background agents alive where the backend supports reply-only Stop.
-    if (managed.agent && !managed.agent.stopTurn?.()) {
-      managed.agent.forceAbort(AbortReason.UserStop)
-    }
+      const queuedMessageIds = Array.from(new Set(
+        managed.messageQueue.map(q => q.messageId).filter((id): id is string => !!id)
+      ))
+      const queuedMessageIdSet = new Set(queuedMessageIds)
 
-    // A Stop during the manual /compact of an Accept & Compact kills the
-    // compaction: funnel into the same failure path (mark non-executable,
-    // restore the consumed draft idempotently, clear) instead of leaving a
-    // plan awaiting a compaction that can no longer complete. A non-compact
-    // message that caused a silent redirect already cleared the record via
-    // sendMessage's safety valve, so this no-ops there.
-    const stoppingCompaction = stopRecord && !stopRecord.executionDispatched && stopRecord.compactionTurn
-      && managed.isProcessing && stopRecord.compactionTurn.generation === managed.processingGeneration
-      && stopRecord.compactionTurn.stopEpoch === stoppedEpoch
-    if (stopRecord && !stopRecord.failed && (stoppingCompaction || stoppingApproval)) {
-      const stoppedExecutionId = stopRecord.executionId
-      const stoppedTurn = stopRecord.compactionTurn
-      const stoppedApprovalId = stopRecord.approvalMessageId
-      await this.withSessionLifecycleLock(sessionId, async () => {
-        // Readiness may publish a new image while its strict write is pending.
-        // Stop still owns that compaction by execution/turn identity until the
-        // active compact ends; an idle ready plan remains executable.
-        const currentRecord = this.sessions.get(sessionId)?.pendingPlanExecution
-        if (this.sessions.get(sessionId) !== managed || !currentRecord) return
-        if (stoppedExecutionId !== undefined ? currentRecord.executionId !== stoppedExecutionId : currentRecord !== stopRecord) return
-        if (stoppingApproval) {
-          const sameApproval = currentRecord.approvalMessageId === stoppedApprovalId && currentRecord.executionDispatched
-          const rolledBackApproval = currentRecord.approvalMessageId === undefined && !currentRecord.executionDispatched
-          if (!sameApproval && !rolledBackApproval) return
-        } else {
-          if (currentRecord.executionDispatched || !stoppedTurn
-            || currentRecord.compactionTurn?.generation !== stoppedTurn.generation
-            || currentRecord.compactionTurn.stopEpoch !== stoppedTurn.stopEpoch) return
+      // Clear queue - user explicitly stopped, don't process queued messages
+      managed.messageQueue = []
+
+      // Explicit Stop restores queued input into the draft. Keep the persisted
+      // bubbles until the renderer confirms that draft persistence succeeded.
+      // Silent redirects have no restore/ack handshake and retain their existing
+      // queue cleanup behavior.
+      const queuedRestoreId = !silent && queuedMessageIds.length > 0
+        ? `input-${randomUUID()}`
+        : undefined
+      const pendingRestoreMessageIds: string[] = []
+      if (queuedRestoreId) {
+        for (const message of managed.messages) {
+          if (message.role === 'user' && message.isQueued && queuedMessageIdSet.has(message.id)) {
+            message.queuedRestoreId = queuedRestoreId
+            pendingRestoreMessageIds.push(message.id)
+          }
         }
-        await this.cancelPendingPlanExecution(managed, currentRecord)
-      }).catch(error => sessionLog.error(`Session ${sessionId}: Stop-funnel cancellation failed`, error))
-    }
-
-    if (pendingRestoreMessageIds.length > 0) {
-      this.persistSession(managed)
-      await this.flushSession(managed.id)
-    }
-
-    this.sendEvent({
-      type: 'interrupted',
-      sessionId,
-      ...(interruptedMessage ? { message: interruptedMessage } : {}),
-      // Include queued input so the renderer can restore it before acknowledging.
-      ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
-      ...(queuedReferences.length > 0 ? { queuedReferences } : {}),
-      ...(queuedAttachments.length > 0 ? { queuedAttachments } : {}),
-      ...(queuedRestoreId && pendingRestoreMessageIds.length > 0
-        ? { queuedRestoreId, queuedMessageIds: pendingRestoreMessageIds }
-        : {}),
-    }, managed.workspace.id)
-
-    // A pending retry can be stopped after its old iterator already closed.
-    // No event pump remains to clear this flag for the next user turn.
-    if (!managed.isProcessing) managed.stopRequested = false
-
-    // Safety timeout: if event loop doesn't complete within 5 seconds, force cleanup
-    // This handles cases where the generator gets stuck
-    setTimeout(() => {
-      if (this.sessions.get(sessionId) === managed && managed.processingGeneration === stoppedGeneration
-        && (managed.stopEpoch ?? 0) === stoppedEpoch + 1 && managed.stopRequested && managed.isProcessing) {
-        sessionLog.warn('Generator did not complete after stop request, forcing cleanup')
-        this.onProcessingStopped(sessionId, 'timeout', stoppedGeneration)
+      } else if (queuedMessageIds.length > 0) {
+        managed.messages = managed.messages.filter(m => !queuedMessageIdSet.has(m.id))
       }
-    }, 5000)
 
-    // NOTE: We don't clear isProcessing or send complete event here anymore.
-    // The event loop will drain remaining events and call onProcessingStopped when done.
+      // Track interruption so the next user message gets a context note
+      // telling the LLM the previous response was cut short
+      managed.wasInterrupted = true
+
+      // Only show "Response interrupted" message when user explicitly clicked Stop
+      // Silent mode is used when redirecting (sending new message while processing)
+      let interruptedMessage: Message | undefined
+      if (!silent) {
+        interruptedMessage = {
+          id: generateMessageId(),
+          role: 'info',
+          content: 'Response interrupted',
+          timestamp: this.monotonic(),
+        }
+        managed.messages.push(interruptedMessage)
+      }
+
+      // Interrupt the backend at the same admission boundary. Recovery writes
+      // may wait on IO; the stopped turn must not keep running during that wait.
+
+      // A Stop during the manual /compact of an Accept & Compact kills the
+      // compaction: funnel into the same failure path (mark non-executable,
+      // restore the consumed draft idempotently, clear) instead of leaving a
+      // plan awaiting a compaction that can no longer complete. A non-compact
+      // message that caused a silent redirect already cleared the record via
+      // sendMessage's safety valve, so this no-ops there.
+      const stoppingCompaction = stopRecord && !stopRecord.executionDispatched && stopRecord.compactionTurn
+        && managed.isProcessing && stopRecord.compactionTurn.generation === managed.processingGeneration
+        && stopRecord.compactionTurn.stopEpoch === stoppedEpoch
+      if (stopRecord && !stopRecord.failed && (stoppingCompaction || stoppingApproval)) {
+        const stoppedExecutionId = stopRecord.executionId
+        const stoppedTurn = stopRecord.compactionTurn
+        const stoppedApprovalId = stopRecord.approvalMessageId
+        await this.withSessionLifecycleLock(sessionId, async () => {
+          // Readiness may publish a new image while its strict write is pending.
+          // Stop still owns that compaction by execution/turn identity until the
+          // active compact ends; an idle ready plan remains executable.
+          const currentRecord = this.sessions.get(sessionId)?.pendingPlanExecution
+          if (this.sessions.get(sessionId) !== managed || !currentRecord) return
+          if (stoppedExecutionId !== undefined ? currentRecord.executionId !== stoppedExecutionId : currentRecord !== stopRecord) return
+          if (stoppingApproval) {
+            const sameApproval = currentRecord.approvalMessageId === stoppedApprovalId && currentRecord.executionDispatched
+            const rolledBackApproval = currentRecord.approvalMessageId === undefined && !currentRecord.executionDispatched
+            if (!sameApproval && !rolledBackApproval) return
+          } else {
+            if (currentRecord.executionDispatched || !stoppedTurn
+              || currentRecord.compactionTurn?.generation !== stoppedTurn.generation
+              || currentRecord.compactionTurn.stopEpoch !== stoppedTurn.stopEpoch) return
+          }
+          await this.cancelPendingPlanExecution(managed, currentRecord)
+        }).catch(error => sessionLog.error(`Session ${sessionId}: Stop-funnel cancellation failed`, error))
+      }
+
+      if (pendingRestoreMessageIds.length > 0) {
+        this.persistSession(managed)
+        await this.flushSessionStrict(managed.id)
+      }
+
+      this.sendEvent({
+        type: 'interrupted',
+        sessionId,
+        ...(interruptedMessage ? { message: interruptedMessage } : {}),
+        // Include queued input so the renderer can restore it before acknowledging.
+        ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
+        ...(queuedReferences.length > 0 ? { queuedReferences } : {}),
+        ...(queuedAttachments.length > 0 ? { queuedAttachments } : {}),
+        ...(queuedRestoreId && pendingRestoreMessageIds.length > 0
+          ? { queuedRestoreId, queuedMessageIds: pendingRestoreMessageIds }
+          : {}),
+      }, managed.workspace.id)
+
+      // A pending retry can be stopped after its old iterator already closed.
+      // No event pump remains to clear this flag for the next user turn.
+      if (!managed.isProcessing) managed.stopRequested = false
+
+      // Safety timeout: if event loop doesn't complete within 5 seconds, force cleanup
+      // This handles cases where the generator gets stuck
+      setTimeout(() => {
+        if (this.sessions.get(sessionId) === managed && managed.processingGeneration === stoppedGeneration
+          && (managed.stopEpoch ?? 0) === stoppedEpoch + 1 && managed.stopRequested && managed.isProcessing) {
+          sessionLog.warn('Generator did not complete after stop request, forcing cleanup')
+          void this.onProcessingStopped(sessionId, 'timeout', stoppedGeneration).catch(error => {
+            sessionLog.error(`Session ${sessionId}: timed-out turn cleanup failed`, error)
+          })
+        }
+      }, 5000)
+
+      // NOTE: We don't clear isProcessing or send complete event here anymore.
+      // The event loop will drain remaining events and call onProcessingStopped when done.
+    } catch (error) {
+      rejectStop(error)
+      throw error
+    } finally {
+      if (managed.stopBarrier === stopBarrier) managed.stopBarrier = undefined
+      releaseStop()
+    }
+
   }
 
   async acknowledgeQueuedInputRestore(
@@ -9038,32 +9407,39 @@ export class SessionManager implements ISessionManager {
     restoreId: string,
     messageIds: string[],
   ): Promise<void> {
-    const managed = this.sessions.get(sessionId)
-    if (!managed || !restoreId || !Array.isArray(messageIds) || messageIds.length === 0) return
-
-    await this.ensureMessagesLoaded(managed)
-    const requestedMessageIds = new Set(messageIds)
-    const removedMessageIds: string[] = []
-    managed.messages = managed.messages.filter(message => {
-      const matches = message.role === 'user'
-        && message.queuedRestoreId === restoreId
-        && requestedMessageIds.has(message.id)
-      if (matches) removedMessageIds.push(message.id)
-      return !matches
+    if (!restoreId || !Array.isArray(messageIds) || messageIds.length === 0) return
+    await this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) return
+      await this.ensureMessagesLoaded(managed)
+      if (this.sessions.get(sessionId) !== managed) return
+      const requested = new Set(messageIds)
+      const removed = managed.messages.flatMap((message, index) => message.role === 'user'
+        && message.queuedRestoreId === restoreId && requested.has(message.id) ? [{ message, index }] : [])
+      if (!removed.length) return
+      const ids = new Set(removed.map(entry => entry.message.id))
+      managed.messages = managed.messages.filter(message => !ids.has(message.id))
+      const previousReceipts = managed.restoredInputIds
+      managed.restoredInputIds = { ...previousReceipts }
+      for (const { message } of removed) {
+        if (message.clientMessageId) managed.restoredInputIds = { ...managed.restoredInputIds, [message.clientMessageId]: message.id }
+      }
+      this.persistSession(managed)
+      try {
+        await this.flushSessionStrict(managed.id)
+      } catch (error) {
+        managed.restoredInputIds = previousReceipts
+        // Keep the identity-scoped outbox retryable until its retirement is durable.
+        // Concurrently appended history is retained; only our removed rows return.
+        for (const { message, index } of removed) {
+          if (!managed.messages.some(candidate => candidate.id === message.id)) managed.messages.splice(index, 0, message)
+        }
+        this.persistSession(managed)
+        throw error
+      }
+      this.sendEvent({ type: 'queued_input_restored', sessionId,
+        queuedRestoreId: restoreId, messageIds: [...ids] }, managed.workspace.id)
     })
-
-    // A repeated or stale acknowledgement is a safe no-op. In particular, it
-    // must never remove messages belonging to a newer restore operation.
-    if (removedMessageIds.length === 0) return
-
-    this.persistSession(managed)
-    await this.flushSession(managed.id)
-    this.sendEvent({
-      type: 'queued_input_restored',
-      sessionId,
-      queuedRestoreId: restoreId,
-      messageIds: removedMessageIds,
-    }, managed.workspace.id)
   }
 
   /**
@@ -9144,7 +9520,9 @@ export class SessionManager implements ISessionManager {
           error: 'Authentication failed. Please check your credentials.',
           timestamp: failedMessage.timestamp,
         }, workspaceId)
-        this.onProcessingStopped(sessionId, 'error', authRetry.generation)
+        await this.onProcessingStopped(sessionId, 'error', authRetry.generation).catch(error => {
+          sessionLog.error(`Session ${sessionId}: authentication retry cleanup failed`, error)
+        })
       }
     })
 
@@ -9257,6 +9635,7 @@ export class SessionManager implements ISessionManager {
       const original = managed.messages.find(message => message.id === steer.messageId)
       if (original) {
         original.isQueued = true
+        original.pendingDelivery = undefined
         this.sendEvent({ type: 'user_message', sessionId: managed.id, message: original,
           status: 'queued', optimisticMessageId: payload?.optimisticMessageId }, managed.workspace.id)
         this.persistSession(managed)
@@ -9287,6 +9666,7 @@ export class SessionManager implements ISessionManager {
             ...(original.hidden ? { hidden: true } : {}),
           }
           original.isQueued = true
+          original.pendingDelivery = undefined
           managed.messageQueue.push({
             message: original.content,
             storedAttachments: original.attachments,
@@ -9304,6 +9684,7 @@ export class SessionManager implements ISessionManager {
     const existing = payload.messageId ? managed.messages.find(m => m.id === payload.messageId) : undefined
     if (existing) {
       existing.isQueued = true
+      existing.pendingDelivery = undefined
       this.sendEvent({ type: 'user_message', sessionId: managed.id, message: existing,
         status: 'queued', optimisticMessageId: payload.optimisticMessageId }, managed.workspace.id)
     }
@@ -9324,7 +9705,7 @@ export class SessionManager implements ISessionManager {
     for (const steer of managed.agent?.takePendingSteers?.() ?? []) {
       this.recoverUndeliveredSteer(managed, steer)
     }
-    managed.acceptedSteers?.clear()
+    if (!managed.agent?.settlePendingSteers) managed.acceptedSteers?.clear()
   }
 
   /** Recover scheduled input; a rejected first entry stays available for explicit Retry. */
@@ -9353,6 +9734,25 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  /** Retire uncertain delivery into the existing durable, idempotent draft outbox. */
+  private markUnacceptedInputForRestore(managed: ManagedSession, ownedIds?: Set<string>): Message[] {
+    const messages = managed.messages.filter(message => message.role === 'user'
+      && message.pendingDelivery && !message.hidden && !message.queuedRestoreId
+      && (!ownedIds || ownedIds.has(message.id)))
+    for (const message of messages) {
+      message.pendingDelivery = undefined
+      message.isQueued = true
+      // Stable across a crash before this transition is flushed to disk.
+      message.queuedRestoreId = `input-${message.id}`
+    }
+    const ids = new Set(messages.map(message => message.id))
+    managed.messageQueue = managed.messageQueue.filter(entry => !entry.messageId || !ids.has(entry.messageId))
+    if (managed.pendingQueueReplay?.entries.every(entry => entry.messageId && ids.has(entry.messageId))) {
+      managed.pendingQueueReplay = undefined
+    }
+    return messages
+  }
+
   /**
    * Central handler for when processing stops (any reason).
    * Single source of truth for cleanup and queue processing.
@@ -9373,6 +9773,44 @@ export class SessionManager implements ISessionManager {
       && managed.processingGeneration === generation && (managed.stopEpoch ?? 0) === cleanupStopEpoch
 
     sessionLog.info(`Processing stopped for session ${sessionId}: ${reason}`)
+    // Retire processing before recovery IO, so a failed recovery write cannot
+    // strand the session busy. The durable pending marker remains recoverable.
+    this.setProcessing(managed, false)
+    managed.stopRequested = false
+    if (!managed.authRetryInProgress) {
+      const undelivered = this.markUnacceptedInputForRestore(managed, new Set([
+        ...(managed.lastSentMessageIds ?? []),
+        ...(managed.acceptedSteers?.keys() ?? []),
+      ]))
+      if (undelivered.length) {
+        this.persistSession(managed)
+        let recoveryPersisted = false
+        try {
+          await this.flushSessionStrict(managed.id)
+          recoveryPersisted = true
+        } catch (error) {
+          // The durable pending-delivery image still owns these inputs. Keep the stable
+          // outbox in memory and retry its write, but never announce restoration before
+          // that write succeeds. Cleanup must finish even when storage is unavailable.
+          sessionLog.error(`Session ${sessionId}: input recovery persistence failed`, error)
+          this.persistSession(managed)
+          if (!ownsCleanup()) return
+          reason = 'error'
+          this.sendEvent({ type: 'error', sessionId,
+            error: `Input recovery could not be saved: ${error instanceof Error ? error.message : String(error)}. The input is retained for recovery.`,
+          }, managed.workspace.id)
+        }
+        if (!ownsCleanup()) return
+        if (recoveryPersisted) {
+          for (const message of undelivered) {
+            this.sendEvent({ type: 'interrupted', sessionId,
+              queuedMessages: [message.content], queuedReferences: message.references,
+              queuedAttachments: message.attachments, queuedRestoreId: message.queuedRestoreId,
+              queuedMessageIds: [message.id] }, managed.workspace.id)
+          }
+        }
+      }
+    }
     const replayApprovalId = managed.pendingQueueReplay?.entries[0]?.messageId
     if (replayApprovalId && managed.lastSentMessageIds?.includes(replayApprovalId)) this.recoverPendingQueueReplay(managed)
 
@@ -9384,8 +9822,8 @@ export class SessionManager implements ISessionManager {
       this.recoverActivationSteers(managed, activationSlot)
     }
 
-    // Backend recovery events precede complete; discard payloads already delivered.
-    managed.acceptedSteers?.clear()
+    // Async producers retain unconfirmed delivery until their receipt arrives.
+    if (!managed.agent?.settlePendingSteers) managed.acceptedSteers?.clear()
 
     // 1. Cleanup state
     this.setProcessing(managed, false)
@@ -10153,78 +10591,122 @@ export class SessionManager implements ISessionManager {
   async adoptGeneratedTaskOrchestrator(
     sessionId: string,
     taskSlug: string,
-    reconcile?: { name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
+    reconcile?: { workspaceId?: string; projectId?: string; name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
   ): Promise<boolean> {
-    const managed = this.sessions.get(sessionId)
-    if (!managed) {
-      sessionLog.warn('adoptGeneratedTaskOrchestrator: session not found', { sessionId, taskSlug })
-      return false
-    }
-    // Idempotency: already bound to this slug → no-op success. Bound to a different slug → refuse,
-    // so a stale draft ref can't hijack an unrelated orchestrator.
-    if (managed.taskSlug) {
-      if (managed.taskSlug === taskSlug) return true
-      sessionLog.warn('adoptGeneratedTaskOrchestrator: slug mismatch, refusing to rebind', {
-        sessionId, existing: managed.taskSlug, requested: taskSlug,
+    return this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) return false
+      // Validate ownership even for idempotent binds; a repeated slug is not authorization.
+      if (reconcile?.workspaceId && managed.workspace.id !== reconcile.workspaceId) {
+        throw new Error('CROSS_WORKSPACE_SESSION: a Task and its Session must belong to the same Workspace')
+      }
+      if (reconcile?.projectId && managed.projectId !== reconcile.projectId) {
+        throw new Error('CROSS_PROJECT_SESSION: a Task cannot change an existing Session\'s Project')
+      }
+      if (managed.taskSlug) return managed.taskSlug === taskSlug
+      if (!managed.taskDraft) {
+        sessionLog.warn('adoptGeneratedTaskOrchestrator: session is not a task draft', { sessionId, taskSlug })
+        return false
+      }
+      // A metadata-only lookup must not let a cold Session look unused when deciding sdkCwd.
+      await this.ensureMessagesLoaded(managed)
+      if (this.sessions.get(sessionId) !== managed) return false
+
+      const modelChanged = Boolean(reconcile?.model && reconcile.model !== managed.model)
+      const connectionChanged = Boolean(reconcile?.llmConnection && !managed.connectionLocked && reconcile.llmConnection !== managed.llmConnection)
+      const cwdChanged = Boolean(reconcile?.workingDirectory && reconcile.workingDirectory !== managed.workingDirectory)
+      const modeChanged = Boolean(reconcile?.permissionMode && reconcile.permissionMode !== managed.permissionMode)
+      const renamed = Boolean(reconcile?.name && reconcile.name !== managed.name)
+      if (cwdChanged) {
+        const validation = isValidWorkingDirectory(reconcile!.workingDirectory!)
+        if (!validation.valid) throw new Error(`Invalid Task working directory: ${validation.reason}`)
+      }
+
+      const previous = {
+        taskSlug: managed.taskSlug,
+        taskDraft: managed.taskDraft,
+        name: managed.name,
+        model: managed.model,
+        llmConnection: managed.llmConnection,
+        workingDirectory: managed.workingDirectory,
+        sdkCwd: managed.sdkCwd,
+        permissionMode: managed.permissionMode,
+        previousPermissionMode: managed.previousPermissionMode,
+      }
+      const staged = {
+        taskSlug,
+        taskDraft: false,
+        name: renamed ? reconcile!.name! : previous.name,
+        model: modelChanged ? reconcile!.model : previous.model,
+        llmConnection: connectionChanged ? reconcile!.llmConnection : previous.llmConnection,
+        workingDirectory: cwdChanged ? reconcile!.workingDirectory : previous.workingDirectory,
+        sdkCwd: cwdChanged && managed.messages.length === 0 && !managed.sdkSessionId && !managed.agent
+          ? reconcile!.workingDirectory : previous.sdkCwd,
+        permissionMode: modeChanged ? reconcile!.permissionMode : previous.permissionMode,
+        previousPermissionMode: modeChanged ? (previous.permissionMode ?? 'ask') : previous.previousPermissionMode,
+      }
+      Object.assign(managed, staged)
+      this.setMetadataWriteGuard(managed)
+      try {
+        this.persistSession(managed)
+        await this.flushSessionStrict(sessionId)
+      } catch (error) {
+        // Other metadata editors do not all take the lifecycle lock. Roll back only values
+        // still owned by this write, preserving any later explicit edits while the I/O waited.
+        for (const key of Object.keys(previous) as Array<keyof typeof previous>) {
+          if (managed[key] === staged[key]) Object.assign(managed, { [key]: previous[key] })
+        }
+        this.setMetadataWriteGuard(managed)
+        this.persistSession(managed)
+        await this.flushSessionStrict(sessionId).catch(rollbackError => {
+          sessionLog.warn('adoptGeneratedTaskOrchestrator: could not persist binding rollback', { sessionId, rollbackError })
+        })
+        throw error
+      }
+
+      // The binding is durable. Preserve the canonical live updates, but a runtime failure
+      // must not turn this committed Task into a rejected RPC and roll back only its YAML.
+      const runtimeUpdates: Array<() => void | Promise<void>> = []
+      if (modelChanged) runtimeUpdates.push(() => {
+        if (managed.model === staged.model) return this.updateSessionModel(sessionId, managed.workspace.id, staged.model!)
       })
-      return false
-    }
-    // Only hidden generate-time drafts are eligible. A non-draft session without a slug isn't a
-    // generate orchestrator and must not be silently captured.
-    if (!managed.taskDraft) {
-      sessionLog.warn('adoptGeneratedTaskOrchestrator: session is not a task draft', { sessionId, taskSlug })
-      return false
-    }
-
-    // What actually changes — so we fire canonical live-updates (agent + caches + per-field events)
-    // only when needed. With generate now seeding model/connection/mode, these are usually all false.
-    const modelChanged = Boolean(reconcile?.model && reconcile.model !== managed.model)
-    const connectionChanged = Boolean(
-      reconcile?.llmConnection && !managed.connectionLocked && reconcile.llmConnection !== managed.llmConnection,
-    )
-    const cwdChanged = Boolean(reconcile?.workingDirectory && reconcile.workingDirectory !== managed.workingDirectory)
-    const modeChanged = Boolean(reconcile?.permissionMode && reconcile.permissionMode !== managed.permissionMode)
-
-    // Promote task metadata (no canonical mutator for these). Connection is set directly because
-    // setSessionConnection() refuses a session that has already sent messages (a generate draft has);
-    // the connection_changed event below keeps the renderer in sync.
-    managed.taskSlug = taskSlug
-    managed.taskDraft = false
-    if (connectionChanged) managed.llmConnection = reconcile!.llmConnection
-    const renamed = Boolean(reconcile?.name && reconcile.name !== managed.name)
-    if (renamed) managed.name = reconcile!.name!
-
-    // Route model / cwd / permission mode through the canonical mutators so the LIVE agent, caches,
-    // and per-field events stay consistent — not just the on-disk metadata (the split-brain the
-    // follow-up review flagged). Each targets only the changed field; persist below captures the mode.
-    if (modelChanged) await this.updateSessionModel(sessionId, managed.workspace.id, reconcile!.model!)
-    if (cwdChanged) this.updateWorkingDirectory(sessionId, reconcile!.workingDirectory!)
-    if (modeChanged) this.setSessionPermissionMode(sessionId, reconcile!.permissionMode!)
-
-    this.setMetadataWriteGuard(managed)
-    this.persistSession(managed)
-    await this.flushSession(managed.id)
-
-    // One-shot board promotion: clearing taskDraft (sent as `false`, never `undefined` — undefined
-    // is dropped over the JSON wire) reveals the already-announced tile. `false` is falsy
-    // for the board's `if (meta.taskDraft)` skip.
-    const changes = { taskDraft: false, taskSlug }
-    this.sendEvent({ type: 'session_metadata_changed', sessionId, changes }, managed.workspace.id)
-    if (renamed) {
-      this.sendEvent({ type: 'name_changed', sessionId, name: managed.name }, managed.workspace.id)
-    }
-    if (connectionChanged) {
-      this.sendEvent({
-        type: 'connection_changed',
-        sessionId,
-        connectionSlug: managed.llmConnection!,
-        supportsBranching: resolveSupportsBranching(managed),
-      }, managed.workspace.id)
-    }
-    const watcher = this.configWatchers.get(managed.workspace.rootPath)
-    watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
-    sessionLog.info('adoptGeneratedTaskOrchestrator: promoted draft', { sessionId, taskSlug, renamed, modelChanged, connectionChanged, cwdChanged, modeChanged })
-    return true
+      if (cwdChanged) runtimeUpdates.push(() => {
+        if (managed.workingDirectory === staged.workingDirectory) this.updateWorkingDirectory(sessionId, staged.workingDirectory!)
+      })
+      if (modeChanged) runtimeUpdates.push(() => {
+        if (managed.permissionMode !== staged.permissionMode) return
+        // Let the canonical mutator retain its user-change signal and previous-mode history.
+        managed.permissionMode = previous.permissionMode
+        this.setSessionPermissionMode(sessionId, staged.permissionMode!)
+      })
+      if (connectionChanged) runtimeUpdates.push(() => this.tryRefreshAgentRuntime(managed, 'Task connection update'))
+      for (const update of runtimeUpdates) {
+        try {
+          await update()
+        } catch (error) {
+          // Non-empty stale signatures use the existing send-path refresh/rebuild gate. An
+          // active Agent is not disposed here; the next idle turn recreates the failed runtime.
+          managed.backendRuntimeSignature = 'task-runtime-reconciliation-pending'
+          managed.backendRestartSignature = 'task-runtime-reconciliation-pending'
+          sessionLog.warn('adoptGeneratedTaskOrchestrator: Task saved; runtime refresh deferred', { sessionId, error })
+        }
+      }
+      try {
+        this.sendEvent({ type: 'session_metadata_changed', sessionId, changes: { taskDraft: false, taskSlug } }, managed.workspace.id)
+        if (renamed) this.sendEvent({ type: 'name_changed', sessionId, name: managed.name }, managed.workspace.id)
+        if (connectionChanged) {
+          this.sendEvent({
+            type: 'connection_changed', sessionId, connectionSlug: managed.llmConnection!,
+            supportsBranching: resolveSupportsBranching(managed),
+          }, managed.workspace.id)
+        }
+        this.configWatchers.get(managed.workspace.rootPath)?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
+      } catch (error) {
+        sessionLog.warn('adoptGeneratedTaskOrchestrator: Task saved; metadata notification failed', { sessionId, error })
+      }
+      sessionLog.info('adoptGeneratedTaskOrchestrator: promoted draft', { sessionId, taskSlug, renamed, modelChanged, connectionChanged, cwdChanged, modeChanged })
+      return true
+    })
   }
 
   /**
@@ -10246,67 +10728,119 @@ export class SessionManager implements ISessionManager {
   async bindExistingSessionToTask(
     sessionId: string,
     taskSlug: string,
-    reconcile?: { name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
+    reconcile?: { workspaceId?: string; projectId?: string; name?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
   ): Promise<boolean> {
-    const managed = this.sessions.get(sessionId)
-    if (!managed) {
-      sessionLog.warn('bindExistingSessionToTask: session not found', { sessionId, taskSlug })
-      return false
-    }
-    if (managed.taskSlug) {
-      if (managed.taskSlug === taskSlug) return true
-      sessionLog.warn('bindExistingSessionToTask: slug mismatch, refusing to rebind', {
-        sessionId, existing: managed.taskSlug, requested: taskSlug,
+    return this.withSessionLifecycleLock(sessionId, async () => {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) return false
+      // Validate ownership even for idempotent binds; a repeated slug is not authorization.
+      if (reconcile?.workspaceId && managed.workspace.id !== reconcile.workspaceId) {
+        throw new Error('CROSS_WORKSPACE_SESSION: a Task and its Session must belong to the same Workspace')
+      }
+      if (reconcile?.projectId && managed.projectId !== reconcile.projectId) {
+        throw new Error('CROSS_PROJECT_SESSION: a Task cannot change an existing Session\'s Project')
+      }
+      if (managed.taskSlug) return managed.taskSlug === taskSlug
+
+      // A metadata-only lookup must not let a cold Session look unused when deciding sdkCwd.
+      await this.ensureMessagesLoaded(managed)
+      if (this.sessions.get(sessionId) !== managed) return false
+
+      const modelChanged = Boolean(reconcile?.model && reconcile.model !== managed.model)
+      const connectionChanged = Boolean(reconcile?.llmConnection && !managed.connectionLocked && reconcile.llmConnection !== managed.llmConnection)
+      const cwdChanged = Boolean(reconcile?.workingDirectory && reconcile.workingDirectory !== managed.workingDirectory)
+      const modeChanged = Boolean(reconcile?.permissionMode && reconcile.permissionMode !== managed.permissionMode)
+      const renamed = Boolean(reconcile?.name && reconcile.name !== managed.name)
+      if (cwdChanged) {
+        const validation = isValidWorkingDirectory(reconcile!.workingDirectory!)
+        if (!validation.valid) throw new Error(`Invalid Task working directory: ${validation.reason}`)
+      }
+
+      const previous = {
+        taskSlug: managed.taskSlug,
+        taskDraft: managed.taskDraft,
+        name: managed.name,
+        model: managed.model,
+        llmConnection: managed.llmConnection,
+        workingDirectory: managed.workingDirectory,
+        sdkCwd: managed.sdkCwd,
+        permissionMode: managed.permissionMode,
+        previousPermissionMode: managed.previousPermissionMode,
+      }
+      const staged = {
+        taskSlug,
+        taskDraft: false,
+        name: renamed ? reconcile!.name! : previous.name,
+        model: modelChanged ? reconcile!.model : previous.model,
+        llmConnection: connectionChanged ? reconcile!.llmConnection : previous.llmConnection,
+        workingDirectory: cwdChanged ? reconcile!.workingDirectory : previous.workingDirectory,
+        sdkCwd: cwdChanged && managed.messages.length === 0 && !managed.sdkSessionId && !managed.agent
+          ? reconcile!.workingDirectory : previous.sdkCwd,
+        permissionMode: modeChanged ? reconcile!.permissionMode : previous.permissionMode,
+        previousPermissionMode: modeChanged ? (previous.permissionMode ?? 'ask') : previous.previousPermissionMode,
+      }
+      Object.assign(managed, staged)
+      this.setMetadataWriteGuard(managed)
+      try {
+        this.persistSession(managed)
+        await this.flushSessionStrict(sessionId)
+      } catch (error) {
+        // Other metadata editors do not all take the lifecycle lock. Roll back only values
+        // still owned by this write, preserving any later explicit edits while the I/O waited.
+        for (const key of Object.keys(previous) as Array<keyof typeof previous>) {
+          if (managed[key] === staged[key]) Object.assign(managed, { [key]: previous[key] })
+        }
+        this.setMetadataWriteGuard(managed)
+        this.persistSession(managed)
+        await this.flushSessionStrict(sessionId).catch(rollbackError => {
+          sessionLog.warn('bindExistingSessionToTask: could not persist binding rollback', { sessionId, rollbackError })
+        })
+        throw error
+      }
+
+      // The binding is durable. Preserve the canonical live updates, but a runtime failure
+      // must not turn this committed Task into a rejected RPC and roll back only its YAML.
+      const runtimeUpdates: Array<() => void | Promise<void>> = []
+      if (modelChanged) runtimeUpdates.push(() => {
+        if (managed.model === staged.model) return this.updateSessionModel(sessionId, managed.workspace.id, staged.model!)
       })
-      return false
-    }
-
-    // What actually changes — so we fire canonical live-updates (agent + caches + per-field events)
-    // only when needed. A quick-add tile is already live, so these keep its running agent in step.
-    const modelChanged = Boolean(reconcile?.model && reconcile.model !== managed.model)
-    const connectionChanged = Boolean(
-      reconcile?.llmConnection && !managed.connectionLocked && reconcile.llmConnection !== managed.llmConnection,
-    )
-    const cwdChanged = Boolean(reconcile?.workingDirectory && reconcile.workingDirectory !== managed.workingDirectory)
-    const modeChanged = Boolean(reconcile?.permissionMode && reconcile.permissionMode !== managed.permissionMode)
-
-    // Promote task metadata (no canonical mutator for these). Connection is set directly because
-    // setSessionConnection() refuses a session that has already sent messages (a quick-add tile has);
-    // the connection_changed event below keeps the renderer in sync.
-    managed.taskSlug = taskSlug
-    managed.taskDraft = false
-    if (connectionChanged) managed.llmConnection = reconcile!.llmConnection
-    const renamed = Boolean(reconcile?.name && reconcile.name !== managed.name)
-    if (renamed) managed.name = reconcile!.name!
-
-    // Route model / cwd / permission mode through the canonical mutators so the LIVE agent, caches,
-    // and per-field events stay consistent — not just the on-disk metadata (the split-brain the
-    // follow-up review flagged). updateSessionModel emits session_model_changed itself.
-    if (modelChanged) await this.updateSessionModel(sessionId, managed.workspace.id, reconcile!.model!)
-    if (cwdChanged) this.updateWorkingDirectory(sessionId, reconcile!.workingDirectory!)
-    if (modeChanged) this.setSessionPermissionMode(sessionId, reconcile!.permissionMode!)
-
-    this.setMetadataWriteGuard(managed)
-    this.persistSession(managed)
-    await this.flushSession(managed.id)
-
-    const changes = { taskDraft: false, taskSlug }
-    this.sendEvent({ type: 'session_metadata_changed', sessionId, changes }, managed.workspace.id)
-    if (renamed) {
-      this.sendEvent({ type: 'name_changed', sessionId, name: managed.name }, managed.workspace.id)
-    }
-    if (connectionChanged) {
-      this.sendEvent({
-        type: 'connection_changed',
-        sessionId,
-        connectionSlug: managed.llmConnection!,
-        supportsBranching: resolveSupportsBranching(managed),
-      }, managed.workspace.id)
-    }
-    const watcher = this.configWatchers.get(managed.workspace.rootPath)
-    watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
-    sessionLog.info('bindExistingSessionToTask: bound existing session', { sessionId, taskSlug, renamed, modelChanged, connectionChanged, cwdChanged, modeChanged })
-    return true
+      if (cwdChanged) runtimeUpdates.push(() => {
+        if (managed.workingDirectory === staged.workingDirectory) this.updateWorkingDirectory(sessionId, staged.workingDirectory!)
+      })
+      if (modeChanged) runtimeUpdates.push(() => {
+        if (managed.permissionMode !== staged.permissionMode) return
+        // Let the canonical mutator retain its user-change signal and previous-mode history.
+        managed.permissionMode = previous.permissionMode
+        this.setSessionPermissionMode(sessionId, staged.permissionMode!)
+      })
+      if (connectionChanged) runtimeUpdates.push(() => this.tryRefreshAgentRuntime(managed, 'Task connection update'))
+      for (const update of runtimeUpdates) {
+        try {
+          await update()
+        } catch (error) {
+          // Non-empty stale signatures use the existing send-path refresh/rebuild gate. An
+          // active Agent is not disposed here; the next idle turn recreates the failed runtime.
+          managed.backendRuntimeSignature = 'task-runtime-reconciliation-pending'
+          managed.backendRestartSignature = 'task-runtime-reconciliation-pending'
+          sessionLog.warn('bindExistingSessionToTask: Task saved; runtime refresh deferred', { sessionId, error })
+        }
+      }
+      try {
+        this.sendEvent({ type: 'session_metadata_changed', sessionId, changes: { taskDraft: false, taskSlug } }, managed.workspace.id)
+        if (renamed) this.sendEvent({ type: 'name_changed', sessionId, name: managed.name }, managed.workspace.id)
+        if (connectionChanged) {
+          this.sendEvent({
+            type: 'connection_changed', sessionId, connectionSlug: managed.llmConnection!,
+            supportsBranching: resolveSupportsBranching(managed),
+          }, managed.workspace.id)
+        }
+        this.configWatchers.get(managed.workspace.rootPath)?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
+      } catch (error) {
+        sessionLog.warn('bindExistingSessionToTask: Task saved; metadata notification failed', { sessionId, error })
+      }
+      sessionLog.info('bindExistingSessionToTask: bound existing session', { sessionId, taskSlug, renamed, modelChanged, connectionChanged, cwdChanged, modeChanged })
+      return true
+    })
   }
 
   /**
@@ -11440,7 +11974,7 @@ export class SessionManager implements ISessionManager {
           sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but no server-known turn to resend (no lastSentMessage identity); skipping auto-retry`)
           break
         }
-        if (!resendMessage.trim() && !snapshotReferences?.length) {
+        if (!resendMessage.trim() && !snapshotReferences?.length && !managed.lastSentAttachments?.length) {
           sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but the turn has no text and no references to resend; skipping auto-retry`)
           break
         }
@@ -11465,6 +11999,8 @@ export class SessionManager implements ISessionManager {
           committed: false,
           scheduledGeneration: managed.processingGeneration,
           originalContent: resendMessage,
+          attachments: managed.lastSentAttachments,
+          storedAttachments: managed.lastSentStoredAttachments,
           sourceSlug: event.sourceSlug,
         }
         managed.autoRetryPending = slot

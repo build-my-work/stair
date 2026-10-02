@@ -23,6 +23,8 @@ import type {
   BackendConfig,
   BackendRuntimeUpdate,
   ChatOptions,
+  PendingSteer,
+  RedirectMetadata,
   SdkMcpServerConfig,
 } from './backend/types.ts';
 import { AbortReason } from './backend/types.ts';
@@ -188,6 +190,22 @@ export class PiAgent extends BaseAgent {
   // State
   private _isProcessing: boolean = false;
   private pendingPromptId: string | null = null;
+  private pendingSteers = new Map<string, PendingSteer & { undelivered: boolean }>();
+  private steeringTurnId: string | null = null;
+  private settledSteers = new Map<string, PendingSteer>();
+  private pendingSteerReceipts = new Map<string, Extract<AgentEvent, { type: 'steer_accepted' }>>();
+  private steerSettlementRequest?: { id: string; turnId: string; entries: Map<string, PendingSteer>; consumedIds: Set<string> };
+  private steerSettlement?: {
+    id: string;
+    expectedIds: Set<string>;
+    promise: Promise<PendingSteer[]>;
+    resolve: (steers: PendingSteer[]) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  private steerSettlementTimeoutMs = 5000;
+  private steeringPaused = false;
+  private steeringGeneration = 0;
   private abortReason?: AbortReason;
   /** Aborted when the current turn stops; tool checks started in the turn watch it. */
   private turnAbort = new AbortController();
@@ -972,6 +990,55 @@ export class PiAgent extends BaseAgent {
           this.eventQueue.enqueue({ type: 'input_accepted' });
         }
         break;
+
+      case 'steer_consumed': {
+        const pending = typeof msg.id === 'string' ? this.pendingSteers.get(msg.id) : undefined;
+        if (pending && !pending.undelivered) {
+          this.pendingSteers.delete(msg.id as string);
+          this.steerSettlementRequest?.consumedIds.add(msg.id as string);
+          if (pending.messageId) {
+            const receipt: Extract<AgentEvent, { type: 'steer_accepted' }> = { type: 'steer_accepted', messageId: pending.messageId };
+            this.pendingSteerReceipts.set(pending.messageId, receipt);
+            this.eventQueue.enqueue(receipt);
+          }
+        }
+        break;
+      }
+
+      case 'steer_rejected': {
+        const pending = typeof msg.id === 'string' ? this.pendingSteers.get(msg.id) : undefined;
+        if (pending && !pending.undelivered) {
+          pending.undelivered = true;
+          this.settledSteers.set(msg.id as string, { message: pending.message, messageId: pending.messageId });
+          this.eventQueue.enqueue({ type: 'steer_undelivered', message: pending.message, messageId: pending.messageId });
+        }
+        break;
+      }
+
+      case 'steers_settled': {
+        const settlement = this.steerSettlement;
+        if (!settlement || msg.id !== settlement.id) break;
+        const pendingIds = Array.isArray(msg.pendingIds) ? msg.pendingIds : [];
+        const reported = new Set(pendingIds);
+        const request = this.steerSettlementRequest!;
+        // A synchronous recovery consumer may already have drained a rejected
+        // input. The immutable request and explicit receipts own this comparison.
+        const outstanding = [...settlement.expectedIds].filter(id => !request.consumedIds.has(id));
+        if (msg.success !== true || pendingIds.some(id => typeof id !== 'string')
+          || reported.size !== pendingIds.length || reported.size !== outstanding.length
+          || outstanding.some(id => !reported.has(id))) {
+          settlement.reject(new Error(typeof msg.errorMessage === 'string'
+            ? msg.errorMessage : 'Pi steering delivery could not be confirmed'));
+        } else {
+          for (const id of outstanding) {
+            const pending = this.pendingSteers.get(id);
+            if (pending) pending.undelivered = true;
+            this.settledSteers.set(id, { ...request.entries.get(id)! });
+          }
+          settlement.resolve([...this.settledSteers.values()].map(entry => ({ ...entry })));
+        }
+        break;
+      }
 
       case 'pre_tool_use_request':
         // Subprocess needs permission check + transforms before tool execution
@@ -1834,6 +1901,7 @@ export class PiAgent extends BaseAgent {
     this.resetSubprocessErrorDedup();
     this.subprocessReady = null;
     this.subprocessReadyResolve = null;
+    this.steerSettlement?.reject(new Error('Pi subprocess exited before steering delivery was confirmed'));
 
     // If we were processing, emit error + complete
     if (this._isProcessing) {
@@ -2054,6 +2122,41 @@ export class PiAgent extends BaseAgent {
   // ============================================================
 
   protected async *chatImpl(
+    message: string,
+    attachments?: FileAttachment[],
+    options?: ChatOptions,
+  ): AsyncGenerator<AgentEvent> {
+    if (this.pendingSteers.size > 0 || this.steerSettlement) {
+      yield { type: 'error', message: 'Previous Pi steering delivery is unresolved; wait for cancellation or reconnect before retrying.' };
+      yield { type: 'complete' };
+      return;
+    }
+    const generation = ++this.steeringGeneration;
+    let complete: Extract<AgentEvent, { type: 'complete' }> | undefined;
+    try {
+      for await (const event of this.chatTurn(message, attachments, options)) {
+        if (event.type === 'steer_accepted') this.pendingSteerReceipts.delete(event.messageId);
+        if (event.type === 'complete') complete = event;
+        else yield event;
+      }
+    } finally {
+      if (generation === this.steeringGeneration) {
+        if (this.pendingSteers.size > 0) {
+          try {
+            await this.settlePendingSteers();
+          } catch (error) {
+            yield { type: 'error', message: error instanceof Error ? error.message : String(error) };
+          }
+        }
+        for (const receipt of this.pendingSteerReceipts.values()) yield receipt;
+        this.pendingSteerReceipts.clear();
+        for (const steer of this.takePendingSteers()) yield { type: 'steer_undelivered', ...steer };
+      }
+    }
+    if (complete) yield complete;
+  }
+
+  private async *chatTurn(
     messageParam: string,
     attachments?: FileAttachment[],
     options?: ChatOptions
@@ -2063,6 +2166,10 @@ export class PiAgent extends BaseAgent {
     const compactEpoch = this.compactionEpoch;
     // Reset state for new turn
     this._isProcessing = true;
+    this.steeringPaused = false;
+    this.steeringTurnId = null;
+    this.settledSteers.clear();
+    this.steerSettlementRequest = undefined;
     this.abortReason = undefined;
     this.turnAbort = new AbortController();
     this.eventQueue.reset();
@@ -2242,6 +2349,7 @@ export class PiAgent extends BaseAgent {
       // Send prompt to subprocess
       const turnId = `turn-${++this.rpcIdCounter}`;
       this.pendingPromptId = turnId;
+      this.steeringTurnId = turnId;
       this.send({
         type: 'prompt',
         id: turnId,
@@ -2498,10 +2606,11 @@ export class PiAgent extends BaseAgent {
    * Events flow through the existing generator — no abort needed.
    */
   override canSteerNow(): boolean {
-    return this._isProcessing && !!this.subprocess && !this.isCompactionInFlight();
+    return this._isProcessing && !this.steeringPaused && this.steeringTurnId !== null
+      && !!this.subprocess?.stdin?.writable && !this.isCompactionInFlight();
   }
 
-  override redirect(message: string): boolean {
+  override redirect(message: string, metadata?: RedirectMetadata): boolean {
     if (this.isCompactionInFlight()) {
       // A manual /compact owns this turn: no agent loop is running to consume a
       // steer, so it would vanish (OSS #1058). Refuse without aborting the
@@ -2509,14 +2618,72 @@ export class PiAgent extends BaseAgent {
       this.debug('Steer refused during manual compaction; message must be queued');
       return false;
     }
-    if (!this._isProcessing || !this.subprocess) {
+    if (!this.canSteerNow()) {
       // Not streaming or no subprocess — fall back to abort
       this.forceAbort(AbortReason.Redirect);
       return false;
     }
     this.debug(`Steering mid-stream: "${message.slice(0, 100)}"`);
-    this.send({ type: 'steer', message });
+    const id = `steer-${++this.rpcIdCounter}`;
+    this.pendingSteers.set(id, { message, ...metadata, undelivered: false });
+    try {
+      this.send({ type: 'steer', id, turnId: this.steeringTurnId, message, ...metadata });
+    } catch {
+      this.pendingSteers.delete(id);
+      return false;
+    }
     return true;
+  }
+
+  /** FIFO stdout puts all preceding consumption receipts before this cancellation acknowledgement. */
+  settlePendingSteers(): Promise<PendingSteer[]> {
+    this.steeringPaused = true;
+    if (this.steerSettlement) return this.steerSettlement.promise.then(entries => entries.map(entry => ({ ...entry })));
+    if (this.pendingSteers.size === 0) return Promise.resolve([...this.settledSteers.values()].map(entry => ({ ...entry })));
+    if ([...this.pendingSteers.values()].every(entry => entry.undelivered)) {
+      return Promise.resolve([...this.settledSteers.values()].map(entry => ({ ...entry })));
+    }
+    if (!this.subprocess?.stdin?.writable) return Promise.reject(new Error('Pi steering delivery is unknown: subprocess is unavailable'));
+    if (!this.steeringTurnId) return Promise.reject(new Error('Pi steering turn is unavailable'));
+    const request = this.steerSettlementRequest ??= {
+      id: `settle-steers-${++this.rpcIdCounter}`,
+      turnId: this.steeringTurnId,
+      entries: new Map([...this.pendingSteers].map(([key, entry]) => [key, { message: entry.message, messageId: entry.messageId }])),
+      consumedIds: new Set<string>(),
+    };
+    const { id } = request;
+    const expectedIds = new Set(request.entries.keys());
+    let resolve!: (steers: PendingSteer[]) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<PendingSteer[]>((onResolve, onReject) => {
+      resolve = onResolve;
+      reject = onReject;
+    });
+    const timer = setTimeout(() => reject(new Error('Pi steering delivery confirmation timed out')), this.steerSettlementTimeoutMs);
+    const settlement = { id, expectedIds, promise, resolve, reject, timer };
+    settlement.promise = promise.finally(() => {
+      clearTimeout(timer);
+      if (this.steerSettlement === settlement) this.steerSettlement = undefined;
+    });
+    this.steerSettlement = settlement;
+    try {
+      this.send({ type: 'settle_steers', id, turnId: request.turnId, steerIds: [...expectedIds] });
+    } catch (error) {
+      settlement.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+    return settlement.promise.then(entries => entries.map(entry => ({ ...entry })));
+  }
+
+  /** Uncertain pipe deliveries stay owned until the asynchronous producer confirms cancellation. */
+  takePendingSteers(): PendingSteer[] {
+    this.steeringPaused = true;
+    const result: PendingSteer[] = [];
+    for (const [id, entry] of this.pendingSteers) {
+      if (!entry.undelivered) continue;
+      this.pendingSteers.delete(id);
+      result.push({ message: entry.message, ...(entry.messageId ? { messageId: entry.messageId } : {}) });
+    }
+    return result;
   }
 
   /** A pending manual compact RPC owns the turn; see AgentBackend.isCompactionInFlight. */
@@ -2590,6 +2757,7 @@ export class PiAgent extends BaseAgent {
    */
   private async killSubprocessGracefully(timeoutMs = 2_000): Promise<void> {
     this.cancelPendingCompactions();
+    this.steerSettlement?.reject(new Error('Pi subprocess stopped before steering delivery was confirmed'));
     this.rejectAllPendingEphemeral(new Error('Pi subprocess stopped'));
 
     const child = this.subprocess;
@@ -2661,6 +2829,7 @@ export class PiAgent extends BaseAgent {
 
   private killSubprocess(): void {
     this.cancelPendingCompactions();
+    this.steerSettlement?.reject(new Error('Pi subprocess stopped before steering delivery was confirmed'));
     this.rejectAllPendingEphemeral(new Error('Pi subprocess stopped'));
 
     if (this.readline) {

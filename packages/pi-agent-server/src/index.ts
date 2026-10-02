@@ -112,6 +112,7 @@ import { adaptCredentialForPiSdk, type PiCredential } from './adapt-credential.t
 import { resolveCraftAgentDir } from './agent-dir.ts';
 import { toPiProviderId } from '../../shared/src/config/pi-provider-ids.ts';
 import { providerEndpointEnv } from './provider-endpoint-env.ts';
+import { PiSteerDelivery } from './steer-delivery.ts';
 
 // ============================================================
 // Types — JSONL Protocol
@@ -174,7 +175,8 @@ type InboundMessage =
   | { type: 'compact'; id: string; customInstructions?: string }
   | { type: 'set_auto_compaction'; id: string; enabled: boolean }
   | RuntimeConfigUpdateMessage
-  | { type: 'steer'; message: string }
+  | { type: 'steer'; id: string; turnId: string; message: string; messageId?: string }
+  | { type: 'settle_steers'; id: string; turnId: string; steerIds: string[] }
   | { type: 'token_update'; piAuth: { provider: string; credential: PiCredential } }
   | { type: 'shutdown' };
 
@@ -250,6 +252,8 @@ interface OutboundError { type: 'error'; message: string; code?: string; id?: st
 type OutboundMessage =
   | OutboundReady
   | { type: 'prompt_accepted'; id: string }
+  | { type: 'steer_consumed' | 'steer_rejected'; id: string }
+  | { type: 'steers_settled'; id: string; success: boolean; pendingIds?: string[]; errorMessage?: string }
   | OutboundEvent
   | OutboundPreToolUseReq
   | OutboundToolExecReq
@@ -284,6 +288,7 @@ let moduleRuntimePromise: Promise<{
   modelRegistry: PiModelRegistry;
 }> | null = null;
 let unsubscribeEvents: (() => void) | null = null;
+let steerDelivery: PiSteerDelivery | null = null;
 
 const ephemeralQueries = new EphemeralQueryCoordinator();
 let localEphemeralQueryCounter = 0;
@@ -776,6 +781,7 @@ async function ensureSession(): Promise<AgentSession> {
   // Create the session — tools flow through customTools + allowlist (see comment above).
   const { session } = await createAgentSession(sessionOptions);
   piSession = session;
+  steerDelivery = new PiSteerDelivery(session, receipt => send(receipt));
   piSessionPromptOverride = systemPromptOverride;
 
   toolsChanged = false;
@@ -1392,6 +1398,8 @@ async function handleInit(msg: Extract<InboundMessage, { type: 'init' }>): Promi
       unsubscribeEvents();
       unsubscribeEvents = null;
     }
+    steerDelivery?.dispose();
+    steerDelivery = null;
     piSession.dispose();
     piSession = null;
     moduleCredentialStore = null; // Reset so createAuthenticatedRuntime() creates a fresh store
@@ -1432,6 +1440,8 @@ async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): P
         unsubscribeEvents();
         unsubscribeEvents = null;
       }
+      steerDelivery?.dispose();
+      steerDelivery = null;
       piSession.dispose();
       piSession = null;
     }
@@ -1458,6 +1468,7 @@ async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): P
 
     // Fire prompt — use followUp when session is already streaming so the
     // message is queued instead of throwing "Agent is already processing".
+    steerDelivery?.beginTurn(msg.id);
     await session.prompt(msg.message, {
       images: msg.images && msg.images.length > 0 ? msg.images : undefined,
       streamingBehavior: 'followUp',
@@ -1795,6 +1806,8 @@ function handleShutdown(): void {
 
   // Dispose session
   if (piSession) {
+    steerDelivery?.dispose();
+    steerDelivery = null;
     piSession.dispose();
     piSession = null;
   }
@@ -1887,11 +1900,22 @@ async function processMessage(msg: InboundMessage): Promise<void> {
       break;
 
     case 'steer':
-      if (piSession) {
+      if (steerDelivery) {
         debugLog(`Steering with: "${msg.message.slice(0, 100)}"`);
-        await piSession.steer(msg.message);
+        await steerDelivery.enqueue(msg.id, msg.message, msg.turnId);
       } else {
-        debugLog('Steer ignored — no active session');
+        send({ type: 'steer_rejected', id: msg.id });
+      }
+      break;
+
+    case 'settle_steers':
+      try {
+        if (!steerDelivery) throw new Error('Pi steering session is unavailable');
+        const pendingIds = await steerDelivery.settle(msg);
+        send({ type: 'steers_settled', id: msg.id, success: true, pendingIds });
+      } catch (error) {
+        send({ type: 'steers_settled', id: msg.id, success: false,
+          errorMessage: error instanceof Error ? error.message : String(error) });
       }
       break;
 

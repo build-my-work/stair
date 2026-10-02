@@ -19,6 +19,7 @@ type ApiToChannelMapKeys = Exclude<
   | 'getRuntimeEnvironment'
   | 'setBrowserApplicationHandler'
   | 'setDrawnixBoardCapabilityHandler'
+  | 'setDrawnixBoardDiscoveryHandler'
   | 'onTransportConnectionStateChanged'
   | 'reconnectTransport'
   | 'isChannelAvailable'

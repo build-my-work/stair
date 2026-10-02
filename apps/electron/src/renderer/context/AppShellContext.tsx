@@ -87,7 +87,9 @@ export interface AppShellContextType {
 
   // Session callbacks
   onCreateSession: (workspaceId: string, options?: import('../../shared/types').CreateSessionOptions) => Promise<Session>
-  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], badges?: import('@craft-agent/core').ContentBadge[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'>) => void
+  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], badges?: import('@craft-agent/core').ContentBadge[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'> & { consumeDraft?: boolean }) => boolean | void
+  pendingInputSessionIds?: ReadonlySet<string>
+  onCancelPendingInput?: (sessionId: string) => Promise<void>
   onRenameSession: (sessionId: string, name: string) => void
   onFlagSession: (sessionId: string) => void
   onUnflagSession: (sessionId: string) => void
@@ -143,6 +145,7 @@ export interface AppShellContextType {
 
   // Structured reference draft callbacks
   onReferencesChange: (sessionId: string, references: Reference[]) => boolean
+  onEditMessage?: (sessionId: string, message: import('../../shared/types').Message) => Promise<void>
   onAddDraftReference: (sessionId: string, reference: Reference) => boolean
   onAddSelectionNote?: (
     reference: Reference,

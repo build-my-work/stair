@@ -12,6 +12,7 @@
  * Background-task output and stop (the composer's task chips) are session channels in sessions.ts
  * (`sessions:getBackgroundTaskOutput`, `sessions:stopBackgroundTask`).
  */
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import type {
@@ -30,6 +31,9 @@ import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import {
   parseTaskYaml,
   saveTaskSpec,
+  serializeTaskYaml,
+  taskYamlPath,
+  TaskSpecSchema,
   loadTaskSpec,
   listTaskSlugs,
   buildGeneratorPrompt,
@@ -42,7 +46,7 @@ import {
   DEFAULT_REPAIR_ATTEMPTS,
   MAX_REPAIR_ATTEMPTS_CAP,
 } from '@craft-agent/shared/tasks'
-import { createLogger } from '@craft-agent/shared/utils'
+import { atomicWriteFileSync, createLogger } from '@craft-agent/shared/utils'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import type { ISessionManager } from '../session-manager-interface'
@@ -154,6 +158,7 @@ function extractYaml(text: string): string {
 export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): void {
   // One Conductor per workspace, created on demand. Holds active runs in memory.
   const runners = new Map<string, TaskRunner>()
+  const taskWrites = new Map<string, Promise<void>>()
 
   function workspaceOrThrow(workspaceId: string) {
     const ws = getWorkspaceByNameOrId(workspaceId)
@@ -189,77 +194,129 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
   })
 
   // tasks:create — write task.yaml + create the orchestrator parent session.
-  server.handle(RPC_CHANNELS.tasks.CREATE, async (_ctx, workspaceId: string, req: TaskCreateRequest): Promise<TaskCreateResult> => {
+  server.handle(RPC_CHANNELS.tasks.CREATE, async (ctx, workspaceId: string, req: TaskCreateRequest): Promise<TaskCreateResult> => {
     const ws = workspaceOrThrow(workspaceId)
+    if (ctx.workspaceId && ctx.workspaceId !== ws.id) {
+      throw new Error('CROSS_WORKSPACE_TASK: the request belongs to another Workspace')
+    }
     const parsed = parseTaskYaml(req.yaml)
     const validation = toValidationDto(parsed)
     if (!parsed.valid || !parsed.spec) {
       return { slug: '', orchestratorSessionId: '', validation }
     }
     const spec = parsed.spec
-    saveTaskSpec(ws.rootPath, spec)
-
-    // Single choke point for ALL orchestrator paths (attach / adopt / fresh): apply the reserved
-    // "Task" label (surfacing its resolved id so the renderer can navigate to the label filter)
-    // and enable the spec's sources on the orchestrator session. Fail-soft — neither a label nor
-    // a sources problem may fail task creation. The body lives in finishTaskOrchestrator
-    // (../../tasks/create-task) so the create_task session tool shares it verbatim.
-    const finish = async (orchestratorSessionId: string): Promise<TaskCreateResult> => {
-      const setup = await finishTaskOrchestrator(deps.sessionManager, orchestratorSessionId, spec)
-      return { slug: spec.id, orchestratorSessionId, validation, taskLabelId: setup.taskLabelId }
-    }
-
-    // Edit-mode bind: the user saved this spec onto an existing, visible tile (e.g. a quick-add
-    // session). Bind that session to the slug. Unlike adoption this HARD-ERRORS on failure — it
-    // must never fall through to createSession, which would leave a duplicate orchestrator tile.
-    if (req.attachToExistingSession) {
-      const existing = await deps.sessionManager.getSession(req.attachToExistingSession)
-      if (existing && spec.project && existing.projectId !== spec.project) {
-        throw new Error('CROSS_PROJECT_SESSION: an existing Session cannot be rebound to another Project')
-      }
-      const bound = await deps.sessionManager.bindExistingSessionToTask(req.attachToExistingSession, spec.id, {
-        name: spec.title,
-        ...(spec.cwd ? { workingDirectory: spec.cwd } : {}),
-        ...(spec.defaults?.model ? { model: spec.defaults.model } : {}),
-        ...(spec.defaults?.llmConnection ? { llmConnection: spec.defaults.llmConnection } : {}),
-        ...(spec.defaults?.permissionMode ? { permissionMode: spec.defaults.permissionMode } : {}),
-      })
-      if (!bound) {
+    // Edits use this same endpoint. Keep the spec rollback and Session binding together so
+    // one rejected save cannot undo a newer save from another window.
+    const specPath = taskYamlPath(ws.rootPath, spec.id)
+    const previousWrite = taskWrites.get(specPath) ?? Promise.resolve()
+    let releaseWrite!: () => void
+    const pendingWrite = new Promise<void>(resolve => { releaseWrite = resolve })
+    taskWrites.set(specPath, pendingWrite)
+    await previousWrite
+    let previousYaml: string | undefined
+    let savedYaml: string | undefined
+    try {
+      const targetSessionId = req.attachToExistingSession ?? req.orchestratorSessionId
+      const targetSession = targetSessionId
+        ? deps.sessionManager.getSessions().find(session => session.id === targetSessionId)
+        : undefined
+      if (req.attachToExistingSession && (!targetSession || (targetSession.taskSlug && targetSession.taskSlug !== spec.id))) {
         throw new Error(
           `Cannot attach task "${spec.id}" to session ${req.attachToExistingSession}: ` +
-            `session is missing or already bound to a different task.`,
+            'session is missing or already bound to a different task.',
         )
       }
-      return finish(req.attachToExistingSession)
-    }
-
-    // Adoption path: when the YAML was authored by a generate orchestrator, promote that hidden
-    // draft in place instead of creating a second top-level session (#bug1). Falls back to a fresh
-    // session if the draft is gone / already adopted / bound to another slug.
-    if (req.orchestratorSessionId) {
-      const draft = await deps.sessionManager.getSession(req.orchestratorSessionId)
-      if (draft && spec.project && draft.projectId !== spec.project) {
-        throw new Error('CROSS_PROJECT_SESSION: a draft Session cannot be adopted into another Project')
+      if (targetSession && targetSession.workspaceId !== ws.id) {
+        throw new Error('CROSS_WORKSPACE_SESSION: a Task and its Session must belong to the same Workspace')
       }
-      const adopted = await deps.sessionManager.adoptGeneratedTaskOrchestrator(req.orchestratorSessionId, spec.id, {
-        name: spec.title,
-        ...(spec.cwd ? { workingDirectory: spec.cwd } : {}),
-        ...(spec.defaults?.model ? { model: spec.defaults.model } : {}),
-        // Reconcile the connection + permission mode from the saved spec (bind already does this) so an
-        // orch model/mode changed after generation actually takes effect on the promoted orchestrator.
-        ...(spec.defaults?.llmConnection ? { llmConnection: spec.defaults.llmConnection } : {}),
-        ...(spec.defaults?.permissionMode ? { permissionMode: spec.defaults.permissionMode } : {}),
-      })
-      if (adopted) {
-        return finish(req.orchestratorSessionId)
+      if (targetSession && spec.project && targetSession.projectId !== spec.project) {
+        throw new Error('CROSS_PROJECT_SESSION: a Task cannot change an existing Session\'s Project')
       }
-    }
+      // An unfiltered editor still targets a specific Session. Persist that identity so later
+      // Task children inherit its Project instead of falling back to the Workspace default.
+      if (targetSession && !spec.project) spec.project = targetSession.projectId
+      const previousProject = loadTaskSpec(ws.rootPath, spec.id)?.spec?.project
+      if (!spec.project) spec.project = previousProject
+      if (previousProject && spec.project !== previousProject) {
+        throw new Error('CROSS_PROJECT_TASK: an existing Task cannot be moved to another Project')
+      }
+      previousYaml = existsSync(specPath) ? readFileSync(specPath, 'utf8') : undefined
+      const replacementYaml = serializeTaskYaml(TaskSpecSchema.parse(spec))
+      saveTaskSpec(ws.rootPath, spec)
+      savedYaml = replacementYaml
 
-    // Fresh create — shared core with the create_task session tool. The spec was already saved
-    // above (all three paths persist first), so skip the core's save. createSession announces the
-    // orchestrator to the renderer by default, so its tile appears on the board immediately.
-    const created = await createTaskFromSpec(deps.sessionManager, workspaceId, ws.rootPath, spec, { save: false })
-    return { slug: created.slug, orchestratorSessionId: created.orchestratorSessionId, validation, taskLabelId: created.taskLabelId }
+      // Single choke point for ALL orchestrator paths (attach / adopt / fresh): apply the reserved
+      // "Task" label (surfacing its resolved id so the renderer can navigate to the label filter)
+      // and enable the spec's sources on the orchestrator session. Fail-soft — neither a label nor
+      // a sources problem may fail task creation. The body lives in finishTaskOrchestrator
+      // (../../tasks/create-task) so the create_task session tool shares it verbatim.
+      const finish = async (orchestratorSessionId: string): Promise<TaskCreateResult> => {
+        const setup = await finishTaskOrchestrator(deps.sessionManager, orchestratorSessionId, spec)
+        return { slug: spec.id, orchestratorSessionId, validation, taskLabelId: setup.taskLabelId }
+      }
+
+      // Edit-mode bind: the user saved this spec onto an existing, visible tile (e.g. a quick-add
+      // session). Bind that session to the slug. Unlike adoption this HARD-ERRORS on failure — it
+      // must never fall through to createSession, which would leave a duplicate orchestrator tile.
+      if (req.attachToExistingSession) {
+        const bound = await deps.sessionManager.bindExistingSessionToTask(req.attachToExistingSession, spec.id, {
+          workspaceId: ws.id,
+          projectId: spec.project,
+          name: spec.title,
+          ...(spec.cwd ? { workingDirectory: spec.cwd } : {}),
+          ...(spec.defaults?.model ? { model: spec.defaults.model } : {}),
+          ...(spec.defaults?.llmConnection ? { llmConnection: spec.defaults.llmConnection } : {}),
+          ...(spec.defaults?.permissionMode ? { permissionMode: spec.defaults.permissionMode } : {}),
+        })
+        if (!bound) {
+          throw new Error(
+            `Cannot attach task "${spec.id}" to session ${req.attachToExistingSession}: ` +
+              `session is missing or already bound to a different task.`,
+          )
+        }
+        return await finish(req.attachToExistingSession)
+      }
+
+      // Adoption path: when the YAML was authored by a generate orchestrator, promote that hidden
+      // draft in place instead of creating a second top-level session (#bug1). Falls back to a fresh
+      // session if the draft is gone / already adopted / bound to another slug.
+      if (req.orchestratorSessionId) {
+        const adopted = await deps.sessionManager.adoptGeneratedTaskOrchestrator(req.orchestratorSessionId, spec.id, {
+          workspaceId: ws.id,
+          projectId: spec.project,
+          name: spec.title,
+          ...(spec.cwd ? { workingDirectory: spec.cwd } : {}),
+          ...(spec.defaults?.model ? { model: spec.defaults.model } : {}),
+          // Reconcile the connection + permission mode from the saved spec (bind already does this) so an
+          // orch model/mode changed after generation actually takes effect on the promoted orchestrator.
+          ...(spec.defaults?.llmConnection ? { llmConnection: spec.defaults.llmConnection } : {}),
+          ...(spec.defaults?.permissionMode ? { permissionMode: spec.defaults.permissionMode } : {}),
+        })
+        if (adopted) {
+          return await finish(req.orchestratorSessionId)
+        }
+      }
+
+      // Fresh create — shared core with the create_task session tool. The spec was already saved
+      // above (all three paths persist first), so skip the core's save. createSession announces the
+      // orchestrator to the renderer by default, so its tile appears on the board immediately.
+      const created = await createTaskFromSpec(deps.sessionManager, workspaceId, ws.rootPath, spec, { save: false })
+      return { slug: created.slug, orchestratorSessionId: created.orchestratorSessionId, validation, taskLabelId: created.taskLabelId }
+    } catch (error) {
+      try {
+        // An external editor/tool may also write task.yaml; never roll its newer bytes back.
+        if (savedYaml !== undefined && existsSync(specPath) && readFileSync(specPath, 'utf8') === savedYaml) {
+          if (previousYaml === undefined) unlinkSync(specPath)
+          else atomicWriteFileSync(specPath, previousYaml)
+        }
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], 'Task creation failed and its spec could not be restored')
+      }
+      throw error
+    } finally {
+      releaseWrite()
+      if (taskWrites.get(specPath) === pendingWrite) taskWrites.delete(specPath)
+    }
   })
 
   // tasks:generate — the persistent orchestrator session AUTHORS the task.yaml from a goal (#2).

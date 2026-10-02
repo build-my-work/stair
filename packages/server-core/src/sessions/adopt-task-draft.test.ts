@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test'
+import { tmpdir } from 'node:os'
 import { SessionManager } from './SessionManager.ts'
 
 // Locks the adoption state machine that prevents "Generate → Create & Run" from minting a duplicate
@@ -83,7 +84,7 @@ describe('adopt/bind route changed fields through canonical live-update mutators
     const any = sm as any
     any.sendEvent = (e: { type: string }) => events.push(e.type)
     any.persistSession = () => {}
-    any.flushSession = async () => {}
+    any.flushSessionStrict = async () => {}
     any.setMetadataWriteGuard = () => {}
     any.updateSessionModel = async (_id: string, _ws: string, m: string) => { calls.model.push(m) }
     any.updateWorkingDirectory = (_id: string, p: string) => { calls.cwd.push(p) }
@@ -92,6 +93,7 @@ describe('adopt/bind route changed fields through canonical live-update mutators
       id: 's',
       taskDraft: true,
       messages: [],
+      messagesLoaded: true,
       connectionLocked: false,
       model: 'old-model',
       llmConnection: 'old-conn',
@@ -103,13 +105,13 @@ describe('adopt/bind route changed fields through canonical live-update mutators
     return { sm, calls, events }
   }
 
-  const CHANGED = { model: 'new-model', workingDirectory: '/new/dir', permissionMode: 'allow-all' as const, llmConnection: 'new-conn' }
+  const CHANGED = { model: 'new-model', workingDirectory: tmpdir(), permissionMode: 'allow-all' as const, llmConnection: 'new-conn' }
 
   it('adopt delegates each changed field to its canonical mutator + sets connection directly', async () => {
     const { sm, calls, events } = harness({})
     expect(await sm.adoptGeneratedTaskOrchestrator('s', 'slug', CHANGED)).toBe(true)
     expect(calls.model).toEqual(['new-model'])
-    expect(calls.cwd).toEqual(['/new/dir'])
+    expect(calls.cwd).toEqual([CHANGED.workingDirectory])
     expect(calls.mode).toEqual(['allow-all'])
     // Connection can't go through setSessionConnection (session has started) → set directly + event.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -134,7 +136,7 @@ describe('adopt/bind route changed fields through canonical live-update mutators
     const { sm, calls } = harness({ taskDraft: false })
     expect(await sm.bindExistingSessionToTask('s', 'slug', CHANGED)).toBe(true)
     expect(calls.model).toEqual(['new-model'])
-    expect(calls.cwd).toEqual(['/new/dir'])
+    expect(calls.cwd).toEqual([CHANGED.workingDirectory])
     expect(calls.mode).toEqual(['allow-all'])
   })
 
@@ -150,20 +152,20 @@ describe('adopt/bind route changed fields through canonical live-update mutators
     expect(calls.mode).toEqual([])
   })
 
-  it('never changes Project ownership through adopt or bind overrides', async () => {
+  it('rejects mismatched expected Project ownership through adopt or bind', async () => {
     const { sm } = harness({ projectId: 'project-a' })
-    // Probe an out-of-contract field to lock the runtime boundary as well as the TypeScript one.
+    // The expected identity is authorization, never an instruction to move the Session.
     const projectOverride = {
       ...CHANGED,
       projectId: 'project-b',
     }
-    await sm.adoptGeneratedTaskOrchestrator('s', 'slug', projectOverride)
+    await expect(sm.adoptGeneratedTaskOrchestrator('s', 'slug', projectOverride)).rejects.toThrow('CROSS_PROJECT_SESSION')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((sm as any).sessions.get('s').projectId).toBe('project-a')
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(sm as any).sessions.get('s').taskDraft = false
-    await sm.bindExistingSessionToTask('s', 'slug', projectOverride)
+    await expect(sm.bindExistingSessionToTask('s', 'slug', projectOverride)).rejects.toThrow('CROSS_PROJECT_SESSION')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((sm as any).sessions.get('s').projectId).toBe('project-a')
   })

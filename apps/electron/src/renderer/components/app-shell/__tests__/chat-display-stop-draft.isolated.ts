@@ -9,9 +9,7 @@ import type { Reference } from '@craft-agent/core'
 
 // Regression for the CHAT-04 stop-draft defect: with a queued message pending,
 // an explicit Stop must leave the draft to the backend restore_input (the
-// already-sent prompt would otherwise be duplicated on the next send). Without
-// a queue, Stop keeps the existing behavior of restoring the sent prompt for
-// editing. The real ChatDisplay handleStop decision is exercised here — no
+// already-sent prompt would otherwise be duplicated on the next send). Already accepted input is edited through an explicit bubble action, not Stop. The real ChatDisplay handleStop decision is exercised here — no
 // copy of the decision and no backend draft-merge re-test live in this file.
 const shell = readFileSync(new URL('../ChatDisplay.tsx', import.meta.url), 'utf8')
 const start = shell.indexOf('  const handleStop = (silent = false) => {')
@@ -21,7 +19,7 @@ if ([start, end].some(index => index < 0)) {
 }
 const source = new Bun.Transpiler({ loader: 'tsx' }).transformSync(`
   return function useStop(context) {
-    const { session, inputValue, referencesValue, onInputChange, onReferencesChange, toast, t } = context;
+    const { session, inputValue, referencesValue, onInputChange, onReferencesChange, toast, t, appShellContext = {} } = context;
     ${shell.slice(start, end)}
     return { stop: handleStop };
   }
@@ -34,6 +32,7 @@ type SessionMessage = {
   references?: Reference[]
 }
 type StopContext = {
+  appShellContext?: { pendingInputSessionIds?: ReadonlySet<string>; onCancelPendingInput?: (sessionId: string) => Promise<void> }
   session: { id: string; projectId: string; isProcessing: boolean; messages: SessionMessage[] }
   inputValue: string
   referencesValue: Reference[]
@@ -104,6 +103,24 @@ const processingSession = (messages: SessionMessage[]) => ({
 })
 
 describe('ChatDisplay Stop draft decision (CHAT-04)', () => {
+  it('can stop a pending submission before the host starts processing', async () => {
+    const pendingCancels: string[] = []
+    const harness = setup({
+      session: { ...processingSession([]), isProcessing: false },
+      inputValue: 'newer edit', referencesValue: [],
+      onInputChange: () => { throw new Error('Stop must not clear newer input') },
+      onReferencesChange: () => { throw new Error('Stop must not clear newer references') },
+      toast: { error() {} }, t: key => key,
+      appShellContext: {
+        pendingInputSessionIds: new Set(['session-1']),
+        onCancelPendingInput: async sessionId => { pendingCancels.push(sessionId) },
+      },
+    })
+    harness.stop()
+    expect(pendingCancels).toEqual(['session-1'])
+    expect(harness.cancels).toEqual([{ sessionId: 'session-1', silent: false }])
+  })
+
   it('leaves the draft untouched when stopping with a queued message pending', () => {
     const harness = setup({
       session: processingSession([
@@ -142,7 +159,7 @@ describe('ChatDisplay Stop draft decision (CHAT-04)', () => {
     expect(harness.cancels).toEqual([{ sessionId: 'session-1', silent: true }])
   })
 
-  it('restores the last sent prompt for editing when stopping without a queue', () => {
+  it('leaves delivered input in history when stopping without a queue', () => {
     const reference = projectReference('selected quote')
     const harness = setup({
       session: processingSession([
@@ -156,12 +173,12 @@ describe('ChatDisplay Stop draft decision (CHAT-04)', () => {
       t: key => key,
     })
     harness.stop()
-    expect(harness.inputChanges).toEqual(['A-prompt already sent'])
-    expect(harness.referenceChanges).toEqual([[reference]])
+    expect(harness.inputChanges).toEqual([])
+    expect(harness.referenceChanges).toEqual([])
     expect(harness.cancels).toEqual([{ sessionId: 'session-1', silent: false }])
   })
 
-  it('merges an unsent draft with the restored prompt without a queue', () => {
+  it('does not contaminate a newer draft with an already delivered prompt', () => {
     const harness = setup({
       session: processingSession([userMessage('A-prompt already sent')]),
       inputValue: 'unsent draft text',
@@ -172,9 +189,7 @@ describe('ChatDisplay Stop draft decision (CHAT-04)', () => {
       t: key => key,
     })
     harness.stop()
-    expect(harness.inputChanges).toHaveLength(1)
-    expect(harness.inputChanges[0]).toContain('unsent draft text')
-    expect(harness.inputChanges[0]).toContain('A-prompt already sent')
+    expect(harness.inputChanges).toEqual([])
   })
 
   it('skips the queued prompt and only restores the sent one when queued messages exist behind the scenes', () => {

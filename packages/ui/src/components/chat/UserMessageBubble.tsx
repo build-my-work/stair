@@ -344,6 +344,8 @@ export interface UserMessageBubbleProps {
   onAddSelectionToNewChat?: ChatTextSelectionAction
   onAddSelectionToNote?: ChatTextSelectionAction
   onAddSelectionToNoteTarget?: ChatTextSelectionAction
+  /** Restore the complete message to the composer for explicit editing. */
+  onEdit?: () => void
   /** Whether the message is awaiting backend confirmation. User bubbles stay visually stable. */
   isPending?: boolean
   /** Whether the message is queued (badge shown) */
@@ -402,6 +404,7 @@ export function UserMessageBubble({
   badges,
   references,
   onReferenceActivate,
+  onEdit,
   onAddSelectionToChat,
   onAddSelectionToNewChat,
   onAddSelectionToNote,
@@ -549,6 +552,11 @@ export function UserMessageBubble({
 
   return (
     <div className={cn("flex w-full flex-col items-end gap-2", className)}>
+      {onEdit && !isPending && !isQueued && (
+        <button type="button" onClick={onEdit} className="text-xs text-foreground/50 hover:text-foreground">
+          {t('common.edit')}
+        </button>
+      )}
       {hasReferences && (
         <div className={cn("flex flex-wrap justify-end gap-2", maxWidth)}>
           {references.map(reference => (

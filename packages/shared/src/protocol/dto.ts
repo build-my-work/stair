@@ -619,6 +619,8 @@ export interface SendMessageOptions {
 // ---------------------------------------------------------------------------
 
 export type SessionCommand =
+  /** Resolve a lost send response before returning its input to the draft. */
+  | { type: 'reconcileInput'; clientMessageId: string }
   | { type: 'flag' }
   | { type: 'unflag' }
   | { type: 'archive' }

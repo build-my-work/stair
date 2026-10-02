@@ -12,6 +12,8 @@ import type {
 import type {
   DrawnixBoardCapabilityRequest,
   DrawnixBoardCapabilityResponse,
+  DrawnixBoardDiscoveryRequest,
+  DrawnixBoardDiscoveryResponse,
 } from './drawnix-board-capability'
 import type { RpcServer } from './types'
 import type {
@@ -46,6 +48,9 @@ export const CLIENT_BROWSER_APPLICATION_INVOKE = 'client:browserApplication:invo
 /** Capability: read or transform a Drawnix board currently visible in the client. */
 export const CLIENT_DRAWNIX_BOARD_INVOKE = 'client:drawnixBoard:invoke'
 
+/** Capability: locate live Drawnix targets without reading or mutating a board. */
+export const CLIENT_DRAWNIX_BOARD_DISCOVER = 'client:drawnixBoard:discover'
+
 /** Marks transport-only options that must not be forwarded to the client. */
 export const CLIENT_INVOKE_OPTIONS = Symbol('client-invoke-options')
 
@@ -65,6 +70,7 @@ export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
   CLIENT_BROWSER_INVOKE,
   CLIENT_BROWSER_APPLICATION_INVOKE,
   CLIENT_DRAWNIX_BOARD_INVOKE,
+  CLIENT_DRAWNIX_BOARD_DISCOVER,
 ]
 
 // ---------------------------------------------------------------------------
@@ -214,4 +220,16 @@ export async function requestClientDrawnixBoardInvoke(
     CLIENT_DRAWNIX_BOARD_INVOKE,
     request,
   ) as Promise<DrawnixBoardCapabilityResponse>
+}
+
+export async function requestClientDrawnixBoardDiscovery(
+  server: RpcServer,
+  clientId: string,
+  request: DrawnixBoardDiscoveryRequest,
+): Promise<DrawnixBoardDiscoveryResponse> {
+  return server.invokeClient(
+    clientId,
+    CLIENT_DRAWNIX_BOARD_DISCOVER,
+    request,
+  ) as Promise<DrawnixBoardDiscoveryResponse>
 }

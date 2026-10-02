@@ -444,6 +444,9 @@ export interface AgentBackend {
   /** Transfer undelivered text steers to the host before handoff/teardown. */
   takePendingSteers?(): PendingSteer[];
 
+  /** Stop an asynchronous steering producer and confirm which inputs remain undelivered. */
+  settlePendingSteers?(): Promise<PendingSteer[]>;
+
   /**
    * Run a simple text completion using the backend's auth infrastructure.
    * Used for connection testing, title generation, and summarization.

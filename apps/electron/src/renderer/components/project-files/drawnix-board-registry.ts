@@ -1,6 +1,8 @@
 import type {
   DrawnixBoardCapabilityRequest,
   DrawnixBoardCapabilityResponse,
+  DrawnixBoardDiscoveryRequest,
+  DrawnixBoardDiscoveryResponse,
   DrawnixMindmapSnapshot,
 } from '@craft-agent/server-core/transport'
 import { isCanonicalProjectRelativePath } from '@craft-agent/shared/project-files'
@@ -40,12 +42,41 @@ export function registerOpenDrawnixBoard(
   }
 }
 
+export function discoverDrawnixBoards(
+  request: DrawnixBoardDiscoveryRequest,
+  activeProjectId: string | null,
+): DrawnixBoardDiscoveryResponse {
+  if (
+    request.v !== 1
+    || typeof request.projectId !== 'string'
+    || request.projectId.length === 0
+    || request.projectId !== request.projectId.trim()
+    || request.projectId.includes('\0')
+    || !isCanonicalProjectRelativePath(request.relativePath)
+    || !request.relativePath.toLowerCase().endsWith('.drawnix')
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: 'MINDMAP_INVALID_REQUEST',
+        message: 'A Project id and canonical .drawnix Project File path are required.',
+      },
+    }
+  }
+  return {
+    ok: true,
+    boardCount: openBoards.get(boardKey(request.projectId, request.relativePath))?.size ?? 0,
+    canCreate: activeProjectId === request.projectId,
+  }
+}
+
 export async function handleDrawnixBoardCapability(
   request: DrawnixBoardCapabilityRequest,
 ): Promise<DrawnixBoardCapabilityResponse> {
   try {
     if (
       request.v !== 1
+      || !['read', 'update', 'create'].includes(request.action)
       || typeof request.projectId !== 'string'
       || request.projectId.length === 0
       || request.projectId !== request.projectId.trim()

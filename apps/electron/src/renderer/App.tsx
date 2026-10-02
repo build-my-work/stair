@@ -33,11 +33,8 @@ import {
 } from '@/contexts/NavigationContext'
 import { navigate, routes } from './lib/navigate'
 import { attachmentFromContentRef, toDraftRef } from './lib/drafts'
-import {
-  restoreSessionDraftContent,
-} from './lib/reference-draft'
 import { SessionDraftCoordinator } from './lib/session-draft-coordinator'
-import { rollbackRejectedOptimisticUserMessage } from './lib/send-message-recovery'
+import { PendingInputJournal, rollbackRejectedOptimisticUserMessage, type PendingInput } from './lib/send-message-recovery'
 import { stripMarkdown } from './utils/text'
 import { getSessionsToRefreshAfterStaleReconnect } from './lib/reconnect-recovery'
 import { formatSessionLoadFailure, shouldTreatSessionLoadFailureAsTransportFallback } from './lib/session-load'
@@ -448,12 +445,24 @@ export default function App() {
     })
   }
   const draftCoordinator = draftCoordinatorRef.current
+  const pendingInputJournalRef = useRef<PendingInputJournal | null>(null)
+  // Synchronous admission must survive a disconnected transport before input clears.
+  // eslint-disable-next-line craft-agent/no-localstorage
+  if (!pendingInputJournalRef.current) pendingInputJournalRef.current = new PendingInputJournal(window.localStorage)
+  const pendingInputJournal = pendingInputJournalRef.current
+  const [pendingInputSessionIds, setPendingInputSessionIds] = useState<ReadonlySet<string>>(new Set())
+  const cancelledInputIdsRef = useRef(new Set<string>())
   const workspaceTransitionGenerationRef = useRef(0)
   const replayDeferredDraftRestoresRef = useRef<(() => void) | null>(null)
   const [draftsLoadedWorkspaceId, setDraftsLoadedWorkspaceId] = useState<string | null>(null)
   const clearSessionDraftState = useCallback((sessionId: string) => {
     draftCoordinator.clearSession(sessionId)
-  }, [draftCoordinator])
+    if (windowWorkspaceId) {
+      for (const input of pendingInputJournal.list(windowWorkspaceId)) {
+        if (input.sessionId === sessionId) pendingInputJournal.remove(input.clientMessageId)
+      }
+    }
+  }, [draftCoordinator, pendingInputJournal, windowWorkspaceId])
   const runBrowserSelectionTask = useCallback(async <T,>(
     operation: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> => draftCoordinator.runBrowserSelectionTask(operation), [draftCoordinator])
@@ -1623,18 +1632,25 @@ export default function App() {
     return true
   }, [clearSessionDraftState, store, removeSession, removeSessionFromWorkbench])
 
+  const hasSessionDraft = useCallback((sessionId: string): boolean => {
+    return draftCoordinator.hasDraft(sessionId)
+      || Boolean(windowWorkspaceId && pendingInputJournal.list(windowWorkspaceId).some(input => input.sessionId === sessionId))
+  }, [draftCoordinator, pendingInputJournal, windowWorkspaceId])
+
   const handleAutoDeleteEmptySession = useCallback(async (sessionId: string) => {
     try {
-      if (draftCoordinator.hasDraft(sessionId)) return
+      const generation = workspaceTransitionGenerationRef.current
+      if (hasSessionDraft(sessionId)) return
 
       const persistedDraft = await window.electronAPI.getDraft(sessionId)
-      if (sessionDraftHasContent(persistedDraft) || !windowWorkspaceId) return
+      if (sessionDraftHasContent(persistedDraft) || !windowWorkspaceId
+        || workspaceTransitionGenerationRef.current !== generation || hasSessionDraft(sessionId)) return
 
       const stillEmpty = findEmptySessionsLeavingWorkbench(
         new Set([sessionId]),
         store.get(retainedWorkbenchSessionIdsAtom),
         store.get(sessionMetaMapAtom),
-        candidateId => draftCoordinator.hasDraft(candidateId),
+        hasSessionDraft,
         windowWorkspaceId,
       ).includes(sessionId)
       if (stillEmpty) await handleDeleteSession(sessionId, true)
@@ -1644,11 +1660,7 @@ export default function App() {
         error,
       })
     }
-  }, [draftCoordinator, handleDeleteSession, store, windowWorkspaceId])
-
-  const hasSessionDraft = useCallback((sessionId: string): boolean => {
-    return draftCoordinator.hasDraft(sessionId)
-  }, [draftCoordinator])
+  }, [hasSessionDraft, handleDeleteSession, store, windowWorkspaceId])
 
   const handleFlagSession = useCallback((sessionId: string) => {
     updateSessionById(sessionId, { isFlagged: true })
@@ -1713,223 +1725,304 @@ export default function App() {
     window.electronAPI.sessionCommand(sessionId, { type: 'rename', name })
   }, [updateSessionById])
 
-  const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'>) => {
-    let optimisticMessageId: string | null = null
-    try {
-      // Capture pre-send processing state so we can flag mid-stream sends
-      // for the queued badge (#616 follow-up — covers Pi steer path which
-      // returns status 'accepted', not 'queued').
-      const sendingMidStream = store.get(sessionAtomFamily(sessionId))?.isProcessing === true
+  const refreshPendingInputSessions = useCallback(() => {
+    if (!windowWorkspaceId) return
+    const next = new Set(pendingInputJournal.list(windowWorkspaceId).map(input => input.sessionId))
+    setPendingInputSessionIds(previous => previous.size === next.size && [...next].every(id => previous.has(id)) ? previous : next)
+  }, [pendingInputJournal, windowWorkspaceId])
 
-      // Step 1: Store attachments and get persistent metadata
-      let storedAttachments: StoredAttachment[] | undefined
-      let processedAttachments: FileAttachment[] | undefined
-
-      if (attachments?.length) {
-        // Store each attachment to disk (generates thumbnails, converts Office→markdown)
-        // Use allSettled so one failure doesn't kill all attachments
-        const storeResults = await Promise.allSettled(
-          attachments.map(a => window.electronAPI.storeAttachment(sessionId, a))
-        )
-
-        // Filter successful stores, warn about failures
-        storedAttachments = []
-        const successfulAttachments: FileAttachment[] = []
-        storeResults.forEach((result, i) => {
-          if (result.status === 'fulfilled') {
-            storedAttachments!.push(result.value)
-            successfulAttachments.push(attachments[i])
-          } else {
-            console.warn(`Failed to store attachment "${attachments[i].name}":`, result.reason)
-          }
-        })
-
-        // Notify user about failed attachments
-        const failedCount = storeResults.filter(r => r.status === 'rejected').length
-        if (failedCount > 0) {
-          console.warn(`${failedCount} attachment(s) failed to store`)
-          // Add warning message to session so user knows some attachments weren't included
-          const failedNames = attachments
-            .filter((_, i) => storeResults[i].status === 'rejected')
-            .map(a => a.name)
-            .join(', ')
-          updateSessionById(sessionId, (s) => ({
-            messages: [...s.messages, {
-              id: generateMessageId(),
-              role: 'warning' as const,
-              content: `⚠️ ${failedCount} attachment(s) could not be stored and will not be sent: ${failedNames}`,
-              timestamp: Date.now()
-            }]
-          }))
-        }
-
-        // Step 2: Create processed attachments for Claude
-        // - Office files: Convert to text with markdown content
-        // - Others: Use original FileAttachment
-        // - All: Include storedPath so agent knows where files are stored
-        // - Resized images: Use resizedBase64 instead of original large base64
-        processedAttachments = await Promise.all(
-          successfulAttachments.map(async (att, i) => {
-            const stored = storedAttachments?.[i]
-            if (!stored) {
-              console.error(`Missing stored attachment at index ${i}`)
-              return att // Fall back to original
-            }
-            // Include storedPath and markdownPath for all attachment types
-            // Agent will use Read tool to access text/office files via these paths
-            // If image was resized/normalized, use the stored base64 + mimeType for Claude API
-            return {
-              ...att,
-              storedPath: stored.storedPath,
-              markdownPath: stored.markdownPath,
-              // Reflect any server-side normalization (e.g. HEIC/HEIF → JPEG) so the
-              // model receives a supported media type instead of silently dropping the image.
-              mimeType: stored.mimeType,
-              // Use resized/normalized base64 when the store produced one
-              base64: stored.resizedBase64 ?? att.base64,
-            }
-          })
-        )
-      }
-
-      // Step 3: Extract badges from mentions (sources/skills) with embedded icons
-      // Badges are self-contained for display in UserMessageBubble and viewer
-      // Merge with any externally provided badges (e.g., from EditPopover context badges)
-      // Use workspace slug (not UUID) for skill qualification - SDK expects "workspaceSlug:skillSlug"
-      const mentionBadges: ContentBadge[] = windowWorkspaceSlug
-        ? extractBadges(message, skills, sources, windowWorkspaceSlug)
-        : []
-      const badges: ContentBadge[] = [...(externalBadges || []), ...mentionBadges]
-
-      // Step 4.1: Detect SDK slash commands (e.g., /compact) and create command badges
-      // This makes /compact render as an inline badge rather than raw text
-      const commandMatch = message.match(/^\/([a-z]+)(\s|$)/i)
-      if (commandMatch && commandMatch[1].toLowerCase() === 'compact') {
-        const commandText = commandMatch[0].trimEnd() // "/compact" without trailing space
-        badges.unshift({
-          type: 'command',
-          label: 'Compact',
-          rawText: commandText,
-          start: 0,
-          end: commandText.length,
-        })
-      }
-
-      // Step 4.2: Detect plan execution messages and create file badges
-      // Pattern: "Read the plan at <path> and execute it."
-      // This is sent after compaction when accepting a plan, displays as clickable file badge
-      // Only the file path is replaced with a badge - surrounding text remains visible
-      const planExecuteMatch = message.match(/^(Read the plan at )(.+?)( and execute it\.?)$/i)
-      if (planExecuteMatch) {
-        const prefix = planExecuteMatch[1]      // "Read the plan at "
-        const filePath = planExecuteMatch[2]    // the actual path
-        const fileName = filePath.split('/').pop() || 'plan.md'
-        badges.push({
-          type: 'file',
-          label: fileName,
-          rawText: filePath,
-          filePath: filePath,
-          start: prefix.length,
-          end: prefix.length + filePath.length,
-        })
-      }
-
-      // Step 5: Create user message with StoredAttachments (for UI display)
-      // Mark as isPending for optimistic UI — will be confirmed by user_message
-      // event. Flag mid-stream sends as queued so the bubble renders with the
-      // dashed-draft treatment immediately. Applies to both backends:
-      // Pi steers (server emits status: 'accepted' but the renderer preserves
-      // isQueued through that update) and Claude queues (server emits 'queued'
-      // which confirms it). Cleared by 'processing' status or when the current
-      // turn ends.
-      const userMessage: Message = {
-        id: generateMessageId(),
-        role: 'user',
-        content: message,
-        timestamp: Date.now(),
-        attachments: storedAttachments,
-        badges: badges.length > 0 ? badges : undefined,
-        references: references?.length ? references : undefined,
-        isPending: true,  // Optimistic - will be confirmed by backend
-        isQueued: sendingMidStream,
-      }
-      optimisticMessageId = userMessage.id
-
-      // Optimistic UI update - add user message and set processing state
-      updateSessionById(sessionId, (s) => ({
-        messages: [...s.messages, userMessage],
-        isProcessing: true,
-        lastMessageAt: Date.now()
-      }))
-
-      // Step 6: Send to Claude with processed attachments + stored attachments for persistence
-      await window.electronAPI.sendMessage(sessionId, message, processedAttachments, storedAttachments, {
-        skillSlugs,
-        badges: badges.length > 0 ? badges : undefined,
-        references: references?.length ? references : undefined,
-        optimisticMessageId: userMessage.id,
-        ...(options?.planExecutionId ? { planExecutionId: options.planExecutionId } : {}),
-      })
-    } catch (error) {
-      console.error('Failed to send message:', error)
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      const referenceValidationRejected = Boolean(
-        references?.length && errorMessage.includes('MESSAGE_REFERENCE_'),
-      )
-      if (referenceValidationRejected) {
-        const existingDraft = draftCoordinator.getDraft(sessionId)
-        const targetProjectId = store.get(sessionMetaMapAtom).get(sessionId)?.projectId
-          ?? store.get(sessionAtomFamily(sessionId))?.projectId
-        const restoreResult = restoreSessionDraftContent(
-          existingDraft,
-          targetProjectId,
-          message,
-          references ?? [],
-        )
-        const restoredDraft = restoreResult.draft
-        if (restoreResult.ok && restoredDraft) {
-          draftCoordinator.setDraft(sessionId, restoredDraft)
-          void Promise.all([
-            draftCoordinator.flushContent(sessionId),
-            window.electronAPI.updateDraftReferences(sessionId, {
-              baseReferences: existingDraft?.references ?? [],
-              nextReferences: restoredDraft.references ?? [],
-            }),
-          ]).catch(draftError => {
-            rendererLog.warn('[drafts] Failed to persist rejected reference input', {
-              sessionId,
-              error: draftError,
-            })
-          })
-        } else if (!restoreResult.ok) {
-          rendererLog.warn('[drafts] Rejected input restoration exceeded reference boundaries', {
-            sessionId,
-          })
-          toast.error(t('reference.couldNotAdd'))
-        }
-        window.dispatchEvent(new CustomEvent('craft:restore-input', {
-          detail: { sessionId, text: restoredDraft?.text ?? '' },
-        }))
-        window.dispatchEvent(new CustomEvent('stair:draft-references-changed', {
-          detail: { sessionId, references: restoredDraft?.references ?? [] },
-        }))
-      }
-      updateSessionById(sessionId, (s) => ({
-        isProcessing: false,
-        messages: [
-          ...(referenceValidationRejected
-            ? rollbackRejectedOptimisticUserMessage(s.messages, optimisticMessageId)
-            : s.messages),
-          {
-            id: generateMessageId(),
-            role: 'error' as const,
-            content: `Failed to send message: ${errorMessage}`,
-            timestamp: Date.now()
-          }
-        ]
-      }))
+  const recoverPendingInput = useCallback(async (input: PendingInput) => {
+    const generation = workspaceTransitionGenerationRef.current
+    const isCurrent = () => !workspaceSwitchingRef.current
+      && workspaceTransitionGenerationRef.current === generation
+      && transportWorkspaceIdRef.current === input.workspaceId
+      && store.get(sessionMetaMapAtom).get(input.sessionId)?.workspaceId === input.workspaceId
+      && store.get(sessionMetaMapAtom).get(input.sessionId)?.projectId === input.projectId
+    if (!isCurrent() || !draftCoordinator.isHydrated(input.workspaceId)) return
+    // Consume all already-staged slots before restoring any rejected one. A
+    // later identical input must not clear the earlier input just restored.
+    for (const pending of pendingInputJournal.list(input.workspaceId)) {
+      if (pending.sessionId !== input.sessionId || !pending.consumption) continue
+      if (pending.projectId !== input.projectId) throw new Error('Pending input Project changed')
+      if (!await draftCoordinator.consumeSubmittedDraft(input.workspaceId, input.sessionId, pending.clientMessageId, pending.consumption)) return
     }
-  }, [draftCoordinator, sessionOptions, updateSessionById, skills, sources, windowWorkspaceId, store, t])
+    if (!isCurrent()) return
+    // Absence from GET is not proof: validation may still be in flight. This
+    // command fences this identity before returning a definitive rejection.
+    const result = await window.electronAPI.sessionCommand(input.sessionId, {
+      type: 'reconcileInput', clientMessageId: input.clientMessageId,
+    })
+    if (!isCurrent()) return
+    if (result.state === 'not_accepted') {
+      const restored = await draftCoordinator.restoreInput(input.workspaceId, input.sessionId, input.projectId, {
+        type: 'restore_input', text: input.text, references: input.references,
+        attachments: input.attachments, queuedRestoreId: `rejected-${input.clientMessageId}`,
+      })
+      if (!restored || !isCurrent()) return
+      updateSessionById(input.sessionId, current => ({
+        messages: rollbackRejectedOptimisticUserMessage(current.messages, input.clientMessageId),
+      }))
+    } else if (result.state === 'owned') {
+      const authoritative = await window.electronAPI.getSessionMessages(input.sessionId)
+      if (!isCurrent()) return
+      if (!authoritative) throw new Error('The owned input session could not be read')
+      const accepted = authoritative.messages.find(message => message.id === result.messageId || message.clientMessageId === input.clientMessageId)
+      // Reconcile only this still-optimistic row. A newer event, another send,
+      // running state, and the live draft retain their independent owners.
+      updateSessionById(input.sessionId, current => ({
+        messages: current.messages.flatMap(message => {
+          if (message.role !== 'user' || !message.isPending
+            || (message.id !== input.clientMessageId && message.clientMessageId !== input.clientMessageId)) return [message]
+          return accepted ? [{ ...accepted, id: message.id, serverMessageId: accepted.id, isPending: false }] : []
+        }),
+      }))
+    } else {
+      throw new Error('Input reconciliation returned no ownership receipt')
+    }
+    pendingInputJournal.remove(input.clientMessageId)
+    cancelledInputIdsRef.current.delete(input.clientMessageId)
+    refreshPendingInputSessions()
+    return result.state
+  }, [draftCoordinator, pendingInputJournal, refreshPendingInputSessions, store, updateSessionById])
+
+  // Only the holder of this browser-managed lock may send/recover a session's
+  // journal. A closed/crashed renderer releases it, so another window can take
+  // over without cancelling a request a live window still owns.
+  useEffect(() => {
+    if (!windowWorkspaceId || draftsLoadedWorkspaceId !== windowWorkspaceId) return
+    const recover = () => {
+      if (workspaceSwitchingRef.current || !navigator.locks) return
+      refreshPendingInputSessions()
+      for (const input of pendingInputJournal.list(windowWorkspaceId)) {
+        void navigator.locks.request(`stair:pending-input:${input.workspaceId}:${input.sessionId}`, { ifAvailable: true }, async lock => {
+          if (!lock) return
+          const current = pendingInputJournal.get(input.clientMessageId)
+          if (current) await recoverPendingInput(current)
+        }).catch(error => rendererLog.warn('[input] Recovery pending; journal retained', { sessionId: input.sessionId, error }))
+      }
+    }
+    recover()
+    const timer = setInterval(recover, 2000)
+    const disconnected = window.electronAPI.onReconnected(recover)
+    window.addEventListener('storage', recover)
+    return () => { clearInterval(timer); disconnected(); window.removeEventListener('storage', recover) }
+  }, [draftsLoadedWorkspaceId, pendingInputJournal, recoverPendingInput, refreshPendingInputSessions, windowWorkspaceId])
+
+  const handleCancelPendingInput = useCallback(async (sessionId: string) => {
+    if (!windowWorkspaceId) return
+    const inputs = pendingInputJournal.list(windowWorkspaceId).filter(input => input.sessionId === sessionId)
+    await Promise.all(inputs.map(async input => {
+      cancelledInputIdsRef.current.add(input.clientMessageId)
+      // Do not wait for the sender's lock: cancellation must fence a request
+      // whose validation or attachment storage is still waiting.
+      await window.electronAPI.sessionCommand(sessionId, { type: 'reconcileInput', clientMessageId: input.clientMessageId })
+      await navigator.locks.request(`stair:pending-input:${input.workspaceId}:${input.sessionId}`, async () => {
+        const current = pendingInputJournal.get(input.clientMessageId)
+        if (current) await recoverPendingInput(current)
+      })
+    }))
+  }, [pendingInputJournal, recoverPendingInput, windowWorkspaceId])
+
+  const handleSendMessage = useCallback((sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'> & { consumeDraft?: boolean }): boolean => {
+    const optimisticMessageId = generateMessageId()
+    const generation = workspaceTransitionGenerationRef.current
+    let pendingInput: PendingInput | undefined
+    try {
+      if (!options?.planExecutionId) {
+        const meta = store.get(sessionMetaMapAtom).get(sessionId)
+        if (!windowWorkspaceId || workspaceSwitchingRef.current || meta?.workspaceId !== windowWorkspaceId || !meta.projectId) {
+          throw new Error('The Chat is no longer available in this Workspace')
+        }
+        if (!navigator.locks) throw new Error('Durable input recovery is unavailable in this client')
+        const attachmentRefs = attachments?.map(attachment => {
+          const ref = toDraftRef(attachment)
+          if (!ref) throw new Error(`Cannot retain attachment "${attachment.name}"; the input was not sent`)
+          return ref
+        })
+        pendingInput = {
+          version: 1, workspaceId: windowWorkspaceId, projectId: meta.projectId,
+          sessionId, clientMessageId: optimisticMessageId, createdAt: Date.now(), text: message,
+          attachments: attachmentRefs, references, skillSlugs, badges: externalBadges,
+          ...(options?.consumeDraft ? { consumption: draftCoordinator.captureSubmittedDraft(sessionId, { attachments: attachmentRefs, references }) } : {}),
+        }
+        pendingInputJournal.write(pendingInput)
+        refreshPendingInputSessions()
+      }
+    } catch (error) {
+      toast.error('Input could not be saved; it has been kept in the composer', {
+        description: error instanceof Error ? error.message : String(error),
+      })
+      return false
+    }
+
+    const send = async () => {
+      try {
+        // The composer clears synchronously after admission. This work starts
+        // under an asynchronous lock, after that clear, and replays its exact
+        // captured consumption before a host may own the input.
+        if (pendingInput) {
+          if (!pendingInputJournal.get(optimisticMessageId)) return
+          for (const pending of pendingInputJournal.list(pendingInput.workspaceId)) {
+            if (pending.sessionId !== sessionId || !pending.consumption) continue
+            if (pending.projectId !== pendingInput.projectId) throw new Error('Pending input Project changed')
+            if (!await draftCoordinator.consumeSubmittedDraft(pendingInput.workspaceId, sessionId, pending.clientMessageId, pending.consumption)) return
+          }
+          if (transportWorkspaceIdRef.current !== pendingInput.workspaceId || workspaceSwitchingRef.current || workspaceTransitionGenerationRef.current !== generation) return
+          if (cancelledInputIdsRef.current.has(optimisticMessageId)) throw new Error('Input cancelled before submission')
+        }
+        // Step 1: Store attachments and get persistent metadata
+        let storedAttachments: StoredAttachment[] | undefined
+        let processedAttachments: FileAttachment[] | undefined
+
+        if (attachments?.length) {
+          // Store each attachment to disk (generates thumbnails, converts Office→markdown)
+          // Use allSettled so one failure doesn't kill all attachments
+          const storeResults = await Promise.allSettled(
+            attachments.map(a => window.electronAPI.storeAttachment(sessionId, a))
+          )
+
+          // Filter successful stores, warn about failures
+          storedAttachments = []
+          const successfulAttachments: FileAttachment[] = []
+          storeResults.forEach((result, i) => {
+            if (result.status === 'fulfilled') {
+              storedAttachments!.push(result.value)
+              successfulAttachments.push(attachments[i])
+            } else {
+              console.warn(`Failed to store attachment "${attachments[i].name}":`, result.reason)
+            }
+          })
+
+          const failedCount = storeResults.filter(r => r.status === 'rejected').length
+          if (failedCount > 0) {
+            throw new Error(`Could not store ${failedCount} attachment(s); the complete input has been retained.`)
+          }
+
+          // Step 2: Create processed attachments for Claude
+          // - Office files: Convert to text with markdown content
+          // - Others: Use original FileAttachment
+          // - All: Include storedPath so agent knows where files are stored
+          // - Resized images: Use resizedBase64 instead of original large base64
+          processedAttachments = await Promise.all(
+            successfulAttachments.map(async (att, i) => {
+              const stored = storedAttachments?.[i]
+              if (!stored) {
+                console.error(`Missing stored attachment at index ${i}`)
+                return att // Fall back to original
+              }
+              // Include storedPath and markdownPath for all attachment types
+              // Agent will use Read tool to access text/office files via these paths
+              // Keep the MIME type aligned with server-side image normalization.
+              return {
+                ...att,
+                storedPath: stored.storedPath,
+                markdownPath: stored.markdownPath,
+                mimeType: stored.mimeType,
+                // Use resized base64 if available (for images that exceeded size limits)
+                base64: stored.resizedBase64 ?? att.base64,
+              }
+            })
+          )
+        }
+
+        // Step 3: Extract badges from mentions (sources/skills) with embedded icons
+        // Badges are self-contained for display in UserMessageBubble and viewer
+        // Merge with any externally provided badges (e.g., from EditPopover context badges)
+        // Use workspace slug (not UUID) for skill qualification - SDK expects "workspaceSlug:skillSlug"
+        const mentionBadges: ContentBadge[] = windowWorkspaceSlug
+          ? extractBadges(message, skills, sources, windowWorkspaceSlug)
+          : []
+        const badges: ContentBadge[] = [...(externalBadges || []), ...mentionBadges]
+
+        // Step 4.1: Detect SDK slash commands (e.g., /compact) and create command badges
+        // This makes /compact render as an inline badge rather than raw text
+        const commandMatch = message.match(/^\/([a-z]+)(\s|$)/i)
+        if (commandMatch && commandMatch[1].toLowerCase() === 'compact') {
+          const commandText = commandMatch[0].trimEnd() // "/compact" without trailing space
+          badges.unshift({
+            type: 'command',
+            label: 'Compact',
+            rawText: commandText,
+            start: 0,
+            end: commandText.length,
+          })
+        }
+
+        // Step 4.2: Detect plan execution messages and create file badges
+        // Pattern: "Read the plan at <path> and execute it."
+        // This is sent after compaction when accepting a plan, displays as clickable file badge
+        // Only the file path is replaced with a badge - surrounding text remains visible
+        const planExecuteMatch = message.match(/^(Read the plan at )(.+?)( and execute it\.?)$/i)
+        if (planExecuteMatch) {
+          const prefix = planExecuteMatch[1]      // "Read the plan at "
+          const filePath = planExecuteMatch[2]    // the actual path
+          const fileName = filePath.split('/').pop() || 'plan.md'
+          badges.push({
+            type: 'file',
+            label: fileName,
+            rawText: filePath,
+            filePath: filePath,
+            start: prefix.length,
+            end: prefix.length + filePath.length,
+          })
+        }
+
+        if (pendingInput) {
+          const currentMeta = store.get(sessionMetaMapAtom).get(sessionId)
+          if (currentMeta?.workspaceId !== pendingInput.workspaceId || currentMeta.projectId !== pendingInput.projectId) return
+          // Once attachments are stored, recovery points at those durable
+          // copies, including the original user-facing filenames.
+          const updated: PendingInput = { ...pendingInput, attachments: storedAttachments?.map(stored => ({ path: stored.storedPath, name: stored.name })) }
+          pendingInputJournal.write(updated)
+          pendingInput = updated
+          if (transportWorkspaceIdRef.current !== pendingInput.workspaceId || workspaceSwitchingRef.current || workspaceTransitionGenerationRef.current !== generation) return
+          if (cancelledInputIdsRef.current.has(optimisticMessageId)) throw new Error('Input cancelled before submission')
+        }
+        const userMessage: Message = {
+          id: optimisticMessageId, clientMessageId: optimisticMessageId,
+          role: 'user', content: message, timestamp: Date.now(), attachments: storedAttachments,
+          badges: badges.length > 0 ? badges : undefined,
+          references: references?.length ? references : undefined,
+          isPending: true,
+          isQueued: store.get(sessionAtomFamily(sessionId))?.isProcessing === true,
+        }
+        updateSessionById(sessionId, current => ({
+          messages: [...current.messages, userMessage], lastMessageAt: Date.now(),
+        }))
+        const receipt = await window.electronAPI.sendMessage(sessionId, message, processedAttachments, storedAttachments, {
+          skillSlugs, badges: badges.length > 0 ? badges : undefined,
+          references: references?.length ? references : undefined,
+          optimisticMessageId,
+          ...(options?.planExecutionId ? { planExecutionId: options.planExecutionId } : {}),
+        })
+        if (pendingInput) {
+          if (receipt?.accepted === true && receipt.messageId) pendingInputJournal.remove(optimisticMessageId)
+          else await recoverPendingInput(pendingInput)
+        }
+      } catch (error) {
+        console.error('Failed to send message:', error)
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        if (pendingInput) {
+          const outcome = await recoverPendingInput(pendingInput).catch(recoveryError => {
+            rendererLog.warn('[input] Outcome not confirmed; journal retained for recovery', { sessionId, error: recoveryError })
+          })
+          if (outcome === 'owned') return
+        }
+        updateSessionById(sessionId, current => ({
+          messages: [...current.messages, { id: generateMessageId(), role: 'error', content: `Failed to send message: ${errorMessage}`, timestamp: Date.now() }],
+        }))
+      } finally {
+        refreshPendingInputSessions()
+      }
+    }
+    if (pendingInput) {
+      void navigator.locks.request(`stair:pending-input:${pendingInput.workspaceId}:${sessionId}`, send)
+        .catch(error => rendererLog.warn('[input] Send lock failed; journal retained', { sessionId, error }))
+    } else {
+      void send()
+    }
+    return true
+  }, [draftCoordinator, pendingInputJournal, recoverPendingInput, refreshPendingInputSessions, updateSessionById, skills, sources, windowWorkspaceId, windowWorkspaceSlug, store])
 
   /**
    * Unified handler for all session option changes.
@@ -2005,7 +2098,7 @@ export default function App() {
             console.warn('[drafts] Attachment missing on restore, dropping:', ref.path)
             return null
           }
-          return attachment
+          return { ...attachment, name: ref.name }
         } catch (err) {
           console.warn('[drafts] Failed to restore attachment, dropping:', ref.path, err)
           return null
@@ -2027,6 +2120,15 @@ export default function App() {
     if (!draftCoordinator.replaceReferences(sessionId, live.references)) throw new Error('Could not synchronize plan draft references')
     return draftCoordinator.consumePlanDraft(windowWorkspaceId, sessionId, executionId)
   }, [draftCoordinator, windowWorkspaceId])
+
+  const handleEditMessage = useCallback(async (sessionId: string, message: Message) => {
+    const meta = store.get(sessionMetaMapAtom).get(sessionId)
+    if (!meta || meta.workspaceId !== windowWorkspaceId || message.hidden || message.role !== 'user') return
+    await draftCoordinator.restoreInput(windowWorkspaceId, sessionId, meta.projectId, {
+      type: 'restore_input', text: message.content, references: message.references,
+      attachments: message.attachments?.map(attachment => ({ path: attachment.storedPath, name: attachment.name })),
+    })
+  }, [draftCoordinator, store, windowWorkspaceId])
 
   const handleInputChange = useCallback((sessionId: string, value: string) => {
     draftCoordinator.updateText(sessionId, value)
@@ -2433,6 +2535,8 @@ export default function App() {
     // Session callbacks
     onCreateSession: handleCreateSession,
     onSendMessage: handleSendMessage,
+    pendingInputSessionIds,
+    onCancelPendingInput: handleCancelPendingInput,
     onRenameSession: handleRenameSession,
     onFlagSession: handleFlagSession,
     onUnflagSession: handleUnflagSession,
@@ -2464,6 +2568,7 @@ export default function App() {
     onAttachmentsChange: handleAttachmentsChange,
     onReferencesChange: handleReferencesChange,
     onAddDraftReference: handleAddDraftReference,
+    onEditMessage: handleEditMessage,
     // New chat (via deep link navigation)
     openNewChat,
   }), [
@@ -2484,6 +2589,8 @@ export default function App() {
     sessionOptions,
     handleCreateSession,
     handleSendMessage,
+    pendingInputSessionIds,
+    handleCancelPendingInput,
     handleRenameSession,
     handleFlagSession,
     handleUnflagSession,
@@ -2511,6 +2618,7 @@ export default function App() {
     handleAttachmentsChange,
     handleReferencesChange,
     handleAddDraftReference,
+    handleEditMessage,
     openNewChat,
   ])
 

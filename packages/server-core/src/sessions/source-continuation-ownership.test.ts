@@ -83,6 +83,7 @@ async function setup(id: string, holdSourceClose = false, keepSteeringWhileSourc
       const first = calls.length === 1
       return pendingSteers.runTurn((async function* (): AsyncGenerator<AgentEvent> {
         if (first) {
+          yield { type: 'input_accepted' }
           firstStarted = true
           await activation
           yield { type: 'source_activated', sourceSlug: 'github', originalMessage: text }

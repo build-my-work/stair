@@ -16,7 +16,9 @@ import {
   CLIENT_BROWSER_APPLICATION_INVOKE,
   CLIENT_BROWSER_INVOKE,
   CLIENT_DRAWNIX_BOARD_INVOKE,
+  CLIENT_DRAWNIX_BOARD_DISCOVER,
   requestClientBrowserApplicationInvoke,
+  requestClientDrawnixBoardDiscovery,
 } from '../capabilities'
 import { CodedError } from '@craft-agent/shared/protocol'
 
@@ -243,5 +245,32 @@ describe('Transport — capability introspection', () => {
       ok: true,
       snapshot: { relativePath: 'maps/tutorial.drawnix', changeSeq: 2 },
     })
+  })
+
+  it('discovers Drawnix targets over a separate capability without invoking a board operation', async () => {
+    const { server, client } = await startPair({
+      clientCapabilities: [CLIENT_DRAWNIX_BOARD_INVOKE, CLIENT_DRAWNIX_BOARD_DISCOVER],
+      workspaceId: 'ws-drawnix',
+    })
+    const calls: unknown[] = []
+    client.handleCapability(CLIENT_DRAWNIX_BOARD_DISCOVER, request => {
+      calls.push(request)
+      return { ok: true, boardCount: 2, canCreate: false }
+    })
+    client.handleCapability(CLIENT_DRAWNIX_BOARD_INVOKE, () => {
+      throw new Error('Discovery must not invoke a board operation')
+    })
+    const [clientId] = server.findClientsWithCapability(CLIENT_DRAWNIX_BOARD_DISCOVER, {
+      workspaceId: 'ws-drawnix',
+    })
+    const request = { v: 1 as const, projectId: 'project-a', relativePath: 'maps/tutorial.drawnix' }
+
+    expect(await requestClientDrawnixBoardDiscovery(server, clientId!, request)).toEqual({
+      ok: true, boardCount: 2, canCreate: false,
+    })
+    expect(calls).toEqual([request])
+    expect(server.findClientsWithCapability(CLIENT_DRAWNIX_BOARD_DISCOVER, {
+      workspaceId: 'ws-other',
+    })).toEqual([])
   })
 })

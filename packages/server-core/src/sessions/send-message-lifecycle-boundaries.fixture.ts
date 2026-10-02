@@ -85,7 +85,7 @@ test.each(['agent construction', 'source setup'] as const)('%s failure settles p
   const f = await setup()
   let fail = true
   const calls: string[] = []
-  const agent = agentStub(async function* (text) { calls.push(text); yield { type: 'complete' } })
+  const agent = agentStub(async function* (text) { calls.push(text); yield { type: 'input_accepted' }; yield { type: 'complete' } })
   agent.setAllSources = () => { if (stage === 'source setup' && fail) throw new Error('isolated setup failure') }
   f.internals.getOrCreateAgent = async () => { if (stage === 'agent construction' && fail) throw new Error('isolated setup failure'); return agent }
   const acks: string[] = []
@@ -112,7 +112,7 @@ test('startup rejection drains already accepted following references and attachm
   const release = Promise.withResolvers<void>()
   let startups = 0
   const calls: { text: string; attachments?: FileAttachment[] }[] = []
-  const agent = agentStub(async function* (text, attachments) { calls.push({ text, attachments }); yield { type: 'complete' } })
+  const agent = agentStub(async function* (text, attachments) { calls.push({ text, attachments }); yield { type: 'input_accepted' }; yield { type: 'complete' } })
   f.internals.getOrCreateAgent = async () => {
     if (++startups === 1) { entered.resolve(); await release.promise; throw new Error('isolated setup failure') }
     return agent
@@ -172,6 +172,7 @@ test.each(['first visual clear', 'final visual clear', 'read persistence', 'mini
     f.sm.setSessionStatus = async (id, status) => { await original(id, status); entered.resolve(); await release.promise }
   }
   const agent = agentStub(async function* (text) {
+    yield { type: 'input_accepted' }
     if (text === 'NEWER-ACTIVE-TURN') { newerEntered.resolve(); await releaseNewer.promise }
     yield { type: 'text_complete', text: `${text} reply` }
     yield { type: 'complete' }
@@ -179,7 +180,7 @@ test.each(['first visual clear', 'final visual clear', 'read persistence', 'mini
   f.internals.getOrCreateAgent = async () => agent
   f.sm.setEventSink((_channel, _target, event) => events.push({ event: structuredClone(event), generation: f.managed.processingGeneration, processing: f.managed.isProcessing }))
   f.sm.onSessionComplete(event => { if (f.managed.isProcessing) conductorWhileActive.push(event) })
-  await f.sm.sendMessage(f.managed.id, 'OLDER-COMPLETED-TURN')
+  const older = f.sm.sendMessage(f.managed.id, 'OLDER-COMPLETED-TURN')
   await entered.promise
   const newer = f.sm.sendMessage(f.managed.id, 'NEWER-ACTIVE-TURN')
   await newerEntered.promise
@@ -193,7 +194,7 @@ test.each(['first visual clear', 'final visual clear', 'read persistence', 'mini
   } finally {
     release.resolve()
     releaseNewer.resolve()
-    await newer
+    await Promise.all([older, newer])
     for (let i = 0; i < 5; i++) await tick()
   }
 }, 5_000)
@@ -201,7 +202,15 @@ test.each(['first visual clear', 'final visual clear', 'read persistence', 'mini
 test.each(['complete', 'empty iterator', 'pre-turn rejection'] as const)('%s still allows the next ordinary warm send', async (exit) => {
   const f = await setup()
   const calls: string[] = []
-  const agent = agentStub(async function* (text) { calls.push(text); if (exit !== 'empty iterator') yield { type: 'complete' } })
+  const agent = agentStub(async function* (text) {
+    calls.push(text)
+    // The first empty iterator deliberately has no producer acknowledgement.
+    // The following warm send is an ordinary successfully admitted turn.
+    if (exit !== 'empty iterator' || calls.length > 1) {
+      yield { type: 'input_accepted' }
+      yield { type: 'complete' }
+    }
+  })
   f.internals.getOrCreateAgent = async () => agent
   if (exit === 'pre-turn rejection') {
     f.internals.startPreTurnDecisions = () => Promise.reject(new Error('isolated decision failure'))
@@ -305,7 +314,7 @@ test('a new send racing public delete cannot ACK or recreate the removed session
   const f = await setup()
   const calls: string[] = []
   const acks: string[] = []
-  const agent = agentStub(async function* (text) { calls.push(text); yield { type: 'complete' } })
+  const agent = agentStub(async function* (text) { calls.push(text); yield { type: 'input_accepted' }; yield { type: 'complete' } })
   f.internals.getOrCreateAgent = async () => agent
   // Both real commands share their normal lifecycle lock. No scheduling seam
   // is needed to reproduce deletion between hydration and message creation.
@@ -322,7 +331,7 @@ test('a send accepted before public delete keeps its single ACK and is then remo
   const f = await setup()
   const calls: string[] = []
   const acks: string[] = []
-  const agent = agentStub(async function* (text) { calls.push(text); yield { type: 'complete' } })
+  const agent = agentStub(async function* (text) { calls.push(text); yield { type: 'input_accepted' }; yield { type: 'complete' } })
   f.internals.getOrCreateAgent = async () => agent
   await f.sm.sendMessage(f.managed.id, 'ACCEPTED-BEFORE-DELETE', undefined, undefined, undefined, undefined, undefined, id => acks.push(id))
   for (let i = 0; i < 5; i++) await tick()
@@ -394,7 +403,7 @@ test('public delete fences a write captured before the send ACK', async () => {
   const f = await setup()
   const calls: string[] = []
   const acks: string[] = []
-  const agent = agentStub(async function* (text) { calls.push(text); yield { type: 'complete' } })
+  const agent = agentStub(async function* (text) { calls.push(text); yield { type: 'input_accepted' }; yield { type: 'complete' } })
   f.internals.getOrCreateAgent = async () => agent
   const queue = sessionPersistenceQueue as unknown as QueueWriteHarness
   const original = queue.performWrite
@@ -465,7 +474,6 @@ test('Stop during completed-turn visual cleanup restores queued following input 
   await f.sm.sendMessage(f.managed.id, 'FOLLOWING-QUEUED-INPUT', [attachment], [stored], { references: [reference] })
   const queuedId = f.managed.messageQueue[0]!.messageId!
   firstRelease.resolve()
-  await first
   await cleanupEntered.promise
   expect(f.managed.isProcessing).toBe(false)
   expect(f.managed.messageQueue).toHaveLength(1)
@@ -474,6 +482,7 @@ test('Stop during completed-turn visual cleanup restores queued following input 
   await f.sm.cancelProcessing(f.managed.id)
   cleanupRelease.resolve()
   try {
+    await first
     for (let i = 0; i < 20; i++) await tick()
     await f.sm.flushSession(f.managed.id)
     const interrupted = events.find(event => event.type === 'interrupted')
@@ -502,6 +511,7 @@ test('Stop during ordinary scheduled replay restores its references and attachme
   const attachment: FileAttachment = { type: 'text', path: stored.storedPath, name: stored.name, mimeType: stored.mimeType, size: stored.size, text: 'queued notes' }
   const agent = agentStub(async function* (text) {
     calls.push(text)
+    yield { type: 'input_accepted' }
     if (calls.length === 1) { entered.resolve(); await release.promise }
     yield { type: 'complete' }
   })
@@ -551,6 +561,7 @@ test.each(['missing bubble', 'invalid persisted reference'] as const)('scheduled
   const attachment: FileAttachment = { type: 'text', path: stored.storedPath, name: stored.name, mimeType: stored.mimeType, size: stored.size, text: 'following notes' }
   const agent = agentStub(async function* (text, attachments) {
     calls.push({ text, attachments })
+    yield { type: 'input_accepted' }
     if (calls.length === 1) { entered.resolve(); await release.promise }
     yield { type: 'complete' }
   })
@@ -699,7 +710,22 @@ test('a delayed generic replay startup rejection warns without interrupting a ne
     expect(failedInput.content).toBe('QUEUED-INPUT')
     expect(failedInput.references).toEqual([reference])
     expect(failedInput.attachments).toEqual([stored])
-    expect(failedInput.isQueued).toBe(false)
+    // The failed startup never accepted this input. It remains in the durable
+    // restore outbox, while the live execution queue stays empty below.
+    expect(failedInput.isQueued).toBe(true)
+    expect(failedInput.queuedRestoreId).toBe(`input-${queuedId}`)
+    expect(failedInput.pendingDelivery).toBeUndefined()
+    const restores = events.filter(({ event }) => event.type === 'interrupted' && event.queuedMessageIds?.includes(queuedId))
+    expect(restores).toHaveLength(1)
+    expect(restores[0]?.generation).toBe(2)
+    expect(restores[0]?.event).toMatchObject({
+      type: 'interrupted',
+      queuedMessages: ['QUEUED-INPUT'],
+      queuedMessageIds: [queuedId],
+      queuedReferences: [reference],
+      queuedAttachments: [stored],
+      queuedRestoreId: `input-${queuedId}`,
+    })
     expect(durable.messages.filter(message => message.type === 'user' && message.content === 'QUEUED-INPUT')).toHaveLength(1)
     const durableWarnings = durable.messages.filter(message => message.type === 'info' && message.infoLevel === 'warning')
     expect(durableWarnings).toHaveLength(1)

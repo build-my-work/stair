@@ -176,6 +176,54 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).not.toContain('When you are done using the browser')
     })
 
+    it.each(['navigate example.com', 'snapshot', 'click @e1'])(
+      'shows the bound window before reporting a human-verification handoff for %s',
+      async command => {
+        let visible = false
+        const actions: string[] = []
+        const windows = await mockFns.listWindows()
+        mockFns.detectChallenge = async () => ({
+          detected: true,
+          provider: 'cloudflare',
+          signals: ['dom:challenge-form'],
+        })
+        mockFns.releaseControl = async () => {
+          actions.push('release')
+          return { action: 'released', resolvedInstanceId: 'browser-1', affectedIds: ['browser-1'] }
+        }
+        mockFns.focusWindow = async instanceId => {
+          actions.push(`focus:${instanceId}`)
+          visible = true
+          return { instanceId: 'browser-1', title: 'Verification', url: 'https://example.com' }
+        }
+        mockFns.listWindows = async () => windows.map(window => ({
+          ...window,
+          isVisible: visible,
+          agentControlActive: false,
+        }))
+
+        const result = await executeTool(tools, 'browser_tool', { command })
+        expect(actions).toEqual(['release', 'focus:browser-1'])
+        expect(visible).toBe(true)
+        expect(result.content[0].text).toContain('Browser shown')
+        expect(result.content[0].text).not.toContain('When you are done using the browser')
+      },
+    )
+
+    it('does not claim a verification window is shown when the window has closed', async () => {
+      mockFns.detectChallenge = async () => ({
+        detected: true,
+        provider: 'cloudflare',
+        signals: ['dom:challenge-form'],
+      })
+      mockFns.listWindows = async () => []
+
+      const result = await executeTool(tools, 'browser_tool', { command: 'navigate example.com' })
+      expect(result.content[0].text).toContain('Security verification detected')
+      expect(result.content[0].text).not.toContain('Browser shown')
+      expect(result.content[0].text).toContain('Browser could not be shown')
+    })
+
     it('routes open command in background by default', async () => {
       let openOptions: { background?: boolean } | undefined
       mockFns.openWindow = async (options) => {

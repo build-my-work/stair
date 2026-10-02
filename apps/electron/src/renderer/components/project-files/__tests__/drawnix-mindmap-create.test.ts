@@ -6,6 +6,7 @@ import type {
   SaveDrawnixProjectFileRequest,
 } from '@craft-agent/shared/project-files'
 import { createDrawnixMindmap } from '../drawnix-mindmap-create'
+import { discoverDrawnixBoards } from '../drawnix-board-registry'
 
 const EMPTY_FINGERPRINT = `sha256:${'a'.repeat(64)}` as ProjectFileFingerprint
 
@@ -106,8 +107,13 @@ describe('Drawnix mind-map creation', () => {
     expect(opened).toEqual(['mindmaps/tutorial.drawnix'])
   })
 
-  it('does not touch the filesystem when the Session Project is not active', async () => {
+  it('rechecks the active Project at execution after a successful discovery', async () => {
     let apiCalls = 0
+    let activeProjectId = 'project-a'
+    expect(discoverDrawnixBoards({
+      v: 1, projectId: 'project-a', relativePath: 'mindmaps/tutorial.drawnix',
+    }, activeProjectId)).toEqual({ ok: true, boardCount: 0, canCreate: true })
+    activeProjectId = 'project-b'
     const unavailable = async (): Promise<never> => {
       apiCalls += 1
       throw new Error('must not be called')
@@ -120,7 +126,7 @@ describe('Drawnix mind-map creation', () => {
       relativePath: 'mindmaps/tutorial.drawnix',
       markdown: '# Tutorial',
     }, {
-      activeProjectId: () => 'project-b',
+      activeProjectId: () => activeProjectId,
       api: {
         listProjectDirectoryEntries: unavailable,
         createProjectDirectory: unavailable,

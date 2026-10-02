@@ -475,22 +475,19 @@ test('deferred-title IO keeps an earlier accepted input ahead of later queued re
     await aInitialEntered.promise
     sendingB = sm.sendMessage(managed.id, 'B-LATER', undefined, undefined, undefined,
       undefined, undefined, id => { acks.B = id })
-    for (let i = 0; i < 100 && !managed.messages.some(message => message.content === 'B-LATER'); i++) await Bun.sleep(1)
-    expect(managed.messages.some(message => message.content === 'B-LATER')).toBe(true)
+    // Later input cannot pass earlier admission while its initial/title write waits.
+    await Bun.sleep(10)
+    expect(managed.messages.some(message => message.content === 'B-LATER')).toBe(false)
     aInitialRelease.resolve()
     await aTitleEntered.promise
-    await bEntered.promise
-    expect(managed.isProcessing).toBe(true)
-    expect(calls.map(call => call.text)).toEqual(['hi', 'B-LATER'])
     sendingC = sm.sendMessage(managed.id, 'C-LATEST', undefined, undefined, { references: [cReference] },
       undefined, undefined, id => { acks.C = id })
-    for (let i = 0; i < 100 && !managed.messageQueue.some(entry => entry.message === 'C-LATEST'); i++) await Bun.sleep(1)
-    expect(managed.messageQueue.some(entry => entry.message === 'C-LATEST')).toBe(true)
+    expect(managed.messages.some(message => message.content === 'C-LATEST')).toBe(false)
     aTitleRelease.resolve()
-    await Promise.all([sendingA, sendingC])
-    const queued = managed.messageQueue.map(entry => ({ message: entry.message, id: entry.messageId }))
+    await bEntered.promise
+    await sendingA
     bRelease.resolve()
-    await sendingB
+    await Promise.all([sendingB, sendingC])
     for (let i = 0; i < 250 && (calls.length < 4 || managed.isProcessing || managed.pendingQueueReplay || managed.messageQueue.length); i++) await Bun.sleep(1)
     expect(managed.isProcessing).toBe(false)
     expect(managed.messageQueue).toHaveLength(0)
@@ -510,8 +507,7 @@ test('deferred-title IO keeps an earlier accepted input ahead of later queued re
     expect(calls.find(call => call.text.includes('A-EARLIER'))?.ids).toEqual([acks.A])
     expect(calls.find(call => call.text.includes('C-LATEST'))?.ids).toEqual([acks.C])
     // Assert order after verifying all payloads and identities survive replay.
-    expect(queued).toEqual([{ message: 'A-EARLIER', id: acks.A }, { message: 'C-LATEST', id: acks.C }])
-    expect(calls.map(call => call.text.split('\n')[0])).toEqual(['hi', 'B-LATER', 'A-EARLIER', 'C-LATEST'])
+    expect(calls.map(call => call.text.split('\n')[0])).toEqual(['hi', 'A-EARLIER', 'B-LATER', 'C-LATEST'])
   } finally {
     aInitialRelease.resolve()
     aTitleRelease.resolve()

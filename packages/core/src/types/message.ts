@@ -295,6 +295,10 @@ export interface Message {
   isQueued?: boolean;
   // Pending restore: queued input is retained until the renderer persists its draft and acks.
   queuedRestoreId?: string;
+  // Host durability is distinct from the provider's input acknowledgement.
+  pendingDelivery?: boolean;
+  // Stable client request identity, retained for reconnect reconciliation.
+  clientMessageId?: string;
   // Intermediate text (commentary between tool calls, not final response)
   isIntermediate?: boolean;
   // Hidden: a system-generated message that must reach the model (it drives a
@@ -430,6 +434,10 @@ export interface StoredMessage {
   isQueued?: boolean;
   // Pending restore: prevents a stopped queued message from replaying after restart.
   queuedRestoreId?: string;
+  // Host durability is distinct from the provider's input acknowledgement.
+  pendingDelivery?: boolean;
+  // Stable client request identity, retained for reconnect reconciliation.
+  clientMessageId?: string;
 }
 
 /**
@@ -585,6 +593,7 @@ export interface AgentEventUsage {
 export type AgentEvent =
   // Internal producer acknowledgement for the current input, never a UI event.
   | { type: 'input_accepted' }
+  | { type: 'steer_accepted'; messageId: string }
   // Failed assistant output is discarded before a retry can produce more text.
   | { type: 'text_discard'; turnId: string }
   | { type: 'retry'; phase: 'backoff'; message: string }

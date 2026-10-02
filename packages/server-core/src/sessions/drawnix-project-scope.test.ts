@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'bun:test'
 import {
   CLIENT_DRAWNIX_BOARD_INVOKE,
+  CLIENT_DRAWNIX_BOARD_DISCOVER,
   type DrawnixBoardCapabilityRequest,
   type RpcServer,
 } from '../transport'
@@ -32,106 +33,156 @@ describe('Drawnix Agent capability architecture', () => {
     expect(source).not.toMatch(/renderer\/workbench|@\/workbench/)
   })
 
-  it('retries another same-Workspace client and pins only the client with the open board', async () => {
-    const calls: string[] = []
+  function routingFixture() {
+    const calls: Array<{ clientId: string; channel: string; request: unknown }> = []
+    const boards = new Map<string, number>([['client-a', 1], ['client-b', 0]])
+    const activeProjects = new Map<string, string>([['client-a', 'project-a'], ['client-b', 'project-b']])
+    let discoverSupported = true
+    let disconnectDuringDiscovery = false
+    let disconnectDuringOperation = false
     const server: RpcServer = {
       handle() {},
       push() {},
-      hasClientCapability: () => true,
-      findClientsWithCapability: () => ['client-b', 'client-a'],
-      invokeClient: async (clientId, channel) => {
-        calls.push(clientId)
-        expect(channel).toBe(CLIENT_DRAWNIX_BOARD_INVOKE)
-        if (clientId === 'client-b') {
-          return {
-            ok: false,
-            error: { code: 'MINDMAP_NOT_OPEN', message: 'not open here' },
+      hasClientCapability: (_clientId, capability) => capability !== CLIENT_DRAWNIX_BOARD_DISCOVER || discoverSupported,
+      findClientsWithCapability: (_capability, scope) => {
+        expect(scope?.workspaceId).toBe('workspace-a')
+        return ['client-b', 'client-a']
+      },
+      invokeClient: async (clientId, channel, request) => {
+        calls.push({ clientId, channel, request })
+        if (channel === CLIENT_DRAWNIX_BOARD_DISCOVER) {
+          if (disconnectDuringDiscovery && clientId === 'client-b') {
+            throw Object.assign(new Error('Client disconnected'), { code: 'CLIENT_DISCONNECTED' })
           }
+          return {
+            ok: true,
+            boardCount: request.projectId === 'project-a' ? boards.get(clientId) ?? 0 : 0,
+            canCreate: activeProjects.get(clientId) === request.projectId,
+          }
+        }
+        expect(channel).toBe(CLIENT_DRAWNIX_BOARD_INVOKE)
+        if (disconnectDuringOperation) {
+          throw Object.assign(new Error('Client disconnected after receiving the operation'), { code: 'CLIENT_DISCONNECTED' })
+        }
+        if (!boards.get(clientId) && request.action !== 'create') {
+          return { ok: false, error: { code: 'MINDMAP_NOT_OPEN', message: 'not open here' } }
         }
         return {
           ok: true,
-          snapshot: {
-            relativePath: 'maps/tutorial.drawnix',
-            changeSeq: 3,
-            roots: [],
-          },
+          snapshot: { relativePath: request.relativePath, changeSeq: 3, roots: [] },
         }
       },
     }
     const manager = new SessionManager()
     const internals = manager as unknown as {
       rpcServer: RpcServer
-      sessions: Map<string, { workspace: { id: string } }>
+      sessions: Map<string, { workspace: { id: string }; projectId: string }>
       drawnixHostBySession: Map<string, string>
-      requestDrawnixBoardForSession(
-        sessionId: string,
-        request: DrawnixBoardCapabilityRequest,
-      ): Promise<unknown>
+      requestDrawnixBoardForSession(sessionId: string, request: DrawnixBoardCapabilityRequest): Promise<unknown>
     }
     internals.rpcServer = server
-    internals.sessions.set('session-a', { workspace: { id: 'workspace-a' } })
+    internals.sessions.set('session-a', { workspace: { id: 'workspace-a' }, projectId: 'project-a' })
     internals.drawnixHostBySession.set('session-a', 'client-b')
+    const read = {
+      v: 1 as const, action: 'read' as const, projectId: 'project-a', relativePath: 'maps/tutorial.drawnix',
+    }
+    return {
+      calls, boards, activeProjects, internals, read,
+      invoke: (request: DrawnixBoardCapabilityRequest = read) => internals.requestDrawnixBoardForSession('session-a', request),
+      disableDiscovery: () => { discoverSupported = false },
+      disconnectDuringDiscovery: () => { disconnectDuringDiscovery = true },
+      disconnectDuringOperation: () => { disconnectDuringOperation = true },
+    }
+  }
 
-    await expect(internals.requestDrawnixBoardForSession('session-a', {
-      v: 1,
-      action: 'read',
-      projectId: 'project-a',
-      relativePath: 'maps/tutorial.drawnix',
-    })).resolves.toMatchObject({ ok: true })
-    expect(calls).toEqual(['client-b', 'client-a'])
-    expect(internals.drawnixHostBySession.get('session-a')).toBe('client-a')
+  it('discovers all same-Workspace clients before reading the unique live board', async () => {
+    const f = routingFixture()
+    await expect(f.invoke()).resolves.toMatchObject({ ok: true })
+    expect(f.calls.map(call => [call.clientId, call.channel])).toEqual([
+      ['client-b', CLIENT_DRAWNIX_BOARD_DISCOVER],
+      ['client-a', CLIENT_DRAWNIX_BOARD_DISCOVER],
+      ['client-a', CLIENT_DRAWNIX_BOARD_INVOKE],
+    ])
+    expect(f.internals.drawnixHostBySession.get('session-a')).toBe('client-a')
   })
 
-  it('tries another same-Workspace client when creating for a Project that is not active', async () => {
-    const calls: string[] = []
-    const server: RpcServer = {
-      handle() {},
-      push() {},
-      hasClientCapability: () => true,
-      findClientsWithCapability: () => ['client-a', 'client-b'],
-      invokeClient: async (clientId, channel) => {
-        calls.push(clientId)
-        expect(channel).toBe(CLIENT_DRAWNIX_BOARD_INVOKE)
-        if (clientId === 'client-a') {
-          return {
-            ok: false,
-            error: {
-              code: 'MINDMAP_PROJECT_NOT_ACTIVE',
-              message: 'project not active here',
-            },
-          }
-        }
-        return {
-          ok: true,
-          snapshot: {
-            relativePath: 'mindmaps/tutorial.drawnix',
-            changeSeq: 0,
-            roots: [],
-          },
-        }
-      },
+  it('rejects duplicate live boards across clients before any read, update, or create operation', async () => {
+    const f = routingFixture()
+    f.boards.set('client-b', 1)
+    for (const request of [f.read, {
+      ...f.read, action: 'update' as const, expectedChangeSeq: 3,
+      operations: [{ type: 'set_topic' as const, nodeId: 'root', topic: 'Changed' }],
+    }, { ...f.read, action: 'create' as const, markdown: '# Tutorial' }]) {
+      await expect(f.invoke(request)).resolves.toMatchObject({
+        ok: false, error: { code: 'MINDMAP_AMBIGUOUS_BOARD' },
+      })
     }
-    const manager = new SessionManager()
-    const internals = manager as unknown as {
-      rpcServer: RpcServer
-      sessions: Map<string, { workspace: { id: string } }>
-      drawnixHostBySession: Map<string, string>
-      requestDrawnixBoardForSession(
-        sessionId: string,
-        request: DrawnixBoardCapabilityRequest,
-      ): Promise<unknown>
-    }
-    internals.rpcServer = server
-    internals.sessions.set('session-a', { workspace: { id: 'workspace-a' } })
+    expect(f.calls.every(call => call.channel === CLIENT_DRAWNIX_BOARD_DISCOVER)).toBe(true)
+    f.boards.set('client-b', 0)
+    await expect(f.invoke()).resolves.toMatchObject({ ok: true })
+  })
 
-    await expect(internals.requestDrawnixBoardForSession('session-a', {
-      v: 1,
-      action: 'create',
-      projectId: 'project-a',
-      relativePath: 'mindmaps/tutorial.drawnix',
-      markdown: '# Tutorial',
-    })).resolves.toMatchObject({ ok: true })
-    expect(calls).toEqual(['client-a', 'client-b'])
-    expect(internals.drawnixHostBySession.get('session-a')).toBe('client-b')
+  it('does not trust a pinned client when another window opens the same board', async () => {
+    const f = routingFixture()
+    await expect(f.invoke()).resolves.toMatchObject({ ok: true })
+    f.calls.length = 0
+    f.boards.set('client-b', 1)
+    await expect(f.invoke()).resolves.toMatchObject({
+      ok: false, error: { code: 'MINDMAP_AMBIGUOUS_BOARD' },
+    })
+    expect(f.calls.every(call => call.channel === CLIENT_DRAWNIX_BOARD_DISCOVER)).toBe(true)
+  })
+
+  it('discovers a create target before issuing exactly one create operation', async () => {
+    const f = routingFixture()
+    f.boards.set('client-a', 0)
+    await expect(f.invoke({ ...f.read, action: 'create', markdown: '# Tutorial' })).resolves.toMatchObject({ ok: true })
+    expect(f.calls.filter(call => call.channel === CLIENT_DRAWNIX_BOARD_INVOKE)).toEqual([{
+      clientId: 'client-a', channel: CLIENT_DRAWNIX_BOARD_INVOKE,
+      request: { ...f.read, action: 'create', markdown: '# Tutorial' },
+    }])
+  })
+
+  it('does not send a mutation to an old client or after incomplete discovery', async () => {
+    for (const failure of ['old-client', 'disconnect']) {
+      const f = routingFixture()
+      if (failure === 'old-client') f.disableDiscovery()
+      else f.disconnectDuringDiscovery()
+      await expect(f.invoke({
+        ...f.read, action: 'update', expectedChangeSeq: 3,
+        operations: [{ type: 'set_topic', nodeId: 'root', topic: 'Changed' }],
+      })).resolves.toMatchObject({ ok: false })
+      expect(f.calls.every(call => call.channel === CLIENT_DRAWNIX_BOARD_DISCOVER)).toBe(true)
+    }
+  })
+
+  it('rejects creation when multiple client windows have the target Project active', async () => {
+    const f = routingFixture()
+    f.boards.set('client-a', 0)
+    f.activeProjects.set('client-b', 'project-a')
+    await expect(f.invoke({ ...f.read, action: 'create', markdown: '# Tutorial' })).resolves.toMatchObject({
+      ok: false, error: { code: 'MINDMAP_AMBIGUOUS_BOARD' },
+    })
+    expect(f.calls.every(call => call.channel === CLIENT_DRAWNIX_BOARD_DISCOVER)).toBe(true)
+  })
+
+  it('does not retry a mutation on another client after losing its reply', async () => {
+    const f = routingFixture()
+    f.disconnectDuringOperation()
+    await expect(f.invoke({
+      ...f.read, action: 'update', expectedChangeSeq: 3,
+      operations: [{ type: 'set_topic', nodeId: 'root', topic: 'Changed' }],
+    })).resolves.toMatchObject({ ok: false, error: { code: 'CLIENT_DISCONNECTED' } })
+    expect(f.calls.filter(call => call.channel === CLIENT_DRAWNIX_BOARD_INVOKE)).toHaveLength(1)
+    expect(f.internals.drawnixHostBySession.has('session-a')).toBe(false)
+  })
+
+  it('does not use another Project\'s open Canvas even at the same relative path', async () => {
+    const f = routingFixture()
+    f.internals.sessions.set('session-a', { workspace: { id: 'workspace-a' }, projectId: 'project-b' })
+    await expect(f.invoke({ ...f.read, projectId: 'project-b' })).resolves.toMatchObject({
+      ok: false, error: { code: 'MINDMAP_NOT_OPEN' },
+    })
+    expect(f.calls.every(call => call.channel === CLIENT_DRAWNIX_BOARD_DISCOVER)).toBe(true)
   })
 })

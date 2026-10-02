@@ -407,6 +407,40 @@ describe('BrowserPaneManager', () => {
     expect(list[0].agentControlActive).toBe(false)
   })
 
+  it.each([
+    { nodes: [{ ref: '@e1', role: 'StaticText', name: 'A normal article' }] },
+    { nodes: [
+      { ref: '@e1', role: 'textbox', name: 'Name' },
+      { ref: '@e2', role: 'button', name: 'Save' },
+    ] },
+  ])('does not mistake a sparse normal page for a security challenge', async ({ nodes }) => {
+    const id = manager.createInstance('sparse-page')
+    const instance = (manager as any).instances.get(id)
+    instance.pageView.webContents.executeJavaScript = mock(async () => [])
+    instance.cdp.getAccessibilitySnapshot = mock(async () => ({ nodes }))
+
+    const result = await manager.detectSecurityChallenge(id)
+    expect(result.detected).toBe(false)
+    expect(result.provider).toBe('none')
+    expect(result.signals).toHaveLength(1)
+    expect(result.signals[0]).toStartWith('ax:near-empty(')
+  })
+
+  it('retains challenge detection from page evidence when the accessibility tree is sparse', async () => {
+    const id = manager.createInstance('challenge-page')
+    const instance = (manager as any).instances.get(id)
+    instance.pageView.webContents.executeJavaScript = mock(async () => ['dom:challenge-form'])
+    instance.cdp.getAccessibilitySnapshot = mock(async () => ({
+      nodes: [{ ref: '@e1', role: 'StaticText', name: 'Checking your browser' }],
+    }))
+
+    expect(await manager.detectSecurityChallenge(id)).toMatchObject({
+      detected: true,
+      provider: 'cloudflare',
+      signals: ['dom:challenge-form', 'ax:near-empty(0/1)'],
+    })
+  })
+
   it('maps thin-client capabilities through each sender window', async () => {
     manager.setWindowManager({
       getWorkspaceForWindow: (webContentsId: number) => (

@@ -256,21 +256,24 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   // `[]` is the safe default while hydration is in flight; FreeFormInput seeds its
   // local state from this prop and swaps in the restored list when ready.
   const [attachmentsValue, setAttachmentsValue] = React.useState<import('../../shared/types').FileAttachment[]>([])
+  const attachmentReadVersion = React.useRef(0)
 
   React.useEffect(() => {
-    let cancelled = false
+    const version = ++attachmentReadVersion.current
     setAttachmentsValue([])
     hydrateDraftAttachments(sessionId).then((atts) => {
-      if (!cancelled) setAttachmentsValue(atts)
+      if (attachmentReadVersion.current === version) setAttachmentsValue(atts)
     })
-    return () => { cancelled = true }
+    return () => { attachmentReadVersion.current += 1 }
   }, [sessionId, hydrateDraftAttachments])
 
   React.useEffect(() => {
     const handler = async (event: Event) => {
       const detail = (event as CustomEvent<{ sessionId?: string }>).detail
       if (detail?.sessionId === sessionId) {
-        setAttachmentsValue(await hydrateDraftAttachments(sessionId))
+        const version = ++attachmentReadVersion.current
+        const attachments = await hydrateDraftAttachments(sessionId)
+        if (attachmentReadVersion.current === version) setAttachmentsValue(attachments)
       }
     }
     window.addEventListener('stair:draft-attachments-changed', handler)
@@ -278,6 +281,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   }, [sessionId, hydrateDraftAttachments])
 
   const handleAttachmentsChange = React.useCallback((attachments: import('../../shared/types').FileAttachment[]) => {
+    attachmentReadVersion.current += 1
     setAttachmentsValue(attachments)
     onAttachmentsChange(sessionId, attachments)
   }, [sessionId, onAttachmentsChange])
@@ -568,7 +572,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
           session={session}
           onSendMessage={(message, attachments, skillSlugs, references, options) => {
             if (session) {
-              onSendMessage(session.id, message, attachments, skillSlugs, undefined, references, options)
+              return onSendMessage(session.id, message, attachments, skillSlugs, undefined, references, options)
             }
           }}
           onOpenFile={handleOpenFile}

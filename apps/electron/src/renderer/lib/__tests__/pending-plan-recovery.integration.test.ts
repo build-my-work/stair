@@ -136,7 +136,7 @@ if (process.env.CRAFT_PLAN_RECOVERY_TEST_CHILD !== '1') {
     return recoverFailedCompactionDraft;
   `))
   const consumeStart = appSource.indexOf('  const handleConsumePendingPlanDraft = useCallback(')
-  const consumeEnd = appSource.indexOf('  const handleInputChange', consumeStart)
+  const consumeEnd = appSource.indexOf('  const handleEditMessage', consumeStart)
   if (consumeStart < 0 || consumeEnd < 0) throw new Error('Actual App consume callback not found')
   const makeActualAppConsume = new Function('ctx', new Bun.Transpiler({ loader: 'tsx' }).transformSync(`
     const { draftCoordinator, windowWorkspaceId } = ctx;

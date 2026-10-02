@@ -48,3 +48,10 @@ export type DrawnixBoardCapabilityRequest =
 export type DrawnixBoardCapabilityResponse =
   | { ok: true; snapshot: DrawnixMindmapSnapshot }
   | { ok: false; error: { code: string; message: string } }
+
+/** Side-effect-free discovery, carried on its own capability for old-client safety. */
+export type DrawnixBoardDiscoveryRequest = DrawnixBoardCapabilityBase
+
+export type DrawnixBoardDiscoveryResponse =
+  | { ok: true; boardCount: number; canCreate: boolean }
+  | { ok: false; error: { code: string; message: string } }
