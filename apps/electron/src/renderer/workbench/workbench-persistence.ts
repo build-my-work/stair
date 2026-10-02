@@ -107,6 +107,8 @@ export const restoreWorkbenchLayoutsAtom = atom(
   async (get, set, input: {
     workspaceId: string
     defaultProjectId: string
+    /** Per-window context from the saved URL, checked against Workspace layouts. */
+    activeProjectId?: string
   }): Promise<boolean> => {
     if (get(workbenchPersistenceReadyAtom)) return true
     const generation = ++restoreGeneration
@@ -168,6 +170,10 @@ export const restoreWorkbenchLayoutsAtom = atom(
 
     set(workbenchAtom, {
       ...latest,
+      activeProjectId: latest === current && current.activeProjectId === input.defaultProjectId
+        && input.activeProjectId && Object.hasOwn(restoredLayouts, input.activeProjectId)
+        ? input.activeProjectId
+        : latest.activeProjectId,
       layoutsByProject: {
         ...layoutsByProject,
         [input.defaultProjectId]: layoutsByProject[input.defaultProjectId]

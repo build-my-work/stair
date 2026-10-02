@@ -55,6 +55,7 @@ import {
 import { sessionMetaMapAtom, updateSessionMetaAtom, type SessionMeta } from '@/atoms/sessions'
 import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
+import { projectsAtom } from '@/atoms/projects'
 import { guardedModeAvailableAtom } from '@/atoms/permission-modes'
 import {
   initializeWorkbenchAtom,
@@ -206,6 +207,9 @@ export function NavigationProvider({
     const sidebarParam = buildRightSidebarParam(sidebar) ?? ''
     const semanticKey = `${workspaceSlug ?? ''}|${route}|${sidebarParam}`
     const url = new URL(window.location.href)
+    const activeProjectId = store.get(workbenchAtom).activeProjectId
+    if (activeProjectId) url.searchParams.set('project', activeProjectId)
+    else url.searchParams.delete('project')
     if (workspaceSlug) url.searchParams.set('ws', workspaceSlug)
     else url.searchParams.delete('ws')
     url.searchParams.set('route', route)
@@ -225,7 +229,7 @@ export function NavigationProvider({
     }
     lastSemanticKeyRef.current = semanticKey
     if (workspaceSlug) storage.set(storage.KEYS.workspaceUrl, url.search, workspaceSlug)
-  }, [updateCanGoBackForward, workspaceSlug])
+  }, [store, updateCanGoBackForward, workspaceSlug])
 
   const filterSessionsByFilter = useCallback((filter: SessionFilter): SessionMeta[] => {
     return sessionMetas.filter((session) => {
@@ -309,7 +313,12 @@ export function NavigationProvider({
 
   const applyViewRoute = useCallback(async (
     route: ViewRoute,
-    options?: { skipAutoSelect?: boolean; pushHistory?: boolean },
+    options?: {
+      skipAutoSelect?: boolean
+      pushHistory?: boolean
+      preserveWorkbenchFocus?: boolean
+      projectId?: string
+    },
   ): Promise<boolean> => {
     const parsedState = parseRouteToNavigationState(route)
     if (!parsedState) return false
@@ -318,6 +327,11 @@ export function NavigationProvider({
       && navigationRequestRef.current === request
     if (workspaceId && defaultProjectId) {
       initializeWorkbench({ workspaceId, defaultProjectId })
+    }
+    if (options?.projectId) {
+      if (!store.get(projectsAtom).some(project => project.config.id === options.projectId)
+        || !await switchWorkbenchProject({ projectId: options.projectId })
+        || !isCurrent()) return false
     }
     const resolvedState = resolveAutoSelection(parsedState, options)
     if (!isSessionsNavigation(resolvedState) || resolvedState.viewMode === 'board') {
@@ -336,6 +350,7 @@ export function NavigationProvider({
       if (!meta || !await selectSessionFromNavigator({
         sessionId: meta.id,
         projectId: meta.projectId,
+        preserveFocus: options?.preserveWorkbenchFocus,
       })) {
         return false
       }
@@ -348,7 +363,7 @@ export function NavigationProvider({
     setBaseNavigationState(resolvedState)
     syncSemanticUrl(resolvedState, options?.pushHistory ?? true)
     return true
-  }, [defaultProjectId, initializeWorkbench, resolveAutoSelection, selectSessionFromNavigator, store, syncSemanticUrl, workspaceId])
+  }, [defaultProjectId, initializeWorkbench, resolveAutoSelection, selectSessionFromNavigator, store, switchWorkbenchProject, syncSemanticUrl, workspaceId])
 
   const routeForSession = useCallback((sessionId: string): ViewRoute => {
     if (!isSessionsNavigation(baseNavigationState)) return routes.view.allSessions(sessionId)
@@ -653,14 +668,23 @@ export function NavigationProvider({
     const pushHistory = !firstRestore && !isPopstateSwitchRef.current
     isPopstateSwitchRef.current = false
     void (async () => {
-      await restoreWorkbenchLayouts({ workspaceId, defaultProjectId })
+      await restoreWorkbenchLayouts({
+        workspaceId, defaultProjectId, activeProjectId: params.get('project') || undefined,
+      })
       if (currentWorkspaceRef.current !== workspaceId) return
       // A user navigation that arrived during the disk read owns the view.
       if (navigationRequestRef.current === request) {
-        if (!await applyViewRoute(route, { pushHistory })
+        const restored = store.get(workbenchAtom)
+        const layout = restored.activeProjectId
+          ? restored.layoutsByProject[restored.activeProjectId]
+          : undefined
+        const skipAutoSelect = Boolean(params.get('project') || layout?.primary || layout?.auxiliary.length)
+        suppressAutoSelectRef.current = skipAutoSelect
+        const restoreOptions = { pushHistory, skipAutoSelect, preserveWorkbenchFocus: true }
+        if (!await applyViewRoute(route, restoreOptions)
           && currentWorkspaceRef.current === workspaceId
           && navigationRequestRef.current === request + 1) {
-          await applyViewRoute(routes.view.allSessions(), { pushHistory })
+          await applyViewRoute(routes.view.allSessions(), restoreOptions)
         }
       }
       if (currentWorkspaceRef.current !== workspaceId) return
@@ -708,7 +732,9 @@ export function NavigationProvider({
         setRightSidebar(undefined)
       }
       const route = (params.get('route') || routes.view.allSessions()) as ViewRoute
-      void applyViewRoute(route, { pushHistory: false })
+      const projectId = params.get('project') || undefined
+      if (projectId) suppressAutoSelectRef.current = true
+      void applyViewRoute(route, { pushHistory: false, projectId, skipAutoSelect: Boolean(projectId) })
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)

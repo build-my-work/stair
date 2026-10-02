@@ -152,7 +152,12 @@ export const switchWorkbenchProjectAtom = atom(
 
 export const selectSessionFromNavigatorAtom = atom(
   null,
-  async (get, set, input: { sessionId: string; projectId: string }): Promise<boolean> => {
+  async (get, set, input: {
+    sessionId: string
+    projectId: string
+    /** Restoring semantic history must not replace an existing Workbench focus. */
+    preserveFocus?: boolean
+  }): Promise<boolean> => {
     if (!validId(input.sessionId) || !validId(input.projectId)) return false
     const current = get(workbenchAtom)
     if (!current.workspaceId || !current.activeProjectId) return false
@@ -169,7 +174,10 @@ export const selectSessionFromNavigatorAtom = atom(
     ))
     let nextLayout: ProjectWorkbench
     if (visible) {
-      nextLayout = { ...layout, focusedPanelId: visible.id }
+      nextLayout = input.preserveFocus && current.activeProjectId === input.projectId
+        && layout.focusedPanelId
+        ? layout
+        : { ...layout, focusedPanelId: visible.id }
     } else {
       const primary = createSessionPanel(
         input.sessionId,

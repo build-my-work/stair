@@ -18,6 +18,63 @@ import {
 } from '../workbench-commands'
 
 describe('Renderer Workbench persistence codec', () => {
+  it('restores the active Project and Canvas focus together', async () => {
+    const store = createStore()
+    store.set(initializeWorkbenchAtom, {
+      workspaceId: 'workspace-a', defaultProjectId: 'project-a',
+    })
+    const document: PersistedWorkbenchLayoutDocument = {
+      version: 1,
+      layoutsByProject: {
+        'project-b': {
+          primary: null,
+          auxiliary: [{
+            id: 'saved-canvas-b', kind: 'project-file', relativePath: 'b.drawnix',
+            presentation: 'explicit', chatTargetSessionId: null, widthRatio: 0.7,
+          }],
+          previewPanelId: null, focusedPanelId: 'saved-canvas-b',
+        },
+      },
+    }
+    store.set(workbenchPersistenceOperationsAtom, { read: async () => document })
+    expect(await store.set(restoreWorkbenchLayoutsAtom, {
+      workspaceId: 'workspace-a', defaultProjectId: 'project-a', activeProjectId: 'project-b',
+    })).toBe(true)
+    const restored = store.get(workbenchAtom)
+    expect(restored.activeProjectId).toBe('project-b')
+    expect(restored.layoutsByProject['project-b']?.focusedPanelId).toBe('saved-canvas-b')
+  })
+
+  it('restores independent window Projects from the same Workspace document', async () => {
+    const document: PersistedWorkbenchLayoutDocument = {
+      version: 1,
+      layoutsByProject: Object.fromEntries(['project-a', 'project-b'].map(projectId => [projectId, {
+        primary: null,
+        auxiliary: [{
+          id: `canvas-${projectId}`, kind: 'project-file', relativePath: `${projectId}.drawnix`,
+          presentation: 'explicit', chatTargetSessionId: null, widthRatio: 0.7,
+        }],
+        previewPanelId: null, focusedPanelId: `canvas-${projectId}`,
+      }])),
+    }
+    for (const activeProjectId of ['project-a', 'project-b', 'foreign-project']) {
+      const store = createStore()
+      store.set(initializeWorkbenchAtom, {
+        workspaceId: 'workspace-a', defaultProjectId: 'project-a',
+      })
+      store.set(workbenchPersistenceOperationsAtom, { read: async () => document })
+      expect(await store.set(restoreWorkbenchLayoutsAtom, {
+        workspaceId: 'workspace-a', defaultProjectId: 'project-a', activeProjectId,
+      })).toBe(true)
+      const restored = store.get(workbenchAtom)
+      const expectedProjectId = activeProjectId === 'foreign-project' ? 'project-a' : activeProjectId
+      expect(restored.activeProjectId).toBe(expectedProjectId)
+      expect(restored.layoutsByProject[expectedProjectId]?.focusedPanelId)
+        .toBe(`canvas-${expectedProjectId}`)
+      expect(serializeWorkbenchLayouts(restored)).toEqual(document)
+    }
+  })
+
   it('does not enable writes after a failed restore read', async () => {
     const store = createStore()
     store.set(initializeWorkbenchAtom, {
@@ -64,13 +121,19 @@ describe('Renderer Workbench persistence codec', () => {
     store.set(workbenchPersistenceOperationsAtom, {
       read: async () => {
         attempts += 1
-        return { version: 1, layoutsByProject: {} }
+        return {
+          version: 1,
+          layoutsByProject: {
+            'project-a': { primary: null, auxiliary: [], previewPanelId: null, focusedPanelId: null },
+          },
+        }
       },
     })
 
     expect(await store.set(restoreWorkbenchLayoutsAtom, {
       workspaceId: 'workspace-a',
       defaultProjectId: 'project-a',
+      activeProjectId: 'project-a',
     })).toBe(true)
     expect(attempts).toBe(1)
     expect(store.get(workbenchAtom).activeProjectId).toBe('project-b')
@@ -90,6 +153,7 @@ describe('Renderer Workbench persistence codec', () => {
     const restoring = store.set(restoreWorkbenchLayoutsAtom, {
       workspaceId: 'workspace-a',
       defaultProjectId: 'project-a',
+      activeProjectId: 'project-b',
     })
     store.set(showSessionInPrimaryAtom, {
       sessionId: 'session-created-while-loading',
@@ -129,6 +193,7 @@ describe('Renderer Workbench persistence codec', () => {
 
     expect(await restoring).toBe(true)
     const restored = store.get(workbenchAtom)
+    expect(restored.activeProjectId).toBe('project-a')
     expect(restored.layoutsByProject['project-a']?.primary?.sessionId)
       .toBe('session-created-while-loading')
     expect(restored.layoutsByProject['project-a']?.auxiliary[0]?.id).toBe('saved-file-a')

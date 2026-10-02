@@ -189,6 +189,21 @@ describe('Session-only Workbench commands', () => {
     expect(store.get(activeProjectWorkbenchAtom)?.focusedPanelId).toBe(target.id)
   })
 
+  it('restoring a visible Session route preserves Canvas focus until explicit selection', async () => {
+    const store = initializedStore()
+    store.set(showSessionInPrimaryAtom, { sessionId: 'session-a', projectId: 'project-a' })
+    await store.set(openProjectFilePreviewAtom, { projectId: 'project-a', relativePath: 'a.drawnix' })
+    const saved = store.get(activeProjectWorkbenchAtom)!
+    expect(await store.set(selectSessionFromNavigatorAtom, {
+      sessionId: 'session-a', projectId: 'project-a', preserveFocus: true,
+    })).toBe(true)
+    expect(store.get(activeProjectWorkbenchAtom)).toEqual(saved)
+    expect(await store.set(selectSessionFromNavigatorAtom, {
+      sessionId: 'session-a', projectId: 'project-a',
+    })).toBe(true)
+    expect(store.get(activeProjectWorkbenchAtom)?.focusedPanelId).toBe(saved.primary!.id)
+  })
+
   it('requests reveal every time Navigator selects an already-visible Session', async () => {
     const store = initializedStore()
     store.set(showSessionInPrimaryAtom, { sessionId: 'session-a', projectId: 'project-a' })
