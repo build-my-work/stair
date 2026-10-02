@@ -614,7 +614,9 @@ export class PiAgent extends BaseAgent {
       // Branch params for Pi SDK session fork
       branchFromSdkSessionId: this.config.session?.branchFromSdkSessionId,
       branchFromSessionPath: this.config.session?.branchFromSessionPath,
+      branchFromMessageId: this.config.session?.branchFromMessageId,
       branchFromSdkTurnId: this.config.session?.branchFromSdkTurnId,
+      sdkSessionId: this.piSessionId ?? undefined,
     });
 
     // Wait for subprocess to report ready

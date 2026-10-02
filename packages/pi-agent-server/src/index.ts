@@ -17,7 +17,7 @@
 import http from 'node:http';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
-import { mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 // Pi SDK
@@ -92,6 +92,7 @@ import {
 // Direct source imports from shared (bundled by bun build)
 import { handleLargeResponse, estimateTokens, tokenLimitFor, setLargeResultFilter } from '../../shared/src/utils/large-response.ts';
 import { getSessionPlansPath, getSessionPath } from '../../shared/src/sessions/storage.ts';
+import { readSessionJsonl } from '../../shared/src/sessions/jsonl.ts';
 import { buildCallLlmRequest } from '../../shared/src/agent/llm-tool.ts';
 import type { LLMQueryRequest, LLMQueryResult } from '../../shared/src/agent/llm-tool.ts';
 import { PI_TOOL_NAME_MAP, THINKING_TO_PI } from '../../shared/src/agent/backend/pi/constants.ts';
@@ -139,7 +140,9 @@ interface InitMessage {
   baseUrl?: string;
   branchFromSdkSessionId?: string;
   branchFromSessionPath?: string;
+  branchFromMessageId?: string;
   branchFromSdkTurnId?: string;
+  sdkSessionId?: string;
   customEndpoint?: CustomEndpointConfig;
   customModels?: Array<string | { id: string; contextWindow?: number; supportsImages?: boolean }>;
   /** Compact once context reaches this many tokens (config.json `autoCompactWindow`). */
@@ -352,21 +355,6 @@ function debugLog(message: string): void {
 // main process for the parts the agent's intent needs before summarizing.
 const largeResultGate = createLargeResultGateClient(send);
 setLargeResultFilter(largeResultGate.filter);
-
-/** Find the most recent .jsonl session file in a directory. */
-function findMostRecentSessionFile(sessionDir: string): string | null {
-  if (!existsSync(sessionDir)) return null;
-  let best: { path: string; mtime: number } | null = null;
-  for (const entry of readdirSync(sessionDir)) {
-    if (!entry.endsWith('.jsonl')) continue;
-    const fullPath = join(sessionDir, entry);
-    const mtime = statSync(fullPath).mtimeMs;
-    if (!best || mtime > best.mtime) {
-      best = { path: fullPath, mtime };
-    }
-  }
-  return best?.path ?? null;
-}
 
 // ============================================================
 // Callback Server (for call_llm from session MCP server)
@@ -696,36 +684,70 @@ async function ensureSession(): Promise<AgentSession> {
   if (initConfig.sessionPath) {
     // Session resume: use a per-Craft-session directory so the Pi SDK can
     // persist and resume its own session across subprocess restarts.
-    // continueRecent() loads the existing session if one exists, otherwise
-    // creates a new one — so this handles both first-run and resume.
+    // Prefer the established SDK identity on resume; continueRecent() remains
+    // the first-run fallback when no persisted identity exists.
     const sessionDir = join(initConfig.sessionPath, '.pi-sessions');
     mkdirSync(sessionDir, { recursive: true });
 
-    if (initConfig.branchFromSessionPath) {
-      // Branching: fork from the parent session's Pi session file.
-      // Branches must not silently degrade to fresh sessions.
+    const existingSessionFile = initConfig.sdkSessionId
+      ? PiSessionManager.findById(cwd, initConfig.sdkSessionId, sessionDir)
+      : undefined;
+    if (existingSessionFile) {
+      sessionOptions.sessionManager = PiSessionManager.open(existingSessionFile, sessionDir, cwd);
+    } else if (initConfig.branchFromSessionPath) {
+      if (initConfig.sdkSessionId) {
+        throw new Error('Pi branch resume failed: established child SDK session not found');
+      }
+      // Use the parent's persisted SDK identity, never a newer unrelated journal.
       const parentPiSessionDir = join(initConfig.branchFromSessionPath, '.pi-sessions');
-      const parentPiSessionFile = findMostRecentSessionFile(parentPiSessionDir);
+      const parent = readSessionJsonl(join(initConfig.branchFromSessionPath, 'session.jsonl'));
+      const branchFromMessageId = initConfig.branchFromMessageId;
+      const selectedIndex = parent?.messages.findIndex(message => message.id === branchFromMessageId) ?? -1;
+      const selected = parent?.messages[selectedIndex];
+      if (!parent || !selected || !initConfig.branchFromSdkSessionId) {
+        throw new Error('Pi branch preflight failed: missing parent or selected message identity');
+      }
+      const parentPiSessionFile = PiSessionManager.findById(
+        parent.sdkCwd || parent.workingDirectory || cwd, initConfig.branchFromSdkSessionId, parentPiSessionDir,
+      );
       if (!parentPiSessionFile) {
-        throw new Error(`Pi branch preflight failed: no parent Pi session file found in ${parentPiSessionDir}`);
+        throw new Error('Pi branch preflight failed: parent SDK session not found');
       }
 
-      debugLog(`Forking Pi session from parent: ${parentPiSessionFile}`);
-      const forkedSessionManager = PiSessionManager.forkFrom(parentPiSessionFile, cwd, sessionDir);
-
-      // Strict branch cutoff: move leaf to the selected parent entry if provided.
-      // This is Pi's equivalent of Claude resumeSessionAt.
-      if (initConfig.branchFromSdkTurnId) {
-        const anchorId = initConfig.branchFromSdkTurnId;
-        const anchorEntry = forkedSessionManager.getEntry(anchorId);
-        if (!anchorEntry) {
-          throw new Error(`Pi branch preflight failed: branch anchor not found: ${anchorId}`);
+      const branchManager = PiSessionManager.open(parentPiSessionFile, sessionDir, cwd);
+      const parentBranch = branchManager.getBranch();
+      const submitPlan = selected.type === 'plan'
+        ? parent.messages.slice(0, selectedIndex).reverse().find(message =>
+          message.type === 'tool' && message.toolName?.includes('SubmitPlan') &&
+          message.toolInput?.planPath === selected.planPath)
+        : undefined;
+      const matches = parentBranch.filter(entry => {
+        if (entry.type !== 'message') return false;
+        if (selected.type === 'assistant' && entry.message.role === 'assistant') {
+          return entry.message.content.filter(block => block.type === 'text').map(block => block.text).join('') === selected.content;
         }
-        forkedSessionManager.branch(anchorId);
-        debugLog(`Applied Pi branch cutoff at entry: ${anchorId}`);
+        return !!submitPlan?.toolUseId && entry.message.role === 'toolResult' &&
+          entry.message.toolCallId === submitPlan.toolUseId;
+      });
+      let anchorId = initConfig.branchFromSdkTurnId;
+      if (anchorId) {
+        if (!matches.some(entry => entry.id === anchorId)) {
+          throw new Error(`Pi branch preflight failed: anchor does not match the selected message in active parent: ${anchorId}`);
+        }
+      } else {
+        // Legacy replies lacked sidecar anchors. Recover only an unambiguous exact
+        // match; timestamps, summaries and the latest leaf cannot prove a cutoff.
+        if (matches.length !== 1) {
+          throw new Error('Pi branch preflight failed: cannot uniquely locate the selected message in the SDK journal');
+        }
+        anchorId = matches[0]!.id;
       }
 
-      sessionOptions.sessionManager = forkedSessionManager;
+      // The SDK writes only the selected ancestry into the child's directory.
+      // Unlike branch(), this cutoff survives a restart before the first prompt.
+      branchManager.createBranchedSession(anchorId);
+      sessionOptions.sessionManager = branchManager;
+      debugLog(`Forked Pi session from ${parentPiSessionFile} at entry: ${anchorId}`);
     } else {
       sessionOptions.sessionManager = PiSessionManager.continueRecent(cwd, sessionDir);
     }
@@ -782,6 +804,7 @@ async function ensureSession(): Promise<AgentSession> {
   // Create the session — tools flow through customTools + allowlist (see comment above).
   const { session } = await createAgentSession(sessionOptions);
   piSession = session;
+  initConfig.sdkSessionId = session.sessionId;
   steerDelivery = new PiSteerDelivery(session, receipt => send(receipt));
   piSessionPromptOverride = systemPromptOverride;
 
@@ -1259,38 +1282,40 @@ function handleSessionEvent(event: AgentSessionEvent): void {
       // turn a sibling of the assistant message, dropping the assistant reply
       // from the LLM's view of history (craft-agents-oss#782).
       //
-      // Instead, attach the SDK's message id to the forwarded event so the main
+      // Instead, attach a local correlation id to the forwarded event so the main
       // process can correlate this turn, then queue a microtask to read the
       // correct leaf AFTER `appendMessage` has run. The microtask drains before
       // any subsequent SDK event is dispatched, so the follow-up
       // `pi_turn_anchor` event is delivered to the main process in the right
       // order (after this `message_end`, before the next event).
-      const sdkMessageId = (msg as { id?: string }).id;
-      if (sdkMessageId) {
-        forwardedEvent = {
-          ...(event as Record<string, unknown>),
-          sdkMessageId,
-        } as unknown as OutboundAgentEvent;
+      // AssistantMessage has no `id` in the current SDK. Provider response IDs
+      // are optional and may repeat, so they cannot correlate host messages.
+      const sdkMessageId = crypto.randomUUID();
+      forwardedEvent = {
+        ...(event as Record<string, unknown>),
+        sdkMessageId,
+      } as unknown as OutboundAgentEvent;
 
-        const sessionManagerSnapshot = piSession.sessionManager;
-        queueMicrotask(() => {
-          // Defensive: session may have been disposed between the message_end
-          // emit and the microtask drain.
-          if (!piSession || piSession.sessionManager !== sessionManagerSnapshot) {
-            return;
-          }
-          const sdkTurnAnchor = sessionManagerSnapshot.getLeafId();
-          if (!sdkTurnAnchor) return;
-          send({
-            type: 'event',
-            event: {
-              type: 'pi_turn_anchor',
-              sdkMessageId,
-              sdkTurnAnchor,
-            } as unknown as OutboundAgentEvent,
-          });
+      const sessionManagerSnapshot = piSession.sessionManager;
+      queueMicrotask(() => {
+        // Defensive: session may have been disposed between the message_end
+        // emit and the microtask drain.
+        if (!piSession || piSession.sessionManager !== sessionManagerSnapshot) {
+          return;
+        }
+        const sdkTurnAnchor = sessionManagerSnapshot.getLeafId();
+        if (!sdkTurnAnchor) return;
+        const entry = sessionManagerSnapshot.getEntry(sdkTurnAnchor);
+        if (entry?.type !== 'message' || entry.message !== event.message) return;
+        send({
+          type: 'event',
+          event: {
+            type: 'pi_turn_anchor',
+            sdkMessageId,
+            sdkTurnAnchor,
+          } as unknown as OutboundAgentEvent,
         });
-      }
+      });
 
       // Speculative prefetch: if the assistant message contains 2+ prefetchable tool calls,
       // fire all requests to the main process in parallel NOW, before executeToolCalls

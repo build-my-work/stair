@@ -3995,7 +3995,7 @@ export class SessionManager implements ISessionManager {
           if (branchFromSessionPath) {
             branchFromSdkTurnId = await getPiTurnAnchor(branchFromSessionPath, options.branchFromMessageId)
             if (!branchFromSdkTurnId) {
-              sessionLog.warn('Pi branch anchor missing: falling back to full-history fork for this branch', {
+              sessionLog.info('Pi branch anchor missing: requiring exact legacy SDK message match', {
                 workspaceId,
                 branchFromSessionId: options.branchFromSessionId,
                 branchFromMessageId: options.branchFromMessageId,
