@@ -136,6 +136,53 @@ if (process.env.STAIR_SUBMITTED_DRAFT_CHILD !== '1') {
     expect(current.getText(id)).toBe('DISK\n\nLOCAL')
   })
 
+  test('Edit followed by immediate replacement and send consumes the persisted base before Stop restores the new input', async () => {
+    const id = 'edit-replace-immediate-stop'
+    const original = {
+      text: 'R03 ORIGINAL BODY A', references: [reference('text'), reference('pdf'), reference('epub')],
+      attachments: [{ path: 'paste.txt', name: 'paste.txt', content: { type: 'text' as const, mimeType: 'text/plain', size: 7, text: 'PAYLOAD' } }],
+    }
+    const current = coordinator()
+    await current.restoreInput('workspace-a', id, 'project-a', { type: 'restore_input', ...original })
+    const queued = { ...original, text: 'I04 NEW BODY B' }
+    // captureSubmittedDraft flushes this live replacement before the 300 ms
+    // composer debounce. The Edit reference write has already advanced the
+    // host revision independently of its earlier content acknowledgement.
+    current.updateText(id, queued.text)
+    const captured = current.captureSubmittedDraft(id, queued)
+    current.updateText(id, '')
+    current.updateAttachments(id, [])
+    current.replaceReferences(id, [])
+    await current.consumeSubmittedDraft('workspace-a', id, 'edit-replace-request', captured)
+    const afterSend = current.getDraft(id)
+    const afterSendOnDisk = config.getSessionDraft(id)
+    // Reconciliation replays exactly the same consumption identity, as it
+    // does after an ambiguous send/ACK. It must not revive the Edit snapshot.
+    await current.consumeSubmittedDraft('workspace-a', id, 'edit-replace-request', captured)
+    await current.restoreInput('workspace-a', id, 'project-a', {
+      type: 'restore_input', ...queued, queuedRestoreId: 'input-edit-replace-request', messageIds: ['queued-message'],
+    })
+    expect({ afterSend: afterSend?.text ?? '', afterSendOnDisk: afterSendOnDisk?.text ?? '', afterStop: current.getText(id) })
+      .toEqual({ afterSend: '', afterSendOnDisk: '', afterStop: queued.text })
+    expect(current.getReferences(id)).toEqual(queued.references)
+    expect(current.getAttachmentRefs(id)).toEqual(queued.attachments)
+    expect(config.getSessionDraft(id)).toMatchObject(queued)
+  })
+
+  test('consuming a replacement preserves unrelated text written by another window', async () => {
+    const id = 'replacement-with-remote-draft'
+    config.setSessionDraft(id, { text: 'ORIGINAL A' })
+    const current = coordinator()
+    current.updateText(id, 'SUBMITTED B')
+    const captured = current.captureSubmittedDraft(id)
+    current.updateText(id, '')
+    config.setSessionDraftContent(id, { text: 'OTHER WINDOW C' })
+    await current.consumeSubmittedDraft('workspace-a', id, 'remote-replacement-request', captured)
+    expect(current.getText(id)).toBe('OTHER WINDOW C')
+    await current.restoreInput('workspace-a', id, 'project-a', { type: 'restore_input', text: 'SUBMITTED B', queuedRestoreId: 'input-remote-replacement-request' })
+    expect(current.getText(id)).toBe('OTHER WINDOW C\n\nSUBMITTED B')
+  })
+
   test('all staged slots retire before either identical rejected input is restored', async () => {
     const id = 'same-text-queue'
     config.setSessionDraft(id, { text: 'SAME' })

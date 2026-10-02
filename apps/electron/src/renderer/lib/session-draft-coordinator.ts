@@ -543,8 +543,11 @@ export class SessionDraftCoordinator {
     return {
       content: { text: '' },
       mutation: {
+        // The base and its revision describe the last confirmed host content.
+        // A just-typed replacement may not be on disk yet. Pairing that live
+        // text with an older revision would preserve the previous disk text as
+        // a supposedly independent edit when a reference write advances it.
         ...request.mutation,
-        base: this.contentOf(before),
         references: { baseReferences: before.references ?? [], nextReferences: [] },
       },
     }
