@@ -92,6 +92,8 @@ export {
   referencesFitSerializedLimits,
   referenceKey,
   mergeReferenceDelta,
+  formatReferencesForModel,
+  stripReferencesFromModelInput,
 } from './reference.ts';
 
 // Message persistence mappers

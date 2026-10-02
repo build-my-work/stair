@@ -67,6 +67,7 @@ registerBunOAuthFlows();
 import { resolvePiModel, isDeniedMiniModelId } from './model-resolution.ts';
 import { pickProviderAppropriateMiniModel } from './pick-mini-model.ts';
 import { queryMiniModel } from './mini-model-query.ts';
+import { getReferenceContext } from './reference-context.ts';
 import {
   CRAFT_PI_EPHEMERAL_QUERY_DEADLINE_MS,
   createCraftSettingsManager,
@@ -1465,6 +1466,13 @@ async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): P
     if (compactionWait.timedOut) {
       debugLog('Proceeding with prompt while the compaction flag is still set');
     }
+
+    // Reject an oversized legacy replay before SDK admission. Context hook errors
+    // are swallowed by Pi, so they cannot be used to refuse an input safely.
+    getReferenceContext(session.sessionManager.getBranch(), [
+      ...session.agent.state.messages,
+      { role: 'user', content: msg.message, timestamp: Date.now() },
+    ]);
 
     // Fire prompt — use followUp when session is already streaming so the
     // message is queued instead of throwing "Agent is already processing".

@@ -336,3 +336,36 @@ export function mergeReferenceDelta(current: Reference[], base: Reference[], nex
   }
   return merged;
 }
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
+    .replaceAll('\u2028', '\\u2028')
+    .replaceAll('\u2029', '\\u2029');
+}
+
+const REFERENCE_DATA_OPEN = '<stair_reference_data trust="untrusted">';
+const REFERENCE_DATA_CLOSE = '</stair_reference_data>';
+
+export function formatReferencesForModel(message: string, references: Reference[]): string {
+  if (references.length === 0) return message;
+  const context = [
+    REFERENCE_DATA_OPEN,
+    escapeXml(JSON.stringify(references, null, 2)),
+    REFERENCE_DATA_CLOSE,
+  ].join('\n');
+  return message ? `${message}\n\n${context}` : context;
+}
+
+export function stripReferencesFromModelInput(message: string): string {
+  const suffix = `\n${REFERENCE_DATA_CLOSE}`;
+  if (!message.endsWith(suffix)) return message;
+
+  const blockStart = message.lastIndexOf(`\n\n${REFERENCE_DATA_OPEN}\n`);
+  if (blockStart >= 0) return message.slice(0, blockStart);
+  return message.startsWith(`${REFERENCE_DATA_OPEN}\n`) ? '' : message;
+}

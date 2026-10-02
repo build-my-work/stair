@@ -4,6 +4,7 @@ import {
   type InlineExtension,
   type SettingsManager,
 } from '@earendil-works/pi-coding-agent';
+import { referenceContextExtension } from './reference-context.ts';
 
 /**
  * Force a Craft-built system prompt onto a Pi AgentSession.
@@ -45,7 +46,7 @@ export function createSystemPromptOverride(): SystemPromptOverride {
 
 /**
  * The resource loader `createAgentSession` would build on its own (same cwd,
- * agentDir and settings), plus the system-prompt override extension. Discovery
+ * agentDir and settings), plus the system-prompt and reference-context extensions. Discovery
  * follows the SDK rules for what it is given: Craft passes an empty agentDir
  * (`agent-dir.ts`) and settings that never trust the working directory
  * (`session-settings.ts`), so no on-disk extension, skill or prompt loads.
@@ -60,7 +61,7 @@ export async function createCraftResourceLoader(options: {
     cwd: options.cwd,
     agentDir: options.agentDir,
     settingsManager: options.settingsManager,
-    extensionFactories: [options.systemPromptOverride.extension],
+    extensionFactories: [options.systemPromptOverride.extension, referenceContextExtension],
   });
   await loader.reload();
   return loader;
