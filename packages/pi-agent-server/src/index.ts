@@ -112,7 +112,7 @@ import { adaptCredentialForPiSdk, type PiCredential } from './adapt-credential.t
 import { resolveCraftAgentDir } from './agent-dir.ts';
 import { toPiProviderId } from '../../shared/src/config/pi-provider-ids.ts';
 import { providerEndpointEnv } from './provider-endpoint-env.ts';
-import { PiSteerDelivery } from './steer-delivery.ts';
+import { PiSteerDelivery, UnknownSteerIdsError } from './steer-delivery.ts';
 
 // ============================================================
 // Types — JSONL Protocol
@@ -253,7 +253,7 @@ type OutboundMessage =
   | OutboundReady
   | { type: 'prompt_accepted'; id: string }
   | { type: 'steer_consumed' | 'steer_rejected'; id: string }
-  | { type: 'steers_settled'; id: string; success: boolean; pendingIds?: string[]; errorMessage?: string }
+  | { type: 'steers_settled'; id: string; success: boolean; pendingIds?: string[]; errorMessage?: string; errorCode?: 'unknown_steer_ids'; unknownIds?: string[] }
   | OutboundEvent
   | OutboundPreToolUseReq
   | OutboundToolExecReq
@@ -1915,7 +1915,8 @@ async function processMessage(msg: InboundMessage): Promise<void> {
         send({ type: 'steers_settled', id: msg.id, success: true, pendingIds });
       } catch (error) {
         send({ type: 'steers_settled', id: msg.id, success: false,
-          errorMessage: error instanceof Error ? error.message : String(error) });
+          errorMessage: error instanceof Error ? error.message : String(error),
+          ...(error instanceof UnknownSteerIdsError ? { errorCode: error.code, unknownIds: error.unknownIds } : {}) });
       }
       break;
 

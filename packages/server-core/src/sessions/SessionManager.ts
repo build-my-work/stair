@@ -2257,20 +2257,25 @@ export class SessionManager implements ISessionManager {
     for (const managed of this.sessions.values()) {
       if (managed.workspace.id !== workspaceId || !managed.messagesLoaded) continue
       if (!managed.messages.some(message => message.queuedRestoreId)) continue
+      const pendingRestores = new Map<string, Message[]>()
+      for (const message of managed.messages) {
+        if (message.role !== 'user' || !message.isQueued || !message.queuedRestoreId) continue
+        const group = pendingRestores.get(message.queuedRestoreId) ?? []
+        group.push(structuredClone(message))
+        pendingRestores.set(message.queuedRestoreId, group)
+      }
       // A failed Stop write may have left only an in-memory outbox. Never let
       // a reconnect persist its draft receipt ahead of the corresponding row.
+      // Only this captured batch is covered by the write: another Stop may
+      // create an outbox while it waits, and must own that batch's durability.
       void (async () => {
         this.persistSession(managed)
         await this.flushSessionStrict(managed.id)
         if (this.sessions.get(managed.id) !== managed || !this.eventSink) return
-        const pendingRestores = new Map<string, Message[]>()
-        for (const message of managed.messages) {
-          if (message.role !== 'user' || !message.isQueued || !message.queuedRestoreId) continue
-          const group = pendingRestores.get(message.queuedRestoreId) ?? []
-          group.push(message)
-          pendingRestores.set(message.queuedRestoreId, group)
-        }
-        for (const [queuedRestoreId, messages] of pendingRestores) {
+        for (const [queuedRestoreId, captured] of pendingRestores) {
+          const messages = captured.filter(message => managed.messages.some(current =>
+            current.id === message.id && current.isQueued && current.queuedRestoreId === queuedRestoreId))
+          if (messages.length === 0) continue
           this.eventSink(
             RPC_CHANNELS.sessions.EVENT,
             { to: 'client', clientId },
@@ -3608,24 +3613,30 @@ export class SessionManager implements ISessionManager {
     // Lazy-load messages from disk if not yet loaded
     await this.ensureMessagesLoaded(m)
 
-    if (m.messages.some(message => message.queuedRestoreId)) {
+    const pendingRestores = new Map<string, Message[]>()
+    for (const message of m.messages) {
+      if (message.role !== 'user' || !message.isQueued || !message.queuedRestoreId) continue
+      const key = `${m.id}\0${message.queuedRestoreId}`
+      if (this.emittedQueuedRestoreIds.has(key)) continue
+      const group = pendingRestores.get(message.queuedRestoreId) ?? []
+      group.push(structuredClone(message))
+      pendingRestores.set(message.queuedRestoreId, group)
+    }
+    if (pendingRestores.size > 0) {
+      // A successful flush covers this value snapshot, not outboxes created
+      // concurrently while that flush is waiting on the previous disk write.
       this.persistSession(m)
       await this.flushSessionStrict(sessionId)
       if (this.sessions.get(sessionId) !== m) return null
     }
 
     if (this.eventSink) {
-      const pendingRestores = new Map<string, Message[]>()
-      for (const message of m.messages) {
-        if (message.role !== 'user' || !message.isQueued || !message.queuedRestoreId) continue
-        const key = `${m.id}\0${message.queuedRestoreId}`
-        if (this.emittedQueuedRestoreIds.has(key)) continue
-        const group = pendingRestores.get(message.queuedRestoreId) ?? []
-        group.push(message)
-        pendingRestores.set(message.queuedRestoreId, group)
-      }
-      for (const [queuedRestoreId, messages] of pendingRestores) {
+      for (const [queuedRestoreId, captured] of pendingRestores) {
         const key = `${m.id}\0${queuedRestoreId}`
+        if (this.emittedQueuedRestoreIds.has(key)) continue
+        const messages = captured.filter(message => m.messages.some(current =>
+          current.id === message.id && current.isQueued && current.queuedRestoreId === queuedRestoreId))
+        if (messages.length === 0) continue
         this.sendEvent({
           type: 'interrupted',
           sessionId: m.id,
@@ -9781,7 +9792,7 @@ export class SessionManager implements ISessionManager {
       const undelivered = this.markUnacceptedInputForRestore(managed, new Set([
         ...(managed.lastSentMessageIds ?? []),
         ...(managed.acceptedSteers?.keys() ?? []),
-      ]))
+      ])).map(message => structuredClone(message))
       if (undelivered.length) {
         this.persistSession(managed)
         let recoveryPersisted = false
@@ -9803,6 +9814,8 @@ export class SessionManager implements ISessionManager {
         if (!ownsCleanup()) return
         if (recoveryPersisted) {
           for (const message of undelivered) {
+            if (!managed.messages.some(current => current.id === message.id
+              && current.isQueued && current.queuedRestoreId === message.queuedRestoreId)) continue
             this.sendEvent({ type: 'interrupted', sessionId,
               queuedMessages: [message.content], queuedReferences: message.references,
               queuedAttachments: message.attachments, queuedRestoreId: message.queuedRestoreId,

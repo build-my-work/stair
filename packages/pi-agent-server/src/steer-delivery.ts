@@ -4,6 +4,15 @@ import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-
 type SteerReceipt = { type: 'steer_consumed' | 'steer_rejected'; id: string };
 type PendingSteer = { id: string; queued: number; consumed: number; admitted: boolean; failed: boolean };
 
+/** The request was rejected before starting or caching an SDK cancellation. */
+export class UnknownSteerIdsError extends Error {
+  readonly code = 'unknown_steer_ids';
+
+  constructor(readonly unknownIds: string[]) {
+    super('Pi steering cancellation contains unknown input identities');
+  }
+}
+
 /** Tracks the SDK's transformed steering queue without replacing its input/extension pipeline. */
 export class PiSteerDelivery {
   private readonly input = new AsyncLocalStorage<PendingSteer>();
@@ -118,8 +127,9 @@ export class PiSteerDelivery {
       }
       return this.settlement.promise.then(ids => [...ids]);
     }
-    if (request.steerIds.some(id => !this.knownIds.has(id))
-      || [...this.pending.keys()].some(id => !request.steerIds.includes(id))) {
+    const unknownIds = request.steerIds.filter(id => !this.knownIds.has(id));
+    if (unknownIds.length > 0) return Promise.reject(new UnknownSteerIdsError(unknownIds));
+    if ([...this.pending.keys()].some(id => !request.steerIds.includes(id))) {
       return Promise.reject(new Error('Pi steering cancellation contains unknown input identities'));
     }
     this.accepting = false;

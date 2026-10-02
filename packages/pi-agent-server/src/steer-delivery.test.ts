@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { createAgentSession, createExtensionRuntime, SessionManager, type Extension, type ModelRuntime, type ResourceLoader } from '@earendil-works/pi-coding-agent';
 import { createAssistantMessageEventStream, type AssistantMessage, type Model } from '@earendil-works/pi-ai';
 import { createCraftSettingsManager } from './session-settings.ts';
-import { PiSteerDelivery } from './steer-delivery.ts';
+import { PiSteerDelivery, UnknownSteerIdsError } from './steer-delivery.ts';
 
 async function fixture(extensions: Extension[] = []) {
   const model: Model<'openai-responses'> = {
@@ -131,8 +131,18 @@ test('cancellation settles unconsumed steers and prevents them from entering the
     await f.steering.enqueue('one', 'queued one', 'turn');
     await f.steering.enqueue('two', 'queued two', 'turn');
     const request = { id: 'settlement', turnId: 'turn', steerIds: ['one', 'two'] };
+    const unknownRequest = { ...request, id: 'startup-settlement', steerIds: ['startup-rejected', 'one', 'two'] };
+    const rejected = await f.steering.settle(unknownRequest).catch(error => error);
+    expect(rejected).toBeInstanceOf(UnknownSteerIdsError);
+    expect(rejected).toMatchObject({ code: 'unknown_steer_ids', unknownIds: ['startup-rejected'] });
+    expect(f.session.getSteeringMessages()).toEqual(['queued one', 'queued two']);
     expect(await f.steering.settle(request)).toEqual(['one', 'two']);
     expect(await f.steering.settle(request)).toEqual(['one', 'two']);
+    // Once a cancellation exists, mismatched requests cannot receive the
+    // no-side-effects error code or start a second cancellation.
+    const mismatch = await f.steering.settle(unknownRequest).catch(error => error);
+    expect(mismatch).not.toBeInstanceOf(UnknownSteerIdsError);
+    expect(mismatch.message).toContain('identity mismatch');
     await turn;
     expect(f.receipts).toEqual([]);
     expect(f.session.getSteeringMessages()).toEqual([]);

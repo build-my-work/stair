@@ -198,6 +198,7 @@ export class PiAgent extends BaseAgent {
   private steerSettlement?: {
     id: string;
     expectedIds: Set<string>;
+    finished: boolean;
     promise: Promise<PendingSteer[]>;
     resolve: (steers: PendingSteer[]) => void;
     reject: (error: Error) => void;
@@ -1017,10 +1018,24 @@ export class PiAgent extends BaseAgent {
 
       case 'steers_settled': {
         const settlement = this.steerSettlement;
-        if (!settlement || msg.id !== settlement.id) break;
+        if (!settlement || settlement.finished || msg.id !== settlement.id) break;
+        settlement.finished = true;
+        const request = this.steerSettlementRequest!;
+        const unknownIds = Array.isArray(msg.unknownIds) ? msg.unknownIds : [];
+        if (msg.success === false && msg.errorCode === 'unknown_steer_ids' && unknownIds.length > 0
+          && new Set(unknownIds).size === unknownIds.length
+          && unknownIds.every(id => typeof id === 'string' && request.entries.has(id) && this.settledSteers.has(id))) {
+          // A startup steer can be refused before the child begins this turn.
+          // This typed response proves no cancellation ran. Its earlier FIFO
+          // rejection receipts let us exclude only those inputs and try again.
+          clearTimeout(settlement.timer);
+          this.steerSettlement = undefined;
+          this.steerSettlementRequest = undefined;
+          void this.settlePendingSteers().then(settlement.resolve, settlement.reject);
+          break;
+        }
         const pendingIds = Array.isArray(msg.pendingIds) ? msg.pendingIds : [];
         const reported = new Set(pendingIds);
-        const request = this.steerSettlementRequest!;
         // A synchronous recovery consumer may already have drained a rejected
         // input. The immutable request and explicit receipts own this comparison.
         const outstanding = [...settlement.expectedIds].filter(id => !request.consumedIds.has(id));
@@ -2648,7 +2663,8 @@ export class PiAgent extends BaseAgent {
     const request = this.steerSettlementRequest ??= {
       id: `settle-steers-${++this.rpcIdCounter}`,
       turnId: this.steeringTurnId,
-      entries: new Map([...this.pendingSteers].map(([key, entry]) => [key, { message: entry.message, messageId: entry.messageId }])),
+      entries: new Map([...this.pendingSteers].filter(([, entry]) => !entry.undelivered)
+        .map(([key, entry]) => [key, { message: entry.message, messageId: entry.messageId }])),
       consumedIds: new Set<string>(),
     };
     const { id } = request;
@@ -2659,8 +2675,11 @@ export class PiAgent extends BaseAgent {
       resolve = onResolve;
       reject = onReject;
     });
-    const timer = setTimeout(() => reject(new Error('Pi steering delivery confirmation timed out')), this.steerSettlementTimeoutMs);
-    const settlement = { id, expectedIds, promise, resolve, reject, timer };
+    const timer = setTimeout(() => {
+      settlement.finished = true;
+      reject(new Error('Pi steering delivery confirmation timed out'));
+    }, this.steerSettlementTimeoutMs);
+    const settlement = { id, expectedIds, finished: false, promise, resolve, reject, timer };
     settlement.promise = promise.finally(() => {
       clearTimeout(timer);
       if (this.steerSettlement === settlement) this.steerSettlement = undefined;
@@ -2669,6 +2688,7 @@ export class PiAgent extends BaseAgent {
     try {
       this.send({ type: 'settle_steers', id, turnId: request.turnId, steerIds: [...expectedIds] });
     } catch (error) {
+      settlement.finished = true;
       settlement.reject(error instanceof Error ? error : new Error(String(error)));
     }
     return settlement.promise.then(entries => entries.map(entry => ({ ...entry })));

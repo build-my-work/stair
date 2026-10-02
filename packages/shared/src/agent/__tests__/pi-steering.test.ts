@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { PiAgent } from '../pi-agent.ts';
+import { PiSteerDelivery } from '../../../../pi-agent-server/src/steer-delivery.ts';
 
 const agents: PiAgent[] = [];
 
@@ -151,4 +152,92 @@ test('the public generator emits late delivery receipts and recovery before comp
     { type: 'steer_undelivered', message: 'waiting', messageId: 'waiting' },
     { type: 'complete' },
   ]);
+});
+
+test.each(['before barrier', 'after barrier', 'timeout retry', 'after barrier timeout retry'] as const)(
+  'startup rejection received %s does not prevent a later queued input from being cancelled', async (timing) => {
+    const { agent, internal, sent } = makeAgent();
+    let observe: (event: any) => void = () => {};
+    const queue: string[] = [];
+    let aborts = 0;
+    let holdResponses = timing.startsWith('after barrier');
+    let dropSettlement = timing.endsWith('timeout retry');
+    const responses: Record<string, any>[] = [];
+    const jobs: Promise<void>[] = [];
+    const respond = (response: Record<string, any>) => {
+      if (response.type === 'steers_settled' && dropSettlement) { dropSettlement = false; return; }
+      if (holdResponses) responses.push(response);
+      else internal.handleLine(JSON.stringify(response));
+    };
+    const child = new PiSteerDelivery({
+      subscribe: (callback: typeof observe) => { observe = callback; return () => {}; },
+      getSteeringMessages: () => queue,
+      steer: async (text: string) => { queue.push(text); observe({ type: 'queue_update', steering: [...queue] }); },
+      abort: async () => { aborts++; },
+      clearQueue: () => { queue.length = 0; observe({ type: 'queue_update', steering: [] }); },
+    } as any, respond);
+    internal.send = (command: Record<string, any>) => {
+      sent.push(command);
+      if (command.type === 'steer') jobs.push(child.enqueue(command.id, command.message, command.turnId));
+      if (command.type === 'settle_steers') jobs.push(child.settle(command as any).then(
+        pendingIds => respond({ type: 'steers_settled', id: command.id, success: true, pendingIds }),
+        error => respond({ type: 'steers_settled', id: command.id, success: false, errorMessage: error.message,
+          errorCode: error.code, unknownIds: error.unknownIds }),
+      ));
+    };
+    try {
+      // handlePrompt awaits session/compaction setup before beginTurn. The
+      // concurrent stdin steer handler explicitly refuses this early input.
+      agent.redirect('startup input', { messageId: 'early' });
+      await Promise.all(jobs);
+      child.beginTurn('turn-test');
+      agent.redirect('queued input', { messageId: 'later' });
+      await Promise.all(jobs);
+      expect(queue).toEqual(['queued input']);
+      if (timing.endsWith('timeout retry')) internal.steerSettlementTimeoutMs = 5;
+      let cancelling = agent.settlePendingSteers();
+      const firstBarrier = sent.at(-1)!;
+      if (timing.startsWith('after barrier')) {
+        await Promise.all(jobs);
+        expect(aborts).toBe(0);
+        holdResponses = false;
+        for (const response of responses) internal.handleLine(JSON.stringify(response));
+      }
+      if (timing.endsWith('timeout retry')) {
+        await expect(cancelling).rejects.toThrow('timed out');
+        cancelling = agent.settlePendingSteers();
+        expect(sent.at(-1)).toEqual(firstBarrier);
+      }
+      expect(await cancelling).toEqual([
+        { message: 'startup input', messageId: 'early' },
+        { message: 'queued input', messageId: 'later' },
+      ]);
+      expect(queue).toEqual([]);
+      expect(aborts).toBe(1);
+      const barriers = sent.filter(command => command.type === 'settle_steers');
+      expect(barriers).toHaveLength(timing === 'before barrier' ? 1 : timing === 'after barrier timeout retry' ? 3 : 2);
+      if (timing.startsWith('after barrier')) expect(barriers.at(-1)!.id).not.toBe(firstBarrier.id);
+    } finally {
+      child.dispose();
+    }
+  },
+);
+
+test('an unknown identity without its matching rejection receipt cannot reset the cancellation request', async () => {
+  const { agent, internal, sent } = makeAgent();
+  agent.redirect('uncertain input', { messageId: 'input' });
+  agent.redirect('still waiting', { messageId: 'waiting' });
+  const cancelling = agent.settlePendingSteers();
+  const barrier = sent.at(-1)!;
+  internal.handleLine(JSON.stringify({ type: 'steers_settled', id: barrier.id, success: false,
+    errorCode: 'unknown_steer_ids', unknownIds: [sent[0]!.id], errorMessage: 'identity unknown' }));
+  expect(agent.takePendingSteers()).toEqual([]);
+  // A duplicate response cannot revive an attempt already rejected, even if
+  // the missing receipt arrives before the promise's cleanup microtask.
+  internal.handleLine(JSON.stringify({ type: 'steer_rejected', id: sent[0]!.id }));
+  internal.handleLine(JSON.stringify({ type: 'steers_settled', id: barrier.id, success: false,
+    errorCode: 'unknown_steer_ids', unknownIds: [sent[0]!.id], errorMessage: 'identity unknown' }));
+  await expect(cancelling).rejects.toThrow('identity unknown');
+  expect(agent.takePendingSteers()).toEqual([{ message: 'uncertain input', messageId: 'input' }]);
+  expect(sent.filter(command => command.type === 'settle_steers')).toHaveLength(1);
 });

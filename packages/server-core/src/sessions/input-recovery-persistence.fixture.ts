@@ -10,8 +10,8 @@ process.env.CRAFT_CONFIG_DIR = profile
 copyFileSync(join(repo, 'apps/electron/resources/config-defaults.json'), join(profile, 'config-defaults.json'))
 const { SessionManager, createManagedSession } = await import('./SessionManager')
 const { createWorkspaceAtPath } = await import('@craft-agent/shared/workspaces')
-const { saveSession, loadSession, sessionPersistenceQueue } = await import('@craft-agent/shared/sessions')
-const { saveConfig } = await import('@craft-agent/shared/config')
+const { saveSession, saveSessionStrict, loadSession, sessionPersistenceQueue } = await import('@craft-agent/shared/sessions')
+const { saveConfig, restoreSessionDraftAtomic, getSessionDraft } = await import('@craft-agent/shared/config')
 const { RPC_CHANNELS } = await import('@craft-agent/shared/protocol')
 const { registerSessionsHandlers } = await import('../handlers/rpc/sessions')
 const { WsRpcServer } = await import('../transport/server')
@@ -256,4 +256,95 @@ for (const failure of ['receipt-write', 'redirect'] as const) {
       server.close()
     }
   })
+}
+
+for (const reader of ['getSession', 'onClientConnected'] as const) {
+  test(`I04/I08: ${reader} publishes only the outbox in its durable snapshot`, async () => {
+    const id = `outbox-race-${reader}`
+    const manager = new SessionManager()
+    const managed = createManagedSession({ id, name: 'Concurrent outbox', projectId: workspace.defaultProjectId }, workspace, { messagesLoaded: true })
+    const internals = manager as unknown as { sessions: Map<string, typeof managed> }
+    internals.sessions.set(id, managed)
+    managed.messages = [
+      { id: 'message-a', role: 'user', content: 'INPUT-A', timestamp: 1, isQueued: true, queuedRestoreId: 'input-message-a' },
+      { id: 'message-b', role: 'user', content: 'INPUT-B', timestamp: 2, pendingDelivery: true },
+    ]
+    managed.isProcessing = true
+    managed.processingGeneration = 1
+    managed.lastSentMessageIds = ['message-b']
+    managed.agent = { forceAbort() {} } as never
+    await saveSessionStrict({ id, name: 'Concurrent outbox', projectId: managed.projectId, workspaceRootPath: workspace.rootPath,
+      createdAt: 1, lastUsedAt: 1,
+      tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, contextTokens: 0, costUsd: 0 },
+      messages: managed.messages.map(({ role, ...message }) => ({ ...message, type: role })) })
+
+    const firstEntered = Promise.withResolvers<void>()
+    const firstRelease = Promise.withResolvers<void>()
+    const secondEntered = Promise.withResolvers<void>()
+    const secondRelease = Promise.withResolvers<void>()
+    let attempts = 0
+    const actualWrite = fs.writeFile
+    const write = spyOn(fs, 'writeFile').mockImplementation(async (path, data, options) => {
+      if (String(path) === join(workspace.rootPath, 'sessions', id, 'session.jsonl.tmp')) {
+        attempts++
+        if (attempts === 1) { firstEntered.resolve(); await firstRelease.promise }
+        else if (attempts === 2) {
+          secondEntered.resolve()
+          await secondRelease.promise
+          throw Object.assign(new Error('Controlled new outbox ENOSPC'), { code: 'ENOSPC' })
+        }
+      }
+      return actualWrite(path, data, options)
+    })
+    const publications: Array<{ restoreId: string; ids: string[]; diskRestoreId?: string }> = []
+    // Use the renderer's real durable draft operation, then simulate a client
+    // exit before its receipt can ACK the session row.
+    const acceptRestore: Parameters<typeof manager.setEventSink>[0] = (_channel, _target, event) => {
+      if (event.type !== 'interrupted' || !event.queuedRestoreId) return
+      publications.push({ restoreId: event.queuedRestoreId, ids: event.queuedMessageIds ?? [],
+        diskRestoreId: loadSession(workspace.rootPath, id)?.messages.find(message => message.id === 'message-b')?.queuedRestoreId })
+      restoreSessionDraftAtomic(id, managed.projectId, event.queuedRestoreId, { text: event.queuedMessages?.join('\n\n') ?? '' })
+    }
+    manager.setEventSink(acceptRestore)
+    let reading: Promise<unknown> | undefined
+    let stopping: Promise<unknown> | undefined
+    try {
+      if (reader === 'getSession') reading = manager.getSession(id)
+      else manager.onClientConnected('review-client', workspace.id)
+      await firstEntered.promise
+      stopping = manager.cancelProcessing(id).catch(error => error)
+      firstRelease.resolve()
+      await secondEntered.promise
+      for (let i = 0; i < 3; i++) await new Promise(resolve => setImmediate(resolve))
+      const premature = publications.filter(publication => publication.ids.includes('message-b'))
+      secondRelease.resolve()
+      expect(await stopping).toBeInstanceOf(Error)
+      await reading?.catch(() => {})
+      write.mockRestore()
+      managed.isProcessing = false
+
+      // Cold recovery reads the last successful disk image. B still carries
+      // pendingDelivery, so its new host uses deterministic input-message-b.
+      // Publishing Stop's uncommitted random id earlier would duplicate B in
+      // the durable draft even though both restores are individually idempotent.
+      expect(loadSession(workspace.rootPath, id)?.messages.find(message => message.id === 'message-b'))
+        .toMatchObject({ pendingDelivery: true })
+      const cold = new SessionManager()
+      const restarted = createManagedSession({ id, name: 'Concurrent outbox', projectId: managed.projectId }, workspace, { messagesLoaded: false })
+      const coldInternals = cold as unknown as { sessions: Map<string, typeof restarted> }
+      coldInternals.sessions.set(id, restarted)
+      cold.setEventSink(acceptRestore)
+      await cold.getSession(id)
+      expect(premature).toHaveLength(0)
+      expect(getSessionDraft(id)?.text).toBe('INPUT-A\n\nINPUT-B')
+      expect(publications.filter(publication => publication.ids.includes('message-b')))
+        .toEqual([{ restoreId: 'input-message-b', ids: ['message-b'], diskRestoreId: 'input-message-b' }])
+    } finally {
+      firstRelease.resolve(); secondRelease.resolve()
+      await Promise.allSettled([reading, stopping].filter(Boolean) as Promise<unknown>[])
+      managed.isProcessing = false
+      write.mockRestore()
+      await sessionPersistenceQueue.flushAll()
+    }
+  }, 5_000)
 }
