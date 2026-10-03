@@ -9835,6 +9835,25 @@ export class SessionManager implements ISessionManager {
       && managed.processingGeneration === generation && (managed.stopEpoch ?? 0) === cleanupStopEpoch
 
     sessionLog.info(`Processing stopped for session ${sessionId}: ${reason}`)
+    // An aborted iterator may never deliver its final tool results. Settle the
+    // host image before recovery IO, matching the renderer's terminal fallback
+    // so a reload cannot revive tools from a stopped turn.
+    if (reason !== 'complete') {
+      const result = reason === 'error' ? 'Error occurred' : 'Interrupted'
+      for (const message of managed.messages) {
+        if (message.role !== 'tool' || message.toolResult !== undefined
+          || message.toolStatus === 'completed' || message.toolStatus === 'error') continue
+        message.toolStatus = 'error'
+        message.toolResult = result
+        message.isError = true
+        if (message.toolUseId) {
+          this.sendEvent({ type: 'tool_result', sessionId, toolUseId: message.toolUseId,
+            toolName: message.toolName ?? 'unknown', result, isError: true,
+            turnId: message.turnId, parentToolUseId: message.parentToolUseId,
+            timestamp: message.timestamp }, managed.workspace.id)
+        }
+      }
+    }
     // Retire processing before recovery IO, so a failed recovery write cannot
     // strand the session busy. The durable pending marker remains recoverable.
     this.setProcessing(managed, false)

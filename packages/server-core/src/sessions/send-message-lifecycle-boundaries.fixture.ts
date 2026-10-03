@@ -81,6 +81,74 @@ async function setup() {
   return { sm, managed, root, workspace, internals }
 }
 
+test.each(['Stop', 'iterator error'] as const)('%s settles unfinished tools on the host and disk without touching a newer turn', async (ending) => {
+  const f = await setup()
+  const events: SessionEvent[] = []
+  let releaseStopped!: () => void
+  let releaseNewer!: () => void
+  const stopped = new Promise<void>(resolve => { releaseStopped = resolve })
+  const newer = new Promise<void>(resolve => { releaseNewer = resolve })
+  let stopping: Promise<void> | undefined
+  let calls = 0
+  const agent = agentStub(async function* () {
+    calls++
+    yield { type: 'input_accepted' }
+    const toolUseId = calls === 1 ? 'stopped-tool' : 'newer-tool'
+    yield { type: 'tool_start', toolName: 'Bash', toolUseId, input: { command: 'synthetic tool' } }
+    if (calls === 1) {
+      await stopped
+      throw ending === 'Stop' ? new DOMException('Stopped', 'AbortError') : new Error('Synthetic iterator failure')
+    }
+    await newer
+    yield { type: 'tool_result', toolName: 'Bash', toolUseId, result: 'NEWER-RESULT' }
+    yield { type: 'complete' }
+  })
+  agent.forceAbort = releaseStopped
+  f.managed.agent = agent as never
+  f.internals.getOrCreateAgent = async () => agent
+  f.sm.setEventSink((_channel, _target, event) => {
+    events.push(structuredClone(event))
+    if (event.type === 'tool_start' && event.toolUseId === 'stopped-tool') {
+      if (ending === 'Stop') stopping = f.sm.cancelProcessing(f.managed.id)
+      else releaseStopped()
+    }
+  })
+  const first = f.sm.sendMessage(f.managed.id, 'STOPPED-INPUT')
+  try {
+    await first
+    await stopping
+    for (let i = 0; i < 10; i++) await tick()
+    await f.sm.flushSession(f.managed.id)
+    const result = ending === 'Stop' ? 'Interrupted' : 'Error occurred'
+    const closed = f.managed.messages.find(message => message.toolUseId === 'stopped-tool')!
+    expect(closed.toolStatus).toBe('error')
+    expect(closed.toolResult).toBe(result)
+    expect(closed.isError).toBe(true)
+    expect(loadSession(f.root, f.managed.id)?.messages.find(message => message.toolUseId === 'stopped-tool')).toMatchObject({
+      toolStatus: 'error', toolResult: result, isError: true,
+    })
+    expect(events.filter(event => event.type === 'tool_result' && event.toolUseId === 'stopped-tool')).toHaveLength(1)
+    const stoppedGeneration = f.managed.processingGeneration
+    const next = f.sm.sendMessage(f.managed.id, 'NEWER-INPUT')
+    try {
+      for (let i = 0; i < 50 && !f.managed.messages.some(message => message.toolUseId === 'newer-tool'); i++) await tick()
+      const current = f.managed.messages.find(message => message.toolUseId === 'newer-tool')!
+      expect(current.toolStatus).toBe('executing')
+      await (f.sm as unknown as { onProcessingStopped(id: string, reason: 'interrupted', generation: number): Promise<void> })
+        .onProcessingStopped(f.managed.id, 'interrupted', stoppedGeneration)
+      expect(current.toolStatus).toBe('executing')
+      expect(current.toolResult).toBeUndefined()
+    } finally { releaseNewer(); await next }
+    for (let i = 0; i < 10; i++) await tick()
+    await f.sm.flushSession(f.managed.id)
+    expect(f.managed.messages.find(message => message.toolUseId === 'newer-tool')).toMatchObject({
+      toolStatus: 'completed', toolResult: 'NEWER-RESULT', isError: false,
+    })
+    expect(loadSession(f.root, f.managed.id)?.messages.find(message => message.toolUseId === 'newer-tool')?.toolStatus).toBe('completed')
+    expect(f.managed.isProcessing).toBe(false)
+  } finally { releaseStopped(); releaseNewer(); await first }
+}, 5_000)
+
 test.each(['agent construction', 'source setup'] as const)('%s failure settles processing before a new warm send', async (stage) => {
   const f = await setup()
   let fail = true
