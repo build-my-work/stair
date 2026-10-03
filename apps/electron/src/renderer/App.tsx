@@ -452,6 +452,7 @@ export default function App() {
   const pendingInputJournal = pendingInputJournalRef.current
   const [pendingInputSessionIds, setPendingInputSessionIds] = useState<ReadonlySet<string>>(new Set())
   const cancelledInputIdsRef = useRef(new Set<string>())
+  const inputSenderRef = useRef({ id: crypto.randomUUID(), ready: false })
   const workspaceTransitionGenerationRef = useRef(0)
   const replayDeferredDraftRestoresRef = useRef<(() => void) | null>(null)
   const [draftsLoadedWorkspaceId, setDraftsLoadedWorkspaceId] = useState<string | null>(null)
@@ -1785,19 +1786,38 @@ export default function App() {
     return result.state
   }, [draftCoordinator, pendingInputJournal, refreshPendingInputSessions, store, updateSessionById])
 
-  // Only the holder of this browser-managed lock may send/recover a session's
-  // journal. A closed/crashed renderer releases it, so another window can take
-  // over without cancelling a request a live window still owns.
+  // Claim a renderer lifetime before publishing any input. A session send lock
+  // alone is too late: another window can recover the newly published journal
+  // before this renderer's asynchronous send lock is requested.
+  useEffect(() => {
+    if (!navigator.locks) return
+    const sender = inputSenderRef.current
+    let disposed = false
+    let release!: () => void
+    const lifetime = new Promise<void>(resolve => { release = resolve })
+    void navigator.locks.request(`stair:input-sender:${sender.id}`, async () => {
+      if (disposed) return
+      sender.ready = true
+      await lifetime
+    }).catch(error => rendererLog.warn('[input] Sender ownership unavailable', { error }))
+    return () => { disposed = true; sender.ready = false; release() }
+  }, [])
+
+  // Orphan recovery first claims the publishing renderer's lifetime, then the
+  // session's send/recovery lock. Closing/crashing releases both automatically.
   useEffect(() => {
     if (!windowWorkspaceId || draftsLoadedWorkspaceId !== windowWorkspaceId) return
     const recover = () => {
       if (workspaceSwitchingRef.current || !navigator.locks) return
       refreshPendingInputSessions()
       for (const input of pendingInputJournal.list(windowWorkspaceId)) {
-        void navigator.locks.request(`stair:pending-input:${input.workspaceId}:${input.sessionId}`, { ifAvailable: true }, async lock => {
-          if (!lock) return
-          const current = pendingInputJournal.get(input.clientMessageId)
-          if (current) await recoverPendingInput(current)
+        void navigator.locks.request(`stair:input-sender:${input.senderId ?? `legacy:${input.clientMessageId}`}`, { ifAvailable: true }, async owner => {
+          if (!owner) return
+          await navigator.locks.request(`stair:pending-input:${input.workspaceId}:${input.sessionId}`, { ifAvailable: true }, async lock => {
+            if (!lock) return
+            const current = pendingInputJournal.get(input.clientMessageId)
+            if (current) await recoverPendingInput(current)
+          })
         }).catch(error => rendererLog.warn('[input] Recovery pending; journal retained', { sessionId: input.sessionId, error }))
       }
     }
@@ -1834,6 +1854,7 @@ export default function App() {
           throw new Error('The Chat is no longer available in this Workspace')
         }
         if (!navigator.locks) throw new Error('Durable input recovery is unavailable in this client')
+        if (!inputSenderRef.current.ready) throw new Error('Input recovery is still starting; please try sending again')
         const attachmentRefs = attachments?.map(attachment => {
           const ref = toDraftRef(attachment)
           if (!ref) throw new Error(`Cannot retain attachment "${attachment.name}"; the input was not sent`)
@@ -1841,7 +1862,7 @@ export default function App() {
         })
         pendingInput = {
           version: 1, workspaceId: windowWorkspaceId, projectId: meta.projectId,
-          sessionId, clientMessageId: optimisticMessageId, createdAt: Date.now(), text: message,
+          sessionId, clientMessageId: optimisticMessageId, senderId: inputSenderRef.current.id, createdAt: Date.now(), text: message,
           attachments: attachmentRefs, references, skillSlugs, badges: externalBadges,
           ...(options?.approvedPlanMessageId ? { approvedPlanMessageId: options.approvedPlanMessageId } : {}),
           ...(options?.consumeDraft ? { consumption: draftCoordinator.captureSubmittedDraft(sessionId, { attachments: attachmentRefs, references }) } : {}),
@@ -2015,6 +2036,18 @@ export default function App() {
           messages: [...current.messages, { id: generateMessageId(), role: 'error', content: `Failed to send message: ${errorMessage}`, timestamp: Date.now() }],
         }))
       } finally {
+        // An unresolved outcome must remain recoverable even while this window
+        // stays open (for example, after reconnecting or switching Workspace).
+        if (pendingInput) {
+          try {
+            const current = pendingInputJournal.get(optimisticMessageId)
+            if (current?.senderId === inputSenderRef.current.id) {
+              pendingInputJournal.write({ ...current, senderId: undefined })
+            }
+          } catch (error) {
+            rendererLog.warn('[input] Ownership release pending; journal retained', { sessionId, error })
+          }
+        }
         refreshPendingInputSessions()
       }
     }

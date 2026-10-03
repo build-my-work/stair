@@ -7,6 +7,7 @@ export interface PendingInput {
   projectId: string
   sessionId: string
   clientMessageId: string
+  senderId?: string
   createdAt: number
   text: string
   attachments?: DraftAttachmentRef[]
@@ -39,7 +40,9 @@ export class PendingInputJournal {
     const input = JSON.parse(raw) as PendingInput
     if (input.version !== 1 || input.clientMessageId !== clientMessageId
       || !input.workspaceId || !input.projectId || !input.sessionId
-      || typeof input.text !== 'string' || (input.consumption && !input.consumption.mutation?.id)) {
+      || typeof input.text !== 'string'
+      || (input.senderId !== undefined && (typeof input.senderId !== 'string' || !input.senderId || input.senderId.length > 180))
+      || (input.consumption && !input.consumption.mutation?.id)) {
       throw new Error('Pending input recovery record is invalid')
     }
     return input

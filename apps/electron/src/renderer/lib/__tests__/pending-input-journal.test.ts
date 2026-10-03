@@ -53,4 +53,15 @@ describe('pending send durability', () => {
     storage.setItem = () => { throw new Error('quota exceeded') }
     expect(() => new PendingInputJournal(storage).write(entry)).toThrow('quota exceeded')
   })
+
+  it('preserves an owner and rejects invalid owner identities without treating them as legacy records', () => {
+    const storage = memoryStorage()
+    const journal = new PendingInputJournal(storage)
+    journal.write({ ...entry, senderId: 'renderer-a' })
+    expect(journal.get(entry.clientMessageId)?.senderId).toBe('renderer-a')
+    for (const senderId of ['', 'x'.repeat(181), 42, null]) {
+      storage.setItem(`stair.pending-input.v1:${entry.clientMessageId}`, JSON.stringify({ ...entry, senderId }))
+      expect(() => journal.get(entry.clientMessageId)).toThrow('Pending input recovery record is invalid')
+    }
+  })
 })
