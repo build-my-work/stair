@@ -1823,7 +1823,7 @@ export default function App() {
     }))
   }, [pendingInputJournal, recoverPendingInput, windowWorkspaceId])
 
-  const handleSendMessage = useCallback((sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'> & { consumeDraft?: boolean }): boolean => {
+  const handleSendMessage = useCallback((sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId' | 'approvedPlanMessageId'> & { consumeDraft?: boolean }): boolean => {
     const optimisticMessageId = generateMessageId()
     const generation = workspaceTransitionGenerationRef.current
     let pendingInput: PendingInput | undefined
@@ -1843,6 +1843,7 @@ export default function App() {
           version: 1, workspaceId: windowWorkspaceId, projectId: meta.projectId,
           sessionId, clientMessageId: optimisticMessageId, createdAt: Date.now(), text: message,
           attachments: attachmentRefs, references, skillSlugs, badges: externalBadges,
+          ...(options?.approvedPlanMessageId ? { approvedPlanMessageId: options.approvedPlanMessageId } : {}),
           ...(options?.consumeDraft ? { consumption: draftCoordinator.captureSubmittedDraft(sessionId, { attachments: attachmentRefs, references }) } : {}),
         }
         pendingInputJournal.write(pendingInput)
@@ -1983,6 +1984,7 @@ export default function App() {
           role: 'user', content: message, timestamp: Date.now(), attachments: storedAttachments,
           badges: badges.length > 0 ? badges : undefined,
           references: references?.length ? references : undefined,
+          ...(options?.approvedPlanMessageId ? { approvedPlanMessageId: options.approvedPlanMessageId } : {}),
           isPending: true,
           isQueued: store.get(sessionAtomFamily(sessionId))?.isProcessing === true,
         }
@@ -1994,6 +1996,7 @@ export default function App() {
           references: references?.length ? references : undefined,
           optimisticMessageId,
           ...(options?.planExecutionId ? { planExecutionId: options.planExecutionId } : {}),
+          ...(options?.approvedPlanMessageId ? { approvedPlanMessageId: options.approvedPlanMessageId } : {}),
         })
         if (pendingInput) {
           if (receipt?.accepted === true && receipt.messageId) pendingInputJournal.remove(optimisticMessageId)

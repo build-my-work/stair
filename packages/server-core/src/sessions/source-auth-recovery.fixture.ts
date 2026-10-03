@@ -61,7 +61,7 @@ test('S02: a stale auth completion cannot consume a newer pending request', asyn
   expect(f.calls).toHaveLength(0)
 })
 
-test('S01: source activation hands the original attachment to the actual next chat call', async () => {
+test('S01: an approved plan resumes with its original references and attachment after source activation', async () => {
   const ws = join(profile, 'workspace')
   mkdirSync(ws)
   const workspace = createWorkspaceAtPath(ws, 'Review fixture')
@@ -73,6 +73,10 @@ test('S01: source activation hands the original attachment to the actual next ch
   manager.setEventSink(() => {})
   await saveSession({ id, name: 'Existing review chat', workspaceRootPath: ws, projectId: managed.projectId, createdAt: 1, lastUsedAt: 1, messages: [],
     tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, contextTokens: 0, costUsd: 0 } })
+  const plan = { id: 'source-activation-plan', role: 'plan' as const, content: '# Source activation plan', planPath: '/activation.md', timestamp: 1 }
+  managed.messages.push(plan)
+  const reference = { version: 1 as const, kind: 'web-selection' as const, projectId: managed.projectId, url: 'https://example.test/activation',
+    title: 'Activation context', quote: 'ACTIVATION-REF', locator: { type: 'web-text-quote' as const, exact: 'ACTIVATION-REF' } }
   const attachmentPath = join(ws, 'review-attachment.txt')
   writeFileSync(attachmentPath, 'REVIEW-ATTACHMENT-CONTENT')
   const attachments = [{ name: 'review-attachment.txt', type: 'text', mimeType: 'text/plain', size: 25,
@@ -94,13 +98,15 @@ test('S01: source activation hands the original attachment to the actual next ch
   }
   ;(manager as any).getOrCreateAgent = async () => { managed.agent = agent; return agent }
   try {
-    await manager.sendMessage(id, 'Read the attached review marker', attachments, stored)
+    await manager.sendMessage(id, 'Read the attached review marker', attachments, stored, { approvedPlanMessageId: plan.id, references: [reference] })
     for (let i = 0; i < 400 && (calls.length < 2 || managed.isProcessing); i++) await Bun.sleep(5)
     await manager.flushSession(id)
     observations.sourceActivation = { calls, persistedUsers: loadSession(ws, id)?.messages.map(storedToMessage).filter((m: any) => m.role === 'user') }
     expect(calls).toHaveLength(2)
     expect(calls[0].attachments).toEqual(attachments)
     expect(calls[1].attachments).toEqual(attachments)
+    expect(calls[1].text).toContain('ACTIVATION-REF')
+    expect(managed.messages.filter((message: any) => message.approvedPlanMessageId === plan.id)).toHaveLength(1)
   } finally {
     if (managed.autoRetryTimer) clearTimeout(managed.autoRetryTimer)
     managed.autoRetryPending = undefined

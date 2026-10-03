@@ -6250,6 +6250,17 @@ export class SessionManager implements ISessionManager {
   // Pending Plan Execution (Accept & Compact)
   // ============================================
 
+  private assertPlanApprovalAvailable(managed: ManagedSession, planMessageId: string, planPath?: string, preparingCompact = false): void {
+    const plan = managed.messages.findLast(message => message.role === 'plan')
+    if (plan?.id !== planMessageId || planPath !== undefined && plan.planPath !== planPath) {
+      throw new Error('PLAN_STALE: the submitted plan is no longer current in this Chat')
+    }
+    if (managed.messages.some(message => message.role === 'user' && message.approvedPlanMessageId === planMessageId)
+      || !preparingCompact && managed.pendingPlanExecution?.approvedPlanMessageId === planMessageId && !managed.pendingPlanExecution.failed) {
+      throw new Error('PLAN_ALREADY_APPROVED: this submitted plan already has an approval')
+    }
+  }
+
   /**
    * Publish lifecycle transitions before taking the persistence snapshot.
    * Ordinary metadata saves must observe the same pending-plan image while
@@ -6310,6 +6321,7 @@ export class SessionManager implements ISessionManager {
     draftReferencesSnapshot?: Reference[],
     approvalText?: string,
     approvalBadges?: ContentBadge[],
+    approvedPlanMessageId?: string,
   ): Promise<NonNullable<StoredSession['pendingPlanExecution']>> {
     return this.withSessionLifecycleLock(sessionId, async () => {
       const managed = this.sessions.get(sessionId)
@@ -6317,6 +6329,10 @@ export class SessionManager implements ISessionManager {
         throw new Error(`PENDING_PLAN_SESSION_MISSING: Session ${sessionId} not found`)
       }
       await this.ensureMessagesLoaded(managed)
+
+      const submittedPlan = managed.messages.findLast(message => message.role === 'plan')
+      approvedPlanMessageId ??= submittedPlan?.planPath === planPath ? submittedPlan.id : undefined
+      if (approvedPlanMessageId !== undefined) this.assertPlanApprovalAvailable(managed, approvedPlanMessageId, planPath, true)
 
       const previous = managed.pendingPlanExecution
       // A new acceptance must never drop an unrecoverable snapshot. Whether
@@ -6390,8 +6406,12 @@ export class SessionManager implements ISessionManager {
         throw new Error(`PENDING_PLAN_SESSION_MISSING: no stored session ${sessionId} to hold the pending plan record`)
       }
       const storedApproval = typeof approvalText === 'string' && approvalText.trim() ? approvalText : undefined
+      // Reference validation and disk IO may let an ordinary Accept win
+      // admission. Recheck before publishing the compaction intent.
+      if (approvedPlanMessageId !== undefined) this.assertPlanApprovalAvailable(managed, approvedPlanMessageId, planPath, true)
       const record: NonNullable<ManagedSession['pendingPlanExecution']> = {
         planPath,
+        ...(approvedPlanMessageId !== undefined ? { approvedPlanMessageId } : {}),
         draftInputSnapshot,
         ...(references?.length ? { draftReferencesSnapshot: references } : {}),
         ...(storedApproval !== undefined ? { approvalMessage: storedApproval, ...(approvalBadges?.length ? { approvalBadges } : {}) } : {}),
@@ -6719,6 +6739,7 @@ export class SessionManager implements ISessionManager {
         id: approvalMessageId,
         role: 'user',
         content: approvalText,
+        ...(record.approvedPlanMessageId !== undefined ? { approvedPlanMessageId: record.approvedPlanMessageId } : {}),
         ...(record.approvalBadges?.length ? { badges: record.approvalBadges } : {}),
         timestamp: this.monotonic(),
         ...(references.length ? { references } : {}),
@@ -7044,6 +7065,7 @@ export class SessionManager implements ISessionManager {
    */
   getPendingPlanExecution(sessionId: string): {
     planPath: string
+    approvedPlanMessageId?: string
     draftInputSnapshot?: string
     draftReferencesSnapshot?: Reference[]
     awaitingCompaction: boolean
@@ -7076,18 +7098,18 @@ export class SessionManager implements ISessionManager {
    * prompts, then sends the approval message through the normal sendMessage
    * path.
    */
-  async acceptPlan(sessionId: string, _planPath?: string): Promise<void> {
+  async acceptPlan(sessionId: string, planPath?: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       sessionLog.warn(`acceptPlan: session ${sessionId} not found`)
       return
     }
 
-    if (managed.permissionMode === 'safe') {
-      this.setSessionPermissionMode(sessionId, planExecutionMode(managed.previousPermissionMode))
-    }
-
-    await this.sendMessage(sessionId, PLAN_APPROVAL_MESSAGE)
+    await this.ensureMessagesLoaded(managed)
+    const plan = managed.messages.findLast(message => message.role === 'plan')
+    if (!plan) throw new Error('PLAN_STALE: no submitted plan in this Chat')
+    this.assertPlanApprovalAvailable(managed, plan.id, planPath)
+    await this.sendMessage(sessionId, PLAN_APPROVAL_MESSAGE, undefined, undefined, { approvedPlanMessageId: plan.id })
   }
 
   // ============================================
@@ -8223,10 +8245,19 @@ export class SessionManager implements ISessionManager {
       // A terminally failed record is a durable restore outbox that new input
       // never clears; only the scoped recovery ACK removes it.
       const isCompactCommand = /^\/compact(\s|$)/i.test(message.trim())
+      const freshPlanApproval = !existingMessageId && !_isAuthRetry ? options?.approvedPlanMessageId : undefined
       if (!isCompactCommand) {
         await this.withSessionLifecycleLock(sessionId, async () => {
           await this.ensureMessagesLoaded(managed)
           if (this.sessions.get(sessionId) !== managed || !ownsAuthRetry()) return
+          if (freshPlanApproval !== undefined) {
+            // A retry of the same client input belongs to its existing row,
+            // even if a later plan has since been submitted. It must not
+            // cancel another window's compaction preparation.
+            if (clientMessageId && (managed.messages.some(candidate => candidate.role === 'user' && candidate.clientMessageId === clientMessageId)
+              || managed.restoredInputIds && Object.hasOwn(managed.restoredInputIds, clientMessageId))) return
+            this.assertPlanApprovalAvailable(managed, freshPlanApproval)
+          }
           const supersededPlan = managed.pendingPlanExecution
           if (
             supersededPlan
@@ -8263,7 +8294,8 @@ export class SessionManager implements ISessionManager {
           && candidate.clientMessageId === options?.optimisticMessageId)
         if (accepted) {
           if (accepted.content !== message || JSON.stringify(accepted.references ?? []) !== JSON.stringify(options.references ?? [])
-            || JSON.stringify(accepted.attachments ?? []) !== JSON.stringify(storedAttachments ?? [])) {
+            || JSON.stringify(accepted.attachments ?? []) !== JSON.stringify(storedAttachments ?? [])
+            || accepted.approvedPlanMessageId !== options.approvedPlanMessageId) {
             throw new Error('INPUT_ID_CONFLICT: input identity belongs to a different payload')
           }
           this.persistSession(managed)
@@ -8348,6 +8380,11 @@ export class SessionManager implements ISessionManager {
       if (!shouldReusePersistedReferences) {
         await validateProjectFileReferencesForSend(references, managed.workspace.rootPath)
       }
+      assertAdmission()
+      // Compaction preparation has its own lifecycle lock. It can commit
+      // while reference validation awaits, so neither acceptance may rely
+      // solely on the earlier check. The user row is the durable claim.
+      if (freshPlanApproval !== undefined) this.assertPlanApprovalAvailable(managed, freshPlanApproval)
       if (this.sessions.get(sessionId) !== managed || !ownsAuthRetry()) return
       if (activationSlot && managed.autoRetryPending !== activationSlot) return
       if (queueReplay && (managed.pendingQueueReplay !== queueReplay
@@ -8394,13 +8431,14 @@ export class SessionManager implements ISessionManager {
         const decideDelivery = !trackedPlanRecord && canSteerTextPayload(attachments, storedAttachments, options) && this.decisionFeatureActive('midTurnMessages')
         // An approval is its own authorized turn, never a steer into a different
         // request that won admission while its payload was being hydrated.
-        const behavior = trackedPlanRecord || decideDelivery ? 'queue' : configured
+        const behavior = trackedPlanRecord || freshPlanApproval !== undefined || decideDelivery ? 'queue' : configured
 
         // Create user message for UI and persist queued delivery state so a
         // restart can recover messages that have not reached the model yet.
         const userMessage: Message = existingUserMessage ?? {
           id: generateMessageId(),
           clientMessageId: options?.optimisticMessageId,
+          ...(freshPlanApproval !== undefined ? { approvedPlanMessageId: freshPlanApproval } : {}),
           role: 'user',
           content: message,
           timestamp: this.monotonic(),
@@ -8427,6 +8465,9 @@ export class SessionManager implements ISessionManager {
         if (this.sessions.get(sessionId) !== managed) throw new Error('INPUT_CANCELLED: Chat was deleted before acceptance')
         acknowledge(userMessage.id)
         if (!ownsAuthRetry() || userMessage.queuedRestoreId) return
+        if (freshPlanApproval !== undefined && managed.permissionMode === 'safe') {
+          this.setSessionPermissionMode(sessionId, planExecutionMode(managed.previousPermissionMode))
+        }
         if (activationSlot) activationSlot.deliveryMessageId = userMessage.id
 
         const agent = managed.agent
@@ -8515,6 +8556,7 @@ export class SessionManager implements ISessionManager {
         userMessage = {
           id: generateMessageId(),
           clientMessageId: options?.optimisticMessageId,
+          ...(freshPlanApproval !== undefined ? { approvedPlanMessageId: freshPlanApproval } : {}),
           role: 'user',
           content: message,
           timestamp: this.monotonic(),
@@ -8544,6 +8586,9 @@ export class SessionManager implements ISessionManager {
         if (this.sessions.get(sessionId) !== managed) throw new Error('INPUT_CANCELLED: Chat was deleted before acceptance')
         acknowledge(userMessage.id)
         if (!ownsAuthRetry() || userMessage.queuedRestoreId) return
+        if (freshPlanApproval !== undefined && managed.permissionMode === 'safe') {
+          this.setSessionPermissionMode(sessionId, planExecutionMode(managed.previousPermissionMode))
+        }
 
         // Emit user_message event so UI can confirm the optimistic message
         this.sendEvent({

@@ -594,6 +594,8 @@ export type SessionEvent =
 export interface SendMessageOptions {
   /** Accept & Compact may start only the exact record observed by this input. */
   planExecutionId?: string
+  /** Submitted plan identity; only one approval may be admitted for that plan. */
+  approvedPlanMessageId?: string
   skillSlugs?: string[]
   badges?: ContentBadge[]
   optimisticMessageId?: string
@@ -649,6 +651,7 @@ export type SessionCommand =
   | {
       type: 'setPendingPlanExecution'
       planPath: string
+      approvedPlanMessageId?: string
       draftInputSnapshot?: string
       draftReferencesSnapshot?: Reference[]
       /** Renderer-composed (localized) approval text, preserved as ordinary user text. */

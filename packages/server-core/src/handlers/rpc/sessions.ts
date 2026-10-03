@@ -431,6 +431,7 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
           command.draftReferencesSnapshot,
           command.approvalText,
           command.approvalBadges,
+          command.approvedPlanMessageId,
         )
       case 'markCompactionComplete':
         return sessionManager.markCompactionComplete(sessionId)

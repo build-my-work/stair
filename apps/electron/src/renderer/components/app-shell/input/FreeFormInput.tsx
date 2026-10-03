@@ -119,7 +119,7 @@ export interface FreeFormInputProps {
   /** Whether the session is currently processing */
   isProcessing?: boolean
   /** Callback when message is submitted (skillSlugs from @mentions) */
-  onSubmit: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'> & { consumeDraft?: boolean }) => boolean | void
+  onSubmit: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId' | 'approvedPlanMessageId'> & { consumeDraft?: boolean }) => boolean | void
   /** Callback to stop processing. Pass silent=true to skip "Response interrupted" message */
   onStop?: (silent?: boolean) => void
   /** External ref for the input */
@@ -709,6 +709,7 @@ export function FreeFormInput({
   type PlanApprovalEventDetail = {
     sessionId?: string
     planPath?: string
+    approvedPlanMessageId?: string
     includeDraftInput?: boolean
     source?: string
   }
@@ -732,7 +733,10 @@ export function FreeFormInput({
         draftInput: draftSnapshot.text,
       })
 
-      if (onSubmit(text, draftSnapshot.attachments.length ? draftSnapshot.attachments : undefined, undefined, draftSnapshot.references, { consumeDraft: shouldIncludeDraft }) === false) return
+      if (onSubmit(text, draftSnapshot.attachments.length ? draftSnapshot.attachments : undefined, undefined, draftSnapshot.references, {
+        consumeDraft: shouldIncludeDraft,
+        ...(e.detail?.approvedPlanMessageId ? { approvedPlanMessageId: e.detail.approvedPlanMessageId } : {}),
+      }) === false) return
       if (shouldIncludeDraft) {
         clearInputDraft()
         setAttachments([])
@@ -871,6 +875,7 @@ export function FreeFormInput({
         const preparation = {
           type: 'setPendingPlanExecution' as const,
           planPath: event.detail?.planPath ?? '',
+          ...(event.detail?.approvedPlanMessageId ? { approvedPlanMessageId: event.detail.approvedPlanMessageId } : {}),
           draftInputSnapshot: snapshotText,
           draftReferencesSnapshot: snapshotReferences,
           // Renderer-composed localized approval text, stored with the

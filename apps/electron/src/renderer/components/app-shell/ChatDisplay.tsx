@@ -194,7 +194,7 @@ function getTurnKey(turn: Turn): string {
 
 interface ChatDisplayProps {
   session: Session | null
-  onSendMessage: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'> & { consumeDraft?: boolean }) => boolean | void
+  onSendMessage: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId' | 'approvedPlanMessageId'> & { consumeDraft?: boolean }) => boolean | void
   onOpenFile: (path: string) => void
   onOpenUrl: (url: string) => void
   // Model selection
@@ -1187,7 +1187,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
   // Handle message submission from InputContainer
   // Backend handles interruption and queueing if currently processing
-  const handleSubmit = (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'> & { consumeDraft?: boolean }) => {
+  const handleSubmit = (message: string, attachments?: FileAttachment[], skillSlugs?: string[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId' | 'approvedPlanMessageId'> & { consumeDraft?: boolean }) => {
     const hasBaseMessage = message.trim().length > 0
     const followUpSection = formatFollowUpSection(pendingFollowUpAnnotations, {
       includeTopSeparator: hasBaseMessage,
@@ -1922,6 +1922,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             detail: {
                               sessionId: session?.id,
                               planPath,
+                              approvedPlanMessageId: planMessage?.id,
                               includeDraftInput: true,
                               source: 'plan-card',
                             },
@@ -1935,6 +1936,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             detail: {
                               sessionId: session?.id,
                               planPath,
+                              approvedPlanMessageId: planMessage?.id,
                               includeDraftInput: true,
                               source: 'plan-card',
                             },

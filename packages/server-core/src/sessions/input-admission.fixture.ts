@@ -151,6 +151,203 @@ test('L04/P03 control: plan identities, refs, consume receipt and exactly-one co
   expect(managed.messageQueue).toHaveLength(1)
 }, 10000)
 
+test('P03: two clients can approve a submitted plan only once, including after session reload', async () => {
+  const managed = await session('wire-plain-plan')
+  const plan = { id: 'submitted-plan', role: 'plan', content: '# One inert execution',
+    planPath: join(profile, 'plain-plan.md'), timestamp: 1 }
+  managed.messages.push(plan)
+  sm.persistSession(managed)
+  await sm.flushSession(managed.id)
+  const reference = { version: 1, kind: 'web-selection', projectId: managed.projectId,
+    url: 'https://example.test/plain-plan', title: 'Approval context', quote: 'APPROVAL-REF',
+    locator: { type: 'web-text-quote', exact: 'APPROVAL-REF' } }
+  const path = join(profile, 'plain-approval.txt')
+  writeFileSync(path, 'APPROVAL-ATT')
+  const attachments = [{ name: 'plain-approval.txt', path, storedPath: path, type: 'text', mimeType: 'text/plain', size: 12, text: 'APPROVAL-ATT' }]
+  const stored = [{ id: 'approval-att', name: 'plain-approval.txt', storedPath: path, type: 'text', mimeType: 'text/plain', size: 12 }]
+  const inputs: any[] = []
+  const agent = { getModel: () => 'no-provider', setAllSources() {}, getSessionId: () => undefined,
+    isCompactionInFlight: () => false, chat: async function* (text: string, files: any) {
+      inputs.push({ text, files }); yield { type: 'input_accepted' }; yield { type: 'complete' }
+    } }
+  sm.getOrCreateAgent = async () => { managed.agent = agent as never; return agent }
+  const secondClient = new WsRpcClient(`ws://127.0.0.1:${server.port}`, {
+    workspaceId: workspaceA.id, autoReconnect: false, requestTimeout: 3000,
+  })
+  secondClient.connect()
+  try {
+    const results = await Promise.allSettled([client, secondClient].map((sender, n) => sender.invoke(
+      RPC_CHANNELS.sessions.SEND_MESSAGE, managed.id, `Plan approved, please execute. Window ${n}`,
+      attachments, stored, { optimisticMessageId: `plain-window-${n}`, approvedPlanMessageId: plan.id, references: [reference] },
+    )))
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1)
+    for (let n = 0; n < 300 && (inputs.length === 0 || managed.isProcessing); n++) await Bun.sleep(5)
+    await sm.flushSession(managed.id)
+    const disk = loadSession(workspaceA.rootPath, managed.id)!
+    const approvals = disk.messages.map(storedToMessage).filter((m: any) => m.role === 'user')
+    expect(approvals).toHaveLength(1)
+    expect(approvals[0].approvedPlanMessageId).toBe(plan.id)
+    expect(approvals[0].references).toEqual([reference])
+    expect(approvals[0].attachments).toEqual(stored)
+    expect(inputs).toHaveLength(1)
+    expect(inputs[0].text).toContain('APPROVAL-REF')
+    expect(inputs[0].files).toEqual(attachments)
+
+    const accepted = approvals[0]
+    const originalBody = accepted.content
+    const retry = await secondClient.invoke(RPC_CHANNELS.sessions.SEND_MESSAGE, managed.id, originalBody,
+      attachments, stored, { optimisticMessageId: accepted.clientMessageId, approvedPlanMessageId: plan.id, references: [reference] })
+    expect(retry).toEqual({ accepted: true, messageId: accepted.id })
+    await expect(secondClient.invoke(RPC_CHANNELS.sessions.SEND_MESSAGE, managed.id, originalBody,
+      attachments, stored, { optimisticMessageId: accepted.clientMessageId, approvedPlanMessageId: 'another-plan', references: [reference] },
+    )).rejects.toThrow('INPUT_ID_CONFLICT')
+
+    managed.messages = []
+    managed.messagesLoaded = false
+    await expect(secondClient.invoke(RPC_CHANNELS.sessions.SEND_MESSAGE, managed.id, 'Plan approved again',
+      undefined, undefined, { optimisticMessageId: 'plain-after-reload', approvedPlanMessageId: plan.id },
+    )).rejects.toThrow('PLAN_ALREADY_APPROVED')
+    expect(inputs).toHaveLength(1)
+
+    const nextPlan = { ...plan, id: 'next-submitted-plan', timestamp: Date.now() }
+    managed.messages.push(nextPlan)
+    sm.persistSession(managed)
+    await sm.flushSession(managed.id)
+    await expect(secondClient.invoke(RPC_CHANNELS.sessions.SEND_MESSAGE, managed.id, 'Old plan',
+      undefined, undefined, { approvedPlanMessageId: plan.id },
+    )).rejects.toThrow('PLAN_STALE')
+    // A lost response still reconciles to the original row after another
+    // plan becomes current; it cannot execute either plan again.
+    expect(await secondClient.invoke(RPC_CHANNELS.sessions.SEND_MESSAGE, managed.id, originalBody,
+      attachments, stored, { optimisticMessageId: accepted.clientMessageId, approvedPlanMessageId: plan.id, references: [reference] },
+    )).toEqual(retry)
+    await secondClient.invoke(RPC_CHANNELS.sessions.SEND_MESSAGE, managed.id, 'New plan approved',
+      undefined, undefined, { optimisticMessageId: 'plain-next-plan', approvedPlanMessageId: nextPlan.id })
+    for (let n = 0; n < 300 && (inputs.length < 2 || managed.isProcessing); n++) await Bun.sleep(5)
+    expect(inputs).toHaveLength(2)
+    observations.plainPlan = { results: results.map(result => result.status), approvals, inputs }
+  } finally {
+    secondClient.destroy()
+  }
+}, 10000)
+
+test('P03: ordinary and compact approval share the submitted plan claim over RPC', async () => {
+  const managed = await session('wire-shared-plan-claim')
+  const plan = { id: 'compact-submitted-plan', role: 'plan', content: '# Approved once', planPath: '/submitted.md', timestamp: 1 }
+  managed.messages.push(plan)
+  sm.persistSession(managed)
+  await sm.flushSession(managed.id)
+  sm.processNextQueuedMessage = () => {}
+  const pending: any = await client.invoke(RPC_CHANNELS.sessions.COMMAND, managed.id, {
+    type: 'setPendingPlanExecution', planPath: plan.planPath, approvedPlanMessageId: plan.id, draftInputSnapshot: 'FIRST-SNAPSHOT',
+  })
+  expect(pending.approvedPlanMessageId).toBe(plan.id)
+  await expect(client.invoke(RPC_CHANNELS.sessions.SEND_MESSAGE, managed.id, 'Second approval',
+    undefined, undefined, { approvedPlanMessageId: plan.id },
+  )).rejects.toThrow('PLAN_ALREADY_APPROVED')
+  expect(sm.getPendingPlanExecution(managed.id)).toMatchObject({ executionId: pending.executionId, draftInputSnapshot: 'FIRST-SNAPSHOT' })
+
+  const write: any = await client.invoke(RPC_CHANNELS.drafts.SET_CONTENT, managed.id, { text: 'FIRST-SNAPSHOT' }, {
+    id: 'shared-plan-write', clientId: 'shared-plan-writer', sequence: 1, baseRevision: 0, base: { text: '' },
+  })
+  await client.invoke(RPC_CHANNELS.sessions.COMMAND, managed.id, { type: 'consumePendingPlanDraft', executionId: pending.executionId,
+    local: { content: { text: 'FIRST-SNAPSHOT' }, mutation: { id: 'shared-plan-consume', clientId: 'shared-plan-writer', sequence: 2,
+      baseRevision: write.revision, base: { text: 'FIRST-SNAPSHOT' } } },
+  })
+  await expect(client.invoke(RPC_CHANNELS.sessions.COMMAND, managed.id, {
+    type: 'setPendingPlanExecution', planPath: plan.planPath, approvedPlanMessageId: plan.id, draftInputSnapshot: 'SECOND-SNAPSHOT',
+  })).rejects.toThrow('PENDING_PLAN_EXISTS')
+  const agent = { getModel: () => 'no-provider', setAllSources() {}, getSessionId: () => undefined, isCompactionInFlight: () => false,
+    chat: async function* () { yield { type: 'info', message: 'Compacted Conversation', compactionTrigger: 'manual' }; yield { type: 'complete' } } }
+  sm.getOrCreateAgent = async () => { managed.agent = agent as never; return agent }
+  await client.invoke(RPC_CHANNELS.sessions.SEND_MESSAGE, managed.id, '/compact', undefined, undefined, { planExecutionId: pending.executionId })
+  for (let n = 0; n < 300 && (managed.isProcessing || sm.getPendingPlanExecution(managed.id)?.awaitingCompaction); n++) await Bun.sleep(5)
+  await client.invoke(RPC_CHANNELS.sessions.COMMAND, managed.id, { type: 'dispatchPendingPlanExecution', executionId: pending.executionId })
+  await sm.flushSession(managed.id)
+  const approvals = loadSession(workspaceA.rootPath, managed.id)!.messages.filter((message: any) => message.approvedPlanMessageId === plan.id)
+  expect(approvals).toHaveLength(1)
+  expect(approvals[0].type).toBe('user')
+  // The approval remains claimed when the compact outbox is retired and
+  // only its durable user message remains after hydration.
+  await sm.commitPendingPlanExecution(managed, undefined)
+  managed.messages = []
+  managed.messagesLoaded = false
+  await expect(client.invoke(RPC_CHANNELS.sessions.COMMAND, managed.id, {
+    type: 'setPendingPlanExecution', planPath: plan.planPath, approvedPlanMessageId: plan.id,
+  })).rejects.toThrow('PLAN_ALREADY_APPROVED')
+  await expect(sm.acceptPlan(managed.id, plan.planPath)).rejects.toThrow('PLAN_ALREADY_APPROVED')
+}, 10000)
+
+test('P03: compact preparation wins while ordinary approval validates a source', async () => {
+  const projectRoot = join(profile, 'approval-source')
+  mkdirSync(projectRoot)
+  const project = createProject(workspaceA.rootPath, { name: 'Approval source', workingDirectory: projectRoot })
+  const managed = await session('wire-approval-validation-race', workspaceA, { projectId: project.id })
+  const plan = { id: 'validation-plan', role: 'plan', content: '# Approve once', planPath: '/validation-plan.md', timestamp: 1 }
+  managed.messages.push(plan)
+  sm.persistSession(managed)
+  await sm.flushSession(managed.id)
+  const marker = 'APPROVAL-SOURCE'
+  const path = join(projectRoot, 'source.txt')
+  writeFileSync(path, marker)
+  const reference = { version: 1, kind: 'project-file', projectId: project.id, relativePath: 'source.txt', fileName: 'source.txt',
+    sourceFingerprint: `sha256:${createHash('sha256').update(marker).digest('hex')}`, quote: marker,
+    locator: { type: 'text-quote', exact: marker, start: 0, end: marker.length } }
+  let entered!: () => void
+  const entry = new Promise<void>(resolve => { entered = resolve })
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const actualOpen = fsPromises.open
+  const openSpy = spyOn(fsPromises, 'open').mockImplementation((async (p: any, ...args: any[]) => {
+    if (String(p) === path) { entered(); await gate }
+    return (actualOpen as any)(p, ...args)
+  }) as never)
+  const ordinary = client.invoke(RPC_CHANNELS.sessions.SEND_MESSAGE, managed.id, 'Waiting normal approval', undefined, undefined,
+    { approvedPlanMessageId: plan.id, optimisticMessageId: 'validation-normal-approval', references: [reference] })
+  // Install the rejection observer before releasing the validation gate.
+  const outcome = ordinary.then(() => 'accepted', (error: unknown) => String(error))
+  try {
+    await Promise.race([entry, Bun.sleep(1000).then(() => { throw new Error('Approval validation gate not reached') })])
+    const prepared: any = await client.invoke(RPC_CHANNELS.sessions.COMMAND, managed.id, {
+      type: 'setPendingPlanExecution', planPath: plan.planPath, approvedPlanMessageId: plan.id, draftInputSnapshot: 'COMPACT-WINNER',
+    })
+    release()
+    expect(await outcome).toContain('PLAN_ALREADY_APPROVED')
+    expect(managed.messages.filter((message: any) => message.role === 'user')).toHaveLength(0)
+    expect(sm.getPendingPlanExecution(managed.id)).toMatchObject({ executionId: prepared.executionId, draftInputSnapshot: 'COMPACT-WINNER' })
+  } finally { release(); await outcome; openSpy.mockRestore() }
+}, 10000)
+
+test('P03: a failed approval write releases the plan claim without changing permissions or starting an agent', async () => {
+  const managed = await session('wire-plan-write-failure', workspaceA, { permissionMode: 'safe', previousPermissionMode: 'guarded' })
+  const plan = { id: 'failed-write-plan', role: 'plan', content: '# Retry after storage recovery', planPath: '/retry.md', timestamp: 1 }
+  managed.messages.push(plan)
+  sm.persistSession(managed)
+  await sm.flushSession(managed.id)
+  const inputs: string[] = []
+  const agent = { getModel: () => 'no-provider', setAllSources() {}, getSessionId: () => undefined, isCompactionInFlight: () => false,
+    chat: async function* (text: string) { inputs.push(text); yield { type: 'input_accepted' }; yield { type: 'complete' } } }
+  sm.getOrCreateAgent = async () => { managed.agent = agent as never; return agent }
+  const directory = join(workspaceA.rootPath, 'sessions', managed.id)
+  chmodSync(directory, 0o500)
+  try {
+    await expect(sm.acceptPlan(managed.id, plan.planPath)).rejects.toThrow()
+    expect(inputs).toHaveLength(0)
+    expect(managed.permissionMode).toBe('safe')
+    expect(managed.messages.filter((message: any) => message.approvedPlanMessageId === plan.id)).toHaveLength(0)
+    expect(loadSession(workspaceA.rootPath, managed.id)!.messages.filter((message: any) => message.approvedPlanMessageId === plan.id)).toHaveLength(0)
+  } finally { chmodSync(directory, 0o700) }
+  await sm.acceptPlan(managed.id, plan.planPath)
+  for (let n = 0; n < 300 && (inputs.length === 0 || managed.isProcessing); n++) await Bun.sleep(5)
+  await sm.flushSession(managed.id)
+  expect(inputs).toHaveLength(1)
+  expect(managed.permissionMode).toBe('guarded')
+  await expect(client.invoke(RPC_CHANNELS.sessions.COMMAND, managed.id, {
+    type: 'setPendingPlanExecution', planPath: plan.planPath, approvedPlanMessageId: plan.id,
+  })).rejects.toThrow('PLAN_ALREADY_APPROVED')
+}, 10000)
+
 test.each(['Stop', 'reconcileInput'] as const)('I09: %s during reference validation prevents late admission', async (cancelMethod) => {
   const projectRoot = join(profile, `stop-source-${cancelMethod}`)
   mkdirSync(projectRoot)

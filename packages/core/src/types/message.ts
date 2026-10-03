@@ -299,6 +299,8 @@ export interface Message {
   pendingDelivery?: boolean;
   // Stable client request identity, retained for reconnect reconciliation.
   clientMessageId?: string;
+  // Submitted plan approved by this user message; retained across restart.
+  approvedPlanMessageId?: string;
   // Intermediate text (commentary between tool calls, not final response)
   isIntermediate?: boolean;
   // Hidden: a system-generated message that must reach the model (it drives a
@@ -438,6 +440,8 @@ export interface StoredMessage {
   pendingDelivery?: boolean;
   // Stable client request identity, retained for reconnect reconciliation.
   clientMessageId?: string;
+  // Submitted plan approved by this user message; durable duplicate protection.
+  approvedPlanMessageId?: string;
 }
 
 /**

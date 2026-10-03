@@ -105,6 +105,8 @@ export type SessionStatus = string;
 export interface PendingPlanExecutionRecord {
   /** Path to the plan file to execute */
   planPath: string;
+  /** Submitted plan identity shared with ordinary Accept duplicate protection. */
+  approvedPlanMessageId?: string;
   /** Optional snapshot of draft input captured at accept time */
   draftInputSnapshot?: string;
   /** Structured draft references captured with the input snapshot. */

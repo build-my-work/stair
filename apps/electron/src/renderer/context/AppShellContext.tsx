@@ -87,7 +87,7 @@ export interface AppShellContextType {
 
   // Session callbacks
   onCreateSession: (workspaceId: string, options?: import('../../shared/types').CreateSessionOptions) => Promise<Session>
-  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], badges?: import('@craft-agent/core').ContentBadge[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId'> & { consumeDraft?: boolean }) => boolean | void
+  onSendMessage: (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], badges?: import('@craft-agent/core').ContentBadge[], references?: Reference[], options?: Pick<import('@craft-agent/shared/protocol').SendMessageOptions, 'planExecutionId' | 'approvedPlanMessageId'> & { consumeDraft?: boolean }) => boolean | void
   pendingInputSessionIds?: ReadonlySet<string>
   onCancelPendingInput?: (sessionId: string) => Promise<void>
   onRenameSession: (sessionId: string, name: string) => void

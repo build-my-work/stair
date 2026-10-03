@@ -323,6 +323,7 @@ export interface ElectronAPI {
   // Pending plan execution (for reload recovery)
   getPendingPlanExecution(sessionId: string): Promise<{
     planPath: string
+    approvedPlanMessageId?: string
     draftInputSnapshot?: string
     draftReferencesSnapshot?: Reference[]
     awaitingCompaction: boolean

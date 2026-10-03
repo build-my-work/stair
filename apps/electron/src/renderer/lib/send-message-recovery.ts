@@ -13,6 +13,7 @@ export interface PendingInput {
   references?: Reference[]
   skillSlugs?: string[]
   badges?: ContentBadge[]
+  approvedPlanMessageId?: string
   consumption?: { content: DraftContent; mutation: DraftContentMutation }
 }
 

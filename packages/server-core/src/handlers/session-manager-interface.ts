@@ -212,6 +212,7 @@ export interface ISessionManager {
     draftReferencesSnapshot?: Reference[],
     approvalText?: string,
     approvalBadges?: import('@craft-agent/core').ContentBadge[],
+    approvedPlanMessageId?: string,
   ): Promise<import('@craft-agent/shared/sessions').PendingPlanExecutionRecord>
   markPendingPlanExecutionDispatched(sessionId: string): Promise<boolean>
   dispatchPendingPlanExecution(sessionId: string, executionId?: string, rpcContext?: { callerClientId?: string }): Promise<{ ok: boolean; reason?: 'missing' | 'busy' | 'not-ready' | 'already-dispatched' | 'failed' | 'stale' | 'invalid-references' | 'persist-failed' }>
@@ -220,6 +221,7 @@ export interface ISessionManager {
   clearPendingPlanExecution(sessionId: string, executionId?: string): Promise<void>
   getPendingPlanExecution(sessionId: string): {
     planPath: string
+    approvedPlanMessageId?: string
     draftInputSnapshot?: string
     draftReferencesSnapshot?: Reference[]
     awaitingCompaction: boolean

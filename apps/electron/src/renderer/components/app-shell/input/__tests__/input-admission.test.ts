@@ -85,8 +85,8 @@ describe('composer durable admission boundary', () => {
   it('normal plan acceptance captures full live input without consuming it on journal failure', () => {
     const f = setup(false)
     new Function('context', approval)(f.context)
-    f.handlers.get('craft:approve-plan')!({ detail: { sessionId: 'session-a' } })
-    expect(f.submissions[0]).toEqual(['ACCEPT FAST_INPUT', [f.attachment], undefined, [f.quote], { consumeDraft: true }])
+    f.handlers.get('craft:approve-plan')!({ detail: { sessionId: 'session-a', approvedPlanMessageId: 'submitted-plan' } })
+    expect(f.submissions[0]).toEqual(['ACCEPT FAST_INPUT', [f.attachment], undefined, [f.quote], { consumeDraft: true, approvedPlanMessageId: 'submitted-plan' }])
     expect(f.changes).toEqual([])
   })
 
@@ -96,6 +96,16 @@ describe('composer durable admission boundary', () => {
     f.handlers.get('craft:approve-plan')!({ detail: { sessionId: 'session-a', includeDraftInput: false } })
     expect(f.submissions[0]).toEqual(['ACCEPT ', undefined, undefined, [], { consumeDraft: false }])
     expect(f.changes).toEqual([['permission', 'ask']])
+  })
+
+  it('normal approval captures the plan and full payload before clearing every draft component', () => {
+    const f = setup(true)
+    new Function('context', approval)(f.context)
+    f.handlers.get('craft:approve-plan')!({ detail: { sessionId: 'session-a', approvedPlanMessageId: 'submitted-plan' } })
+    expect(f.submissions).toEqual([['ACCEPT FAST_INPUT', [f.attachment], undefined, [f.quote], {
+      consumeDraft: true, approvedPlanMessageId: 'submitted-plan',
+    }]])
+    expect(f.changes).toEqual([['clear'], ['attachments', []], ['saved-attachments', []], ['references', []], ['permission', 'ask']])
   })
 
   it('flushes dirty text before hydration but does not mark an untouched empty composer dirty', () => {
