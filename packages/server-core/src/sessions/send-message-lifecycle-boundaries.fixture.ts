@@ -100,7 +100,7 @@ test.each(['Stop', 'iterator error'] as const)('%s settles unfinished tools on t
       throw ending === 'Stop' ? new DOMException('Stopped', 'AbortError') : new Error('Synthetic iterator failure')
     }
     await newer
-    yield { type: 'tool_result', toolName: 'Bash', toolUseId, result: 'NEWER-RESULT' }
+    yield { type: 'tool_result', toolName: 'Bash', toolUseId, result: 'NEWER-RESULT', isError: false }
     yield { type: 'complete' }
   })
   agent.forceAbort = releaseStopped
