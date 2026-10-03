@@ -90,6 +90,27 @@ describe('session message loading atoms', () => {
     expect(store.get(loadedSessionsAtom).has(sessionId)).toBe(true)
   })
 
+  it('reloads a missing session atom even when its loaded flag remains set', async () => {
+    const store = createStore()
+    const sessionId = 'missing-loaded-session'
+    const calls: string[] = []
+    const restored = makeSession({ id: sessionId, messages: [msg('restored-message')] })
+    globalThis.window = {
+      electronAPI: {
+        getSessionMessages: async (id: string) => {
+          calls.push(id)
+          return restored
+        },
+      },
+    } as unknown as typeof window
+    store.set(loadedSessionsAtom, new Set([sessionId]))
+    expect(store.get(sessionAtomFamily(sessionId))).toBeNull()
+
+    expect(await store.set(ensureSessionMessagesLoadedAtom, sessionId)).toEqual(restored)
+    expect(calls).toEqual([sessionId])
+    expect(store.get(sessionAtomFamily(sessionId))).toEqual(restored)
+  })
+
   it('does not mark stale empty-response fallback as loaded', async () => {
     const store = createStore()
     const sessionId = 'session-1'

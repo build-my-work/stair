@@ -48,7 +48,8 @@ export function deriveSessionMessagesLoadState({
     && messageCount === 0
     && !session?.lastFinalMessageId
     && !sessionMeta?.lastFinalMessageId
-  const hasStaleLoadedFlag = hasLoadedFlag && hasExpectedPersistedMessages && !hasInMemoryMessages
+  const hasStaleLoadedFlag = hasLoadedFlag
+    && (!session || (hasExpectedPersistedMessages && !hasInMemoryMessages))
   const messagesReady = (hasLoadedFlag && !hasStaleLoadedFlag) || hasInMemoryMessages || isKnownEmptySession
   const error = messagesReady ? null : (loadError ?? null)
 

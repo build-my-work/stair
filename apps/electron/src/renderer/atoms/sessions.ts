@@ -589,9 +589,10 @@ async function loadSessionMessages(
   } else {
     const loadedSessions = get(loadedSessionsAtom)
 
-    // Already loaded, return current session
+    // A loaded flag cannot stand in for a missing session payload.
     if (loadedSessions.has(sessionId)) {
-      return get(sessionAtomFamily(sessionId))
+      const currentSession = get(sessionAtomFamily(sessionId))
+      if (currentSession) return currentSession
     }
   }
 

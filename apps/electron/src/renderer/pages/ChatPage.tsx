@@ -485,7 +485,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             <ChatDisplay
               ref={chatDisplayRef}
               session={skeletonSession}
-              onSendMessage={() => {}}
+              onSendMessage={() => false}
+              disableSend
               onOpenFile={handleOpenFile}
               onOpenUrl={handleOpenUrl}
               currentModel={effectiveModel}

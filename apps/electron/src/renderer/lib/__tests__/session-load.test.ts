@@ -64,6 +64,18 @@ describe('deriveSessionMessagesLoadState', () => {
     expect(state.messagesLoading).toBe(false)
   })
 
+  it('does not treat a missing session payload as ready because of its loaded flag', () => {
+    const state = deriveSessionMessagesLoadState({
+      session: null,
+      sessionMeta: { messageCount: 0 },
+      messagesLoaded: true,
+    })
+
+    expect(state.hasStaleLoadedFlag).toBe(true)
+    expect(state.messagesReady).toBe(false)
+    expect(state.messagesLoading).toBe(true)
+  })
+
   it('treats an empty loaded atom with expected messages as stale', () => {
     const state = deriveSessionMessagesLoadState({
       session: createSession({ messages: [], messageCount: 2 }),
