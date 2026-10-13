@@ -40,6 +40,7 @@ function createMockWebContents(sendCommandImpl?: (method: string, params?: any) 
         listeners[event].push(cb)
       }),
     },
+    sendInputEvent: mock((_event: { type: string; [key: string]: unknown }) => {}),
     getURL: mock(() => 'https://example.com'),
     getTitle: mock(() => 'Example Page'),
     _debuggerListeners: listeners,
@@ -157,6 +158,27 @@ describe('BrowserCDP', () => {
       )
       expect(detachCalls.length).toBe(1)
     })
+
+    it('B01: does not idle-detach while a later CDP command is still pending', async () => {
+      let resolveCommand!: (value: unknown) => void
+      let commands = 0
+      const wc = createMockWebContents(async () => {
+        if (++commands === 1) return { nodes: [] }
+        return new Promise(resolve => { resolveCommand = resolve })
+      })
+      const cdp = new BrowserCDP(wc as any)
+      try {
+        await cdp.getAccessibilitySnapshot()
+        const pending = cdp.getAccessibilitySnapshot()
+        await new Promise(resolve => setTimeout(resolve, 5_100))
+        expect(wc.debugger.detach).not.toHaveBeenCalled()
+        resolveCommand({ nodes: [] })
+        await pending
+      } finally {
+        resolveCommand?.({ nodes: [] })
+        cdp.detach()
+      }
+    }, 7_000)
   })
 
   describe('getAccessibilitySnapshot', () => {
@@ -445,8 +467,9 @@ describe('BrowserCDP', () => {
   })
 
   describe('fillElement', () => {
-    it('focuses, clears, and types characters', async () => {
+    it('sets editable content through its target node and verifies the retained value', async () => {
       const sentCommands: string[] = []
+      let functionCalls = 0
       const wc = createMockWebContents(async (method) => {
         sentCommands.push(method)
         if (method === 'Accessibility.getFullAXTree') {
@@ -462,6 +485,9 @@ describe('BrowserCDP', () => {
         if (method === 'DOM.getBoxModel') {
           return { model: { content: [10, 10, 50, 10, 50, 50, 10, 50] } }
         }
+        if (method === 'Runtime.callFunctionOn') {
+          return { result: { value: ++functionCalls === 1 ? { ok: true } : true } }
+        }
         return {}
       })
 
@@ -470,26 +496,27 @@ describe('BrowserCDP', () => {
 
       await cdp.fillElement('@e1', 'ab')
 
-      expect(sentCommands).toContain('DOM.focus')
       expect(sentCommands).toContain('Runtime.callFunctionOn')
-      // Two characters typed: 2 keyDown + 2 keyUp = 4 key events
-      const keyEvents = sentCommands.filter(c => c === 'Input.dispatchKeyEvent')
-      expect(keyEvents.length).toBe(4)
+      expect(functionCalls).toBe(2)
     })
   })
 
-  describe('fillElement value settling', () => {
-    // React-controlled inputs ignore value writes React's tracker did not see; the native setter
-    // plus an input event is what React listens to.
-    it('clears and settles through the page, and reports a password field', async () => {
-      const page = createPage({ role: 'textbox', answers: { 'settle-value': () => ({ isPassword: true }) } })
+  describe('fillElement target metadata', () => {
+    it('fills and verifies the target node, reports a password field, and releases its object', async () => {
+      const page = createPage({ role: 'textbox', answers: {
+        'fill-value': () => ({ ok: true, isPassword: true }),
+        'verify-value': () => true,
+      } })
       const cdp = await cdpOnPage(page)
 
       const result = await cdp.fillElement('@e1', 'pw')
 
       expect(result.isPassword).toBe(true)
-      expect(page.ran('clear-value')).toBe(1)
-      expect(page.sent.find((c) => pageFunction(c.params) === 'settle-value')?.params.arguments).toEqual([{ value: 'pw' }])
+      expect(page.ran('fill-value')).toBe(1)
+      expect(page.ran('verify-value')).toBe(1)
+      expect(page.sent.find((c) => pageFunction(c.params) === 'fill-value')?.params).toMatchObject({ objectId: 'node-42', arguments: [{ value: 'pw' }] })
+      expect(page.keys()).toHaveLength(0)
+      expect(page.sent).toContainEqual({ method: 'Runtime.releaseObject', params: { objectId: 'node-42' } })
     })
   })
 
@@ -581,7 +608,17 @@ describe('BrowserCDP', () => {
   })
 
   describe('drag', () => {
-    it('dispatches pressed -> moved -> released with expected button state', async () => {
+    it('uses native drag first and releases at the requested target', async () => {
+      const page = createPage()
+      const cdp = new BrowserCDP(page.wc as any)
+      await cdp.drag(10, 20, 110, 20)
+
+      expect(page.mouse()).toHaveLength(0)
+      expect(page.wc.sendInputEvent.mock.calls.some(([event]) => event.type === 'mouseDown')).toBe(true)
+      expect(page.wc.sendInputEvent).toHaveBeenLastCalledWith({ type: 'mouseUp', x: 110, y: 20, button: 'left', clickCount: 1 })
+    })
+
+    it('falls back to CDP and dispatches pressed -> moved -> released with expected button state', async () => {
       const mouseEvents: any[] = []
       const wc = createMockWebContents(async (method, params) => {
         if (method === 'Input.dispatchMouseEvent') {
@@ -591,6 +628,7 @@ describe('BrowserCDP', () => {
       })
 
       const cdp = new BrowserCDP(wc as any)
+      wc.sendInputEvent = mock(() => { throw new Error('native input unavailable') })
       await cdp.drag(10, 20, 110, 20)
 
       expect(mouseEvents.length).toBeGreaterThan(2)
@@ -616,7 +654,7 @@ describe('BrowserCDP', () => {
       })
     })
 
-    it('attempts release even when a move event fails and rethrows original error', async () => {
+    it('attempts CDP release even when a move event fails and rethrows original error', async () => {
       const mouseEvents: any[] = []
       let failedOnce = false
       const wc = createMockWebContents(async (method, params) => {
@@ -631,6 +669,7 @@ describe('BrowserCDP', () => {
       })
 
       const cdp = new BrowserCDP(wc as any)
+      wc.sendInputEvent = mock(() => { throw new Error('native input unavailable') })
       await expect(cdp.drag(0, 0, 100, 0)).rejects.toThrow('move failed')
       expect(mouseEvents.some((event) => event.type === 'mouseReleased')).toBe(true)
     })

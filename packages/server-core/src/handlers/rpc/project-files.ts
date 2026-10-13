@@ -23,6 +23,7 @@ import {
   type ProjectFileSearchRequest,
   type ProjectFileSearchResult,
   type CreateProjectEntryRequest,
+  type CreateDrawnixProjectFileWithContentRequest,
   type ProjectFileFingerprint,
   type ProjectFileBinaryResponse,
   type ProjectFileMetadata,
@@ -103,6 +104,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES,
   RPC_CHANNELS.projectFiles.CREATE_FILE,
   RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE,
+  RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE_WITH_CONTENT,
   RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
   RPC_CHANNELS.projectFiles.READ_TEXT,
   RPC_CHANNELS.projectFiles.READ_BINARY,
@@ -272,16 +274,18 @@ function validateSaveRequest(value: unknown): SaveProjectTextFileRequest {
   return { ...request, expectedFingerprint: save.expectedFingerprint, content: save.content }
 }
 
-function validateDrawnixSaveRequest(value: unknown): SaveDrawnixProjectFileRequest {
+function validateDrawnixFileRequest(value: unknown, action: 'save'): SaveDrawnixProjectFileRequest
+function validateDrawnixFileRequest(value: unknown, action: 'create'): ProjectFileRequest & { content: string }
+function validateDrawnixFileRequest(value: unknown, action: 'save' | 'create'): ProjectFileRequest & { content: string; expectedFingerprint?: ProjectFileFingerprint } {
   const request = validateFileRequest(value)
   const save = value as Partial<SaveDrawnixProjectFileRequest>
   if (
     !request.relativePath.toLowerCase().endsWith('.drawnix')
-    || !isProjectFileFingerprint(save.expectedFingerprint)
+    || (action === 'save' && !isProjectFileFingerprint(save.expectedFingerprint))
     || typeof save.content !== 'string'
     || Buffer.byteLength(save.content, 'utf8') > MAX_PROJECT_FILE_TEXT_BYTES
   ) {
-    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Invalid Drawnix save request')
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', `Invalid Drawnix ${action} request`)
   }
 
   let document: unknown
@@ -320,7 +324,11 @@ function validateDrawnixSaveRequest(value: unknown): SaveDrawnixProjectFileReque
   ) {
     throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Content is not a native Drawnix document')
   }
-  return { ...request, expectedFingerprint: save.expectedFingerprint, content: save.content }
+  return {
+    ...request,
+    ...(action === 'save' ? { expectedFingerprint: save.expectedFingerprint! } : {}),
+    content: save.content,
+  }
 }
 
 function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
@@ -559,6 +567,18 @@ export async function createDrawnixProjectFileWithinRoot(
     throw projectFileError('PROJECT_FILE_INVALID_REQUEST', 'Drawnix Project Files must use the .drawnix extension')
   }
   return createProjectEntryWithinRoot(rootPath, validated, 'file', EMPTY_DRAWNIX_DOCUMENT)
+}
+
+export async function createDrawnixProjectFileWithContentWithinRoot(
+  rootPath: string,
+  request: CreateDrawnixProjectFileWithContentRequest,
+): Promise<ProjectDirectoryEntry> {
+  const entry = validateCreateRequest(request)
+  const relativePath = entry.parentRelativePath
+    ? posix.join(entry.parentRelativePath, entry.name)
+    : entry.name
+  const validated = validateDrawnixFileRequest({ ...entry, relativePath, content: request.content }, 'create')
+  return createProjectEntryWithinRoot(rootPath, entry, 'file', validated.content)
 }
 
 function statSnapshotsMatch(left: FileStatSnapshot, right: FileStatSnapshot): boolean {
@@ -849,7 +869,7 @@ export async function saveDrawnixProjectFileWithinRoot(
   rootPath: string,
   request: SaveDrawnixProjectFileRequest,
 ): Promise<SaveDrawnixProjectFileResponse> {
-  const validated = validateDrawnixSaveRequest(request)
+  const validated = validateDrawnixFileRequest(request, 'save')
   return withProjectFileWriteQueue(rootPath, validated.relativePath, async () => {
     const current = await readStableProjectFile(
       rootPath,
@@ -954,6 +974,20 @@ export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps
     },
   )
   server.handle(
+    RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE_WITH_CONTENT,
+    async (context, rawRequest: unknown) => {
+      const entry = validateCreateRequest(rawRequest)
+      const relativePath = entry.parentRelativePath
+        ? posix.join(entry.parentRelativePath, entry.name)
+        : entry.name
+      const validated = validateDrawnixFileRequest({
+        ...entry, relativePath, content: (rawRequest as { content?: unknown }).content,
+      }, 'create')
+      const rootPath = await resolveAuthorizedProjectRoot(context, deps, entry.projectId)
+      return createDrawnixProjectFileWithContentWithinRoot(rootPath, { ...entry, content: validated.content })
+    },
+  )
+  server.handle(
     RPC_CHANNELS.projectFiles.CREATE_DIRECTORY,
     async (context, rawRequest: unknown) => {
       const request = validateCreateRequest(rawRequest)
@@ -980,7 +1014,7 @@ export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps
   server.handle(
     RPC_CHANNELS.projectFiles.SAVE_DRAWNIX_FILE,
     async (context, rawRequest: unknown) => {
-      const request = validateDrawnixSaveRequest(rawRequest)
+      const request = validateDrawnixFileRequest(rawRequest, 'save')
       const rootPath = await resolveAuthorizedProjectRoot(context, deps, request.projectId)
       return saveDrawnixProjectFileWithinRoot(rootPath, request)
     },

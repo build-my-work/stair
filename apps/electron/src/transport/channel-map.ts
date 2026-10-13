@@ -465,6 +465,7 @@ export const CHANNEL_MAP = {
   listProjectDirectoryEntries: invoke(RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES),
   createProjectFile: invoke(RPC_CHANNELS.projectFiles.CREATE_FILE),
   createDrawnixProjectFile: invoke(RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE),
+  createDrawnixProjectFileWithContent: invoke(RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE_WITH_CONTENT),
   createProjectDirectory: invoke(RPC_CHANNELS.projectFiles.CREATE_DIRECTORY),
   readProjectTextFile: invoke(RPC_CHANNELS.projectFiles.READ_TEXT),
   readProjectFileBinary: invoke(RPC_CHANNELS.projectFiles.READ_BINARY),

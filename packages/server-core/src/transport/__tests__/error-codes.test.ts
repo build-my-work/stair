@@ -20,7 +20,7 @@ import {
   requestClientBrowserApplicationInvoke,
   requestClientDrawnixBoardDiscovery,
 } from '../capabilities'
-import { CodedError } from '@craft-agent/shared/protocol'
+import { CodedError, RPC_CHANNELS } from '@craft-agent/shared/protocol'
 
 const TEST_TOKEN = 'test-token-with-enough-entropy-to-pass'
 
@@ -68,6 +68,16 @@ async function startPair(opts?: { clientCapabilities?: string[]; workspaceId?: s
 }
 
 describe('Transport — error code preservation', () => {
+  it('D01: a server without atomic Drawnix creation rejects the new channel without a legacy write', async () => {
+    const { server, client } = await startPair()
+    let writes = 0
+    server.handle(RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE, () => { writes += 1 })
+    await expect(client.invoke(RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE_WITH_CONTENT, {
+      projectId: 'project-a', name: 'complete.drawnix', content: '{}',
+    })).rejects.toThrow()
+    expect(writes).toBe(0)
+  })
+
   it('preserves `err.code` from server handler → client invoke', async () => {
     const { server, client } = await startPair()
     server.handle('explode', async () => {

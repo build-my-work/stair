@@ -487,6 +487,7 @@ export const RPC_CHANNELS = {
     LIST_DIRECTORY_ENTRIES: 'projectFiles:listDirectoryEntries',
     CREATE_FILE: 'projectFiles:createFile',
     CREATE_DRAWNIX_FILE: 'projectFiles:createDrawnixFile',
+    CREATE_DRAWNIX_FILE_WITH_CONTENT: 'projectFiles:createDrawnixFileWithContent',
     CREATE_DIRECTORY: 'projectFiles:createDirectory',
     READ_TEXT: 'projectFiles:readText',
     READ_BINARY: 'projectFiles:readBinary',

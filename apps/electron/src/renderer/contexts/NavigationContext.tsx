@@ -205,9 +205,9 @@ export function NavigationProvider({
   ) => {
     const route = buildRouteFromNavigationState(state) as ViewRoute
     const sidebarParam = buildRightSidebarParam(sidebar) ?? ''
-    const semanticKey = `${workspaceSlug ?? ''}|${route}|${sidebarParam}`
-    const url = new URL(window.location.href)
     const activeProjectId = store.get(workbenchAtom).activeProjectId
+    const semanticKey = `${workspaceSlug ?? ''}|${activeProjectId ?? ''}|${route}|${sidebarParam}`
+    const url = new URL(window.location.href)
     if (activeProjectId) url.searchParams.set('project', activeProjectId)
     else url.searchParams.delete('project')
     if (workspaceSlug) url.searchParams.set('ws', workspaceSlug)
@@ -232,8 +232,10 @@ export function NavigationProvider({
   }, [store, updateCanGoBackForward, workspaceSlug])
 
   const filterSessionsByFilter = useCallback((filter: SessionFilter): SessionMeta[] => {
+    const activeProjectId = store.get(workbenchAtom).activeProjectId
     return sessionMetas.filter((session) => {
-      if (session.hidden || (workspaceId && session.workspaceId !== workspaceId)) return false
+      if (!activeProjectId || session.projectId !== activeProjectId || session.hidden
+        || (workspaceId && session.workspaceId !== workspaceId && session.workspaceId !== remoteWorkspaceId)) return false
       switch (filter.kind) {
         case 'allSessions':
           return session.isArchived !== true
@@ -251,7 +253,7 @@ export function NavigationProvider({
           return false
       }
     })
-  }, [labelConfigs, sessionMetas, workspaceId])
+  }, [labelConfigs, remoteWorkspaceId, sessionMetas, store, workspaceId])
 
   const getFirstSessionId = useCallback(
     (filter: SessionFilter) => filterSessionsByFilter(filter)[0]?.id ?? null,

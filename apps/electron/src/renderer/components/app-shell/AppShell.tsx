@@ -525,6 +525,26 @@ function AppShellContent({
     })
   }, [sessionFilterKey])
 
+  // Restoring or switching a Workbench Project must also restore its list scope.
+  useEffect(() => {
+    const projectId = workbench.activeProjectId
+    if (!projectId || !sessionFilterKey) return
+    setViewFiltersMap(prev => {
+      const existing = prev[sessionFilterKey]
+      const projectFilters = existing?.projects ?? {}
+      if (Object.keys(projectFilters).length === 1 && projectFilters[projectId] === 'include') return prev
+      return {
+        ...prev,
+        [sessionFilterKey]: {
+          statuses: existing?.statuses ?? {},
+          labels: existing?.labels ?? {},
+          groupingMode: existing?.groupingMode,
+          projects: { [projectId]: 'include' },
+        },
+      }
+    })
+  }, [workbench.activeProjectId, sessionFilterKey])
+
   // Jump to All Sessions filtered by a single project. Used by the Projects list
   // context menu — sets the allSessions view's project filter (preserving its
   // other filters), then navigates.
@@ -1584,18 +1604,19 @@ function AppShellContent({
     })
   }, [activeWorkspaceId, activeSessionWorkingDirectory])
 
-  // Filter session metadata by active workspace
+  // The visible session list and its counts belong to the active Workbench Project.
   // Also exclude hidden sessions (mini-agent sessions) from all counts and lists
   // For remote workspaces, sessions have the remote workspace ID (not the local one),
   // so we match against both the local and remote workspace IDs.
   const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId
   const workspaceSessionMetas = useMemo(() => {
     const metas = Array.from(sessionMetaMap.values())
-    if (!activeWorkspaceId) return metas.filter(s => !s.hidden)
+    if (!activeWorkspaceId || !workbench.activeProjectId) return []
     return metas.filter(s =>
-      !s.hidden && (s.workspaceId === activeWorkspaceId || (remoteWorkspaceId && s.workspaceId === remoteWorkspaceId))
+      !s.hidden && s.projectId === workbench.activeProjectId
+      && (s.workspaceId === activeWorkspaceId || (remoteWorkspaceId && s.workspaceId === remoteWorkspaceId))
     )
-  }, [sessionMetaMap, activeWorkspaceId, remoteWorkspaceId])
+  }, [sessionMetaMap, activeWorkspaceId, remoteWorkspaceId, workbench.activeProjectId])
 
   // Active sessions exclude archived - use this for all counts and filters except archived view
   const activeSessionMetas = useMemo(() => {
@@ -2775,7 +2796,7 @@ function AppShellContent({
         title: p.config.name,
         icon: FolderKanban,
         // Highlight when on allSessions view AND filter includes this project (the jump-to state)
-        variant: (sessionFilter?.kind === 'allSessions' && projectFilter.get(p.config.id) === 'include') ? "default" as const : "ghost" as const,
+        variant: (sessionFilter?.kind === 'allSessions' && workbench.activeProjectId === p.config.id) ? "default" as const : "ghost" as const,
         onClick: () => handleJumpToProjectSessions(p.config.id),
       })),
     },

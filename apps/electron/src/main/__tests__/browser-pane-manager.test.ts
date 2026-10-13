@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, mock, spyOn } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { EventEmitter } from 'node:events'
 import { i18n, setupI18n } from '@craft-agent/shared/i18n'
 import * as config from '@craft-agent/shared/config'
 import { RPC_CHANNELS, type Session } from '@craft-agent/shared/protocol'
@@ -4842,6 +4843,43 @@ describe('BrowserPaneManager', () => {
   })
 
   describe('failed interaction tracking', () => {
+    it('B01: observes navigation that completes before the click call returns', async () => {
+      manager.createInstance('fast-navigation')
+      const instance = (manager as any).instances.get('fast-navigation')
+      const events = new EventEmitter()
+      instance.pageView.webContents.once = events.once.bind(events)
+      instance.pageView.webContents.removeListener = events.removeListener.bind(events)
+      const geometry = await instance.cdp.getElementGeometry('@e1')
+      instance.cdp.clickElement = mock(async () => {
+        events.emit('did-navigate')
+        return { ...geometry, via: 'mouse' }
+      })
+      await expect(manager.clickElement('fast-navigation', '@e1', { waitFor: 'navigation', timeoutMs: 100 }))
+        .resolves.toEqual({ via: 'mouse' })
+      expect(events.listenerCount('did-navigate')).toBe(0)
+      expect(events.listenerCount('did-navigate-in-page')).toBe(0)
+    })
+
+    it.each(['delayed', 'timeout', 'failed-click'])('B01: cleans navigation listeners after %s', async outcome => {
+      manager.createInstance('navigation-lifecycle')
+      const instance = (manager as any).instances.get('navigation-lifecycle')
+      const events = new EventEmitter()
+      instance.pageView.webContents.once = events.once.bind(events)
+      instance.pageView.webContents.removeListener = events.removeListener.bind(events)
+      const geometry = await instance.cdp.getElementGeometry('@e1')
+      instance.cdp.clickElement = mock(async () => {
+        if (outcome === 'failed-click') throw new Error('click failed')
+        if (outcome === 'delayed') setTimeout(() => events.emit('did-navigate-in-page'), 10)
+        return { ...geometry, via: 'mouse' }
+      })
+      const clicking = manager.clickElement('navigation-lifecycle', '@e1', { waitFor: 'navigation', timeoutMs: 100 })
+      if (outcome === 'delayed') await expect(clicking).resolves.toEqual({ via: 'mouse' })
+      else await expect(clicking).rejects.toThrow()
+      expect(events.listenerCount('did-navigate')).toBe(0)
+      expect(events.listenerCount('did-navigate-in-page')).toBe(0)
+      expect(instance.lastAction.status).toBe(outcome === 'delayed' ? 'succeeded' : 'failed')
+    })
+
     it('clickElement records failed lastAction on error', async () => {
       manager.createInstance('fail-click')
       const instance = (manager as any).instances.get('fail-click')

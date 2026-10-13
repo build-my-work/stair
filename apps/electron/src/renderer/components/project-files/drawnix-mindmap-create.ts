@@ -1,15 +1,13 @@
 import { parseMarkdownToDrawnix } from '@plait-board/markdown-to-drawnix'
 import type { MindElement } from '@plait/mind'
+import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import {
   isCanonicalProjectRelativePath,
   type CreateProjectEntryRequest,
+  type CreateDrawnixProjectFileWithContentRequest,
   type ProjectDirectoryEntriesRequest,
   type ProjectDirectoryEntriesResult,
   type ProjectDirectoryEntry,
-  type ProjectFileRequest,
-  type ProjectFileTextResponse,
-  type SaveDrawnixProjectFileRequest,
-  type SaveDrawnixProjectFileResponse,
 } from '@craft-agent/shared/project-files'
 import type {
   DrawnixBoardCreateCapabilityRequest,
@@ -18,15 +16,12 @@ import type {
 import { mindElementToOutlineNode } from './drawnix-document-controller'
 
 interface DrawnixMindmapCreateApi {
+  isChannelAvailable(channel: string): boolean
   listProjectDirectoryEntries(
     request: ProjectDirectoryEntriesRequest,
   ): Promise<ProjectDirectoryEntriesResult>
   createProjectDirectory(request: CreateProjectEntryRequest): Promise<ProjectDirectoryEntry>
-  createDrawnixProjectFile(request: CreateProjectEntryRequest): Promise<ProjectDirectoryEntry>
-  readProjectTextFile(request: ProjectFileRequest): Promise<ProjectFileTextResponse>
-  saveDrawnixProjectFile(
-    request: SaveDrawnixProjectFileRequest,
-  ): Promise<SaveDrawnixProjectFileResponse>
+  createDrawnixProjectFileWithContent(request: CreateDrawnixProjectFileWithContentRequest): Promise<ProjectDirectoryEntry>
 }
 
 interface DrawnixMindmapCreateContext {
@@ -62,6 +57,12 @@ export async function createDrawnixMindmap(
     return errorResponse(
       'MINDMAP_PROJECT_NOT_ACTIVE',
       'Open the Session Project in Stair before creating its Drawnix mind map.',
+    )
+  }
+  if (!context.api.isChannelAvailable(RPC_CHANNELS.projectFiles.CREATE_DRAWNIX_FILE_WITH_CONTENT)) {
+    return errorResponse(
+      'MINDMAP_CREATE_UNAVAILABLE',
+      'The Workspace server does not support atomic Drawnix creation. Update it before retrying.',
     )
   }
 
@@ -132,25 +133,22 @@ export async function createDrawnixMindmap(
       }
       currentParent = currentParent ? `${currentParent}/${directoryName}` : directoryName
     }
-    await context.api.createDrawnixProjectFile({
+    await context.api.createDrawnixProjectFileWithContent({
       projectId: request.projectId,
       ...(parentRelativePath ? { parentRelativePath } : {}),
       name,
-    })
-    const created = await context.api.readProjectTextFile({
-      projectId: request.projectId,
-      relativePath: request.relativePath,
-    })
-    await context.api.saveDrawnixProjectFile({
-      projectId: request.projectId,
-      relativePath: request.relativePath,
-      expectedFingerprint: created.sourceFingerprint,
       content,
     })
-    if (!await context.openProjectFile({
-      projectId: request.projectId,
-      relativePath: request.relativePath,
-    })) {
+    let opened = false
+    try {
+      opened = await context.openProjectFile({
+        projectId: request.projectId,
+        relativePath: request.relativePath,
+      })
+    } catch {
+      // Creation has committed; an opening failure must not invite another create.
+    }
+    if (!opened) {
       return errorResponse(
         'MINDMAP_CREATED_NOT_OPENED',
         `Created ${request.relativePath}, but Stair could not open its Drawnix canvas. Do not retry creation.`,

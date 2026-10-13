@@ -273,30 +273,6 @@ const SCRIPT_CLICK_FN = `function(x, y) { /* craft:script-click */ ${PAGE_HELPER
   return true
 }`
 
-/** Empty an input through the native value setter, so React's value tracker sees the change. */
-const CLEAR_VALUE_FN = `function() { /* craft:clear-value */
-  const proto = this instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : this instanceof HTMLInputElement ? HTMLInputElement.prototype : null
-  if (!proto) return false
-  Object.getOwnPropertyDescriptor(proto, 'value').set.call(this, '')
-  this.dispatchEvent(new Event('input', { bubbles: true }))
-  return true
-}`
-
-/**
- * After typing: if the input does not hold the value (a controlled input re-rendered over the
- * keystrokes, or some went elsewhere), set it through the native setter so React picks it up.
- */
-const SETTLE_VALUE_FN = `function(value) { /* craft:settle-value */
-  const proto = this instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : this instanceof HTMLInputElement ? HTMLInputElement.prototype : null
-  const isPassword = this instanceof HTMLInputElement && this.type === 'password'
-  if (proto && this.value !== value) {
-    Object.getOwnPropertyDescriptor(proto, 'value').set.call(this, value)
-    this.dispatchEvent(new Event('input', { bubbles: true }))
-  }
-  this.dispatchEvent(new Event('change', { bubbles: true }))
-  return { isPassword }
-}`
-
 /** Native <select>: choose by value, else by visible text. null = not a native select. */
 const SELECT_NATIVE_FN = `function(value) { /* craft:select-native */ ${PAGE_HELPERS}
   if (!(this instanceof HTMLSelectElement)) return null
@@ -388,6 +364,7 @@ export class BrowserCDP {
   private attached = false
   private detachListenerRegistered = false
   private idleDetachTimer: ReturnType<typeof setTimeout> | null = null
+  private pendingCommands = 0
   // Map from "@eN" refs to backend node IDs for the current snapshot.
   private refMap: Map<string, number> = new Map()
   // Map from "@eN" refs to semantic details captured during snapshot.
@@ -448,12 +425,17 @@ export class BrowserCDP {
   }
 
   private async send(method: string, params?: Record<string, unknown>): Promise<any> {
-    await this.ensureAttached()
+    if (this.idleDetachTimer) {
+      clearTimeout(this.idleDetachTimer)
+      this.idleDetachTimer = null
+    }
+    this.pendingCommands += 1
     try {
+      await this.ensureAttached()
       return await this.webContents.debugger.sendCommand(method, params)
     } finally {
-      // Keep detach countdown tied to completed calls so we do not detach mid-flight.
-      this.resetIdleDetachTimer()
+      this.pendingCommands -= 1
+      if (this.pendingCommands === 0 && this.attached) this.resetIdleDetachTimer()
     }
   }
 
@@ -884,7 +866,7 @@ export class BrowserCDP {
   // ---------------------------------------------------------------------------
   // Mouse and keyboard input
   //
-  // Trusted input goes through CDP (Input.dispatch*): it needs no window focus,
+  // Clicks and keyboard input go through CDP (Input.dispatch*): it needs no window focus,
   // and agent windows are usually hidden, where webContents.sendInputEvent drops
   // events (Electron requires the window to be focused). CDP also takes CSS
   // pixels, the unit of every DOM geometry here. sendInputEvent is the fallback
@@ -1071,8 +1053,13 @@ export class BrowserCDP {
   }
 
   async drag(x1: number, y1: number, x2: number, y2: number): Promise<void> {
-    if (await this.canUseCdpInput()) await this.dragCDP(x1, y1, x2, y2)
-    else await this.dragNative(x1, y1, x2, y2)
+    // Keep the established Electron drag path: CDP drag can stall in hidden views.
+    try {
+      await this.dragNative(x1, y1, x2, y2)
+    } catch (error) {
+      mainLog.warn(`[browser-cdp] native drag failed, falling back to CDP: ${error instanceof Error ? error.message : String(error)}`)
+      await this.dragCDP(x1, y1, x2, y2)
+    }
   }
 
   async typeText(text: string): Promise<void> {
@@ -1282,24 +1269,89 @@ export class BrowserCDP {
   }
 
   async fillElement(ref: string, value: string): Promise<ElementGeometry & { isPassword: boolean }> {
+    // Browser editing hosts expose line endings as LF, including pasted CRLF text.
+    value = value.replace(/\r\n?/g, '\n')
     const backendNodeId = this.requireBackendNodeId(ref)
 
     let objectId: string | undefined
     try {
-      await this.send('DOM.focus', { backendNodeId })
       const { object } = await this.send('DOM.resolveNode', { backendNodeId })
       objectId = object.objectId as string
-      await this.callValue(objectId, CLEAR_VALUE_FN)
-
-      // Type the new value character by character for realistic input
-      for (const char of value) {
-        await this.send('Input.dispatchKeyEvent', { type: 'keyDown', text: char })
-        await this.send('Input.dispatchKeyEvent', { type: 'keyUp', text: char })
+      // Bind the mutation to the resolved node. Keyboard insertion can be
+      // redirected by page focus handlers between protocol commands.
+      const applied = await this.send('Runtime.callFunctionOn', {
+        objectId,
+        returnByValue: true,
+        functionDeclaration: `function(value) { /* craft:fill-value */
+          if (!this.isConnected) return { error: 'Element is no longer attached' };
+          if (this.matches(':disabled') || this.readOnly || this.getAttribute('aria-disabled') === 'true' || this.getAttribute('aria-readonly') === 'true') {
+            return { error: 'Element is disabled or read-only' };
+          }
+          const input = this instanceof HTMLInputElement;
+          const isPassword = input && this.type === 'password';
+          const textarea = this instanceof HTMLTextAreaElement;
+          if (input || textarea) {
+            if (this.type !== 'number' && this.maxLength >= 0 && value.length > this.maxLength) {
+              return { error: 'Value exceeds the element maxlength' };
+            }
+            if (input && !['text', 'search', 'url', 'tel', 'email', 'password', 'number'].includes(this.type)) {
+              return { error: 'This input type cannot be filled with text' };
+            }
+            if (input) {
+              const probe = this.ownerDocument.createElement('input');
+              probe.type = this.type;
+              probe.value = value;
+              if (probe.value !== value || (this.type === 'number' && value && !Number.isFinite(probe.valueAsNumber))) {
+                return { error: 'Value is not valid for this input type' };
+              }
+            }
+          } else if (!this.isContentEditable) {
+            return { error: 'Element is not editable' };
+          }
+          this.focus();
+          if (!this.dispatchEvent(new InputEvent('beforeinput', {
+            bubbles: true, composed: true, cancelable: true,
+            inputType: 'insertReplacementText', data: value,
+          }))) return { error: 'The page cancelled the input' };
+          if (!this.isConnected || this.matches(':disabled') || this.readOnly) {
+            return { error: 'The element became unavailable' };
+          }
+          if (input || textarea) {
+            // The native setter bypasses framework value trackers so input
+            // handlers observe this write (including controlled React inputs).
+            const prototype = input ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+            Object.getOwnPropertyDescriptor(prototype, 'value').set.call(this, value);
+          } else {
+            this.innerText = value;
+          }
+          this.dispatchEvent(new InputEvent('input', {
+            bubbles: true, composed: true, inputType: 'insertReplacementText', data: value,
+          }));
+          this.dispatchEvent(new Event('change', { bubbles: true }));
+          return { ok: true, isPassword };
+        }`,
+        arguments: [{ value }],
+      })
+      if (applied.exceptionDetails || applied.result?.value?.ok !== true) {
+        throw new Error(applied.result?.value?.error ?? 'Could not fill the editable content')
       }
-
-      const settled = await this.callValue<{ isPassword?: boolean }>(objectId, SETTLE_VALUE_FN, [{ value }])
+      const verified = await this.send('Runtime.callFunctionOn', {
+        objectId,
+        returnByValue: true,
+        functionDeclaration: `function(value) { /* craft:verify-value */
+          // Chromium retains a placeholder <br> in an emptied editing host.
+          const read = () => this.isContentEditable
+            ? (value === '' && this.textContent === '' ? '' : this.innerText)
+            : this.value;
+          return this.isConnected && read() === value;
+        }`,
+        arguments: [{ value }],
+      })
+      if (verified.exceptionDetails || verified.result?.value !== true) {
+        throw new Error('The element did not retain the requested value')
+      }
       const geometry = await this.getElementGeometry(ref)
-      return { ...geometry, isPassword: !!settled?.isPassword }
+      return { ...geometry, isPassword: applied.result.value.isPassword === true }
     } catch (err) {
       mainLog.error(`[browser-cdp] Fill failed for ${ref}:`, err)
       throw new Error(`Failed to fill ${ref}: ${err}`)

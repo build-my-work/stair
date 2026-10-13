@@ -849,6 +849,7 @@ export interface ElectronAPI {
   listProjectDirectoryEntries(request: import('@craft-agent/shared/project-files').ProjectDirectoryEntriesRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntriesResult>
   createProjectFile(request: import('@craft-agent/shared/project-files').CreateProjectEntryRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntry>
   createDrawnixProjectFile(request: import('@craft-agent/shared/project-files').CreateProjectEntryRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntry>
+  createDrawnixProjectFileWithContent(request: import('@craft-agent/shared/project-files').CreateDrawnixProjectFileWithContentRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntry>
   createProjectDirectory(request: import('@craft-agent/shared/project-files').CreateProjectEntryRequest): Promise<import('@craft-agent/shared/project-files').ProjectDirectoryEntry>
   readProjectTextFile(request: import('@craft-agent/shared/project-files').ProjectFileRequest): Promise<import('@craft-agent/shared/project-files').ProjectFileTextResponse>
   readProjectFileBinary(request: import('@craft-agent/shared/project-files').ProjectFileRequest): Promise<import('@craft-agent/shared/project-files').ProjectFileBinaryResponse>

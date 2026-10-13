@@ -18,10 +18,20 @@ import {
 
 export interface WorkbenchPersistenceOperations {
   read(): Promise<PersistedWorkbenchLayoutDocument>
+  readProjectIds(workspaceId: string): Promise<string[]>
 }
 
 export const workbenchPersistenceOperationsAtom = atom<WorkbenchPersistenceOperations>({
   read: () => window.electronAPI.readWorkbenchLayout(),
+  readProjectIds: async workspaceId => {
+    const projects = await window.electronAPI.getProjects(workspaceId)
+    if (!Array.isArray(projects)) throw new Error('Invalid Workspace Projects response')
+    return projects.map(project => {
+      const id = project?.config?.id
+      if (typeof id !== 'string' || !id.trim()) throw new Error('Invalid Workspace Project identity')
+      return id
+    })
+  },
 })
 
 const RESTORE_READ_ATTEMPTS = 3
@@ -107,7 +117,7 @@ export const restoreWorkbenchLayoutsAtom = atom(
   async (get, set, input: {
     workspaceId: string
     defaultProjectId: string
-    /** Per-window context from the saved URL, checked against Workspace layouts. */
+    /** Saved URL context, checked against the authoritative Workspace Projects. */
     activeProjectId?: string
   }): Promise<boolean> => {
     if (get(workbenchPersistenceReadyAtom)) return true
@@ -120,13 +130,23 @@ export const restoreWorkbenchLayoutsAtom = atom(
 
     const operations = get(workbenchPersistenceOperationsAtom)
     let document: PersistedWorkbenchLayoutDocument | null = null
+    let projectIds: string[] = []
     for (let attempt = 0; attempt < RESTORE_READ_ATTEMPTS; attempt += 1) {
       if (
         generation !== restoreGeneration
         || get(workbenchAtom).workspaceId !== input.workspaceId
       ) return false
       try {
-        document = await operations.read()
+        const restoredDocument = await operations.read()
+        if (
+          generation !== restoreGeneration
+          || get(workbenchAtom).workspaceId !== input.workspaceId
+        ) return false
+        // Validate after the disk read so newly created Projects are not pruned
+        // by a list captured before a delayed restore completed.
+        const availableProjectIds = await operations.readProjectIds(input.workspaceId)
+        document = restoredDocument
+        projectIds = availableProjectIds
         break
       } catch {
         if (attempt === RESTORE_READ_ATTEMPTS - 1) return false
@@ -137,7 +157,11 @@ export const restoreWorkbenchLayoutsAtom = atom(
 
     const latest = get(workbenchAtom)
     if (latest.workspaceId !== input.workspaceId) return false
-    const restoredLayouts = hydrateWorkbenchLayouts(document)
+    const restoredLayouts = hydrateWorkbenchLayouts({
+      ...document,
+      layoutsByProject: Object.fromEntries(Object.entries(document.layoutsByProject)
+        .filter(([projectId]) => projectIds.includes(projectId))),
+    })
     let layoutsByProject: Record<string, ProjectWorkbench>
 
     if (latest === current) {
@@ -168,16 +192,26 @@ export const restoreWorkbenchLayoutsAtom = atom(
       }
     }
 
+    const activeLayoutUnchanged = latest.activeProjectId === current.activeProjectId
+      && latest.layoutsByProject[current.activeProjectId] === current.layoutsByProject[current.activeProjectId]
+    const requestedActiveProjectId = activeLayoutUnchanged && current.activeProjectId === input.defaultProjectId
+      && input.activeProjectId && projectIds.includes(input.activeProjectId)
+      ? input.activeProjectId
+      : latest.activeProjectId
+    const activeProjectId = requestedActiveProjectId && projectIds.includes(requestedActiveProjectId)
+      ? requestedActiveProjectId
+      : input.defaultProjectId
     set(workbenchAtom, {
       ...latest,
-      activeProjectId: latest === current && current.activeProjectId === input.defaultProjectId
-        && input.activeProjectId && Object.hasOwn(restoredLayouts, input.activeProjectId)
-        ? input.activeProjectId
-        : latest.activeProjectId,
+      activeProjectId,
       layoutsByProject: {
-        ...layoutsByProject,
+        ...Object.fromEntries(Object.entries(layoutsByProject)
+          .filter(([projectId]) => projectIds.includes(projectId))),
         [input.defaultProjectId]: layoutsByProject[input.defaultProjectId]
           ?? createEmptyProjectWorkbench(),
+        ...(activeProjectId ? {
+          [activeProjectId]: layoutsByProject[activeProjectId] ?? createEmptyProjectWorkbench(),
+        } : {}),
       },
     })
     set(workbenchPersistenceReadyAtom, true)

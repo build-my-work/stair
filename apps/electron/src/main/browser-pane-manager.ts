@@ -1979,6 +1979,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
     // window.open runs inside the click handler, so popups it opens (or that were refused) are recorded by the time the click returns.
     const popupMark = this.popupEventSeq
+    const waitFor = options?.waitFor ?? 'none'
+    let navigationObserved = false
+    let resolveNavigation: (() => void) | undefined
+    let navigationTimer: ReturnType<typeof setTimeout> | undefined
+    const onNavigation = () => {
+      navigationObserved = true
+      resolveNavigation?.()
+    }
+    if (waitFor === 'navigation') {
+      instance.pageView.webContents.once('did-navigate', onNavigation)
+      instance.pageView.webContents.once('did-navigate-in-page', onNavigation)
+    }
 
     try {
       const { via, note, point: _point, ...geometry } = await instance.cdp.clickElement(ref)
@@ -1990,31 +2002,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         timestamp: Date.now(),
       }
 
-      const waitFor = options?.waitFor ?? 'none'
-      if (waitFor === 'navigation') {
+      if (waitFor === 'navigation' && !navigationObserved) {
         const timeoutMs = Math.max(100, options?.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)
         await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            cleanup()
-            reject(new Error(
-              `Click navigation wait timed out after ${timeoutMs}ms (no navigation event observed). `
-              + `Tip: retry with "click ${ref}" (no navigation wait), then use "wait url <pattern>" or "wait network-idle".`
-            ))
-          }, timeoutMs)
-
-          const onNav = () => {
-            cleanup()
-            resolve()
-          }
-
-          const cleanup = () => {
-            clearTimeout(timer)
-            instance.pageView.webContents.removeListener('did-navigate', onNav)
-            instance.pageView.webContents.removeListener('did-navigate-in-page', onNav)
-          }
-
-          instance.pageView.webContents.once('did-navigate', onNav)
-          instance.pageView.webContents.once('did-navigate-in-page', onNav)
+          resolveNavigation = resolve
+          navigationTimer = setTimeout(() => reject(new Error(
+            `Click navigation wait timed out after ${timeoutMs}ms (no navigation event observed). `
+            + `Tip: retry with "click ${ref}" (no navigation wait), then use "wait url <pattern>" or "wait network-idle".`
+          )), timeoutMs)
         })
       } else if (waitFor === 'network-idle') {
         await this.waitFor(id, { kind: 'network-idle', timeoutMs: options?.timeoutMs })
@@ -2029,6 +2024,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         timestamp: Date.now(),
       }
       throw error
+    } finally {
+      if (navigationTimer) clearTimeout(navigationTimer)
+      if (waitFor === 'navigation') {
+        instance.pageView.webContents.removeListener('did-navigate', onNavigation)
+        instance.pageView.webContents.removeListener('did-navigate-in-page', onNavigation)
+      }
     }
   }
 

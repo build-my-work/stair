@@ -35,6 +35,7 @@ import {
   EMPTY_DRAWNIX_DOCUMENT,
   atomicReplace,
   createDrawnixProjectFileWithinRoot,
+  createDrawnixProjectFileWithContentWithinRoot,
   createProjectEntryWithinRoot,
   listProjectDirectoryEntriesWithinRoot,
   readProjectFileBinaryWithinRoot,
@@ -426,6 +427,32 @@ describe('Project Files RPC', () => {
       projectId: 'project-a',
       name: 'tutorial.json',
     })).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
+  })
+
+  it('D01: creates the complete Drawnix payload in one exclusive file operation', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+    const content = JSON.stringify({
+      ...JSON.parse(EMPTY_DRAWNIX_DOCUMENT),
+      elements: [{ id: 'root', type: 'mindmap', children: [] }],
+    })
+    const request = { projectId: 'project-a', name: 'complete.drawnix', content }
+    await createDrawnixProjectFileWithContentWithinRoot(root, request)
+    expect(readFileSync(join(root, request.name), 'utf8')).toBe(content)
+    await expect(createDrawnixProjectFileWithContentWithinRoot(root, request))
+      .rejects.toThrow('PROJECT_FILE_ALREADY_EXISTS')
+    expect(readFileSync(join(root, request.name), 'utf8')).toBe(content)
+  })
+
+  it('D01: rejects invalid initial Drawnix content before creating a file', async () => {
+    const root = join(sandbox, 'project')
+    mkdirSync(root)
+    for (const content of ['', '{broken', '{"type":"not-drawnix"}', 'x'.repeat(MAX_PROJECT_FILE_TEXT_BYTES + 1)]) {
+      const request = { projectId: 'project-a', name: 'invalid.drawnix', content }
+      await expect(createDrawnixProjectFileWithContentWithinRoot(root, request))
+        .rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
+      expect(existsSync(join(root, request.name))).toBe(false)
+    }
   })
 
   it('校验 Drawnix 文档并使用 fingerprint CAS 原子保存', async () => {

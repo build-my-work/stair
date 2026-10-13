@@ -18,6 +18,109 @@ import {
 } from '../workbench-commands'
 
 describe('Renderer Workbench persistence codec', () => {
+  it('W03: rejects a stale or invalid saved Project without retaining its layout', async () => {
+    const store = createStore()
+    store.set(initializeWorkbenchAtom, { workspaceId: 'workspace-a', defaultProjectId: 'project-a' })
+    store.set(workbenchPersistenceOperationsAtom, {
+      readProjectIds: async () => ['project-a'],
+      read: async () => ({ version: 1, layoutsByProject: { foreign: {
+        primary: null, auxiliary: [], previewPanelId: null, focusedPanelId: null,
+      } } }),
+    })
+    expect(await store.set(restoreWorkbenchLayoutsAtom, {
+      workspaceId: 'workspace-a', defaultProjectId: 'project-a', activeProjectId: 'foreign',
+    })).toBe(true)
+    expect(store.get(workbenchAtom).activeProjectId).toBe('project-a')
+    expect(store.get(workbenchAtom).layoutsByProject.foreign).toBeUndefined()
+  })
+
+  it('W03: a failed Project lookup leaves persistence disabled', async () => {
+    const store = createStore()
+    store.set(initializeWorkbenchAtom, { workspaceId: 'workspace-a', defaultProjectId: 'project-a' })
+    let attempts = 0
+    store.set(workbenchPersistenceOperationsAtom, {
+      read: async () => ({ version: 1, layoutsByProject: {} }),
+      readProjectIds: async () => { attempts += 1; throw new Error('Project lookup unavailable') },
+    })
+    expect(await store.set(restoreWorkbenchLayoutsAtom, {
+      workspaceId: 'workspace-a', defaultProjectId: 'project-a', activeProjectId: 'project-b',
+    })).toBe(false)
+    expect(attempts).toBe(3)
+    expect(store.get(workbenchPersistenceReadyAtom)).toBe(false)
+  })
+
+  it('W03: restores a valid saved Project even when its layout is empty', async () => {
+    const store = createStore()
+    store.set(initializeWorkbenchAtom, { workspaceId: 'workspace-a', defaultProjectId: 'project-a' })
+    store.set(workbenchPersistenceOperationsAtom, {
+      readProjectIds: async () => ['project-a', 'project-b'],
+      read: async () => ({ version: 1, layoutsByProject: {} }),
+    })
+    expect(await store.set(restoreWorkbenchLayoutsAtom, {
+      workspaceId: 'workspace-a', defaultProjectId: 'project-a', activeProjectId: 'project-b',
+    })).toBe(true)
+    expect(store.get(workbenchAtom).activeProjectId).toBe('project-b')
+    expect(store.get(workbenchAtom).layoutsByProject['project-b']).toEqual({
+      primary: null, auxiliary: [], previewPanelId: null, focusedPanelId: null,
+    })
+  })
+
+  it('W03: ignores an unrelated layout cleanup while restoring the selected Project', async () => {
+    const store = createStore()
+    store.set(initializeWorkbenchAtom, { workspaceId: 'workspace-a', defaultProjectId: 'project-a' })
+    const initial = store.get(workbenchAtom)
+    store.set(workbenchAtom, {
+      ...initial,
+      layoutsByProject: { ...initial.layoutsByProject, 'deleted-project': { ...initial.layoutsByProject['project-a']! } },
+    })
+    let resolveRead!: (document: PersistedWorkbenchLayoutDocument) => void
+    store.set(workbenchPersistenceOperationsAtom, {
+      readProjectIds: async () => ['project-a', 'project-b'],
+      read: () => new Promise(resolve => { resolveRead = resolve }),
+    })
+    const restoring = store.set(restoreWorkbenchLayoutsAtom, {
+      workspaceId: 'workspace-a', defaultProjectId: 'project-a', activeProjectId: 'project-b',
+    })
+    const latest = store.get(workbenchAtom)
+    store.set(workbenchAtom, { ...latest, layoutsByProject: { 'project-a': latest.layoutsByProject['project-a']! } })
+    resolveRead({ version: 1, layoutsByProject: { 'project-b': {
+      primary: null, auxiliary: [], previewPanelId: null, focusedPanelId: null,
+    } } })
+    expect(await restoring).toBe(true)
+    expect(store.get(workbenchAtom).activeProjectId).toBe('project-b')
+  })
+
+  it('W03: keeps a Project created and selected while the layout read is pending', async () => {
+    const store = createStore()
+    const availableProjects = ['project-a', 'project-b']
+    store.set(initializeWorkbenchAtom, { workspaceId: 'workspace-a', defaultProjectId: 'project-a' })
+    let resolveRead!: (document: PersistedWorkbenchLayoutDocument) => void
+    store.set(workbenchPersistenceOperationsAtom, {
+      readProjectIds: async () => [...availableProjects],
+      read: () => new Promise(resolve => { resolveRead = resolve }),
+    })
+    const restoring = store.set(restoreWorkbenchLayoutsAtom, {
+      workspaceId: 'workspace-a', defaultProjectId: 'project-a', activeProjectId: 'project-b',
+    })
+    availableProjects.push('project-c')
+    const current = store.get(workbenchAtom)
+    store.set(workbenchAtom, {
+      ...current,
+      activeProjectId: 'project-c',
+      layoutsByProject: { ...current.layoutsByProject, 'project-c': {
+        primary: null, auxiliary: [], previewPanelId: null, focusedPanelId: null,
+      } },
+    })
+    store.set(showSessionInPrimaryAtom, { sessionId: 'new-session-c', projectId: 'project-c' })
+    resolveRead({ version: 1, layoutsByProject: { 'project-b': {
+      primary: null, auxiliary: [], previewPanelId: null, focusedPanelId: null,
+    } } })
+    expect(await restoring).toBe(true)
+    expect(store.get(workbenchAtom).activeProjectId).toBe('project-c')
+    expect(store.get(workbenchAtom).layoutsByProject['project-c']?.primary?.sessionId).toBe('new-session-c')
+    expect(store.get(workbenchAtom).layoutsByProject['project-b']).toBeDefined()
+  })
+
   it('restores the active Project and Canvas focus together', async () => {
     const store = createStore()
     store.set(initializeWorkbenchAtom, {
@@ -36,7 +139,9 @@ describe('Renderer Workbench persistence codec', () => {
         },
       },
     }
-    store.set(workbenchPersistenceOperationsAtom, { read: async () => document })
+    store.set(workbenchPersistenceOperationsAtom, {
+      read: async () => document, readProjectIds: async () => ['project-a', 'project-b'],
+    })
     expect(await store.set(restoreWorkbenchLayoutsAtom, {
       workspaceId: 'workspace-a', defaultProjectId: 'project-a', activeProjectId: 'project-b',
     })).toBe(true)
@@ -62,7 +167,9 @@ describe('Renderer Workbench persistence codec', () => {
       store.set(initializeWorkbenchAtom, {
         workspaceId: 'workspace-a', defaultProjectId: 'project-a',
       })
-      store.set(workbenchPersistenceOperationsAtom, { read: async () => document })
+      store.set(workbenchPersistenceOperationsAtom, {
+        read: async () => document, readProjectIds: async () => ['project-a', 'project-b'],
+      })
       expect(await store.set(restoreWorkbenchLayoutsAtom, {
         workspaceId: 'workspace-a', defaultProjectId: 'project-a', activeProjectId,
       })).toBe(true)
@@ -83,6 +190,7 @@ describe('Renderer Workbench persistence codec', () => {
     })
     let attempts = 0
     store.set(workbenchPersistenceOperationsAtom, {
+      readProjectIds: async () => ['project-a', 'project-b'],
       read: async () => {
         attempts += 1
         throw new Error('transport unavailable')
@@ -119,6 +227,7 @@ describe('Renderer Workbench persistence codec', () => {
     })
     let attempts = 0
     store.set(workbenchPersistenceOperationsAtom, {
+      readProjectIds: async () => ['project-a', 'project-b'],
       read: async () => {
         attempts += 1
         return {
@@ -148,6 +257,7 @@ describe('Renderer Workbench persistence codec', () => {
     })
     let resolveRead!: (document: PersistedWorkbenchLayoutDocument) => void
     store.set(workbenchPersistenceOperationsAtom, {
+      readProjectIds: async () => ['project-a', 'project-b'],
       read: () => new Promise(resolve => { resolveRead = resolve }),
     })
     const restoring = store.set(restoreWorkbenchLayoutsAtom, {
@@ -209,6 +319,7 @@ describe('Renderer Workbench persistence codec', () => {
     })
     let resolveWorkspaceA!: (document: PersistedWorkbenchLayoutDocument) => void
     store.set(workbenchPersistenceOperationsAtom, {
+      readProjectIds: async () => ['project-a', 'project-b'],
       read: () => new Promise(resolve => { resolveWorkspaceA = resolve }),
     })
     const restoringWorkspaceA = store.set(restoreWorkbenchLayoutsAtom, {
@@ -226,6 +337,7 @@ describe('Renderer Workbench persistence codec', () => {
     expect(store.get(workbenchPersistenceReadyAtom)).toBe(false)
 
     store.set(workbenchPersistenceOperationsAtom, {
+      readProjectIds: async () => ['project-a', 'project-b'],
       read: async () => ({
         version: 1,
         layoutsByProject: {
@@ -264,6 +376,7 @@ describe('Renderer Workbench persistence codec', () => {
     })
     let attempts = 0
     store.set(workbenchPersistenceOperationsAtom, {
+      readProjectIds: async () => ['project-a', 'project-b'],
       read: async () => {
         attempts += 1
         if (attempts === 1) throw new Error('transport starting')

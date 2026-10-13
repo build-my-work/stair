@@ -1,20 +1,39 @@
 import { describe, expect, it } from 'bun:test'
 import type {
   CreateProjectEntryRequest,
+  CreateDrawnixProjectFileWithContentRequest,
   ProjectDirectoryEntry,
-  ProjectFileFingerprint,
-  SaveDrawnixProjectFileRequest,
 } from '@craft-agent/shared/project-files'
 import { createDrawnixMindmap } from '../drawnix-mindmap-create'
 import { discoverDrawnixBoards } from '../drawnix-board-registry'
 
-const EMPTY_FINGERPRINT = `sha256:${'a'.repeat(64)}` as ProjectFileFingerprint
-
 describe('Drawnix mind-map creation', () => {
+  it('D01: refuses an older Workspace server before creating any parent directories', async () => {
+    let mutations = 0
+    const unavailable = async (): Promise<never> => {
+      mutations += 1
+      throw new Error('must not write')
+    }
+    const result = await createDrawnixMindmap({
+      v: 1, action: 'create', projectId: 'project-a',
+      relativePath: 'maps/complete.drawnix', markdown: '# Root',
+    }, {
+      activeProjectId: () => 'project-a',
+      api: {
+        isChannelAvailable: () => false,
+        listProjectDirectoryEntries: unavailable,
+        createProjectDirectory: unavailable,
+        createDrawnixProjectFileWithContent: unavailable,
+      },
+      openProjectFile: unavailable,
+    })
+    expect(result).toMatchObject({ ok: false, error: { code: 'MINDMAP_CREATE_UNAVAILABLE' } })
+    expect(mutations).toBe(0)
+  })
+
   it('creates missing directories, saves native Drawnix content, and opens the canvas', async () => {
     const directories: CreateProjectEntryRequest[] = []
-    const files: CreateProjectEntryRequest[] = []
-    const saves: SaveDrawnixProjectFileRequest[] = []
+    const files: CreateDrawnixProjectFileWithContentRequest[] = []
     const opened: string[] = []
 
     const result = await createDrawnixMindmap({
@@ -26,6 +45,7 @@ describe('Drawnix mind-map creation', () => {
     }, {
       activeProjectId: () => 'project-a',
       api: {
+        isChannelAvailable: () => true,
         listProjectDirectoryEntries: async () => ({ entries: [], truncated: false }),
         createProjectDirectory: async request => {
           directories.push(request)
@@ -35,38 +55,12 @@ describe('Drawnix mind-map creation', () => {
             type: 'directory',
           }
         },
-        createDrawnixProjectFile: async request => {
+        createDrawnixProjectFileWithContent: async request => {
           files.push(request)
           return {
             name: request.name,
             relativePath: `${request.parentRelativePath}/${request.name}`,
             type: 'file',
-          }
-        },
-        readProjectTextFile: async request => ({
-          metadata: {
-            projectId: request.projectId,
-            relativePath: request.relativePath,
-            name: 'tutorial.drawnix',
-            mimeType: 'application/vnd.drawnix+json',
-            byteLength: 0,
-            lastModifiedMs: 1,
-          },
-          text: '',
-          sourceFingerprint: EMPTY_FINGERPRINT,
-        }),
-        saveDrawnixProjectFile: async request => {
-          saves.push(request)
-          return {
-            metadata: {
-              projectId: request.projectId,
-              relativePath: request.relativePath,
-              name: 'tutorial.drawnix',
-              mimeType: 'application/vnd.drawnix+json',
-              byteLength: request.content.length,
-              lastModifiedMs: 2,
-            },
-            sourceFingerprint: `sha256:${'b'.repeat(64)}` as ProjectFileFingerprint,
           }
         },
       },
@@ -92,14 +86,9 @@ describe('Drawnix mind-map creation', () => {
       projectId: 'project-a',
       parentRelativePath: 'mindmaps',
       name: 'tutorial.drawnix',
+      content: expect.any(String),
     }])
-    expect(saves).toHaveLength(1)
-    expect(saves[0]).toMatchObject({
-      projectId: 'project-a',
-      relativePath: 'mindmaps/tutorial.drawnix',
-      expectedFingerprint: EMPTY_FINGERPRINT,
-    })
-    expect(JSON.parse(saves[0]!.content)).toMatchObject({
+    expect(JSON.parse(files[0]!.content)).toMatchObject({
       type: 'drawnix',
       version: 1,
       elements: [{ type: 'mindmap' }],
@@ -128,11 +117,10 @@ describe('Drawnix mind-map creation', () => {
     }, {
       activeProjectId: () => activeProjectId,
       api: {
+        isChannelAvailable: () => true,
         listProjectDirectoryEntries: unavailable,
         createProjectDirectory: unavailable,
-        createDrawnixProjectFile: unavailable,
-        readProjectTextFile: unavailable,
-        saveDrawnixProjectFile: unavailable,
+        createDrawnixProjectFileWithContent: unavailable,
       },
       openProjectFile: unavailable,
     })
@@ -147,8 +135,59 @@ describe('Drawnix mind-map creation', () => {
     expect(apiCalls).toBe(0)
   })
 
+  it('D01: creates a populated file without depending on a second read/save request', async () => {
+    let content: string | undefined
+    const result = await createDrawnixMindmap({
+      v: 1, action: 'create', projectId: 'project-a',
+      relativePath: 'complete.drawnix', markdown: '# Complete\n## Child',
+    }, {
+      activeProjectId: () => 'project-a',
+      api: {
+        isChannelAvailable: () => true,
+        listProjectDirectoryEntries: async () => ({ entries: [], truncated: false }),
+        createProjectDirectory: async request => ({ name: request.name, relativePath: request.name, type: 'directory' }),
+        createDrawnixProjectFileWithContent: async request => {
+          content = request.content
+          return { name: request.name, relativePath: request.name, type: 'file' }
+        },
+      },
+      openProjectFile: async () => true,
+    })
+    expect(result).toMatchObject({ ok: true, snapshot: { roots: [{ topic: 'Complete' }] } })
+    expect(JSON.parse(content!)).toMatchObject({
+      type: 'drawnix', elements: [{ data: { topic: { children: [{ text: 'Complete' }] } } }],
+    })
+  })
+
+  it.each(['rejected', 'exception'])('D01: reports the persisted file when opening the Canvas fails with %s', async failure => {
+    const files: CreateDrawnixProjectFileWithContentRequest[] = []
+    const result = await createDrawnixMindmap({
+      v: 1, action: 'create', projectId: 'project-a',
+      relativePath: 'complete.drawnix', markdown: '# Complete',
+    }, {
+      activeProjectId: () => 'project-a',
+      api: {
+        isChannelAvailable: () => true,
+        listProjectDirectoryEntries: async () => ({ entries: [], truncated: false }),
+        createProjectDirectory: async request => ({ name: request.name, relativePath: request.name, type: 'directory' }),
+        createDrawnixProjectFileWithContent: async request => {
+          files.push(request)
+          return { name: request.name, relativePath: request.name, type: 'file' }
+        },
+      },
+      openProjectFile: async () => {
+        if (failure === 'exception') throw new Error('Canvas unavailable')
+        return false
+      },
+    })
+    expect(result).toMatchObject({ ok: false, error: {
+      code: 'MINDMAP_CREATED_NOT_OPENED', message: expect.stringContaining('Do not retry creation'),
+    } })
+    expect(files).toHaveLength(1)
+    expect(JSON.parse(files[0]!.content).elements[0].data.topic.children[0].text).toBe('Complete')
+  })
+
   it('preserves an existing target instead of overwriting it', async () => {
-    let saved = false
     let opened = false
     const existingError = Object.assign(new Error('target already exists'), {
       code: 'PROJECT_FILE_ALREADY_EXISTS',
@@ -168,17 +207,13 @@ describe('Drawnix mind-map creation', () => {
     }, {
       activeProjectId: () => 'project-a',
       api: {
+        isChannelAvailable: () => true,
         listProjectDirectoryEntries: async () => ({
           entries: [existingDirectory],
           truncated: false,
         }),
         createProjectDirectory: async () => existingDirectory,
-        createDrawnixProjectFile: async () => { throw existingError },
-        readProjectTextFile: async () => { throw new Error('must not read') },
-        saveDrawnixProjectFile: async () => {
-          saved = true
-          throw new Error('must not save')
-        },
+        createDrawnixProjectFileWithContent: async () => { throw existingError },
       },
       openProjectFile: async () => {
         opened = true
@@ -193,7 +228,6 @@ describe('Drawnix mind-map creation', () => {
         message: 'target already exists',
       },
     })
-    expect(saved).toBe(false)
     expect(opened).toBe(false)
   })
 })

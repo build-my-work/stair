@@ -80,6 +80,11 @@ export interface CreateProjectEntryRequest {
   name: string
 }
 
+/** Creates a populated Drawnix file exclusively; no follow-up save is required. */
+export interface CreateDrawnixProjectFileWithContentRequest extends CreateProjectEntryRequest {
+  content: string
+}
+
 export interface ProjectFileMetadata {
   projectId: string
   relativePath: string
