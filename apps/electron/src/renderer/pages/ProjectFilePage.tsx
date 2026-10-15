@@ -569,9 +569,10 @@ export default function ProjectFilePage({
             contentSelector="[data-project-file-text-content]"
             onReferenceAction={handleReferenceAction}
           >
-            <div data-project-file-text-content className="h-full overflow-auto px-8 py-6">
+            <div data-project-file-text-content className="h-full overflow-auto px-4 py-6 @lg/panel:px-8">
               <Markdown
                 mode="full"
+                className="mx-auto w-full min-w-0 max-w-[720px] [overflow-wrap:anywhere]"
                 onFileClick={handleMarkdownLink}
                 onUrlClick={handleMarkdownLink}
               >
