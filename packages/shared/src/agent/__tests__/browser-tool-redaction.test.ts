@@ -6,7 +6,7 @@ import {
   redactBrowserToolInput,
 } from '../browser-tool-redaction.ts';
 import { executeBrowserToolCommand } from '../browser-tool-runtime.ts';
-import type { BrowserPaneFns } from '../browser-tools.ts';
+import type { BrowserWindowFns } from '../browser-tools.ts';
 
 /** How Claude stores an MCP tool result: its content blocks as pretty-printed JSON. */
 function claudeStoredResult(text: string): string {
@@ -14,10 +14,10 @@ function claudeStoredResult(text: string): string {
 }
 
 /** Pane functions for fill/click where only `passwordRef` is a password field. */
-function loginPage(passwordRef: string): BrowserPaneFns {
+function loginPage(passwordRef: string): BrowserWindowFns {
   let focused = '';
   return {
-    fill: async (ref: string) => { focused = ref; },
+    fill: async (ref: string) => { focused = ref; return { isPassword: ref === passwordRef }; },
     // type/paste go into whatever has focus; `focus @eN` is how these tests move it
     type: async () => {},
     setClipboard: async () => {},
@@ -26,7 +26,7 @@ function loginPage(passwordRef: string): BrowserPaneFns {
     detectChallenge: async () => ({ detected: false, provider: 'none', signals: [] }),
     // Page metrics after the fill: the filled field has focus.
     evaluate: async () => ({ url: 'https://example.com/login', title: 'Sign in', activeElementTag: 'input', activeElementIsPassword: focused === passwordRef }),
-  } as unknown as BrowserPaneFns;
+  } as unknown as BrowserWindowFns;
 }
 
 describe('passwordFillRefs', () => {
@@ -130,6 +130,29 @@ describe('redactBrowserPasswordFills', () => {
 });
 
 describe('redaction of real runtime output', () => {
+  it('redacts the actual password target even when focus moved to an ordinary field', async () => {
+    const fns = loginPage('@e2');
+    fns.fill = async () => ({ isPassword: true });
+    const command = 'fill @e2 redirected-secret';
+    const { output } = await executeBrowserToolCommand({ command, fns, sessionId: 'test-session' });
+    expect(output).not.toContain('redirected-secret');
+    expect(redactBrowserPasswordFills('browser_tool', { command }, output))
+      .toEqual({ command: 'fill @e2 [password: 17 characters]' });
+  });
+
+  it('hides and redacts fills from legacy clients that cannot report target privacy', async () => {
+    const fns = loginPage('@e2');
+    fns.fill = async () => {};
+    const command = 'fill @e2 legacy-secret';
+    const { output } = await executeBrowserToolCommand({ command, fns, sessionId: 'test-session' });
+    expect(output).not.toContain('legacy-secret');
+    const summarized = keepPasswordEntryLines(output, 'Screenshot saved');
+    for (const result of [output, claudeStoredResult(output), summarized]) {
+      expect(redactBrowserPasswordFills('browser_tool', { command }, result))
+        .toEqual({ command: 'fill @e2 [password: 13 characters]' });
+    }
+  });
+
   const command = 'fill @e1 user@example.com; fill @e2 hunter2-secret; click @e3';
   const redacted = { command: 'fill @e1 user@example.com; fill @e2 [password: 14 characters]; click @e3' };
 

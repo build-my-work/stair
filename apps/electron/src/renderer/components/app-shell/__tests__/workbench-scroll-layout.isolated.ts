@@ -109,6 +109,8 @@ beforeAll(() => {
       ),
     ),
   })
+  mock.module('@craft-agent/ui/motion', () => ({ FlipOnChange: ({ children }: { children?: React.ReactNode }) => children }))
+  mock.module('@/components/ui/sonner', () => ({ useToastAnchor() {} }))
   mock.module('motion/react', () => ({ motion, useReducedMotion: () => true }))
   mock.module('@dnd-kit/core', () => ({
     DndContext: ({ children }: { children: React.ReactNode }) => children,

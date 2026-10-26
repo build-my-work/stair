@@ -101,8 +101,8 @@ describe('computeCollapsedPagination', () => {
       expect(result.hasMore).toBe(true)
     })
 
-    it('project grouping windows each group, sessions without a project included', () => {
-      const projects = sessions.map((s, i) => ({ ...s, projectId: i < 3 ? undefined : 'p1' }))
+    it('project grouping windows each Project independently', () => {
+      const projects = sessions.map((s, i) => ({ ...s, projectId: i < 3 ? 'proj-default' : 'p1' }))
       const result = computeCollapsedPagination(projects, 1, undefined, 'project')
 
       expect(result.paginatedItems.map(s => s.id)).toEqual(['done1', 'open1'])

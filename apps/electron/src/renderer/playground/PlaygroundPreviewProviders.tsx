@@ -18,6 +18,7 @@ export function PlaygroundPreviewProviders({ children }: { children: React.React
     <ModalProvider>
       <NavigationProvider
         workspaceId={null}
+        defaultProjectId={null}
         workspaceSlug={null}
         onCreateSession={onCreateSession}
         isReady={false}

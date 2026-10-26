@@ -914,15 +914,10 @@ export class BrowserCDP {
     this.webContents.sendInputEvent(event as any)
   }
 
-  /** A left click through CDP, approached along a short trajectory like a person would. */
+  /** Click directly: waiting for mouse-move acknowledgements can stall hidden Electron views. */
   private async clickAtCDP(x: number, y: number): Promise<void> {
     const targetX = Math.round(x)
     const targetY = Math.round(y)
-    const startX = targetX + (Math.random() - 0.5) * 60
-    const startY = targetY + (Math.random() - 0.5) * 60
-    for (const point of this.generateTrajectory(startX, startY, targetX, targetY, 3 + Math.floor(Math.random() * 3))) {
-      await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0 })
-    }
     await this.send('Input.dispatchMouseEvent', {
       type: 'mousePressed',
       x: targetX,
@@ -1035,7 +1030,7 @@ export class BrowserCDP {
 
   /**
    * Whether CDP input can be used. Native input is only the fallback for a debugger that won't
-   * attach: retrying after a CDP failure part-way through would click or drag twice.
+   * attach: retrying after a CDP failure part-way through would click twice.
    */
   private async canUseCdpInput(): Promise<boolean> {
     try {
@@ -1288,7 +1283,9 @@ export class BrowserCDP {
             return { error: 'Element is disabled or read-only' };
           }
           const input = this instanceof HTMLInputElement;
-          const isPassword = input && this.type === 'password';
+          const isPassword = this.type === 'password'
+            || /password/i.test(this.getAttribute('autocomplete') || '')
+            || (getComputedStyle(this).webkitTextSecurity || 'none') !== 'none';
           const textarea = this instanceof HTMLTextAreaElement;
           if (input || textarea) {
             if (this.type !== 'number' && this.maxLength >= 0 && value.length > this.maxLength) {
@@ -1328,7 +1325,9 @@ export class BrowserCDP {
             bubbles: true, composed: true, inputType: 'insertReplacementText', data: value,
           }));
           this.dispatchEvent(new Event('change', { bubbles: true }));
-          return { ok: true, isPassword };
+          return { ok: true, isPassword: isPassword || this.type === 'password'
+            || /password/i.test(this.getAttribute('autocomplete') || '')
+            || (getComputedStyle(this).webkitTextSecurity || 'none') !== 'none' };
         }`,
         arguments: [{ value }],
       })

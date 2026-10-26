@@ -24,15 +24,21 @@ function authFixture(id: string) {
   const managed = createManagedSession({ id, projectId: 'project-a' }, {
     id: 'workspace-a', name: 'Review', rootPath: profile,
   }, { messagesLoaded: true })
-  const request = { type: 'oauth', requestId: `${id}-request`, sourceSlug: 'review-source', sourceName: 'Review Source' }
+  const request = { type: 'oauth' as const, sessionId: id, requestId: `${id}-request`, sourceSlug: 'review-source', sourceName: 'Review Source' }
   managed.pendingAuthRequestId = request.requestId
   managed.pendingAuthRequest = request
+  managed.pendingAuthOwner = { generation: 0, stopEpoch: 0, token: `${id}-owner` }
+  managed.pendingAuthContinuation = { version: 1, request, projectId: 'project-a', originMessageIds: ['original'],
+    input: { text: 'Original request' }, continuationMessageId: `${id}-continue`, phase: 'waiting' }
+  managed.sdkSessionId = 'existing-sdk'
   managed.messages.push({ id: 'auth-card', role: 'auth-request', content: 'Sign in', timestamp: 1,
     authRequestId: request.requestId, authStatus: 'pending' })
+  managed.messages.push({ id: 'original', role: 'user', content: 'Original request', timestamp: 0 })
   const calls: unknown[][] = []
   ;(manager as any).sessions.set(id, managed)
   ;(manager as any).persistSession = () => {}
-  ;(manager as any).sendMessage = async (...args: unknown[]) => { calls.push(args) }
+  ;(manager as any).flushSessionStrict = async () => {}
+  ;(manager as any).sendMessage = async (...args: unknown[]) => { calls.push(args); (args[7] as (() => void) | undefined)?.() }
   manager.setEventSink(() => {})
   return { manager, managed, request, calls }
 }

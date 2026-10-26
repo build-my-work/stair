@@ -4843,6 +4843,17 @@ describe('BrowserPaneManager', () => {
   })
 
   describe('failed interaction tracking', () => {
+    it('returns actual fill target privacy without mixing it into screenshot geometry', async () => {
+      manager.createInstance('fill-privacy')
+      const instance = (manager as any).instances.get('fill-privacy')
+      const geometry = await instance.cdp.getElementGeometry('@e1')
+      instance.cdp.fillElement = mock(async () => ({ ...geometry, isPassword: true }))
+
+      expect(await manager.fillElement('fill-privacy', '@e1', 'secret')).toEqual({ isPassword: true })
+      expect(instance.lastAction.geometry).toEqual(geometry)
+      expect(instance.lastAction).not.toHaveProperty('value')
+    })
+
     it('B01: observes navigation that completes before the click call returns', async () => {
       manager.createInstance('fast-navigation')
       const instance = (manager as any).instances.get('fast-navigation')

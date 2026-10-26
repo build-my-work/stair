@@ -76,6 +76,7 @@ import type {
   IBrowserPaneManager,
   BrowserInstanceSnapshot,
   BrowserClickResult,
+  BrowserFillResult,
 } from '@craft-agent/server-core/handlers'
 import type {
   BrowserApplicationProjectTarget,
@@ -2033,11 +2034,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
   }
 
-  async fillElement(id: string, ref: string, value: string): Promise<void> {
+  async fillElement(id: string, ref: string, value: string): Promise<BrowserFillResult> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      const geometry = await instance.cdp.fillElement(ref, value)
+      const { isPassword, ...geometry } = await instance.cdp.fillElement(ref, value)
       instance.lastAction = {
         tool: 'browser_fill',
         ref,
@@ -2045,6 +2046,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         geometry,
         timestamp: Date.now(),
       }
+      return { isPassword }
     } catch (error) {
       instance.lastAction = {
         tool: 'browser_fill',

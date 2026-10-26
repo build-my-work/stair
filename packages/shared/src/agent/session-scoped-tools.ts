@@ -18,7 +18,7 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { getSessionPlansPath, getSessionPath } from '../sessions/storage.ts';
 import { DOC_REFS } from '../docs/index.ts';
-import { createClaudeContext } from './claude-context.ts';
+import { createClaudeContext, type SessionToolContext } from './claude-context.ts';
 import { basename } from 'node:path';
 
 // Import from session-tools-core: registry + schemas + base descriptions
@@ -261,7 +261,22 @@ export function getSessionScopedTools(
     function registryTool(name: string, schema: any) {
       const def = SESSION_TOOL_REGISTRY.get(name)!;
       return tool(name, TOOL_DESCRIPTIONS[name] || def.description, schema, async (args: any) => {
-        const result = await def.handler!(ctx, args);
+        // Capture only handoffs at invocation entry. The other context bindings
+        // remain inherited/lazy, including Browser, Mindmap and source callbacks.
+        const { onAuthRequest, onPlanSubmitted } = getSessionScopedToolCallbacks(sessionId) ?? {};
+        const invocationContext = Object.create(ctx) as SessionToolContext;
+        invocationContext.callbacks = {
+          onAuthRequest: request => {
+            if (!onAuthRequest) throw new Error('No active turn owns this authentication request.');
+            onAuthRequest(request);
+          },
+          onPlanSubmitted: planPath => {
+            if (!onPlanSubmitted) throw new Error('No active turn owns this plan submission.');
+            onPlanSubmitted(planPath);
+            setLastPlanFilePath(sessionId, planPath);
+          },
+        };
+        const result = await def.handler!(invocationContext, args);
         return convertResult(result);
       }, def.readOnly ? { annotations: { readOnlyHint: true } } : undefined);
     }

@@ -12,6 +12,7 @@
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
 import type { BoundPr, PrMonitorState } from '../protocol/pr-watch.ts';
+import type { AuthRequest } from '@craft-agent/session-tools-core';
 import type { StoredAttachment, MessageRole, ToolStatus, AuthRequestType, AuthStatus, CredentialInputMode, StoredMessage, ContextUsageSnapshot, Reference } from '@craft-agent/core/types';
 
 /**
@@ -45,8 +46,9 @@ export const SESSION_PERSISTENT_FIELDS = [
   'prMonitors',
   // Sharing
   'sharedUrl', 'sharedId',
-  // Plan execution
+  // Durable plan and auth handoffs
   'pendingPlanExecution',
+  'pendingAuthContinuation',
   // Durable cancellation identities for lost-response reconciliation.
   'cancelledInputIds',
   'restoredInputIds',
@@ -89,6 +91,23 @@ export type SessionPersistentField = typeof SESSION_PERSISTENT_FIELDS[number];
  * Falls back to 'todo' if status doesn't exist.
  */
 export type SessionStatus = string;
+
+/** Full host input and identity for explicitly resuming an authentication handoff. */
+export interface PendingAuthContinuationRecord {
+  version: 1;
+  request: AuthRequest;
+  projectId: string;
+  originMessageIds: string[];
+  input: {
+    text: string;
+    references?: Reference[];
+    attachments?: StoredAttachment[];
+    skillSlugs?: string[];
+    thinkingLevel?: ThinkingLevel;
+  };
+  continuationMessageId: string;
+  phase: 'waiting' | 'ready' | 'delivered' | 'cancelled';
+}
 
 /**
  * Pending plan execution record — the durable state of an "Accept & Compact".
@@ -234,6 +253,7 @@ export interface SessionConfig {
    * Cleared on: successful execution, new user message, or manual clear.
    */
   pendingPlanExecution?: PendingPlanExecutionRecord;
+  pendingAuthContinuation?: PendingAuthContinuationRecord;
   /** A reconciled absent input must never be admitted by a late/replayed send. */
   cancelledInputIds?: string[];
   /** Retired outbox rows still own their client input identities after restart. */
@@ -379,6 +399,7 @@ export interface SessionHeader {
    * Cleared on: successful execution, new user message, or manual clear.
    */
   pendingPlanExecution?: PendingPlanExecutionRecord;
+  pendingAuthContinuation?: PendingAuthContinuationRecord;
   cancelledInputIds?: string[];
   restoredInputIds?: Record<string, string>;
   /** When true, session is hidden from session list (e.g., mini edit sessions) */

@@ -7,7 +7,7 @@ import { registerDecisionsHandlers } from './decisions'
 import { registerFilesHandlers } from './files'
 import { registerLabelsHandlers } from './labels'
 import { registerLlmConnectionsHandlers } from './llm-connections'
-import { registerOAuthHandlers } from './oauth'
+import { cleanupOAuthClientResources, registerOAuthHandlers } from './oauth'
 import { registerResourcesHandlers } from './resources'
 import { registerOnboardingHandlers } from './onboarding'
 import { cleanupSessionFileWatchForClient, registerSessionsHandlers } from './sessions'
@@ -71,8 +71,9 @@ export function registerCoreRpcHandlers(
   registerSaveTextFileHandlers(server)
 }
 
-/** Per-client server state to drop when a client disconnects (session file watches, PR watches). */
+/** Per-client server state to drop when a client disconnects. */
 export function cleanupRpcClientResources(clientId: string): void {
+  cleanupOAuthClientResources(clientId)
   cleanupSessionFileWatchForClient(clientId)
   cleanupPrWatchForClient(clientId)
 }

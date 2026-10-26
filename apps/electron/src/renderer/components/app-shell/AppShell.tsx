@@ -2795,7 +2795,7 @@ function AppShellContent({
         id: `nav:projects:${p.config.id}`,
         title: p.config.name,
         icon: FolderKanban,
-        // Highlight when on allSessions view AND filter includes this project (the jump-to state)
+        // Highlight the active Workbench Project in the sessions view.
         variant: (sessionFilter?.kind === 'allSessions' && workbench.activeProjectId === p.config.id) ? "default" as const : "ghost" as const,
         onClick: () => handleJumpToProjectSessions(p.config.id),
       })),

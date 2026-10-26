@@ -10,6 +10,7 @@
 import type {
   IBrowserPaneManager,
   BrowserClickResult,
+  BrowserFillResult,
   AccessibilitySnapshot,
   BrowserConsoleEntry,
   BrowserConsoleOptions,
@@ -76,7 +77,7 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   async clickElement(_id: string, _ref: string, _options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }): Promise<BrowserClickResult | void> { unavailable('clickElement') }
   async clickAtCoordinates(_id: string, _x: number, _y: number): Promise<void> { unavailable('clickAtCoordinates') }
   async drag(_id: string, _x1: number, _y1: number, _x2: number, _y2: number): Promise<void> { unavailable('drag') }
-  async fillElement(_id: string, _ref: string, _value: string): Promise<void> { unavailable('fillElement') }
+  async fillElement(_id: string, _ref: string, _value: string): Promise<BrowserFillResult> { unavailable('fillElement') }
   async typeText(_id: string, _text: string): Promise<void> { unavailable('typeText') }
   async selectOption(_id: string, _ref: string, _value: string): Promise<void> { unavailable('selectOption') }
   async setClipboard(_id: string, _text: string): Promise<void> { unavailable('setClipboard') }

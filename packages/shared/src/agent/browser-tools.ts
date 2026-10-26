@@ -67,6 +67,11 @@ export interface BrowserClickResult {
   popup?: string
 }
 
+/** Privacy of the resolved fill target, independent of the final focused element. */
+export interface BrowserFillResult {
+  isPassword: boolean
+}
+
 export interface BrowserScreenshotResult {
   imageBuffer: Buffer
   imageFormat: 'png' | 'jpeg'
@@ -136,7 +141,8 @@ export interface BrowserWindowFns {
   click: (ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }) => Promise<BrowserClickResult | void>;
   clickAt: (x: number, y: number) => Promise<void>;
   drag: (x1: number, y1: number, x2: number, y2: number) => Promise<void>;
-  fill: (ref: string, value: string) => Promise<void>;
+  /** Older Browser clients return void; absent metadata must keep the entered value private. */
+  fill: (ref: string, value: string) => Promise<BrowserFillResult | void>;
   type: (text: string) => Promise<void>;
   select: (ref: string, value: string) => Promise<void>;
   setClipboard: (text: string) => Promise<void>;

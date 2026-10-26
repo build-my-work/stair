@@ -198,7 +198,7 @@ export interface ISessionManager {
     alwaysAllow: boolean,
     options?: PermissionResponseOptions,
   ): boolean
-  respondToCredential(sessionId: string, requestId: string, response: CredentialResponse): Promise<boolean>
+  respondToCredential(sessionId: string, requestId: string, response: CredentialResponse, clientId?: string): Promise<boolean>
   getSessionPermissionModeState(sessionId: string): PermissionModeState | null
 
   // ---------------------------------------------------------------------------
@@ -341,7 +341,10 @@ export interface ISessionManager {
    * `getOrCreateAgent`.
    */
   refreshConnectionRuntime(connectionSlug: string): Promise<void>
-  completeAuthRequest(sessionId: string, result: AuthResult): Promise<void>
+  prepareAuthRequest(sessionId: string, requestId: string, workspaceId: string, sourceSlug: string, clientId?: string): Promise<string>
+  releaseAuthRequestOwner(sessionId: string, requestId: string, ownerToken: string): Promise<void>
+  isAuthRequestCurrent(sessionId: string, requestId: string, ownerToken: string): boolean
+  completeAuthRequest(sessionId: string, result: AuthResult, ownerToken?: string): Promise<void>
   /**
    * After a successful OAuth sign-in for a source, complete the auth request of every session
    * in the workspace waiting on it and resume each one. `boundRequests` are the cards that
@@ -351,8 +354,8 @@ export interface ISessionManager {
     workspaceId: string,
     sourceSlug: string,
     result: { email?: string; workspace?: string },
-    boundRequests?: Array<{ sessionId: string; authRequestId: string }>,
-  ): string[]
+    boundRequests?: Array<{ sessionId: string; authRequestId: string; authOwnerToken?: string }>,
+  ): Promise<string[]>
   executePromptAutomation(input: ExecutePromptAutomationInput): Promise<{ sessionId: string }>
 
   /**

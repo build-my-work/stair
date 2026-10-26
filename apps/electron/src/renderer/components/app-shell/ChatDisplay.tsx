@@ -453,6 +453,20 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
   // Navigation for session branching
   const { navigate, openSessionInNewPanel } = useNavigation()
+  const continuationRequestRef = React.useRef<symbol | null>(null)
+  const continuationScopeRef = React.useRef({
+    sessionId: session?.id,
+    workspaceId: appShellContext.activeWorkspaceId,
+    projectId: session?.projectId,
+    isFocusedPanel,
+  })
+  continuationScopeRef.current = {
+    sessionId: session?.id,
+    workspaceId: appShellContext.activeWorkspaceId,
+    projectId: session?.projectId,
+    isFocusedPanel,
+  }
+  useEffect(() => () => { continuationRequestRef.current = null }, [])
 
   // Get isDark from useTheme hook for overlay theme
   // This accounts for scenic themes (like Haze) that force dark mode
@@ -980,17 +994,29 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Coding mode is fixed once the conversation starts: continue in a new session with it switched.
   // The server carries the folder, model, sources and a summary of this conversation over.
   const handleContinueWithCodingMode = useCallback(async (enabled: boolean) => {
-    if (!session) return
+    if (!session || continuationRequestRef.current) return
+    const request = Symbol('continue-session')
+    continuationRequestRef.current = request
+    const origin = { ...continuationScopeRef.current }
     const toastId = toast.loading(t('chat.codingMode.continuing'))
     try {
       const result = await window.electronAPI.sessionCommand(session.id, { type: 'continueInNewSession', codingMode: enabled })
       toast.dismiss(toastId)
-      navigate(routes.view.allSessions(result.sessionId))
+      const current = continuationScopeRef.current
+      // Retain the created conversation, but a delayed response must not take over another panel.
+      if (continuationRequestRef.current !== request
+        || current.sessionId !== origin.sessionId
+        || current.workspaceId !== origin.workspaceId
+        || current.projectId !== origin.projectId
+        || !current.isFocusedPanel) return
+      await navigate(routes.view.allSessions(result.sessionId))
     } catch (error) {
       toast.error(t('chat.codingMode.continueFailed'), {
         id: toastId,
         description: error instanceof Error ? error.message : String(error),
       })
+    } finally {
+      if (continuationRequestRef.current === request) continuationRequestRef.current = null
     }
   }, [session, navigate, t])
 

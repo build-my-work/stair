@@ -31,6 +31,34 @@ afterEach(() => {
 })
 
 describe('OAuthFlowStore single flight', () => {
+  it('disconnect removes every owned flow and exposes a retryable outcome', () => {
+    const store = newStore()
+    const older = flow({ state: 'older' })
+    const newest = flow({ state: 'newest' })
+    store.store(older)
+    store.store(newest)
+
+    expect(store.removeOwnedByClient('client-a')).toEqual([older, newest])
+    expect(store.getByState('older')).toBeNull()
+    expect(store.getByState('newest')).toBeNull()
+    expect(store.getLiveForSource('ws-1', 'gmail')).toBeNull()
+    const status = store.getStatus(newest.flowId, 'ws-1')
+    expect(status.live === false && status.outcome?.error).toContain('disconnected')
+    expect(store.removeOwnedByClient('client-a')).toEqual([])
+  })
+
+  it('disconnect detaches only that client’s waiter bindings from a flow it does not own', () => {
+    const store = newStore()
+    const owner = flow({ state: 'shared', ownerClientId: 'service-owner' })
+    store.store(owner)
+    store.join(owner.state, { clientId: 'client-a', sessionId: 'session', authRequestId: 'request', authOwnerToken: 'old-owner' })
+    store.join(owner.state, { clientId: 'service-owner', sessionId: 'owner-session', authRequestId: 'owner-request', authOwnerToken: 'active-owner' })
+
+    expect(store.removeOwnedByClient('client-a')).toEqual([])
+    expect(store.getByState(owner.state)).toBe(owner)
+    expect(owner.waiters).toEqual([{ clientId: 'service-owner', sessionId: 'owner-session', authRequestId: 'owner-request', authOwnerToken: 'active-owner' }])
+  })
+
   it('finds the live flow for a workspace + source, and only that one', () => {
     const store = newStore()
     const owner = flow({ state: 's1' })

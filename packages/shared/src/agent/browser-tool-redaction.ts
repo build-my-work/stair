@@ -13,7 +13,8 @@ import { PASSWORD_FILL_MARKER, PASSWORD_TEXT_MARKER, splitBatchCommands, tokeniz
 
 // Not anchored to line starts: Claude stores an MCP tool result as JSON text blocks, where the
 // output's line breaks are escaped.
-const PASSWORD_FILL_REF = new RegExp(`${PASSWORD_FILL_MARKER} (\\S+)`, 'g');
+// The length-only form also protects legacy clients whose target privacy is unknown.
+const PASSWORD_FILL_REF = new RegExp(`${PASSWORD_FILL_MARKER} (\\S+)|Filled element (\\S+) \\(\\d+ characters\\)`, 'g');
 
 const PASSWORD_PLACEHOLDER = /^\[password: \d+ characters\]$/;
 
@@ -21,9 +22,9 @@ function passwordPlaceholder(length: number): string {
   return `[password: ${length} characters]`;
 }
 
-/** Refs of the password fields a browser_tool result reports as filled. */
+/** Filled refs whose values are private: password targets, or clients without target metadata. */
 export function passwordFillRefs(result: string): string[] {
-  return [...new Set(Array.from(result.matchAll(PASSWORD_FILL_REF), (match) => match[1]!))];
+  return [...new Set(Array.from(result.matchAll(PASSWORD_FILL_REF), (match) => (match[1] ?? match[2])!))];
 }
 
 /** What a result says went into password fields: the refs filled, and whether a type/paste did. */
@@ -133,7 +134,7 @@ export function redactBrowserToolInput(
  * batch) with the original's password-entry lines kept, so its stored input can still be redacted.
  */
 export function keepPasswordEntryLines(original: string, replacement: string): string {
-  const lines = passwordFillRefs(original).map((ref) => `${PASSWORD_FILL_MARKER} ${ref}`);
+  const lines = [...new Set(Array.from(original.matchAll(PASSWORD_FILL_REF), (match) => match[0]))];
   if (original.includes(PASSWORD_TEXT_MARKER)) lines.push(PASSWORD_TEXT_MARKER);
   return lines.length > 0 ? `${replacement}\n\n${lines.join('\n')}` : replacement;
 }

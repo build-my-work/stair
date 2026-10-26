@@ -1093,7 +1093,8 @@ app.whenReady().then(async () => {
               break
             }
           }
-          cleanupSessionFileWatchForClient(clientId)
+          cleanupRpcClientResources(clientId)
+          localSessionManager.onClientDisconnected(clientId)
         },
       })
       const localSessionManager = new SessionManager()

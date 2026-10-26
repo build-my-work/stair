@@ -1183,14 +1183,16 @@ async function executeSingleCommand(args: {
     if (!ref || value === undefined) throw new Error('fill requires ref and value. Example: fill @e5 hello world');
 
     const before = await getPageMetrics(fns);
-    await fns.fill(ref, value);
+    const filled = await fns.fill(ref, value);
     const after = await getPageMetrics(fns);
 
-    // fill focuses its target, so the focused field afterwards is the one filled. Echo the
-    // value only when that field is known not to be a password, so secrets stay out of transcripts.
-    const summary = after?.activeElementIsPassword
+    // Page handlers can move focus during a target-bound fill. Only target metadata can
+    // authorize echoing a value; older clients without it keep the value private.
+    const isPassword = filled?.isPassword === true
+      || (filled?.isPassword === undefined && after?.activeElementIsPassword === true);
+    const summary = isPassword
       ? [`${PASSWORD_FILL_MARKER} ${ref} (${value.length} characters)`]
-      : after
+      : filled?.isPassword === false
         ? [`Filled element ${ref} with "${value}"`, `Value length: ${value.length} characters`]
         : [`Filled element ${ref} (${value.length} characters)`];
 

@@ -36,7 +36,7 @@ describe('session completion seam', () => {
 
   function session(id: string) {
     const workspace = { id: 'ws-test', name: 'Test Workspace', rootPath: tmpRoot, createdAt: Date.now() }
-    const managed = createManagedSession({ id, name: id }, workspace as never, { messagesLoaded: true })
+    const managed = createManagedSession({ id, name: id, projectId: 'test-project' }, workspace as never, { messagesLoaded: true })
     ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(id, managed)
     return managed
   }

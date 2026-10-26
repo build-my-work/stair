@@ -41,6 +41,11 @@ export interface BrowserScreenshotOptions {
   jpegQuality?: number
 }
 
+/** Privacy of the resolved fill target, independent of the final focused element. */
+export interface BrowserFillResult {
+  isPassword: boolean
+}
+
 export interface BrowserScreenshotResult {
   imageBuffer: Buffer
   imageFormat: 'png' | 'jpeg'
@@ -246,7 +251,8 @@ export interface IBrowserPaneManager {
   clickElement(id: string, ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }): Promise<BrowserClickResult | void>
   clickAtCoordinates(id: string, x: number, y: number): Promise<void>
   drag(id: string, x1: number, y1: number, x2: number, y2: number): Promise<void>
-  fillElement(id: string, ref: string, value: string): Promise<void>
+  /** Older Browser clients return void; absent metadata must keep the entered value private. */
+  fillElement(id: string, ref: string, value: string): Promise<BrowserFillResult | void>
   typeText(id: string, text: string): Promise<void>
   selectOption(id: string, ref: string, value: string): Promise<void>
   setClipboard(id: string, text: string): Promise<void>

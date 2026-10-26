@@ -18,6 +18,7 @@ import type { BrowserInstanceInfo, BrowserSecurityChallenge } from '@craft-agent
 import type {
   IBrowserPaneManager,
   BrowserClickResult,
+  BrowserFillResult,
   BrowserScreenshotOptions,
   BrowserScreenshotRegionTarget,
   BrowserScreenshotResult,
@@ -266,8 +267,8 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   async drag(id: string, x1: number, y1: number, x2: number, y2: number): Promise<void> {
     await this.invoke('drag', [id, x1, y1, x2, y2])
   }
-  async fillElement(id: string, ref: string, value: string): Promise<void> {
-    await this.invoke('fillElement', [id, ref, value])
+  async fillElement(id: string, ref: string, value: string): Promise<BrowserFillResult | void> {
+    return await this.invoke('fillElement', [id, ref, value])
   }
   async typeText(id: string, text: string): Promise<void> {
     await this.invoke('typeText', [id, text])

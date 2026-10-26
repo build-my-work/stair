@@ -72,6 +72,7 @@ function ChatHeaderDemo({
 
   const item: SessionMeta = {
     id: 'playground-chat-header',
+    projectId: 'playground-project',
     workspaceId: playgroundAppShellValue.activeWorkspaceId ?? 'playground-workspace',
     name: longTitle ? LONG_TITLE : SHORT_TITLE,
     labels,

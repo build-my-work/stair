@@ -19,6 +19,7 @@ interface ProjectFilePanelSlotProps {
   isFocusedPanel: boolean
   isAtLeftEdge: boolean
   isAtRightEdge: boolean
+  isJoinedToNavigator?: boolean
   isCompact?: boolean
   reorderHandle?: ReactNode
 }
@@ -29,6 +30,7 @@ export function ProjectFilePanelSlot({
   isFocusedPanel,
   isAtLeftEdge,
   isAtRightEdge,
+  isJoinedToNavigator = false,
   isCompact = false,
   reorderHandle,
 }: ProjectFilePanelSlotProps) {
@@ -74,39 +76,57 @@ export function ProjectFilePanelSlot({
     }
   }, [focusPanel, isFocusedPanel, panel.id, panel.projectId])
 
+  const radii = {
+    borderTopLeftRadius: isJoinedToNavigator ? 0 : RADIUS_INNER,
+    borderBottomLeftRadius: isJoinedToNavigator ? 0 : getPanelBottomRadius(isCompact, isAtLeftEdge),
+    borderTopRightRadius: RADIUS_INNER,
+    borderBottomRightRadius: getPanelBottomRadius(isCompact, isAtRightEdge),
+  }
+  const isLifted = !isOnly && isFocusedPanel
+
   return (
     <div
       onPointerDown={handlePointerDown}
       data-panel-role="content"
+      data-panel-surface="true"
+      data-joined-to-navigator={isJoinedToNavigator || undefined}
       data-project-file={panel.relativePath}
       data-panel-id={panel.id}
       data-compact={isCompact || undefined}
       tabIndex={isCompact ? 0 : undefined}
       className={cn(
-        'h-full w-full min-w-0 overflow-hidden relative @container/panel bg-foreground-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-        !isOnly && isFocusedPanel ? 'shadow-panel-focused z-[1]' : 'shadow-middle z-0',
+        'h-full w-full min-w-0 relative isolate @container/panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+        isLifted ? 'z-[1]' : 'z-0',
       )}
       style={{
         ...(!isFocusedPanel && !isOnly
           ? { '--background': 'var(--background-elevated)' } as React.CSSProperties
           : {}),
-        borderTopLeftRadius: RADIUS_INNER,
-        borderBottomLeftRadius: getPanelBottomRadius(isCompact, isAtLeftEdge),
-        borderTopRightRadius: RADIUS_INNER,
-        borderBottomRightRadius: getPanelBottomRadius(isCompact, isAtRightEdge),
       }}
     >
-      <AppShellProvider value={contextOverride}>
-        <ProjectFilePage
-          projectId={panel.projectId}
-          relativePath={panel.relativePath}
-          presentation={panel.presentation}
-          panelId={panel.id}
-          chatTargetSessionId={panel.chatTargetSessionId}
-          openIntent={panel.openIntent}
-          openIntentRevision={panel.openIntentRevision}
-        />
-      </AppShellProvider>
+      {/* Only the card material scales during layout animation; editors and Canvas never do. */}
+      <div
+        data-panel-material="true"
+        aria-hidden="true"
+        className={cn(
+          'shell-card absolute inset-0 -z-10 pointer-events-none bg-paper',
+          isLifted ? 'shadow-elev-2' : 'shadow-elev-0',
+        )}
+        style={radii}
+      />
+      <div className="h-full overflow-hidden" style={radii}>
+        <AppShellProvider value={contextOverride}>
+          <ProjectFilePage
+            projectId={panel.projectId}
+            relativePath={panel.relativePath}
+            presentation={panel.presentation}
+            panelId={panel.id}
+            chatTargetSessionId={panel.chatTargetSessionId}
+            openIntent={panel.openIntent}
+            openIntentRevision={panel.openIntentRevision}
+          />
+        </AppShellProvider>
+      </div>
     </div>
   )
 }

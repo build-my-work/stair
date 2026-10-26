@@ -73,7 +73,7 @@ describe('WebUI /api/oauth/callback', () => {
       },
       sessionManager: {
         completeAuthRequest: async () => {},
-        completeAuthRequestsForSource: (...args) => { fanOuts.push(args); return ['session-1']; },
+        completeAuthRequestsForSource: async (...args) => { fanOuts.push(args); return ['session-1']; },
       },
       pushSourcesChanged: () => {},
     });
@@ -122,7 +122,7 @@ describe('WebUI /api/oauth/callback', () => {
       },
       sessionManager: {
         completeAuthRequest: async () => {},
-        completeAuthRequestsForSource: () => [],
+        completeAuthRequestsForSource: async () => [],
       },
       pushSourcesChanged: () => {},
     });

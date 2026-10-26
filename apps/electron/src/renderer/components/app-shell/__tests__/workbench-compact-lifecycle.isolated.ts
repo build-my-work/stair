@@ -35,6 +35,8 @@ beforeAll(() => {
   // Only unrelated shell surfaces and third-party rendering/browser adapters are replaced.
   mock.module('react-i18next', () => ({ useTranslation: () => ({ t: translate }) }))
   mock.module('sonner', () => ({ toast: { error() {}, success() {} } }))
+  mock.module('@craft-agent/ui/motion', () => ({ FlipOnChange: ({ children }: { children?: React.ReactNode }) => children }))
+  mock.module('@/components/ui/sonner', () => ({ useToastAnchor() {} }))
   mock.module('motion/react', () => ({
     motion: { div: forwardRef<HTMLDivElement, Record<string, unknown>>(
       ({ initial: _initial, animate, transition: _transition, style, ...props }, ref) => (

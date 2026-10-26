@@ -22,6 +22,7 @@ import type { ComponentEntry } from './types'
 
 const WORKSPACE_ID = 'playground-workspace'
 const WORKSPACE_SLUG = 'playground'
+const PROJECT_ID = 'playground-project'
 const SESSION_ID = 'playground-coding-panel'
 const WORKING_DIRECTORY = '/Users/demo/craft-agents'
 const SESSION_FOLDER = `/mock/workspaces/${WORKSPACE_ID}/sessions/${SESSION_ID}`
@@ -72,7 +73,7 @@ const CODING_MESSAGES: Message[] = [
 const log = (label: string) => (...args: unknown[]) => console.log(`[Playground ChatPanel] ${label}`, args)
 
 function createStubSession(id: string): Session {
-  return { id, workspaceId: WORKSPACE_ID, workspaceName: 'Playground', lastMessageAt: Date.now(), messages: [], isProcessing: false }
+  return { id, workspaceId: WORKSPACE_ID, projectId: PROJECT_ID, workspaceName: 'Playground', lastMessageAt: Date.now(), messages: [], isProcessing: false }
 }
 
 interface ChatPanelCodingDemoProps {
@@ -112,6 +113,7 @@ function ChatPanelCodingDemo({
   const session = React.useMemo<Session>(() => ({
     id: SESSION_ID,
     workspaceId: WORKSPACE_ID,
+    projectId: PROJECT_ID,
     workspaceName: 'Playground',
     name,
     messages,
@@ -129,6 +131,7 @@ function ChatPanelCodingDemo({
   const meta = React.useMemo<SessionMeta>(() => ({
     id: SESSION_ID,
     workspaceId: WORKSPACE_ID,
+    projectId: PROJECT_ID,
     name,
     labels,
     sessionStatus: status,
@@ -152,6 +155,7 @@ function ChatPanelCodingDemo({
     <PlaygroundSessionProviders
       workspaceId={WORKSPACE_ID}
       workspaceSlug={WORKSPACE_SLUG}
+      defaultProjectId={PROJECT_ID}
       compact={compact}
       session={session}
       sessions={sessions}

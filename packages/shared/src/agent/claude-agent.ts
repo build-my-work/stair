@@ -44,6 +44,7 @@ import {
   getLastPlanFilePath,
   clearPlanFileState,
   registerSessionScopedToolCallbacks,
+  mergeSessionScopedToolCallbacks,
   unregisterSessionScopedToolCallbacks,
   getSessionScopedTools,
   cleanupSessionScopedTools,
@@ -461,6 +462,8 @@ export class ClaudeAgent extends BaseAgent {
   // The constructor's whole config is the inherited this.config (see ClaudeAgentConfig)
   private currentQuery: Query | null = null;
   private currentQueryAbortController: AbortController | null = null;
+  /** Handoffs follow foreground turns, not the persistent SDK query's lifetime. */
+  private toolHandoffTurn: object | null = null;
   private lastAbortReason: AbortReason | null = null;
   private sessionId: string | null = null;
   // Whether the most recent user turn included image/PDF attachments. Read by
@@ -530,7 +533,14 @@ export class ClaudeAgent extends BaseAgent {
    * A turn stopped with `stopTurn` that the CLI has not ended yet. Its leftover messages, up to and
    * including its `result`, belong to no turn (least of all the next one, already waiting).
    */
-  private stoppedTurn: { fallback: ReturnType<typeof setTimeout> } | null = null;
+  private stoppedTurn: {
+    fallback: ReturnType<typeof setTimeout>;
+    input: { inputId: string; accepted: boolean } | null;
+    settle: (accepted: boolean) => void;
+  } | null = null;
+  /** Producer evidence survives ending the foreground event channel on Stop. */
+  private inputDelivery: { inputId: string; accepted: boolean } | null = null;
+  private stoppedTurnInputReceipt: Promise<boolean> | null = null;
 
   /**
    * Tear down the persistent query. Idempotent, and the single funnel for ALL
@@ -540,7 +550,7 @@ export class ClaudeAgent extends BaseAgent {
    * so the subprocess dies even if the graceful close is ignored.
    */
   private teardownPersistentQuery(reason: string = 'teardown'): void {
-    if (!this.persistentInput && !this.persistentIterator && !this.persistentAbortController) {
+    if (!this.persistentInput && !this.persistentIterator && !this.persistentAbortController && !this.stoppedTurn) {
       return; // already torn down
     }
     debug(`[bg-lifecycle] teardownPersistentQuery (${reason})`, { sessionId: this.config.session?.id });
@@ -554,7 +564,10 @@ export class ClaudeAgent extends BaseAgent {
     this.persistentThinkingKey = null;
     this.activeTurnChannel = null;
     this.activeTurnState = null;
-    if (this.stoppedTurn) clearTimeout(this.stoppedTurn.fallback);
+    if (this.stoppedTurn) {
+      clearTimeout(this.stoppedTurn.fallback);
+      this.stoppedTurn.settle(this.stoppedTurn.input?.accepted ?? false);
+    }
     this.stoppedTurn = null;
     // A dead query can't stop tasks: stopBackgroundTask must report "not running", not reject
     this.currentQuery = null;
@@ -595,6 +608,8 @@ export class ClaudeAgent extends BaseAgent {
     const channel = createPushableInputStream<SDKMessage>();
     this.activeTurnChannel = channel;
     this.activeTurnState = { aborted: false };
+    this.inputDelivery = prompt.uuid ? { inputId: prompt.uuid, accepted: false } : null;
+    this.stoppedTurnInputReceipt = null;
     this.persistentInput.push(prompt);
     return channel.stream;
   }
@@ -657,10 +672,22 @@ export class ClaudeAgent extends BaseAgent {
           if (done) break;
           // A newer query took over: this one's leftover messages belong to no turn.
           if (this.persistentIterator !== iterator) continue;
+          // Observe delivery before routing: Stop can end the host channel before it drains a
+          // matching frame. Only this query's foreground UUID may acknowledge its input.
+          const delivery = this.stoppedTurn ? this.stoppedTurn.input : this.inputDelivery;
+          if (delivery && !delivery.accepted
+            && ((value.type === 'assistant' || value.type === 'stream_event') && value.parent_tool_use_id === null
+              || value.type === 'result' && value.num_turns > 0)
+            && !('isReplay' in value && value.isReplay === true)
+            && (value.type !== 'stream_event' || (value.event as { type: string }).type !== 'ping')
+            && (value.user_message_uuid === delivery.inputId || value.user_message_uuids?.includes(delivery.inputId))) {
+            delivery.accepted = true;
+          }
           if (this.stoppedTurn) {
             // The stopped turn's remains: background notifications still count, the rest is dropped.
             if ((value as { type?: string } | undefined)?.type === 'result') {
               clearTimeout(this.stoppedTurn.fallback);
+              this.stoppedTurn.settle(this.stoppedTurn.input?.accepted ?? false);
               this.stoppedTurn = null;
             } else {
               this.routeBackgroundMessage(value);
@@ -903,16 +930,6 @@ export class ClaudeAgent extends BaseAgent {
 
     // Register session-scoped tool callbacks
     registerSessionScopedToolCallbacks(sessionId, {
-      onPlanSubmitted: (planPath) => {
-        this.onDebug?.(`[ClaudeAgent] onPlanSubmitted received: ${planPath}`);
-        this.beginToolHandoff();
-        this.onPlanSubmitted?.(planPath);
-      },
-      onAuthRequest: (request) => {
-        this.onDebug?.(`[ClaudeAgent] onAuthRequest received: ${request.sourceSlug} (type: ${request.type})`);
-        this.beginToolHandoff();
-        this.onAuthRequest?.(request);
-      },
       queryFn: (request) => this.queryLlm(request),
       spawnSessionFn: (input) => this.preExecuteSpawnSession(input),
     });
@@ -1015,6 +1032,18 @@ export class ClaudeAgent extends BaseAgent {
     return this.config.mcpToken ?? null;
   }
 
+  override async *chat(
+    userMessage: string,
+    attachments?: FileAttachment[],
+    options?: ChatOptions
+  ): AsyncGenerator<AgentEvent> {
+    // BaseAgent may reject missing skills without entering chatImpl. Every admitted
+    // generator must start without evidence left over from an earlier input.
+    this.inputDelivery = null;
+    this.stoppedTurnInputReceipt = null;
+    yield* super.chat(userMessage, attachments, options);
+  }
+
   protected async *chatImpl(
     userMessage: string,
     attachments?: FileAttachment[],
@@ -1035,9 +1064,27 @@ export class ClaudeAgent extends BaseAgent {
     // A handoff deferred in an earlier turn must never interrupt this one.
     if (this.toolHandoff?.timer) clearTimeout(this.toolHandoff.timer);
     this.toolHandoff = null;
+    const handoffTurn = {};
+    this.toolHandoffTurn = handoffTurn;
+    const onPlanSubmitted = this.onPlanSubmitted;
+    const onAuthRequest = this.onAuthRequest;
 
     try {
       const sessionId = this.config.session?.id || `temp-${Date.now()}`;
+      mergeSessionScopedToolCallbacks(sessionId, {
+        onPlanSubmitted: planPath => {
+          if (this.toolHandoffTurn !== handoffTurn) throw new Error('The tool invocation no longer belongs to the active turn.');
+          this.onDebug?.(`[ClaudeAgent] onPlanSubmitted received: ${planPath}`);
+          this.beginToolHandoff();
+          onPlanSubmitted?.(planPath);
+        },
+        onAuthRequest: request => {
+          if (this.toolHandoffTurn !== handoffTurn) throw new Error('The tool invocation no longer belongs to the active turn.');
+          this.onDebug?.(`[ClaudeAgent] onAuthRequest received: ${request.sourceSlug} (type: ${request.type})`);
+          this.beginToolHandoff();
+          onAuthRequest?.(request);
+        },
+      });
 
       // Pin system prompt components on first chat() call for consistency after compaction
       // The SDK's resume mechanism expects system prompt consistency within a session
@@ -1724,6 +1771,7 @@ This is a branched conversation. All prior messages in this conversation are par
       let turnMessageSource: AsyncIterable<SDKMessage>;
       let persistentTurn: { aborted: boolean } | null = null;
       const inputId = randomUUID();
+      this.inputDelivery = { inputId, accepted: false };
       if (this.keepBackgroundTasksAlive && isSlashCommand) {
         debug(`[chat] Detected SDK slash command on persistent input: ${trimmedMessage}`);
         const sdkMessage: SDKUserMessage = {
@@ -1801,6 +1849,7 @@ This is a branched conversation. All prior messages in this conversation are par
             && (message.type !== 'stream_event' || (message.event as { type: string }).type !== 'ping')
             && (message.user_message_uuid === inputId || message.user_message_uuids?.includes(inputId))) {
             inputAccepted = true;
+            if (this.inputDelivery?.inputId === inputId) this.inputDelivery.accepted = true;
             yield { type: 'input_accepted' };
           }
           // Track if we got any text content from assistant
@@ -2508,6 +2557,7 @@ This is a branched conversation. All prior messages in this conversation are par
       // emit complete even on error so application knows we're done
       yield { type: 'complete' };
     } finally {
+      if (this.toolHandoffTurn === handoffTurn) this.toolHandoffTurn = null;
       // [bg-lifecycle] Nulling currentQuery closes the SDK query iterator, which
       // tears down the per-turn subprocess and any background sub-agents it
       // launched. This is the teardown point referenced by WS2-step0: background
@@ -3025,6 +3075,7 @@ This is a branched conversation. All prior messages in this conversation are par
    * caller then uses forceAbort.
    */
   stopTurn(): boolean {
+    this.toolHandoffTurn = null;
     const query = this.currentQuery;
     if (!query || !this.persistentInput || !this.activeTurnChannel) return false;
     this.lastAbortReason = AbortReason.UserStop;
@@ -3037,7 +3088,11 @@ This is a branched conversation. All prior messages in this conversation are par
     this.toolHandoff = null;
 
     if (this.stoppedTurn) clearTimeout(this.stoppedTurn.fallback);
+    let settle!: (accepted: boolean) => void;
+    this.stoppedTurnInputReceipt = new Promise<boolean>(resolve => { settle = resolve; });
     const stopped = {
+      input: this.inputDelivery,
+      settle,
       fallback: setTimeout(() => {
         if (this.stoppedTurn !== stopped) return;
         this.debug('[bg-lifecycle] stopped turn did not end; hard-stopping the query');
@@ -3053,6 +3108,11 @@ This is a branched conversation. All prior messages in this conversation are par
     return true;
   }
 
+  /** Wait for the stopped turn's final delivery evidence before the host restores input. */
+  settleStoppedTurnInput(): Promise<boolean> {
+    return this.stoppedTurnInputReceipt ?? Promise.resolve(this.inputDelivery?.accepted ?? false);
+  }
+
   /**
    * Force-abort the current query using the SDK's AbortController.
    * This immediately stops processing (SIGTERM/SIGKILL) without waiting for graceful shutdown.
@@ -3061,6 +3121,7 @@ This is a branched conversation. All prior messages in this conversation are par
    * @param reason - Why the abort is happening (affects UI feedback)
    */
   forceAbort(reason: AbortReason = AbortReason.UserStop): void {
+    this.toolHandoffTurn = null;
     this.lastAbortReason = reason;
     if (this.activeTurnState) this.activeTurnState.aborted = true;
     // Keep-alive: end the stopped turn now, not when the killed CLI finally exits (seconds later).
@@ -3077,6 +3138,7 @@ This is a branched conversation. All prior messages in this conversation are par
       this.currentQueryAbortController = null;
     }
     this.currentQuery = null;
+    if (this.stoppedTurn) this.teardownPersistentQuery('forced-stopped-turn');
   }
 
   getModel(): string {
@@ -3186,6 +3248,7 @@ This is a branched conversation. All prior messages in this conversation are par
    * Calls super.destroy() for base cleanup, then Claude-specific cleanup.
    */
   destroy(): void {
+    this.toolHandoffTurn = null;
     // Never let a suspended hook inject into a subsequent turn.
     this.pendingSteers.pause();
     // Claude-specific cleanup first

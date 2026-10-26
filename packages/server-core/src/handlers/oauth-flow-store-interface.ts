@@ -13,5 +13,6 @@ export interface IOAuthFlowStore {
   getLiveForSource(workspaceId: string, sourceSlug: string): PendingOAuthFlow | null
   join(state: string, waiter: OAuthFlowWaiter): PendingOAuthFlow | null
   remove(state: string, outcome?: OAuthFlowOutcome): PendingOAuthFlow | null
+  removeOwnedByClient(clientId: string): PendingOAuthFlow[]
   getStatus(flowId: string, workspaceId: string): OAuthFlowStatus
 }

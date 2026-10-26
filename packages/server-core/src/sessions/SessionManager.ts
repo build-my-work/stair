@@ -83,6 +83,7 @@ import {
   type SessionMetadata,
   type SessionStatus,
   type SessionHeader,
+  type PendingAuthContinuationRecord,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
 import { serializeHeaderCredential, loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, TokenRefreshManager } from '@craft-agent/shared/sources'
@@ -771,6 +772,8 @@ interface ManagedSession {
   // Incremented each time a new message starts processing.
   // Used to detect if a follow-up message has superseded the current one (stale-request guard).
   processingGeneration: number
+  /** Backend receipt evidence belongs only to a turn that actually entered chat. */
+  foregroundInputOwner?: { agent: AgentInstance; generation: number }
   // NOTE: Parent-child tracking state (pendingTools, parentToolStack, toolToParentMap,
   // pendingTextParent) has been removed. CraftAgent now provides parentToolUseId
   // directly on all events using the SDK's authoritative parent_tool_use_id field.
@@ -932,7 +935,9 @@ interface ManagedSession {
   // Pending auth request tracking (for unified auth flow)
   pendingAuthRequestId?: string
   pendingAuthRequest?: AuthRequest
-  pendingAuthOwner?: { generation: number; stopEpoch: number }
+  pendingAuthOwner?: { generation: number; stopEpoch: number; token: string; restored?: boolean; clientId?: string }
+  pendingAuthContinuation?: PendingAuthContinuationRecord
+  pendingAuthDispatch?: Promise<void>
   // Serialize admission, never the long-running agent iterator or Stop itself.
   sendAdmissionTail?: Promise<void>
   pendingSendAdmissions?: Map<() => void, string | undefined>
@@ -1485,6 +1490,8 @@ export class SessionManager implements ISessionManager {
   private messageLoadingPromises: Map<string, Promise<void>> = new Map()
   private emittedQueuedRestoreIds = new Set<string>()
   private sessionLifecycleQueues = new Map<string, Promise<void>>()
+  /** Captured by auth preparations so disconnect fences even a still-waiting lifecycle lock. */
+  private authClientScopes = new Map<string, { active: boolean }>()
   /**
    * Track which session the user is actively viewing (per workspace).
    * Map of workspaceId -> sessionId. Used to determine if a session should be
@@ -2238,8 +2245,20 @@ export class SessionManager implements ISessionManager {
    * Called by the transport bootstrap on `onClientDisconnected`. Drops any
    * pins held by `clientId` so the next browser tool call re-resolves via
    * {@link findClientsWithCapability} instead of trying to ship to a dead client.
+   * Revokes that client's active auth invocations, retaining durable cards for explicit retry.
    */
   onClientDisconnected(clientId: string): void {
+    const authScope = this.authClientScopes.get(clientId)
+    if (authScope) authScope.active = false
+    this.authClientScopes.delete(clientId)
+    for (const managed of this.sessions.values()) {
+      const owner = managed.pendingAuthOwner
+      if (owner?.clientId === clientId && managed.pendingAuthRequestId) {
+        void this.releaseAuthRequestOwner(managed.id, managed.pendingAuthRequestId, owner.token).catch(error => {
+          sessionLog.error(`Session ${managed.id}: disconnected auth state could not be saved`, error)
+        })
+      }
+    }
     for (const [sid, pinned] of this.browserHostByCanvas) {
       if (pinned === clientId) this.browserHostByCanvas.delete(sid)
     }
@@ -3113,6 +3132,11 @@ export class SessionManager implements ISessionManager {
     if (stored) {
       managed.messages = (stored.messages || []).map(storedToMessage)
       this.markUnacceptedInputForRestore(managed)
+      const auth = managed.pendingAuthContinuation
+      if (auth?.phase === 'ready' && managed.messages.some(message => message.id === auth.continuationMessageId && message.pendingDelivery)) {
+        const card = managed.messages.find(message => message.authRequestId === auth.request.requestId && message.role === 'auth-request')
+        if (card) card.authStatus = 'pending'
+      }
       managed.tokenUsage = stored.tokenUsage
       managed.pendingPlanExecution = this.reconcileStoredPendingPlanExecution(managed, stored)
       // Deferred-load fields (intentionally undefined after startup, see
@@ -3129,6 +3153,7 @@ export class SessionManager implements ISessionManager {
       // Queue recovery: find orphaned queued messages from crash/restart and re-queue them.
       const orphanedQueued = managed.messages.filter(m =>
         m.role === 'user' && m.isQueued === true && !m.queuedRestoreId
+        && m.id !== managed.pendingAuthContinuation?.continuationMessageId
         && !(managed.pendingPlanExecution?.failed && m.id === managed.pendingPlanExecution.approvalMessageId)
       )
       if (orphanedQueued.length > 0) {
@@ -3249,120 +3274,220 @@ export class SessionManager implements ISessionManager {
   }
 
 
-  /**
-   * Complete an auth request and send result back to agent
-   * This updates the auth message status and sends a faked user message
-   */
-  async completeAuthRequest(sessionId: string, result: AuthResult): Promise<void> {
-    const managed = this.sessions.get(sessionId)
-    if (!managed) {
-      sessionLog.warn(`Cannot complete auth request - session ${sessionId} not found`)
-      return
-    }
-
-    // A credential exchange may finish after Stop, a replacement request, or
-    // a newer turn. Only the live request is allowed to resume this session.
-    const request = managed.pendingAuthRequest
-    const owner = managed.pendingAuthOwner
-    if (!request || managed.pendingAuthRequestId !== result.requestId
-      || request.requestId !== result.requestId || request.sourceSlug !== result.sourceSlug
-      || owner && (owner.generation !== managed.processingGeneration || owner.stopEpoch !== (managed.stopEpoch ?? 0))) return
-
-    // Find and update the pending auth-request message
-    const authMessage = managed.messages.find(m =>
-      m.role === 'auth-request' &&
-      m.authRequestId === result.requestId &&
-      m.authStatus === 'pending'
-    )
-
-    if (!authMessage) return
-    if (authMessage) {
-      authMessage.authStatus = result.success ? 'completed' :
-                               result.cancelled ? 'cancelled' : 'failed'
-      authMessage.authError = result.error
-      authMessage.authEmail = result.email
-      authMessage.authWorkspace = result.workspace
-    }
-
-    // Emit auth_completed event to update UI
-    this.sendEvent({
-      type: 'auth_completed',
-      sessionId,
-      requestId: result.requestId,
-      success: result.success,
-      cancelled: result.cancelled,
-      error: result.error,
-    }, managed.workspace.id)
-
-    // Create faked user message with result
-    const resultContent = this.formatAuthResultMessage(result)
-
-    // Clear pending auth state
-    managed.pendingAuthRequestId = undefined
+  /** Invalidate synchronously: neither a delayed OAuth callback nor a queued send may revive it. */
+  private invalidatePendingAuth(managed: ManagedSession): boolean {
+    const record = managed.pendingAuthContinuation
+    const requestId = managed.pendingAuthRequestId ?? record?.request.requestId
+    managed.pendingAuthDispatch = undefined
+    if (!managed.pendingAuthRequest && (!record || record.phase === 'delivered' || record.phase === 'cancelled')) return false
     managed.pendingAuthRequest = undefined
+    managed.pendingAuthRequestId = undefined
     managed.pendingAuthOwner = undefined
-
-    // Auto-enable the source in the session after successful auth
-    if (result.success && result.sourceSlug) {
-      const slugSet = new Set(managed.enabledSourceSlugs || [])
-      if (!slugSet.has(result.sourceSlug)) {
-        slugSet.add(result.sourceSlug)
-        managed.enabledSourceSlugs = Array.from(slugSet)
-        sessionLog.info(`Auto-enabled source ${result.sourceSlug} in session ${sessionId} after auth`)
-      }
-
-      // Clear any refresh cooldown so the source is immediately usable
-      managed.tokenRefreshManager.clearCooldown(result.sourceSlug)
+    if (record) {
+      record.phase = 'cancelled'
+      managed.messageQueue = managed.messageQueue.filter(entry => entry.messageId !== record.continuationMessageId)
+      const continuation = managed.messages.find(message => message.id === record.continuationMessageId)
+      if (continuation) { continuation.pendingDelivery = undefined; continuation.isQueued = false }
     }
-
-    // Persist session with updated auth message and enabled sources
-    this.persistSession(managed)
-
-    // Send the result as a new message to resume conversation
-    // Use empty arrays for attachments since this is a system-generated message
-    if (!result.cancelled) await this.sendMessage(sessionId, resultContent, [], [], { hidden: true })
-
-    sessionLog.info(`Auth request completed for ${result.sourceSlug}: ${result.success ? 'success' : 'failed'}`)
+    const card = managed.messages.find(message => message.role === 'auth-request' && message.authRequestId === requestId)
+    if (card) card.authStatus = 'cancelled'
+    return true
   }
 
-  /**
-   * One OAuth sign-in serves every session paused on the source: complete each session's
-   * pending OAuth request for it in this workspace and resume it. `boundRequests` (the cards
-   * that started or joined the sign-in) also count when their session no longer holds the
-   * request in memory — `pendingAuthRequest` is not persisted, so a restart forgets it.
-   * Resumed turns run in the background so sessions don't wait on each other's turns.
-   */
-  completeAuthRequestsForSource(
+  /** Only an explicit card action may re-arm a persisted request after restart. */
+  async prepareAuthRequest(sessionId: string, requestId: string, workspaceId: string, sourceSlug: string, clientId?: string): Promise<string> {
+    const clientScope = clientId ? this.authClientScopes.get(clientId) ?? { active: true } : undefined
+    if (clientId && clientScope) this.authClientScopes.set(clientId, clientScope)
+    return this.withSessionLifecycleLock(sessionId, async () => {
+      if (clientScope && !clientScope.active) throw new Error('AUTH_REQUEST_CANCELLED')
+      const managed = this.sessions.get(sessionId)
+      if (!managed || managed.workspace.id !== workspaceId) throw new Error('AUTH_REQUEST_SCOPE_MISMATCH')
+      const epoch = managed.stopEpoch ?? 0
+      await this.ensureMessagesLoaded(managed)
+      if (this.sessions.get(sessionId) !== managed || (managed.stopEpoch ?? 0) !== epoch
+        || clientScope && !clientScope.active) throw new Error('AUTH_REQUEST_CANCELLED')
+      const record = managed.pendingAuthContinuation
+      const card = managed.messages.find(message => message.role === 'auth-request' && message.authRequestId === requestId)
+      if (!record || record.version !== 1) {
+        // Old cards never stored the originating input/turn id. Inferring from the last user
+        // bubble can pick a queued or unrelated message, so retain the card and fail explicitly.
+        throw new Error('AUTH_CONTINUATION_UNAVAILABLE: The original input was not recorded. Send the request again to continue.')
+      }
+      if (!card || record.request.requestId !== requestId || record.request.sourceSlug !== sourceSlug
+        || record.projectId !== managed.projectId || record.request.sessionId !== sessionId
+        || record.phase === 'cancelled' || record.phase === 'delivered'
+        || managed.pendingAuthRequestId && managed.pendingAuthRequestId !== requestId
+        || record.originMessageIds.length === 0 || record.originMessageIds.some(id => !managed.messages.some(m => m.id === id && m.role === 'user'))) {
+        throw new Error('AUTH_REQUEST_CANCELLED: This authentication request no longer owns the session.')
+      }
+      if (managed.isProcessing || managed.pendingAuthDispatch) throw new Error('AUTH_REQUEST_BUSY')
+      const owner = managed.pendingAuthOwner ?? {
+        generation: managed.processingGeneration, stopEpoch: epoch, token: randomUUID(), restored: true,
+      }
+      if (clientId) owner.clientId = clientId
+      managed.pendingAuthRequest = record.request
+      managed.pendingAuthRequestId = requestId
+      managed.pendingAuthOwner = owner
+      this.persistSession(managed)
+      await this.flushSessionStrict(sessionId)
+      if (!this.isAuthRequestCurrent(sessionId, requestId, owner.token)
+        || clientScope && !clientScope.active) throw new Error('AUTH_REQUEST_CANCELLED')
+      return owner.token
+    })
+  }
+
+  /** Disconnect revokes this invocation, while retaining its card for a later explicit retry. */
+  async releaseAuthRequestOwner(sessionId: string, requestId: string, ownerToken: string): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed || !this.isAuthRequestCurrent(sessionId, requestId, ownerToken)) return
+    managed.pendingAuthRequest = undefined
+    managed.pendingAuthRequestId = undefined
+    managed.pendingAuthOwner = undefined
+    managed.pendingAuthDispatch = undefined
+    managed.messageQueue = managed.messageQueue.filter(entry => entry.messageId !== managed.pendingAuthContinuation?.continuationMessageId)
+    const card = managed.messages.find(message => message.role === 'auth-request' && message.authRequestId === requestId)
+    if (card) card.authStatus = 'pending'
+    this.persistSession(managed)
+    await this.flushSessionStrict(sessionId)
+  }
+
+  isAuthRequestCurrent(sessionId: string, requestId: string, ownerToken: string): boolean {
+    const managed = this.sessions.get(sessionId)
+    const owner = managed?.pendingAuthOwner
+    const record = managed?.pendingAuthContinuation
+    return !!managed && managed.pendingAuthRequestId === requestId && owner?.token === ownerToken
+      && owner.generation === managed.processingGeneration && owner.stopEpoch === (managed.stopEpoch ?? 0)
+      && record?.request.requestId === requestId && record.projectId === managed.projectId
+      && (record.phase === 'waiting' || record.phase === 'ready')
+  }
+
+  /** Commit the auth result and its stable continuation before any backend receives it. */
+  async completeAuthRequest(sessionId: string, result: AuthResult, ownerToken?: string): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    const owner = managed?.pendingAuthOwner
+    if (!managed || !owner || (ownerToken !== undefined && owner.token !== ownerToken)
+      || !this.isAuthRequestCurrent(sessionId, result.requestId, owner.token)
+      || managed.pendingAuthRequest?.sourceSlug !== result.sourceSlug) return
+    if (managed.pendingAuthDispatch && !result.cancelled) return managed.pendingAuthDispatch
+
+    let continuation: Message | undefined
+    await this.withSessionLifecycleLock(sessionId, async () => {
+      if (!this.isAuthRequestCurrent(sessionId, result.requestId, owner.token)) return
+      const record = managed.pendingAuthContinuation!
+      const card = managed.messages.find(message => message.role === 'auth-request' && message.authRequestId === result.requestId)
+      if (!card) return
+      if (result.cancelled) {
+        this.invalidatePendingAuth(managed)
+        this.persistSession(managed)
+        await this.flushSessionStrict(sessionId)
+        this.sendEvent({ type: 'auth_completed', sessionId, requestId: result.requestId, success: false, cancelled: true }, managed.workspace.id)
+        return
+      }
+      const previousCard = { authStatus: card.authStatus, authError: card.authError, authEmail: card.authEmail, authWorkspace: card.authWorkspace }
+      const previousPhase = record.phase
+      const previousSources = managed.enabledSourceSlugs
+      let created = false
+      continuation = managed.messages.find(message => message.id === record.continuationMessageId)
+      const previousContinuation = continuation ? structuredClone(continuation) : undefined
+      const recoverContext = owner.restored || !managed.sdkSessionId
+      if (!continuation) {
+        continuation = {
+          id: record.continuationMessageId, role: 'user', hidden: true, pendingDelivery: true,
+          content: '',
+          timestamp: this.monotonic(),
+        }
+        managed.messages.push(continuation)
+        created = true
+      }
+      // A warm ready row may contain only the auth notice. After a crash its
+      // explicit retry must recover the durable context while keeping the same id.
+      continuation.content = this.formatAuthResultMessage(result) + (recoverContext
+        ? `\n\nOriginal request context (resume from authentication; do not repeat completed work):\n${record.input.text}` : '')
+      continuation.references = recoverContext ? record.input.references : undefined
+      continuation.attachments = recoverContext ? record.input.attachments : undefined
+      record.phase = 'ready'
+      card.authStatus = result.success ? 'completed' : 'failed'
+      card.authError = result.error
+      card.authEmail = result.email
+      card.authWorkspace = result.workspace
+      if (result.success) {
+        managed.enabledSourceSlugs = Array.from(new Set([...(managed.enabledSourceSlugs ?? []), result.sourceSlug]))
+        managed.tokenRefreshManager.clearCooldown(result.sourceSlug)
+      }
+      this.persistSession(managed)
+      try { await this.flushSessionStrict(sessionId) }
+      catch (error) {
+        if (this.isAuthRequestCurrent(sessionId, result.requestId, owner.token)) {
+          Object.assign(card, previousCard)
+          record.phase = previousPhase
+          managed.enabledSourceSlugs = previousSources
+          if (created) managed.messages = managed.messages.filter(message => message !== continuation)
+          else if (continuation && previousContinuation) {
+            Object.assign(continuation, previousContinuation)
+            continuation.references = previousContinuation.references
+            continuation.attachments = previousContinuation.attachments
+          }
+          this.persistSession(managed)
+        }
+        continuation = undefined
+        throw error
+      }
+      if (!this.isAuthRequestCurrent(sessionId, result.requestId, owner.token)) { continuation = undefined; return }
+      this.sendEvent({ type: 'auth_completed', sessionId, requestId: result.requestId,
+        success: result.success, error: result.error }, managed.workspace.id)
+    })
+    if (!continuation || !this.isAuthRequestCurrent(sessionId, result.requestId, owner.token)) return
+    // Duplicate completions share durable admission, never wait for the whole model turn.
+    if (managed.pendingAuthDispatch) return managed.pendingAuthDispatch
+    const row = continuation
+    const record = managed.pendingAuthContinuation!
+    let accepted!: () => void
+    let failed!: (error: unknown) => void
+    const dispatch = new Promise<void>((resolve, reject) => { accepted = resolve; failed = reject })
+    managed.pendingAuthDispatch = dispatch
+    const run = this.sendMessage(sessionId, row.content, undefined, row.attachments,
+      { hidden: true, references: row.references, skillSlugs: record.input.skillSlugs, thinkingLevel: record.input.thinkingLevel }, row.id, undefined, accepted, undefined,
+      { authContinuation: { record, owner } })
+    void run.then(accepted, async error => {
+      if (managed.pendingAuthContinuation === record && record.phase === 'ready') {
+        const card = managed.messages.find(message => message.role === 'auth-request' && message.authRequestId === result.requestId)
+        if (card) { card.authStatus = 'pending'; card.authError = 'Continuation was not delivered. Sign in again to retry.' }
+        this.persistSession(managed)
+        try { await this.flushSessionStrict(sessionId) } catch (writeError) {
+          sessionLog.error(`Session ${sessionId}: auth recovery state could not be saved`, writeError)
+        }
+      }
+      failed(error)
+      sessionLog.error(`Session ${sessionId}: auth continuation failed`, error)
+    }).finally(() => {
+      if (managed.pendingAuthDispatch === dispatch) managed.pendingAuthDispatch = undefined
+    })
+    return dispatch
+  }
+
+  /** A sign-in can answer live requests, but never silently arm historical cards. */
+  async completeAuthRequestsForSource(
     workspaceId: string,
     sourceSlug: string,
     result: { email?: string; workspace?: string },
-    boundRequests: Array<{ sessionId: string; authRequestId: string }> = [],
-  ): string[] {
-    const bound = new Map(boundRequests.map(r => [r.sessionId, r.authRequestId]))
+    boundRequests: Array<{ sessionId: string; authRequestId: string; authOwnerToken?: string }> = [],
+  ): Promise<string[]> {
+    const bound = new Map(boundRequests.map(request => [request.sessionId, request]))
     const resumed: string[] = []
+    const completions: Promise<void>[] = []
     for (const managed of this.sessions.values()) {
       if (managed.workspace.id !== workspaceId) continue
-      // The fresh tokens void any refresh-failure cooldown, whether or not the session was waiting
       managed.tokenRefreshManager.clearCooldown(sourceSlug)
-
-      let requestId: string | undefined
-      const pending = managed.pendingAuthRequest
-      if (pending) {
-        // A session holds one request at a time; answer it only if it is this source's sign-in
-        if (pending.type !== 'credential' && pending.sourceSlug === sourceSlug) requestId = pending.requestId
-      } else {
-        const boundId = bound.get(managed.id)
-        if (boundId && managed.messages.some(m =>
-          m.role === 'auth-request' && m.authRequestId === boundId && m.authStatus === 'pending')) {
-          requestId = boundId
-        }
-      }
-      if (!requestId) continue
-
+      const request = managed.pendingAuthRequest
+      const owner = managed.pendingAuthOwner
+      const binding = bound.get(managed.id)
+      if (!request || request.type === 'credential' || request.sourceSlug !== sourceSlug || !owner
+        || !this.isAuthRequestCurrent(managed.id, request.requestId, owner.token)
+        || binding && (binding.authRequestId !== request.requestId || binding.authOwnerToken !== owner.token)) continue
       resumed.push(managed.id)
-      this.completeAuthRequest(managed.id, { requestId, sourceSlug, success: true, ...result })
-        .catch(error => sessionLog.error(`Failed to resume session ${managed.id} after ${sourceSlug} sign-in:`, error))
+      completions.push(this.completeAuthRequest(managed.id, { requestId: request.requestId, sourceSlug, success: true, ...result }, owner.token))
     }
+    await Promise.all(completions)
     return resumed
   }
 
@@ -3373,15 +3498,15 @@ export class SessionManager implements ISessionManager {
   async handleCredentialInput(
     sessionId: string,
     requestId: string,
-    response: import('@craft-agent/shared/protocol').CredentialResponse
+    response: import('@craft-agent/shared/protocol').CredentialResponse,
+    clientId?: string,
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
-    if (!managed?.pendingAuthRequest) {
-      sessionLog.warn(`Cannot handle credential input - no pending auth request for session ${sessionId}`)
-      return
-    }
-
-    const request = managed.pendingAuthRequest as CredentialAuthRequest
+    if (!managed) return
+    const candidate = managed.pendingAuthRequest ?? managed.pendingAuthContinuation?.request
+    if (!candidate || candidate.type !== 'credential') return
+    const ownerToken = await this.prepareAuthRequest(sessionId, requestId, managed.workspace.id, candidate.sourceSlug, clientId)
+    const request = candidate as CredentialAuthRequest
     if (request.requestId !== requestId) {
       sessionLog.warn(`Credential request ID mismatch: expected ${request.requestId}, got ${requestId}`)
       return
@@ -3393,7 +3518,7 @@ export class SessionManager implements ISessionManager {
         sourceSlug: request.sourceSlug,
         success: false,
         cancelled: true,
-      })
+      }, ownerToken)
       return
     }
 
@@ -3443,7 +3568,7 @@ export class SessionManager implements ISessionManager {
         requestId,
         sourceSlug: request.sourceSlug,
         success: true,
-      })
+      }, ownerToken)
     } catch (error) {
       sessionLog.error(`Failed to save credentials for ${request.sourceSlug}:`, error)
       await this.completeAuthRequest(sessionId, {
@@ -3451,7 +3576,7 @@ export class SessionManager implements ISessionManager {
         sourceSlug: request.sourceSlug,
         success: false,
         error: error instanceof Error ? error.message : 'Failed to save credentials',
-      })
+      }, ownerToken)
     }
   }
 
@@ -3690,6 +3815,11 @@ export class SessionManager implements ISessionManager {
     if (storedSession) {
       managed.messages = (storedSession.messages || []).map(storedToMessage)
       this.markUnacceptedInputForRestore(managed)
+      const auth = managed.pendingAuthContinuation
+      if (auth?.phase === 'ready' && managed.messages.some(message => message.id === auth.continuationMessageId && message.pendingDelivery)) {
+        const card = managed.messages.find(message => message.authRequestId === auth.request.requestId && message.role === 'auth-request')
+        if (card) card.authStatus = 'pending'
+      }
       managed.tokenUsage = storedSession.tokenUsage
       managed.pendingPlanExecution = this.reconcileStoredPendingPlanExecution(managed, storedSession)
       managed.lastReadMessageId = storedSession.lastReadMessageId
@@ -3714,6 +3844,7 @@ export class SessionManager implements ISessionManager {
       // Queue recovery: find orphaned queued messages from crash/restart and re-queue them
       const orphanedQueued = managed.messages.filter(m =>
         m.role === 'user' && m.isQueued === true && !m.queuedRestoreId
+        && m.id !== managed.pendingAuthContinuation?.continuationMessageId
         && !(managed.pendingPlanExecution?.failed && m.id === managed.pendingPlanExecution.approvalMessageId)
       )
       if (orphanedQueued.length > 0) {
@@ -5474,8 +5605,14 @@ export class SessionManager implements ISessionManager {
       }
 
       // Wire up onAuthRequest to add auth message to conversation and pause execution
-      managed.agent.onAuthRequest = (request) => {
+      const authAgent = managed.agent
+      authAgent.onAuthRequest = (request) => {
+        if (this.sessions.get(managed.id) !== managed || managed.agent !== authAgent
+          || !managed.isProcessing || managed.stopRequested || managed.stopBarrier
+          || managed.foregroundInputOwner?.agent !== authAgent
+          || managed.foregroundInputOwner.generation !== managed.processingGeneration) return
         sessionLog.info(`Auth request for session ${managed.id}:`, request.type, request.sourceSlug)
+        if (managed.pendingAuthRequestId === request.requestId && managed.pendingAuthContinuation?.phase === 'waiting') return
 
         // Create auth-request message
         const authMessage: Message = {
@@ -5504,10 +5641,25 @@ export class SessionManager implements ISessionManager {
         // Add to session messages
         managed.messages.push(authMessage)
 
+        // Snapshot only the server-known admitted input, before a later turn can replace it.
+        this.invalidatePendingAuth(managed)
+        managed.pendingAuthContinuation = {
+          version: 1, request: structuredClone(request), projectId: managed.projectId!,
+          originMessageIds: [...(managed.lastSentMessageIds ?? [])],
+          input: {
+            text: managed.lastSentMessage ?? '',
+            references: structuredClone(activationTurnReferences(managed.messages, managed.lastSentMessageIds, managed.lastSentOptions)),
+            attachments: structuredClone(managed.lastSentStoredAttachments),
+            skillSlugs: structuredClone(managed.lastSentOptions?.skillSlugs),
+            thinkingLevel: managed.lastSentOptions?.thinkingLevel,
+          },
+          continuationMessageId: generateMessageId(), phase: 'waiting',
+        }
+
         // Store pending auth request for later resolution
         managed.pendingAuthRequestId = request.requestId
         managed.pendingAuthRequest = request
-        managed.pendingAuthOwner = { generation: managed.processingGeneration, stopEpoch: managed.stopEpoch ?? 0 }
+        managed.pendingAuthOwner = { generation: managed.processingGeneration, stopEpoch: managed.stopEpoch ?? 0, token: randomUUID() }
 
         // Interrupt execution (like SubmitPlan)
         if (managed.isProcessing && managed.agent) {
@@ -5526,16 +5678,17 @@ export class SessionManager implements ISessionManager {
           this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage, backgroundTasksAlive: this.keepBackgroundTasksAlive }, managed.workspace.id)
         }
 
-        // Emit auth_request event to renderer
-        this.sendEvent({
-          type: 'auth_request',
-          sessionId: managed.id,
-          message: authMessage,
-          request: request,
-        }, managed.workspace.id)
-
-        // Persist session state
+        // Publish a resumable card only after its full continuation is durable.
+        const owner = managed.pendingAuthOwner
         this.persistSession(managed)
+        void this.flushSessionStrict(managed.id).then(() => {
+          if (!this.isAuthRequestCurrent(managed.id, request.requestId, owner.token)) return
+          this.sendEvent({ type: 'auth_request', sessionId: managed.id, message: authMessage, request }, managed.workspace.id)
+        }).catch(error => {
+          sessionLog.error(`Session ${managed.id}: authentication request could not be saved`, error)
+          this.sendEvent({ type: 'error', sessionId: managed.id,
+            error: 'Authentication request could not be saved. The input is retained; retry after storage is available.' }, managed.workspace.id)
+        })
 
         // OAuth flow is client-driven via performOAuth() (preload).
         // The UI calls window.electronAPI.performOAuth() when user clicks "Sign in".
@@ -8102,12 +8255,13 @@ export class SessionManager implements ISessionManager {
      * references were validated and persisted by the server when the
      * interrupted turn started.
      */
-    internalContinuation?: { activationReferences?: Reference[]; authRetry?: { generation: number; stopEpoch: number } },
+    internalContinuation?: { activationReferences?: Reference[]; authRetry?: { generation: number; stopEpoch: number }; authContinuation?: { record: PendingAuthContinuationRecord; owner: NonNullable<ManagedSession['pendingAuthOwner']> } },
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
     }
+    const authContinuation = internalContinuation?.authContinuation
     const admissionEpoch = managed.stopEpoch ?? 0
     const clientMessageId = !existingMessageId && !_isAuthRetry ? options?.optimisticMessageId : undefined
     if (clientMessageId !== undefined && (!clientMessageId || clientMessageId.length > 180)) {
@@ -8141,7 +8295,9 @@ export class SessionManager implements ISessionManager {
     const acknowledge = (messageId: string) => { durable = true; finishCommit(); onAck?.(messageId) }
     const assertAdmission = () => {
       if (this.sessions.get(sessionId) !== managed || (managed.stopEpoch ?? 0) !== admissionEpoch
-        || clientMessageId && managed.cancelledInputIds?.includes(clientMessageId)) {
+        || clientMessageId && managed.cancelledInputIds?.includes(clientMessageId)
+        || authContinuation && (managed.pendingAuthContinuation !== authContinuation.record
+          || !this.isAuthRequestCurrent(sessionId, authContinuation.record.request.requestId, authContinuation.owner.token))) {
         throw new Error('INPUT_CANCELLED: input was stopped before delivery')
       }
     }
@@ -8155,7 +8311,9 @@ export class SessionManager implements ISessionManager {
       const trackedApprovalExecutionId = trackedPlanRecord?.executionId
       const approvalStopEpoch = managed.stopEpoch ?? 0
       const authRetry = _isAuthRetry ? internalContinuation?.authRetry : undefined
-      const ownsAuthRetry = () => (managed.stopEpoch ?? 0) === admissionEpoch
+      const ownsAuthRetry = () => (!authContinuation || managed.pendingAuthContinuation === authContinuation.record
+        && this.isAuthRequestCurrent(sessionId, authContinuation.record.request.requestId, authContinuation.owner.token))
+        && (managed.stopEpoch ?? 0) === admissionEpoch
         && !(clientMessageId && managed.cancelledInputIds?.includes(clientMessageId))
         && (!authRetry || this.sessions.get(sessionId) === managed
         && managed.processingGeneration === authRetry.generation
@@ -8402,6 +8560,17 @@ export class SessionManager implements ISessionManager {
         || queueReplay && managed.pendingQueueReplay !== queueReplay
       )) return
       const messageForModel = formatReferencesForModel(message, references)
+      // Only a validated, genuinely new input supersedes auth. An idempotent
+      // resend or a rejected payload must leave the existing card usable.
+      const invalidatedAuthRequestId = managed.pendingAuthRequestId ?? managed.pendingAuthContinuation?.request.requestId
+      if (!existingMessageId && !_isAuthRetry && !options?.hidden && !internalContinuation
+        && this.invalidatePendingAuth(managed)) {
+        this.persistSession(managed)
+        await this.flushSessionStrict(sessionId)
+        assertAdmission()
+        if (invalidatedAuthRequestId) this.sendEvent({ type: 'auth_completed', sessionId,
+          requestId: invalidatedAuthRequestId, success: false, cancelled: true }, managed.workspace.id)
+      }
       const recoveredActivationSteers = !activationSlot && pendingAutoRetry
         && (!pendingAutoRetry.committed || (pendingAutoRetry.ownedSteers?.length ?? 0) > 0)
         ? this.recoverActivationSteers(managed, pendingAutoRetry)
@@ -8551,6 +8720,9 @@ export class SessionManager implements ISessionManager {
       if (existingMessageId) {
         // Find existing message (already added when queued)
         userMessage = existingUserMessage!
+        // The auth outbox was strictly persisted before dispatch. Its caller
+        // waits for this validated admission, not for the entire model turn.
+        if (authContinuation) acknowledge(userMessage.id)
       } else {
         // Create new message
         userMessage = {
@@ -8690,6 +8862,7 @@ export class SessionManager implements ISessionManager {
       managed.streamingText = ''
       managed.streamingTurnId = undefined
       managed.processingGeneration++
+      if (authContinuation) authContinuation.owner.generation = managed.processingGeneration
       admittedGeneration = managed.processingGeneration
       if (queueReplay) queueReplay.processingGeneration = managed.processingGeneration
       if (authRetry) authRetry.generation = managed.processingGeneration
@@ -8948,7 +9121,8 @@ export class SessionManager implements ISessionManager {
           const stoppedMeanwhile = (managed.stopEpoch ?? 0) !== turnStopEpoch
           const superseded = managed.processingGeneration !== myGeneration
           const deleted = this.sessions.get(sessionId) !== managed
-          if (stoppedMeanwhile || superseded || deleted) {
+          const authRevoked = authContinuation && !this.isAuthRequestCurrent(sessionId, authContinuation.record.request.requestId, authContinuation.owner.token)
+          if (stoppedMeanwhile || superseded || deleted || authRevoked) {
             sessionLog.info(`Turn for session ${sessionId} not started: ${deleted ? 'deleted' : superseded ? 'superseded' : 'stopped'} before it began`)
             sendSpan.mark('chat.not_started')
             if (deleted) return  // the finally block below cleans up
@@ -8964,6 +9138,7 @@ export class SessionManager implements ISessionManager {
           }
 
           sendSpan.mark('chat.starting')
+          managed.foregroundInputOwner = { agent, generation: myGeneration }
           const chatIterator = agent.chat(messageForModel, modelInputAttachments.attachments, Object.keys(chatOptions).length > 0 ? chatOptions : undefined)
           sessionLog.info('Got chat iterator, starting iteration...')
 
@@ -8982,6 +9157,12 @@ export class SessionManager implements ISessionManager {
             if (event.type === 'input_accepted' && !approvalHandoffMarked) {
               approvalHandoffMarked = true
               if ((managed.stopEpoch ?? 0) !== turnStopEpoch || managed.stopRequested) continue
+              if (authContinuation && managed.pendingAuthContinuation === authContinuation.record) {
+                authContinuation.record.phase = 'delivered'
+                managed.pendingAuthRequest = undefined
+                managed.pendingAuthRequestId = undefined
+                managed.pendingAuthOwner = undefined
+              }
               if (!trackedPlanRecord) {
                 if (queueReplay && managed.pendingQueueReplay === queueReplay) managed.pendingQueueReplay = undefined
                 for (const id of managed.lastSentMessageIds ?? []) {
@@ -9299,9 +9480,10 @@ export class SessionManager implements ISessionManager {
     const stopRecord = managed?.pendingPlanExecution
     // The delivery tracker survives until producer acknowledgement. Hard Stop
     // also owns a queued approval or a replay still waiting for turn admission.
-    const stoppingApproval = !silent && stopRecord?.executionDispatched && stopRecord.approvalMessageId && !stopRecord.failed
+    let stoppingApproval = !silent && stopRecord?.executionDispatched && stopRecord.approvalMessageId && !stopRecord.failed
     if (!managed || !managed.isProcessing && !managed.autoRetryTimer && !managed.autoRetryPending?.ownedSteers?.length
       && managed.messageQueue.length === 0 && !stoppingApproval && !managed.pendingQueueReplay && !managed.authRetryInProgress && !managed.pendingAuthRequest
+      && !['waiting', 'ready'].includes(managed.pendingAuthContinuation?.phase ?? '')
       && !managed.pendingSendAdmissions?.size) {
       return // Not processing, nothing to cancel
     }
@@ -9325,23 +9507,45 @@ export class SessionManager implements ISessionManager {
       // Unblock a new epoch even if an old validation read never returns.
       for (const release of [...(managed.pendingSendAdmissions?.keys() ?? [])]) release()
       managed.authRetryInProgress = false
-      if (managed.pendingAuthRequest) {
-        const requestId = managed.pendingAuthRequestId
-        const card = managed.messages.find(message => message.role === 'auth-request'
-          && message.authRequestId === requestId && message.authStatus === 'pending')
-        if (card) card.authStatus = 'cancelled'
-        managed.pendingAuthRequest = undefined
-        managed.pendingAuthRequestId = undefined
-        managed.pendingAuthOwner = undefined
-        if (requestId) this.sendEvent({ type: 'auth_completed', sessionId, requestId, success: false, cancelled: true }, managed.workspace.id)
-        this.persistSession(managed)
-      }
+      const stoppedInputIds = [...(managed.lastSentMessageIds ?? [])]
+      const cancelledAuthRequestId = managed.pendingAuthRequestId ?? managed.pendingAuthContinuation?.request.requestId
+      const authCancelled = this.invalidatePendingAuth(managed)
+      if (authCancelled) this.persistSession(managed)
       // A Pi cancellation receipt is ordered after all earlier consumption receipts.
       // New turn admission waits for this barrier, so an old abort cannot hit it.
       const stoppedAgent = managed.agent
       // Keep background agents alive where the backend supports reply-only Stop.
       if (stoppedAgent && !stoppedAgent.stopTurn?.()) {
         stoppedAgent.forceAbort(AbortReason.UserStop)
+      }
+      if (stoppedAgent?.settleStoppedTurnInput
+        && managed.foregroundInputOwner?.agent === stoppedAgent
+        && managed.foregroundInputOwner.generation === stoppedGeneration) {
+        const delivered = await stoppedAgent.settleStoppedTurnInput()
+        if (this.sessions.get(sessionId) !== managed || managed.processingGeneration !== stoppedGeneration) return
+        if (delivered) {
+          for (const id of stoppedInputIds) {
+            const input = managed.messages.find(message => message.id === id && message.role === 'user')
+            if (input) { input.pendingDelivery = undefined; input.isQueued = false }
+          }
+          if (managed.pendingQueueReplay?.entries.every(entry => entry.messageId && stoppedInputIds.includes(entry.messageId))) {
+            managed.pendingQueueReplay = undefined
+          }
+          if (stopRecord?.approvalMessageId && stoppedInputIds.includes(stopRecord.approvalMessageId)
+            && managed.pendingPlanExecution === stopRecord) {
+            stoppingApproval = false
+            managed.pendingPlanExecution = undefined
+            if (stopRecord.executionId) (managed.pendingPlanReceiptRetirements ??= new Set()).add(stopRecord.executionId)
+          }
+          this.persistSession(managed)
+          try { await this.flushSessionStrict(sessionId) }
+          catch (error) {
+            // A proven delivery cannot become retryable when its receipt write
+            // fails. Preserve live retirement and retry with subsequent history.
+            sessionLog.error(`Session ${sessionId}: stopped input receipt could not be saved; retaining live acceptance`, error)
+            this.persistSession(managed)
+          }
+        }
       }
       if (stoppedAgent?.settlePendingSteers) {
         const undelivered = await stoppedAgent.settlePendingSteers()
@@ -9370,7 +9574,7 @@ export class SessionManager implements ISessionManager {
       // queued-input restore below retains each original payload.
       this.recoverActivationSteers(managed)
       this.recoverPendingSteers(managed)
-      if (stoppingApproval) {
+      if (stoppingApproval && stopRecord) {
         // The plan outbox restores its consumed snapshot. Restoring the
         // approval control message through the ordinary queue would duplicate it.
         managed.messageQueue = managed.messageQueue.filter(entry => entry.messageId !== stopRecord.approvalMessageId)
@@ -9463,11 +9667,13 @@ export class SessionManager implements ISessionManager {
         }).catch(error => sessionLog.error(`Session ${sessionId}: Stop-funnel cancellation failed`, error))
       }
 
-      if (pendingRestoreMessageIds.length > 0) {
+      if (pendingRestoreMessageIds.length > 0 || authCancelled) {
         this.persistSession(managed)
         await this.flushSessionStrict(managed.id)
       }
 
+      if (authCancelled && cancelledAuthRequestId) this.sendEvent({ type: 'auth_completed', sessionId,
+        requestId: cancelledAuthRequestId, success: false, cancelled: true }, managed.workspace.id)
       this.sendEvent({
         type: 'interrupted',
         sessionId,
@@ -9874,7 +10080,15 @@ export class SessionManager implements ISessionManager {
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed || originatingGeneration !== undefined && managed.processingGeneration !== originatingGeneration) return
+    // Stop owns receipt settlement and restoration. An iterator may finish before its
+    // persistent SDK reader sees the final delivery proof; never restore ahead of it.
+    if (managed.stopBarrier) {
+      try { await managed.stopBarrier } catch { /* Stop reports its own persistence failure. */ }
+      if (this.sessions.get(sessionId) !== managed
+        || originatingGeneration !== undefined && managed.processingGeneration !== originatingGeneration) return
+    }
     const generation = originatingGeneration ?? managed.processingGeneration
+    if (managed.foregroundInputOwner?.generation === generation) managed.foregroundInputOwner = undefined
     const cleanupStopEpoch = managed.stopEpoch ?? 0
     const ownsCleanup = () => this.sessions.get(sessionId) === managed
       && managed.processingGeneration === generation && (managed.stopEpoch ?? 0) === cleanupStopEpoch
@@ -10432,12 +10646,13 @@ export class SessionManager implements ISessionManager {
    * - New unified auth flow (via handleCredentialInput)
    * - Legacy callback flow (via pendingCredentialResolvers)
    */
-  async respondToCredential(sessionId: string, requestId: string, response: import('@craft-agent/shared/protocol').CredentialResponse): Promise<boolean> {
+  async respondToCredential(sessionId: string, requestId: string, response: import('@craft-agent/shared/protocol').CredentialResponse, clientId?: string): Promise<boolean> {
     // First, check if this is a new unified auth flow request
     const managed = this.sessions.get(sessionId)
-    if (managed?.pendingAuthRequest && managed.pendingAuthRequest.requestId === requestId) {
+    const request = managed?.pendingAuthRequest ?? managed?.pendingAuthContinuation?.request
+    if (request?.requestId === requestId && request.type === 'credential') {
       sessionLog.info(`Credential response (unified flow) for ${requestId}: cancelled=${response.cancelled}`)
-      await this.handleCredentialInput(sessionId, requestId, response)
+      await this.handleCredentialInput(sessionId, requestId, response, clientId)
       return true
     }
 

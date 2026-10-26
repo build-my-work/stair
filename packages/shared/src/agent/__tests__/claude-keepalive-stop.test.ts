@@ -15,7 +15,7 @@ describe('ClaudeAgent keep-alive Stop', () => {
     agent.currentQuery = agent.fakeQuery
     agent.persistentThinkingKey = claudeThinkingKey(thinking)
     agent.pendingSteers = { pause: () => {} }
-    await agent.beginPersistentTurn({ type: 'user', message: { role: 'user', content: 'hello' }, parent_tool_use_id: null }, {}, thinking)
+    await agent.beginPersistentTurn({ type: 'user', uuid: 'foreground-input', message: { role: 'user', content: 'hello' }, parent_tool_use_id: null }, {}, thinking)
     return agent
   }
 
@@ -148,6 +148,68 @@ describe('ClaudeAgent keep-alive Stop', () => {
       failing.stopTurn()
       await new Promise(resolve => setTimeout(resolve, 0))
       expect(failingController.signal.aborted).toBe(true)
+    })
+
+    it('waits for the stopped result and retains a matching late delivery proof without emitting its reply', async () => {
+      const agent = withInterrupt(await agentInPersistentTurn(), async () => {})
+      const output = createPushableInputStream<any>()
+      agent.persistentIterator = output.stream[Symbol.asyncIterator]()
+      agent.startPersistentConsumer()
+      agent.stopTurn()
+      let settled = false
+      const receipt = agent.settleStoppedTurnInput().then((accepted: boolean) => { settled = true; return accepted })
+      output.push({ type: 'assistant', parent_tool_use_id: null, user_message_uuid: 'foreground-input' })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(settled).toBe(false)
+      output.push({ type: 'result', num_turns: 1, user_message_uuid: 'foreground-input' })
+      expect(await receipt).toBe(true)
+      expect(agent.currentQuery).toBe(agent.fakeQuery)
+      expect(agent.persistentAbortController.signal.aborted).toBe(false)
+      output.end()
+    })
+
+    it('retains consumer delivery evidence even when Stop ends the unread foreground channel', async () => {
+      const agent = withInterrupt(await agentInPersistentTurn(), async () => {})
+      const output = createPushableInputStream<any>()
+      agent.persistentIterator = output.stream[Symbol.asyncIterator]()
+      agent.startPersistentConsumer()
+      output.push({ type: 'assistant', parent_tool_use_id: null, user_message_uuid: 'foreground-input' })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      agent.stopTurn()
+      const receipt = agent.settleStoppedTurnInput()
+      output.push({ type: 'result', num_turns: 0 })
+      expect(await receipt).toBe(true)
+      output.end()
+    })
+
+    it('rejects unrelated, replayed, subagent and progress frames when settling a stopped input', async () => {
+      const agent = withInterrupt(await agentInPersistentTurn(), async () => {})
+      const output = createPushableInputStream<any>()
+      agent.persistentIterator = output.stream[Symbol.asyncIterator]()
+      agent.startPersistentConsumer()
+      agent.stopTurn()
+      const receipt = agent.settleStoppedTurnInput()
+      output.push({ type: 'assistant', parent_tool_use_id: null, user_message_uuid: 'old-input' })
+      output.push({ type: 'assistant', parent_tool_use_id: 'child', user_message_uuid: 'foreground-input' })
+      output.push({ type: 'assistant', parent_tool_use_id: null, user_message_uuid: 'foreground-input', isReplay: true })
+      output.push({ type: 'stream_event', parent_tool_use_id: null, user_message_uuid: 'foreground-input', event: { type: 'ping' } })
+      output.push({ type: 'auth_status', user_message_uuid: 'foreground-input' })
+      output.push({ type: 'result', num_turns: 0, user_message_uuid: 'foreground-input' })
+      expect(await receipt).toBe(false)
+      output.end()
+    })
+
+    it('settles the stopped receipt on hard-stop fallback and never reuses it for the next input', async () => {
+      const agent = withInterrupt(await agentInPersistentTurn(), async () => {})
+      agent.stoppedTurnResultWaitMs = 5
+      agent.stopTurn()
+      expect(await agent.settleStoppedTurnInput()).toBe(false)
+      expect(agent.currentQuery).toBeNull()
+      agent.persistentInput = createPushableInputStream()
+      agent.currentQuery = agent.fakeQuery
+      await agent.beginPersistentTurn({ type: 'user', uuid: 'next-input', message: { role: 'user', content: 'next' }, parent_tool_use_id: null }, {}, { thinking: { type: 'adaptive' }, effort: 'high' })
+      expect(await agent.settleStoppedTurnInput()).toBe(false)
+      agent.forceAbort(AbortReason.UserStop)
     })
 
     it('declines without a live keep-alive turn, so the caller hard-stops', async () => {

@@ -51,6 +51,16 @@ function request(overrides: Record<string, unknown> = {}) {
 }
 
 describe('oauth:start single flight', () => {
+  it('does not publish a prepared flow after its auth owner was cancelled', async () => {
+    const { start, flowStore, releaseNext } = harness({ manualPrepare: true })
+    let current = true
+    const starting = start(request({ assertCurrent: () => { if (!current) throw new Error('AUTH_REQUEST_CANCELLED') } }))
+    const failure = starting.catch(error => error)
+    current = false
+    releaseNext()
+    expect((await failure).message).toBe('AUTH_REQUEST_CANCELLED')
+    expect(flowStore.getLiveForSource('ws-1', 'gmail')).toBeNull()
+  })
   it('a second start for the same source joins the live flow instead of opening another sign-in', async () => {
     const { flowStore, start, prepareCount } = harness()
 
@@ -144,7 +154,7 @@ describe('completeOAuthFlow', () => {
       credManager: { exchangeAndStore: exchange },
       sessionManager: {
         completeAuthRequest: async (...args) => { calls.completed.push(args) },
-        completeAuthRequestsForSource: (...args) => { calls.fanOut.push(args); return ['session-1', 'session-2'] },
+        completeAuthRequestsForSource: async (...args) => { calls.fanOut.push(args); return ['session-1', 'session-2'] },
       },
       pushSourcesChanged: (workspaceId) => calls.pushed.push(workspaceId),
       logger,
@@ -177,6 +187,48 @@ describe('completeOAuthFlow', () => {
     })
   })
 
+  it('a cancellation during token exchange prevents the old flow from resuming cards', async () => {
+    let release!: () => void
+    const { flowStore, start, calls, complete } = completionHarness(() => new Promise(resolve => {
+      release = () => resolve({ success: true })
+    }))
+    const owner = await start(request({ sessionId: 'session-1', authRequestId: 'auth-1', authOwnerToken: 'owner-1' }))
+    const state = 'authUrl' in owner ? owner.state : ''
+    const completing = complete(state)
+    const duplicate = complete(state)
+    flowStore.remove(state)
+    release()
+    const outcome = await completing
+    expect(outcome.success).toBe(false)
+    expect(await duplicate).toEqual(outcome)
+    expect(calls.fanOut).toHaveLength(0)
+    expect(calls.completed).toHaveLength(0)
+  })
+
+  it('duplicate callbacks share one exchange so a consumed authorization code cannot cancel its winner', async () => {
+    let exchanges = 0
+    let release!: () => void
+    const { start, calls, complete } = completionHarness(async () => {
+      if (++exchanges > 1) throw new Error('invalid_grant: authorization code already consumed')
+      return new Promise(resolve => { release = () => resolve({ success: true }) })
+    })
+    const owner = await start(request({ sessionId: 'session-1', authRequestId: 'auth-1', authOwnerToken: 'owner-1' }))
+    const state = 'authUrl' in owner ? owner.state : ''
+    const first = complete(state)
+    const second = complete(state)
+    const outcomes = Promise.allSettled([first, second])
+    await Promise.resolve()
+    release()
+    expect(await outcomes).toEqual([
+      { status: 'fulfilled', value: { success: true } },
+      { status: 'fulfilled', value: { success: true } },
+    ])
+    expect(exchanges).toBe(1)
+    expect(calls.fanOut).toHaveLength(1)
+    expect(calls.pushed).toEqual(['ws-1'])
+    expect(calls.fanOut[0]?.[3]).toEqual([{ sessionId: 'session-1', authRequestId: 'auth-1', authOwnerToken: 'owner-1' }])
+  })
+
   it('a failed exchange fails only the card that started the flow; joined cards stay pending', async () => {
     const { flowStore, start, calls, complete } = completionHarness(async () => ({ success: false, error: 'invalid_grant' }))
     const owner = await start(request({ sessionId: 'session-1', authRequestId: 'auth-1' }))
@@ -203,6 +255,28 @@ describe('completeOAuthFlow', () => {
     expect(flowStore.getLiveForSource('ws-1', 'gmail')).toBeNull()
     const status = flowStore.getStatus(owner.flowId, 'ws-1')
     expect(status.live === false && status.outcome?.error).toBe('network down')
+  })
+
+  it('duplicate callbacks share a provider failure and end the flow once', async () => {
+    let exchanges = 0
+    let fail!: (error: Error) => void
+    const { flowStore, start, calls, complete } = completionHarness(() => {
+      exchanges++
+      return new Promise((_resolve, reject) => { fail = reject })
+    })
+    const owner = await start(request())
+    const state = 'authUrl' in owner ? owner.state : ''
+    const outcomes = Promise.allSettled([complete(state), complete(state)])
+    const error = new Error('network down')
+    fail(error)
+    expect(await outcomes).toEqual([
+      { status: 'rejected', reason: error },
+      { status: 'rejected', reason: error },
+    ])
+    expect(exchanges).toBe(1)
+    expect(flowStore.getByState(state)).toBeNull()
+    expect(calls.fanOut).toHaveLength(0)
+    expect(calls.completed).toHaveLength(0)
   })
 
   it('only the owning client can complete over RPC', async () => {

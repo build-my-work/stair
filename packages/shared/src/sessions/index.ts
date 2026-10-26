@@ -19,6 +19,7 @@ export type {
   SessionHeader,
   SessionPersistentField,
   PendingPlanExecutionRecord,
+  PendingAuthContinuationRecord,
 } from './types.ts';
 
 // Field constants

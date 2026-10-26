@@ -1671,6 +1671,9 @@ export class PiAgent extends BaseAgent {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ content: string; isError: boolean }> {
+    const turnSignal = this.turnAbort.signal;
+    const onAuthRequest = this.onAuthRequest;
+    const onPlanSubmitted = this.onPlanSubmitted;
     try {
       // call_llm uses the shared pre-execution pipeline from BaseAgent
       if (toolName === 'call_llm') {
@@ -1758,7 +1761,25 @@ export class PiAgent extends BaseAgent {
       }
 
       const ctx = this.getSessionToolContext();
-      const result: SessionToolResult = await def.handler(ctx, args);
+      // Keep the cached context's lazy tool bindings, but handoffs belong to the
+      // invocation's turn even when a source refresh awaits across Stop/restart.
+      const invocationContext = Object.create(ctx) as SessionToolContext;
+      invocationContext.callbacks = {
+        onAuthRequest: request => {
+          if (turnSignal.aborted || turnSignal !== this.turnAbort.signal || !this._isProcessing) {
+            throw new Error('The tool invocation no longer belongs to the active turn.');
+          }
+          onAuthRequest?.(request);
+        },
+        onPlanSubmitted: planPath => {
+          if (turnSignal.aborted || turnSignal !== this.turnAbort.signal || !this._isProcessing) {
+            throw new Error('The tool invocation no longer belongs to the active turn.');
+          }
+          setLastPlanFilePath(this._sessionId, planPath);
+          onPlanSubmitted?.(planPath);
+        },
+      };
+      const result: SessionToolResult = await def.handler(invocationContext, args);
 
       // Convert ToolResult to subprocess response format
       const text = result.content.map(c => c.text).join('\n');

@@ -578,6 +578,7 @@ describe('createBrowserTools', () => {
     })
 
     it('echoes the filled value for a field known not to be a password', async () => {
+      mockFns.fill = async () => ({ isPassword: false })
       mockFns.evaluate = fakePageEvaluate(fakeInput('email', { name: 'email' }))
       const result = await executeTool(tools, 'browser_tool', { command: 'fill @e2 user@example.com' })
       expect(result.content[0].text).toContain('Filled element @e2 with "user@example.com"')
@@ -632,7 +633,7 @@ describe('createBrowserTools', () => {
 
     it('does not split batch on semicolons inside quoted text', async () => {
       const calls: string[] = []
-      mockFns.fill = async (ref, value) => { calls.push(`fill:${ref}:${value}`) }
+      mockFns.fill = async (ref, value) => { calls.push(`fill:${ref}:${value}`); return { isPassword: false } }
       mockFns.click = async (ref) => { calls.push(`click:${ref}`) }
       mockFns.evaluate = fakePageEvaluate(fakeInput('text'))
 

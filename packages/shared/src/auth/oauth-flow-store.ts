@@ -23,6 +23,7 @@ export interface OAuthFlowWaiter {
   clientId: string;
   sessionId?: string;
   authRequestId?: string;
+  authOwnerToken?: string;
 }
 
 /** How a flow ended, as reported to the clients that joined it. */
@@ -57,6 +58,7 @@ export interface PendingOAuthFlow {
   // Optional session binding (when initiated from auth request card)
   sessionId?: string;
   authRequestId?: string;
+  authOwnerToken?: string;
 
   /** Callers that joined this flow instead of starting their own */
   waiters: OAuthFlowWaiter[];
@@ -114,7 +116,8 @@ export class OAuthFlowStore {
     const flow = this.getByState(state);
     if (!flow) return null;
     const known = flow.waiters.some(w =>
-      w.clientId === waiter.clientId && w.sessionId === waiter.sessionId && w.authRequestId === waiter.authRequestId,
+      w.clientId === waiter.clientId && w.sessionId === waiter.sessionId && w.authRequestId === waiter.authRequestId
+      && w.authOwnerToken === waiter.authOwnerToken,
     );
     if (!known) flow.waiters.push(waiter);
     return flow;
@@ -129,6 +132,20 @@ export class OAuthFlowStore {
     if (!flow) return null;
     this.end(flow, outcome);
     return flow;
+  }
+
+  /** Revoke a disconnected owner's flows and remove its bindings from other live flows. */
+  removeOwnedByClient(clientId: string): PendingOAuthFlow[] {
+    const removed: PendingOAuthFlow[] = [];
+    for (const flow of this.flows.values()) {
+      if (flow.ownerClientId === clientId) {
+        this.end(flow, { success: false, error: 'The sign-in client disconnected. Sign in again to continue.' });
+        removed.push(flow);
+      } else {
+        flow.waiters = flow.waiters.filter(waiter => waiter.clientId !== clientId);
+      }
+    }
+    return removed;
   }
 
   /** Whether a flow is still live, or how it ended — scoped to the caller's workspace. */

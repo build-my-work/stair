@@ -1,10 +1,18 @@
 import { app, BrowserWindow, WebContentsView } from 'electron'
 import { readFileSync } from 'node:fs'
 import { BrowserCDP } from '../browser-cdp'
+import { executeBrowserToolCommand } from '../../../../../packages/shared/src/agent/browser-tool-runtime'
+import { redactBrowserPasswordFills } from '../../../../../packages/shared/src/agent/browser-tool-redaction'
+import type { BrowserWindowFns } from '../../../../../packages/shared/src/agent/browser-tools'
 
 // B01 / BROWSER-02: one hidden test window; no desktop input or user profile.
 app.setPath('userData', process.argv[2]!)
-const timeout = setTimeout(() => app.exit(2), 20_000)
+const results: Record<string, unknown> = {}
+let pendingProtocol = 'startup'
+const timeout = setTimeout(() => {
+  console.error(`BROWSER_RUNTIME_TIMEOUT=${JSON.stringify({ pendingProtocol, results })}`)
+  app.exit(2)
+}, 20_000)
 void app.whenReady().then(async () => {
   app.dock?.hide()
   const window = new BrowserWindow({ show: false, width: 800, height: 600 })
@@ -12,8 +20,16 @@ void app.whenReady().then(async () => {
   window.contentView.addChildView(view)
   view.setBounds({ x: 0, y: 0, width: 800, height: 600 })
   const page = view.webContents
+  // BrowserPaneManager enables hidden rendering while an Agent controls this view.
+  // Model that production contract so trusted input events are actually dispatched.
+  page.setBackgroundThrottling(false)
+  const sendCommand = page.debugger.sendCommand.bind(page.debugger)
+  page.debugger.sendCommand = async (method, params, sessionId) => {
+    pendingProtocol = `${method}${params?.type ? `:${params.type}` : ''}`
+    try { return await sendCommand(method, params, sessionId) }
+    finally { pendingProtocol = 'none' }
+  }
   const cdp = new BrowserCDP(page)
-  const results: Record<string, unknown> = {}
   let exitCode = 0
 
   async function loadControls(html: string): Promise<{ input: string; button: string }> {
@@ -86,6 +102,35 @@ void app.whenReady().then(async () => {
     rejected = false
     try { await cdp.fillElement(refs.input, 'Wrong target') } catch { rejected = true }
     results.redirectedFocus = { rejected, value: await page.executeJavaScript('entry.value'), other: await page.executeJavaScript('other.value') }
+
+    const privacy: unknown[] = []
+    for (const [mode, attributes] of [
+      ['password', 'type="password"'],
+      ['autocomplete', 'autocomplete="current-password"'],
+      ['masked', 'style="-webkit-text-security:disc"'],
+    ]) {
+      refs = await loadControls(`<input id="entry" aria-label="Input" ${attributes}><input id="other"><button>Commit</button><script>entry.addEventListener("beforeinput",()=>other.focus())</script>`)
+      let isPassword: boolean | undefined
+      const fns = {
+        fill: async (ref: string, value: string) => {
+          const result = await cdp.fillElement(ref, value)
+          isPassword = result.isPassword
+          return { isPassword }
+        },
+        evaluate: (expression: string) => page.executeJavaScript(expression),
+      } as unknown as BrowserWindowFns
+      const command = `fill ${refs.input} fixture-secret`
+      const { output } = await executeBrowserToolCommand({ command, fns, sessionId: 'fixture' })
+      const stored = redactBrowserPasswordFills('browser_tool', { command }, output)
+      privacy.push({
+        mode, isPassword,
+        ...await page.executeJavaScript('({value:entry.value,other:other.value,focus:document.activeElement.id})'),
+        outputHasSecret: output.includes('fixture-secret'),
+        storedHasSecret: JSON.stringify(stored)?.includes('fixture-secret') ?? false,
+        storedWasRedacted: JSON.stringify(stored)?.includes('[password: 14 characters]') ?? false,
+      })
+    }
+    results.privacy = privacy
 
     await loadControls('<div style="width:300px;height:300px">Canvas</div><input aria-label="Input"><button>Commit</button><script>window.__dragResult={down:false,up:false,x:0};document.addEventListener("mousedown",e=>{e.preventDefault();window.__dragResult.down=true});document.addEventListener("mousemove",e=>window.__dragResult.x=e.clientX);document.addEventListener("mouseup",()=>window.__dragResult.up=true)</script>')
     await cdp.drag(10, 10, 110, 10)

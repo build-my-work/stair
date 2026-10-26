@@ -79,6 +79,10 @@ it.skipIf(!hasDisplay)('B01 / BROWSER-02: verifies real page effects in one hidd
       crlfTextarea: 'Windows\ntext',
       cancelledInput: { rejected: true, value: '' },
       disabledFieldset: { rejected: true, value: 'Keep me' },
+      privacy: ['password', 'autocomplete', 'masked'].map(mode => ({
+        mode, isPassword: true, value: 'fixture-secret', other: '', focus: 'other',
+        outputHasSecret: false, storedHasSecret: false, storedWasRedacted: true,
+      })),
       drag: { down: true, up: true, x: 110 },
     })
     expect(redirectedFocus.other).toBe('')

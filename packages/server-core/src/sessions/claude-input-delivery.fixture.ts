@@ -243,3 +243,54 @@ test('an uncorrelated zero-turn resume result still restores context and retries
   expect(events.some(event => event.type === 'info' && event.message === 'Restoring conversation context...')).toBe(true)
   expect(events.some(event => event.type === 'complete')).toBe(true)
 })
+
+for (const delivered of [true, false]) {
+  test(`soft Stop settles ${delivered ? 'a late matching delivery' : 'a rejected input'} before recovery without killing the persistent query`, async () => {
+    const agent = createAgent(true)
+    const queryCount = queries
+    const ready = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const events: AgentEvent[] = []
+    produce = async (input, output) => {
+      ready.resolve()
+      await release.promise
+      if (delivered) output.push(delta(input.uuid, 'This old response must not reach the stopped transcript'))
+      output.push(result(input.uuid, { turns: delivered ? 1 : 0, blocked: !delivered }))
+    }
+    const running = collect(agent, 'Stopped input with its own UUID', events)
+    await ready.promise
+    expect(agent.stopTurn()).toBe(true)
+    let settled = false
+    const receipt = agent.settleStoppedTurnInput().then(accepted => { settled = true; return accepted })
+    await running
+    expect(settled).toBe(false)
+    expect(events.some(event => event.type === 'input_accepted')).toBe(false)
+    release.resolve()
+    expect(await receipt).toBe(delivered)
+    expect(events.some(event => event.type === 'text_delta' && event.text.includes('old response'))).toBe(false)
+    produce = async (input, output) => {
+      output.push(assistant(input.uuid))
+      output.push(result(input.uuid))
+    }
+    const next = await collect(agent, 'A new input after Stop settlement')
+    expect(next.filter(event => event.type === 'input_accepted')).toHaveLength(1)
+    expect(queries - queryCount).toBe(1)
+  })
+}
+
+test('a missing-skill failure at public chat entry cannot inherit the previous accepted input receipt', async () => {
+  const agent = createAgent(true)
+  produce = async (input, output) => {
+    output.push(assistant(input.uuid))
+    output.push(result(input.uuid))
+  }
+  await collect(agent, 'An earlier accepted input')
+  expect(await agent.settleStoppedTurnInput()).toBe(true)
+  const queryCount = queries
+  const failing = agent.chat('[skill:deleted-skill] New input never submitted')
+  const first = await failing.next()
+  expect(first.value).toMatchObject({ type: 'error' })
+  expect(await agent.settleStoppedTurnInput()).toBe(false)
+  expect(queries).toBe(queryCount)
+  await failing.return(undefined)
+})

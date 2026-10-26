@@ -384,6 +384,9 @@ export interface AgentBackend {
    */
   stopTurn?(): boolean;
 
+  /** Settle the stopped foreground input's delivery before restoring it; never waits for background tasks. */
+  settleStoppedTurnInput?(): Promise<boolean>;
+
   /**
    * WS2: register a sink for background task events that arrive BETWEEN turns
    * (when no chat() generator is being consumed) under keep-alive mode. Backends

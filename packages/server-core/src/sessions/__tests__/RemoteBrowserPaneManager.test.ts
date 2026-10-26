@@ -41,6 +41,15 @@ function createFakeServer(opts?: {
 }
 
 describe('RemoteBrowserPaneManager — wire packaging', () => {
+  it('preserves fill target privacy metadata across the Browser capability reply', async () => {
+    const { server, calls } = createFakeServer({ invokeImpl: () => ({ isPassword: true }) })
+    const bridge = new RemoteBrowserPaneManager({
+      sessionId: 'sess-1', workspaceId: 'ws-1', rpcServer: server, getHostClient: () => 'client-A',
+    })
+    expect(await bridge.fillElement('inst-1', '@e2', 'secret')).toEqual({ isPassword: true })
+    expect(calls[0]?.args).toMatchObject([{ method: 'fillElement', args: ['inst-1', '@e2', 'secret'] }])
+  })
+
   it('packages async methods into a BrowserCapabilityRequest with sessionId + workspaceId', async () => {
     const { server, calls } = createFakeServer({ invokeImpl: () => ({ url: 'https://x', title: 't' }) })
     const bridge = new RemoteBrowserPaneManager({

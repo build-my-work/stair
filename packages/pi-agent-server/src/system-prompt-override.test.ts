@@ -110,7 +110,7 @@ describe('createCraftResourceLoader', () => {
     return { cwd, marker };
   }
 
-  it('loads nothing but the override for Craft sessions (no project, global or built-in extensions)', async () => {
+  it('loads only the prompt and reference extensions for Craft sessions (no project, global or built-in extensions)', async () => {
     const { cwd, marker } = repoWithProjectExtension();
     const sessionPath = mkdtempSync(join(tmpdir(), 'craft-pi-session-'));
     dirs.push(sessionPath);
@@ -123,7 +123,10 @@ describe('createCraftResourceLoader', () => {
       });
       const { extensions, errors } = loader.getExtensions();
       expect(errors).toEqual([]);
-      expect(extensions.map(ext => ext.path)).toEqual([`<inline:${CRAFT_SYSTEM_PROMPT_EXTENSION_NAME}>`]);
+      expect(extensions.map(ext => ext.path)).toEqual([
+        `<inline:${CRAFT_SYSTEM_PROMPT_EXTENSION_NAME}>`,
+        '<inline:stair-reference-context>',
+      ]);
     }
     expect(existsSync(marker)).toBe(false);
   });

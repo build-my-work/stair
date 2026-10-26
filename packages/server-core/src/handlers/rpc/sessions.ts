@@ -327,8 +327,9 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
 
   // Respond to a credential request (secure auth input)
   // Returns true if the response was delivered, false if agent/session is gone
-  server.handle(RPC_CHANNELS.sessions.RESPOND_TO_CREDENTIAL, async (_ctx, sessionId: string, requestId: string, response: import('@craft-agent/shared/protocol').CredentialResponse) => {
-    return sessionManager.respondToCredential(sessionId, requestId, response)
+  server.handle(RPC_CHANNELS.sessions.RESPOND_TO_CREDENTIAL, async (ctx, sessionId: string, requestId: string, response: import('@craft-agent/shared/protocol').CredentialResponse) => {
+    assertDraftSessionAccess(ctx.workspaceId, sessionManager.getSessions(ctx.workspaceId ?? undefined), sessionId)
+    return sessionManager.respondToCredential(sessionId, requestId, response, ctx.clientId)
   })
 
   // ==========================================================================

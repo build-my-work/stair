@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { readFileSync } from 'node:fs'
+import { checkAttachmentSizes, DEFAULT_MAX_MESSAGE_BYTES } from '@craft-agent/shared/protocol'
 import { coerceInputText } from '../../../../lib/input-text'
 
 const source = readFileSync(new URL('../FreeFormInput.tsx', import.meta.url), 'utf8')
@@ -14,7 +15,8 @@ const submitted = new Bun.Transpiler({ loader: 'tsx' }).transformSync(`
     skills, sources, optimisticSourceSlugs, onSourcesChange, setOptimisticSourceSlugs,
     onSubmit, setInput, setAttachments, syncTimeoutRef, onInputChange, onAttachmentsChange,
     onReferencesChange, prevInputValueRef, richInputRef, liveInputRef, inputRef,
-    parseMentions, requestAnimationFrame, onWorkingDirectoryChange, homeDir } = context;
+    parseMentions, requestAnimationFrame, onWorkingDirectoryChange, homeDir,
+    checkAttachmentSizes, maxMessageBytesRef, showAttachmentSizeProblem } = context;
   ${between('  const submitMessage = React.useCallback(', '  // Listen for craft:submit-input')}
   return submitMessage;
 `)
@@ -34,8 +36,9 @@ const flush = new Bun.Transpiler({ loader: 'tsx' }).transformSync(`
 function setup(accepted: boolean) {
   const changes: unknown[] = []
   const submissions: unknown[][] = []
+  const sizeProblems: unknown[] = []
   const handlers = new Map<string, (event: any) => void>()
-  const attachment = { name: 'paste.txt', path: 'paste.txt', text: 'FULL_PAYLOAD' }
+  const attachment = { name: 'paste.txt', path: 'paste.txt', text: 'FULL_PAYLOAD', type: 'text', size: 12 }
   const quote = { quote: 'REFERENCE' }
   const context: any = {
     React: { useCallback: (fn: unknown) => fn, useEffect: (fn: () => unknown) => fn() },
@@ -56,9 +59,11 @@ function setup(accepted: boolean) {
     onPermissionModeChange: (value: string) => changes.push(['permission', value]),
     coerceInputText, buildPlanApprovalMessage: ({ draftInput }: { draftInput: string }) => `ACCEPT ${draftInput}`,
     planExecutionMode: () => 'ask',
+    checkAttachmentSizes, maxMessageBytesRef: { current: DEFAULT_MAX_MESSAGE_BYTES },
+    showAttachmentSizeProblem: (problem: unknown) => sizeProblems.push(problem),
   }
   context.changeInputRef = { current: context.onInputChange }
-  return { context, changes, submissions, handlers, attachment, quote }
+  return { context, changes, submissions, handlers, attachment, quote, sizeProblems }
 }
 
 describe('composer durable admission boundary', () => {
@@ -80,6 +85,18 @@ describe('composer durable admission boundary', () => {
     expect(f.context.inputRef.current).toBe('')
     expect(f.changes).toContainEqual(['saved-attachments', []])
     expect(f.changes).toContainEqual(['references', []])
+  })
+
+  it('keeps the complete draft when the upstream attachment budget rejects it', () => {
+    const f = setup(true)
+    f.attachment.size = DEFAULT_MAX_MESSAGE_BYTES
+    const submit = new Function('context', submitted)(f.context)
+    expect(submit()).toBe(false)
+    expect(f.submissions).toEqual([])
+    expect(f.changes).toEqual([])
+    expect(f.sizeProblems).toHaveLength(1)
+    expect(f.context.richInputRef.current.value).toBe('FAST_INPUT')
+    expect(f.context.referencesValue).toEqual([f.quote])
   })
 
   it('normal plan acceptance captures full live input without consuming it on journal failure', () => {
