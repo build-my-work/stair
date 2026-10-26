@@ -249,6 +249,7 @@ const EXPECTED_CHANNELS: string[] = [
   'projectFiles:applyPdfStateMutation',
   'projectFiles:createDirectory',
   'projectFiles:createDrawnixFile',
+  'projectFiles:createDrawnixFileWithContent',
   'projectFiles:createFile',
   'projectFiles:flushCompleted',
   'projectFiles:flushRequested',

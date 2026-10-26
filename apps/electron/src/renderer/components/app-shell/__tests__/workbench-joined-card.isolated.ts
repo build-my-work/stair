@@ -71,7 +71,7 @@ beforeAll(() => {
     MainContentPanel: () => React.createElement('div', { 'data-session-content': true }, 'Session or shell'),
   }))
   mock.module(rendererPath('pages/ProjectFilePage.tsx'), () => ({
-    default: () => {
+    default: function ProjectFilePageFixture() {
       const [draft, setDraft] = useState(() => { fileMounts += 1; return 'Saved' })
       return React.createElement('textarea', {
         value: draft,
