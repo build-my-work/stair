@@ -14,3 +14,6 @@ import type { LoadedSkill } from '../../shared/types'
  * NavigationContext reads from it for auto-selection.
  */
 export const skillsAtom = atom<LoadedSkill[]>([])
+
+/** Hand off an explicit update request from an installed skill to the shared preview flow. */
+export const skillImportSourceAtom = atom<{ workspaceId: string; source: import('@craft-agent/shared/skills/marketplace').SkillImportSource } | null>(null)

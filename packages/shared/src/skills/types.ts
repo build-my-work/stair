@@ -56,4 +56,6 @@ export interface LoadedSkill {
   path: string;
   /** Where this skill was loaded from */
   source: SkillSource;
+  /** Installation provenance; absent for skills created outside the marketplace. */
+  installation?: import('./marketplace-types').SkillInstallation;
 }

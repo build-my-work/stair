@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { navigate, routes } from '@/lib/navigate'
 import { Button } from '@/components/ui/button'
 import { useTranslation } from 'react-i18next'
 import { Zap } from 'lucide-react'
@@ -47,6 +48,11 @@ export function SkillsListPanel({
 
   return (
     <>
+    <div className="shrink-0 px-3 py-2">
+      <Button variant="ghost" className="w-full justify-start" onClick={() => navigate(routes.view.skills(), { skipAutoSelect: true })}>
+        <Zap className="size-4" />{t('skillMarket.discover')}
+      </Button>
+    </div>
     <EntityPanel<LoadedSkill>
       items={skills}
       getId={(s) => s.slug}

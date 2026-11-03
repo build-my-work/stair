@@ -31,6 +31,7 @@ import { validateAutomationsConfig } from '../automations/validation.ts'
 import { generateShortId } from '../automations/resolve-config-path.ts'
 import { VALID_EVENTS } from '../automations/schemas.ts'
 import { debug } from '../utils/debug.ts'
+import { writeSkillDirectory } from '../skills/installation'
 
 import type { FolderSourceConfig } from '../sources/types.ts'
 import type { AutomationMatcher } from '../automations/types.ts'
@@ -758,44 +759,9 @@ function importSkills(
 
   for (const entry of entries) {
     try {
-      const targetDir = join(skillsDir, entry.slug)
-      const exists = existsSync(targetDir)
-
-      if (exists && mode === 'skip') {
-        result.skipped.push(entry.slug)
-        continue
-      }
-
-      // Stage: build in temp dir
-      const tmpDir = join(skillsDir, `.tmp-${entry.slug}-${randomUUID().slice(0, 8)}`)
-      mkdirSync(tmpDir, { recursive: true })
-
-      try {
-        // Restore all files
-        restoreFiles(tmpDir, entry.files)
-
-        // Validate: SKILL.md should exist
-        if (!existsSync(join(tmpDir, 'SKILL.md'))) {
-          result.failed.push({ id: entry.slug, error: 'SKILL.md missing after restore' })
-          rmSync(tmpDir, { recursive: true })
-          continue
-        }
-
-        // On overwrite: remove old dir
-        if (exists) {
-          rmSync(targetDir, { recursive: true })
-        }
-
-        // Atomic replace: rename temp → target
-        renameSync(tmpDir, targetDir)
-        result.imported.push(entry.slug)
-      } catch (err) {
-        // Clean up temp dir on failure
-        if (existsSync(tmpDir)) {
-          rmSync(tmpDir, { recursive: true })
-        }
-        throw err
-      }
+      const outcome = writeSkillDirectory(workspaceRootPath, entry.slug, entry.files, mode === 'overwrite')
+      if (outcome === 'installed') result.imported.push(entry.slug)
+      else result.skipped.push(entry.slug)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       result.failed.push({ id: entry.slug, error: message })

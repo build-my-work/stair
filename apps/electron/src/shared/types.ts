@@ -596,6 +596,9 @@ export interface ElectronAPI {
   onDefaultPermissionsChanged(callback: () => void): () => void
 
   // Skills
+  searchSkillMarketplace(workspaceId: string, market: import('@craft-agent/shared/skills/marketplace').SkillMarket, query: string): Promise<import('@craft-agent/shared/skills/marketplace').SkillCatalogEntry[]>
+  prepareSkillImport(workspaceId: string, source: import('@craft-agent/shared/skills/marketplace').SkillImportSource): Promise<import('@craft-agent/shared/skills/marketplace').PreparedSkillImport>
+  installSkills(workspaceId: string, request: import('@craft-agent/shared/skills/marketplace').SkillInstallRequest): Promise<import('@craft-agent/shared/skills/marketplace').SkillInstallResult>
   getSkills(workspaceId: string, workingDirectory?: string): Promise<LoadedSkill[]>
   getSkillFiles?(workspaceId: string, skillSlug: string): Promise<SkillFile[]>
   deleteSkill(workspaceId: string, skillSlug: string): Promise<void>

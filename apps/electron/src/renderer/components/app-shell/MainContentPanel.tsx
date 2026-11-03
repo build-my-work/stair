@@ -41,6 +41,7 @@ import { extractLabelId } from '@craft-agent/shared/labels'
 import type { SessionStatusId } from '@/config/session-status-config'
 import { SourceInfoPage, ChatPage } from '@/pages'
 import SkillInfoPage from '@/pages/SkillInfoPage'
+import SkillMarketplacePage from '@/pages/SkillMarketplacePage'
 import { getSettingsPageComponent } from '@/pages/settings/settings-pages'
 import { AutomationInfoPage } from '../automations/AutomationInfoPage'
 import ProjectInfoPage from '@/pages/ProjectInfoPage'
@@ -311,10 +312,12 @@ export function MainContentPanel({
         </Panel>
       )
     }
-    // No skill selected - empty state
+    // No skill selected - browse the workspace marketplace.
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
-        <DetailEmptyState message={t("skillsList.noSkillsConfigured")} />
+        {activeWorkspaceId
+          ? <SkillMarketplacePage key={activeWorkspaceId} workspaceId={activeWorkspaceId} workingDirectory={activeSessionWorkingDirectory} />
+          : <DetailEmptyState message={t('skillsList.noSkillsConfigured')} />}
       </Panel>
     )
   }

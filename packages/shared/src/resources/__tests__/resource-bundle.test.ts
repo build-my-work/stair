@@ -665,6 +665,36 @@ describe('resource-bundle', () => {
       expect(readFileSync(join(wsDir, 'sources', 'imported-api', 'guide.md'), 'utf-8')).toBe('# Imported\n\nGuide content.')
     })
 
+    it('preserves existing safe skill directory names through resource transfer', async () => {
+      const from = createTestWorkspace(join(tmpDir, 'from'))
+      const to = createTestWorkspace(join(tmpDir, 'to'))
+      const slugs = ['my_skill', 'CodeReview', '中文技能', '-legacy']
+      for (const slug of slugs) createTestSkill(from, slug, { 'reference.md': 'Keep the original name' })
+      const { bundle } = exportResources(from, { skills: slugs })
+      const result = await importResources(to, bundle, 'skip', noopDeps)
+      expect(result.skills.imported).toEqual(slugs)
+      expect(result.skills.failed).toEqual([])
+      for (const slug of slugs) {
+        expect(readFileSync(join(to, 'skills', slug, 'SKILL.md'), 'utf8')).toBe(readFileSync(join(from, 'skills', slug, 'SKILL.md'), 'utf8'))
+        expect(readFileSync(join(to, 'skills', slug, 'reference.md'), 'utf8')).toBe('Keep the original name')
+      }
+    })
+
+    it('rejects unsafe skill destination names while preserving legacy names', async () => {
+      const wsDir = createTestWorkspace(tmpDir)
+      const slugs = ['../escape', 'nested/one', 'nested\\one', '.', '..', 'C:escape', 'trailing.', 'trailing ', 'bad\u0000name']
+      const bundle: ResourceBundle = {
+        version: 1,
+        exportedAt: Date.now(),
+        resources: { skills: slugs.map(slug => ({ slug, files: [makeBundleFile('SKILL.md', '---\nname: skill\ndescription: Test\n---\nInstructions')] })) },
+      }
+      const result = await importResources(wsDir, bundle, 'overwrite', noopDeps)
+      expect(result.skills.imported).toEqual([])
+      expect(result.skills.failed.map(f => f.id)).toEqual(slugs)
+      expect(readdirSync(join(wsDir, 'skills'))).toEqual([])
+      expect(existsSync(join(wsDir, 'escape'))).toBe(false)
+    })
+
     it('imports skills with auxiliary files', async () => {
       const wsDir = createTestWorkspace(tmpDir)
 

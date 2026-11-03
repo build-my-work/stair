@@ -1,3 +1,4 @@
+import { readSkillInstallation } from './installation'
 /**
  * Skills Storage
  *
@@ -39,7 +40,7 @@ export const PROJECT_AGENT_SKILLS_DIR = '.agents/skills';
  * Normalize requiredSources frontmatter to a clean string array.
  * Accepts a single string or array of strings, trims whitespace, and deduplicates.
  */
-function normalizeRequiredSources(value: unknown): string[] | undefined {
+export function normalizeRequiredSources(value: unknown): string[] | undefined {
   const asArray = typeof value === 'string'
     ? [value]
     : Array.isArray(value)
@@ -136,6 +137,7 @@ function loadSkillFromDir(skillsDir: string, slug: string, source: SkillSource):
     metadata: parsed.metadata,
     content: parsed.body,
     iconPath: findIconFile(skillDir),
+    installation: readSkillInstallation(skillDir),
     path: skillDir,
     source,
   };

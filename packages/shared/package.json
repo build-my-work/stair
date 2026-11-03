@@ -80,7 +80,9 @@
     "./tasks": "./src/tasks/index.ts",
     "./i18n": "./src/i18n/index.ts",
     "./resources": "./src/resources/index.ts",
-    "./sessions/plan-approval": "./src/sessions/plan-approval.ts"
+    "./sessions/plan-approval": "./src/sessions/plan-approval.ts",
+    "./skills/marketplace": "./src/skills/marketplace-types.ts",
+    "./utils/bundle-files": "./src/utils/bundle-files.ts"
   },
   "dependencies": {
     "@craft-agent/core": "workspace:*",

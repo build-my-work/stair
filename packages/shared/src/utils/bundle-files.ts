@@ -7,7 +7,7 @@
  * BundleFile.relativePath is always forward-slash separated for cross-platform portability.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, statSync, mkdirSync, writeFileSync, chmodSync } from 'fs'
 import { join, relative, dirname, sep } from 'path'
 import { debug } from './debug.ts'
 
@@ -27,6 +27,8 @@ export interface BundleFile {
   contentBase64: string
   /** Original file size in bytes (for validation) */
   size: number
+  /** Preserve executable scripts when the source exposes POSIX file mode. */
+  executable?: boolean
 }
 
 // ============================================================
@@ -83,6 +85,8 @@ export function validateBundleFile(file: BundleFile): string | null {
   if (typeof file.size !== 'number' || file.size < 0) {
     return `Invalid size for ${file.relativePath}`
   }
+
+  if (file.executable !== undefined && typeof file.executable !== 'boolean') return 'Invalid executable flag'
 
   // Verify decoded size matches declared size
   try {
@@ -147,6 +151,7 @@ export function collectDirectoryFiles(dir: string, options?: CollectOptions): Bu
             relativePath: toPortableRelPath(relPath),
             contentBase64: content.toString('base64'),
             size: stat.size,
+            executable: Boolean(stat.mode & 0o111),
           })
         } catch (err) {
           debug(`[bundle-files] Failed to read file ${fullPath}:`, err)
@@ -198,5 +203,6 @@ export function restoreFiles(targetDir: string, files: BundleFile[]): void {
     // Decode and write
     const content = Buffer.from(file.contentBase64, 'base64')
     writeFileSync(fullPath, content)
+    if (file.executable && process.platform !== 'win32') chmodSync(fullPath, 0o755)
   }
 }

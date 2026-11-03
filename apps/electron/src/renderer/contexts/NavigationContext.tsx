@@ -54,7 +54,6 @@ import {
 } from '../../shared/types'
 import { sessionMetaMapAtom, updateSessionMetaAtom, type SessionMeta } from '@/atoms/sessions'
 import { sourcesAtom } from '@/atoms/sources'
-import { skillsAtom } from '@/atoms/skills'
 import { projectsAtom } from '@/atoms/projects'
 import { guardedModeAvailableAtom } from '@/atoms/permission-modes'
 import {
@@ -164,7 +163,6 @@ export function NavigationProvider({
   const updateSessionMeta = useSetAtom(updateSessionMetaAtom)
   const { labels: labelConfigs } = useLabels(workspaceId)
   const sources = useAtomValue(sourcesAtom)
-  const skills = useAtomValue(skillsAtom)
 
   const [baseNavigationState, setBaseNavigationState] = useState<NavigationState>(DEFAULT_NAVIGATION_STATE)
   const baseNavigationStateRef = useRef<NavigationState>(DEFAULT_NAVIGATION_STATE)
@@ -304,14 +302,9 @@ export function NavigationProvider({
         : nextState
     }
 
-    if (isSkillsNavigation(nextState) && !nextState.details && !options?.skipAutoSelect) {
-      const skillSlug = skills[0]?.slug
-      return skillSlug
-        ? { ...nextState, details: { type: 'skill', skillSlug } }
-        : nextState
-    }
+    // The Skills collection opens its marketplace; installed items remain explicitly selectable.
     return nextState
-  }, [getFirstSessionId, getFirstSourceSlug, getLastSelectedSessionId, remoteWorkspaceId, skills, store, workspaceId])
+  }, [getFirstSessionId, getFirstSourceSlug, getLastSelectedSessionId, remoteWorkspaceId, store, workspaceId])
 
   const applyViewRoute = useCallback(async (
     route: ViewRoute,

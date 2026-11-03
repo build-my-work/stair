@@ -1,4 +1,7 @@
 import { join } from 'path'
+import { SkillMarketplace } from '../../skills/marketplace'
+import { searchSkillCatalog } from '../../skills/catalogs'
+import type { SkillMarket, SkillImportSource, SkillInstallRequest } from '@craft-agent/shared/skills/marketplace'
 import { existsSync, readdirSync, statSync } from 'fs'
 import { RPC_CHANNELS, type SkillFile } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
@@ -7,6 +10,9 @@ import type { HandlerDeps } from '../handler-deps'
 
 export const HANDLED_CHANNELS = [
   RPC_CHANNELS.skills.GET,
+  RPC_CHANNELS.skills.SEARCH_MARKETPLACE,
+  RPC_CHANNELS.skills.PREPARE_IMPORT,
+  RPC_CHANNELS.skills.INSTALL,
   RPC_CHANNELS.skills.GET_FILES,
   RPC_CHANNELS.skills.DELETE,
   RPC_CHANNELS.skills.OPEN_EDITOR,
@@ -14,6 +20,24 @@ export const HANDLED_CHANNELS = [
 ] as const
 
 export function registerSkillsHandlers(server: RpcServer, deps: HandlerDeps): void {
+  const marketplace = new SkillMarketplace()
+  server.handle(RPC_CHANNELS.skills.SEARCH_MARKETPLACE, async (_ctx, workspaceId: string, market: SkillMarket, query: string) => {
+    if (!getWorkspaceByNameOrId(workspaceId)) throw new Error('Workspace not found')
+    return searchSkillCatalog(market, query)
+  })
+  server.handle(RPC_CHANNELS.skills.PREPARE_IMPORT, async (ctx, workspaceId: string, source: SkillImportSource) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error('Workspace not found')
+    return marketplace.prepare(workspace.rootPath, ctx.clientId, source)
+  })
+  server.handle(RPC_CHANNELS.skills.INSTALL, async (ctx, workspaceId: string, request: SkillInstallRequest) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error('Workspace not found')
+    const result = marketplace.install(workspace.rootPath, ctx.clientId, request)
+    for (const slug of result.installed) deps.sessionManager.notifyConfigFileChange(workspace.rootPath, 'skills/' + slug + '/SKILL.md')
+    return result
+  })
+
   // Get all skills for a workspace (and optionally project-level skills from workingDirectory)
   server.handle(RPC_CHANNELS.skills.GET, async (_ctx, workspaceId: string, workingDirectory?: string) => {
     deps.platform.logger?.info(`SKILLS_GET: Loading skills for workspace: ${workspaceId}${workingDirectory ? `, workingDirectory: ${workingDirectory}` : ''}`)

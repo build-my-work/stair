@@ -8,6 +8,7 @@ export * from './types.ts';
 export {
   GLOBAL_AGENT_SKILLS_DIR,
   PROJECT_AGENT_SKILLS_DIR,
+  normalizeRequiredSources,
   loadSkill,
   loadAllSkills,
   invalidateSkillsCache,
@@ -19,3 +20,6 @@ export {
   skillNeedsIconDownload,
   downloadSkillIcon,
 } from './storage.ts';
+
+export * from './marketplace-types'
+export { writeSkillDirectory, hashSkillFiles, fingerprintSkillDirectory, readSkillInstallation, SKILL_INSTALLATION_FILE } from './installation'

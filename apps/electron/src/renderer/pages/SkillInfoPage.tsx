@@ -9,6 +9,9 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useCallback } from 'react'
+import { useSetAtom } from 'jotai'
+import { skillImportSourceAtom } from '@/atoms/skills'
+import { Button } from '@/components/ui/button'
 import { Check, X, Minus } from 'lucide-react'
 import { EditPopover, EditButton, getEditConfig } from '@/components/ui/EditPopover'
 import { toast } from 'sonner'
@@ -35,6 +38,7 @@ interface SkillInfoPageProps {
 
 export default function SkillInfoPage({ skillSlug, workspaceId, workingDirectory }: SkillInfoPageProps) {
   const { t } = useTranslation()
+  const setImportSource = useSetAtom(skillImportSourceAtom)
   const [skill, setSkill] = useState<LoadedSkill | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -178,6 +182,13 @@ export default function SkillInfoPage({ skillSlug, workspaceId, workingDirectory
             avatar={<SkillAvatar skill={skill} fluid workspaceId={workspaceId} />}
             title={skill.metadata.name}
             tagline={skill.metadata.description}
+            actions={<div className="flex flex-wrap gap-2">
+              {skill.source === 'workspace' && skill.installation?.updateSource && <Button variant="secondary" size="sm" onClick={() => {
+                setImportSource({ workspaceId, source: skill.installation!.updateSource! })
+                navigate(routes.view.skills(), { skipAutoSelect: true })
+              }}>{t('skillMarket.checkUpdate')}</Button>}
+              <Button size="sm" onClick={() => navigate(routes.action.newSession({ input: '[skill:' + skill.slug + '] ' }))}>{t('skillMarket.useInChat')}</Button>
+            </div>}
           />
 
           {/* Metadata */}
@@ -208,6 +219,9 @@ export default function SkillInfoPage({ skillSlug, workspaceId, workingDirectory
                  skill.source === 'global' ? t('skillInfo.sourceGlobal') :
                  t('skillInfo.sourceWorkspace')}
               </Info_Table.Row>
+              {skill.installation && <Info_Table.Row label={t('skillMarket.origin')}>
+                <span className="break-all">{skill.installation.url || skill.installation.source}{skill.installation.revision ? ' · ' + skill.installation.revision : ''}</span>
+              </Info_Table.Row>}
               <Info_Table.Row label={t('common.location')}>
                 <button
                   onClick={handleLocationClick}
