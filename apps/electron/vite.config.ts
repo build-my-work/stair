@@ -56,13 +56,9 @@ export default defineConfig({
     alias: {
       '@': resolve(__dirname, 'src/renderer'),
       '@config': resolve(__dirname, '../../packages/shared/src/config'),
-      '@drawnix/drawnix/index.css': resolve(
+      '@ttsworld/drawnix/index.css': resolve(
         __dirname,
-        '../../node_modules/@drawnix/drawnix/index.css',
-      ),
-      '@plait-board/react-text/index.css': resolve(
-        __dirname,
-        '../../node_modules/@plait-board/react-text/index.css',
+        '../../node_modules/@ttsworld/drawnix/index.css',
       ),
       // Force all React imports to use the root node_modules React
       // Bun hoists deps to root. This prevents "multiple React copies" error from @craft-agent/ui

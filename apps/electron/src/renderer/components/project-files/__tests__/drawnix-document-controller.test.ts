@@ -12,23 +12,28 @@ import {
   type PlaitMindBoard,
 } from '@plait/mind'
 import type { Element as SlateElement } from 'slate'
+import type { DrawnixBoardUpdateCapabilityRequest } from '@craft-agent/server-core/transport'
 import type {
   ProjectFileFingerprint,
   SaveDrawnixProjectFileRequest,
   SaveDrawnixProjectFileResponse,
 } from '@craft-agent/shared/project-files'
+import { DrawnixDocumentController } from '../drawnix-document-controller'
 import {
-  DrawnixDocumentController,
   applyMindmapOperations,
-  parseNativeDrawnixDocument,
-  snapshotDrawnixBoard,
-} from '../drawnix-document-controller'
+  createDrawnixEditor,
+  parseDrawnixDocument,
+} from '@ttsworld/drawnix/editor'
 import {
   handleDrawnixBoardCapability,
   registerOpenDrawnixBoard,
 } from '../drawnix-board-registry'
 
 const INITIAL_FINGERPRINT = `sha256:${'a'.repeat(64)}` as ProjectFileFingerprint
+
+function snapshotDrawnixBoard(board: PlaitBoard, relativePath: string, changeSeq: number) {
+  return { relativePath, changeSeq, roots: createDrawnixEditor(board).readMindmap() }
+}
 
 function createEmptyBoard(): PlaitBoard {
   return createTestingBoard([], [])
@@ -52,13 +57,48 @@ function savedResponse(
 }
 
 describe('Drawnix document controller', () => {
+  it('persists notes through the package interface and protects user edits from stale Agent writes', async () => {
+    const board = createEmptyBoard()
+    const editor = createDrawnixEditor(board)
+    editor.updateMindmap([{ type: 'populate_empty', markdown: '# 核心点' }])
+    let saved = ''
+    const controller = new DrawnixDocumentController(
+      editor, 'project-a', 'maps/notes.drawnix', INITIAL_FINGERPRINT,
+      async request => {
+        saved = request.content
+        return savedResponse(request, 1)
+      }, () => {},
+    )
+    const initial = await controller.read()
+    const nodeId = initial.roots[0]!.id
+    const request: DrawnixBoardUpdateCapabilityRequest = {
+      v: 1,
+      action: 'update',
+      projectId: 'project-a',
+      relativePath: 'maps/notes.drawnix',
+      expectedChangeSeq: initial.changeSeq,
+      operations: [{ type: 'set_note', nodeId, note: '详细解释\n个人笔记' }],
+    }
+    const afterAgent = await controller.update(request)
+    expect(afterAgent.roots[0]).toMatchObject({ topic: '核心点', note: '详细解释\n个人笔记' })
+    editor.updateMindmap([{ type: 'set_note', nodeId, note: '用户刚刚修改的备注' }])
+    controller.notifyBoardChanged()
+    await expect(controller.update({ ...request, expectedChangeSeq: afterAgent.changeSeq }))
+      .rejects.toMatchObject({ code: 'MINDMAP_BOARD_CHANGED' })
+    await controller.flush()
+    const document = parseDrawnixDocument(saved)
+    const reopened = createDrawnixEditor(createTestingBoard([], document.elements))
+    expect(reopened.readMindmap()[0]).toMatchObject({ topic: '核心点', note: '用户刚刚修改的备注' })
+  })
+
   it('does not reuse a read token from a previous renderer process', async () => {
     const controllerModule = new URL('../drawnix-document-controller.ts', import.meta.url).pathname
     const previousRenderer = Bun.spawnSync([process.execPath, '-e', `
       import { createTestingBoard } from '@plait/core'
+      import { createDrawnixEditor } from '@ttsworld/drawnix/editor'
       import { DrawnixDocumentController } from ${JSON.stringify(controllerModule)}
       const controller = new DrawnixDocumentController(
-        createTestingBoard([], []), 'project-a', 'maps/restart.drawnix',
+        createDrawnixEditor(createTestingBoard([], [])), 'project-a', 'maps/restart.drawnix',
         ${JSON.stringify(INITIAL_FINGERPRINT)}, () => { throw new Error('no save expected') }, () => {},
       )
       console.log(JSON.stringify(await controller.read()))
@@ -66,7 +106,7 @@ describe('Drawnix document controller', () => {
     expect(previousRenderer.exitCode).toBe(0)
     const stale = JSON.parse(previousRenderer.stdout.toString()) as { changeSeq: number }
     const controller = new DrawnixDocumentController(
-      createEmptyBoard(), 'project-a', 'maps/restart.drawnix',
+      createDrawnixEditor(createEmptyBoard()), 'project-a', 'maps/restart.drawnix',
       INITIAL_FINGERPRINT, request => Promise.resolve(savedResponse(request, 1)), () => {},
     )
 
@@ -92,7 +132,7 @@ describe('Drawnix document controller', () => {
       return response
     }
     const controller = new DrawnixDocumentController(
-      board, projectId, relativePath, savedFingerprint, save, () => {},
+      createDrawnixEditor(board), projectId, relativePath, savedFingerprint, save, () => {},
     )
     let unregister = registerOpenDrawnixBoard(projectId, relativePath, controller)
     try {
@@ -104,9 +144,9 @@ describe('Drawnix document controller', () => {
       await controller.flush()
       unregister()
 
-      const persisted = parseNativeDrawnixDocument(savedContent)
+      const persisted = parseDrawnixDocument(savedContent)
       const reopened = new DrawnixDocumentController(
-        createTestingBoard([], persisted.elements),
+        createDrawnixEditor(createTestingBoard([], persisted.elements)),
         projectId, relativePath, savedFingerprint, save, () => {},
       )
       unregister = registerOpenDrawnixBoard(projectId, relativePath, reopened)
@@ -190,7 +230,7 @@ describe('Drawnix document controller', () => {
     const board = createEmptyBoard()
     const saves: SaveDrawnixProjectFileRequest[] = []
     const controller = new DrawnixDocumentController(
-      board,
+      createDrawnixEditor(board),
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,
@@ -244,7 +284,7 @@ describe('Drawnix document controller', () => {
       savedResponse(saves[1]!, 2).sourceFingerprint,
     ])
 
-    const persisted = parseNativeDrawnixDocument(saves.at(-1)!.content)
+    const persisted = parseDrawnixDocument(saves.at(-1)!.content)
     const reopened = createTestingBoard([], persisted.elements)
     reopened.viewport = persisted.viewport
     reopened.theme = persisted.theme ?? reopened.theme
@@ -255,7 +295,7 @@ describe('Drawnix document controller', () => {
   it('rejects a stale Agent update after a user change', async () => {
     const board = createEmptyBoard()
     const controller = new DrawnixDocumentController(
-      board,
+      createDrawnixEditor(board),
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,
@@ -284,7 +324,7 @@ describe('Drawnix document controller', () => {
       code: 'PROJECT_FILE_CHANGED',
     })
     const controller = new DrawnixDocumentController(
-      board,
+      createDrawnixEditor(board),
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,
@@ -301,7 +341,7 @@ describe('Drawnix document controller', () => {
     const board = createEmptyBoard()
     let attempts = 0
     const controller = new DrawnixDocumentController(
-      board,
+      createDrawnixEditor(board),
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,
@@ -324,7 +364,7 @@ describe('Drawnix document controller', () => {
     const board = createEmptyBoard()
     const saves: SaveDrawnixProjectFileRequest[] = []
     const controller = new DrawnixDocumentController(
-      board,
+      createDrawnixEditor(board),
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,
@@ -345,7 +385,7 @@ describe('Drawnix document controller', () => {
   it('persists viewport or theme changes without invalidating the Agent outline sequence', async () => {
     const board = createEmptyBoard()
     const controller = new DrawnixDocumentController(
-      board,
+      createDrawnixEditor(board),
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,
@@ -364,7 +404,7 @@ describe('Drawnix document controller', () => {
     await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Original' }])
     const rootId = snapshotDrawnixBoard(board, 'maps/tutorial.drawnix', 0).roots[0]!.id
     const controller = new DrawnixDocumentController(
-      board,
+      createDrawnixEditor(board),
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,
@@ -404,7 +444,7 @@ describe('Drawnix document controller', () => {
       originalApply(operation)
     }
     const controller = new DrawnixDocumentController(
-      board,
+      createDrawnixEditor(board),
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,

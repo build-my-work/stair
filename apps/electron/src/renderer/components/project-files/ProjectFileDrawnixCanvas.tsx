@@ -5,17 +5,15 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
-  type PointerEvent,
 } from 'react'
 import { AlertTriangle, Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { Drawnix } from '@drawnix/drawnix'
-import type { PlaitBoard } from '@plait/core'
+import { Drawnix } from '@ttsworld/drawnix'
+import { parseDrawnixDocument, type DrawnixEditor } from '@ttsworld/drawnix/editor'
 import type { ProjectFileFingerprint } from '@craft-agent/shared/project-files'
 import './drawnix-project-file.css'
 import {
   DrawnixDocumentController,
-  parseNativeDrawnixDocument,
   type DrawnixDocumentState,
 } from './drawnix-document-controller'
 import { registerOpenDrawnixBoard } from './drawnix-board-registry'
@@ -41,7 +39,7 @@ export function ProjectFileDrawnixCanvas({
   const { t } = useTranslation()
   const documentResult = useMemo(() => {
     try {
-      return { document: parseNativeDrawnixDocument(content), error: null }
+      return { document: parseDrawnixDocument(content), error: null }
     } catch (error) {
       return {
         document: null,
@@ -50,34 +48,13 @@ export function ProjectFileDrawnixCanvas({
     }
   }, [content])
   const document = documentResult.document
-  const [board, setBoard] = useState<PlaitBoard | null>(null)
+  const [editor, setEditor] = useState<DrawnixEditor | null>(null)
   const [documentState, setDocumentState] = useState<DrawnixDocumentState>(IDLE_STATE)
   const controllerRef = useRef<DrawnixDocumentController | null>(null)
-  const hostRef = useRef<HTMLDivElement | null>(null)
-
-  const initializeBoard = useCallback((initializedBoard: PlaitBoard) => {
-    const globalKeyDown = initializedBoard.globalKeyDown
-    const keyDown = initializedBoard.keyDown
-    const keyUp = initializedBoard.keyUp
-    const isFromThisCanvas = (event: globalThis.KeyboardEvent) => (
-      event.target instanceof Node && Boolean(hostRef.current?.contains(event.target))
-    )
-    initializedBoard.globalKeyDown = event => {
-      if (isFromThisCanvas(event)) globalKeyDown(event)
-    }
-    initializedBoard.keyDown = event => {
-      if (isFromThisCanvas(event)) keyDown(event)
-    }
-    initializedBoard.keyUp = event => {
-      if (isFromThisCanvas(event)) keyUp(event)
-    }
-    setBoard(initializedBoard)
-  }, [])
-
   useEffect(() => {
-    if (!board || !document) return
+    if (!editor || !document) return
     const controller = new DrawnixDocumentController(
-      board,
+      editor,
       projectId,
       relativePath,
       sourceFingerprint,
@@ -101,7 +78,7 @@ export function ProjectFileDrawnixCanvas({
         })
         .finally(unregisterDocument)
     }
-  }, [board, document, projectId, relativePath, sourceFingerprint])
+  }, [editor, document, projectId, relativePath, sourceFingerprint])
 
   const notifyBoardChanged = useCallback(() => {
     controllerRef.current?.notifyBoardChanged()
@@ -115,9 +92,6 @@ export function ProjectFileDrawnixCanvas({
       event.stopPropagation()
       void controllerRef.current?.flush().catch(() => undefined)
     }
-  }, [])
-  const focusCanvas = useCallback((event: PointerEvent<HTMLDivElement>) => {
-    event.currentTarget.focus({ preventScroll: true })
   }, [])
   const reloadFromDisk = useCallback(() => {
     if (!window.confirm(t('projectFileEditor.reloadConflictConfirm'))) return
@@ -143,17 +117,15 @@ export function ProjectFileDrawnixCanvas({
 
   return (
     <div
-      ref={hostRef}
       tabIndex={-1}
       className="stair-drawnix-host relative h-full min-h-0 overflow-hidden bg-background outline-none"
       onKeyDownCapture={blockNativeFileShortcut}
-      onPointerDownCapture={focusCanvas}
     >
       <Drawnix
         value={document.elements}
         viewport={document.viewport}
         theme={document.theme}
-        afterInit={initializeBoard}
+        onEditorReady={setEditor}
         onValueChange={notifyBoardChanged}
         onViewportChange={notifyPresentationChanged}
         onThemeChange={notifyPresentationChanged}

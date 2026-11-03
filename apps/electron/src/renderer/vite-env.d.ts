@@ -27,4 +27,4 @@ declare module "*.pdf?url" {
   export default src
 }
 
-declare module "@drawnix/drawnix/index.css"
+declare module "@ttsworld/drawnix/index.css"

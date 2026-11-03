@@ -1,10 +1,29 @@
 import { describe, expect, it } from 'bun:test';
-import type { SessionToolContext } from '../context.ts';
+import type { MindmapUpdateRequest, SessionToolContext } from '../context.ts';
 import { handleMindmapCreate } from './mindmap-create.ts';
 import { handleMindmapRead } from './mindmap-read.ts';
 import { handleMindmapUpdate } from './mindmap-update.ts';
+import { MindmapUpdateSchema } from '../tool-defs.ts';
 
 describe('mind-map session tools', () => {
+  it('accepts detailed notes and explicit removal without weakening the update guard', () => {
+    const request: MindmapUpdateRequest = {
+      relativePath: 'maps/notes.drawnix',
+      expectedChangeSeq: 4,
+      operations: [{ type: 'set_note', nodeId: 'root', note: '细节\n笔记' }],
+    };
+    expect(MindmapUpdateSchema.parse(request)).toEqual(request);
+    expect(MindmapUpdateSchema.safeParse({
+      ...request,
+      operations: [{ type: 'set_note', nodeId: 'root', note: '' }],
+    }).success).toBe(true);
+    expect(MindmapUpdateSchema.safeParse({ ...request, expectedChangeSeq: undefined }).success).toBe(false);
+    expect(MindmapUpdateSchema.safeParse({
+      ...request,
+      operations: [{ type: 'set_note', nodeId: 'root', note: 42 }],
+    }).success).toBe(false);
+  });
+
   it('creates a native mind map through the session callback', async () => {
     const requests: unknown[] = [];
     const ctx = {

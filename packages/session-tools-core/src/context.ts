@@ -483,6 +483,7 @@ export interface SessionToolContext {
 export interface MindmapOutlineNode {
   id: string;
   topic: string;
+  note?: string;
   children: MindmapOutlineNode[];
 }
 
@@ -501,7 +502,8 @@ export type MindmapUpdateOperation =
   | { type: 'populate_empty'; markdown: string }
   | { type: 'insert_child'; parentId: string; topic: string }
   | { type: 'insert_sibling'; nodeId: string; topic: string }
-  | { type: 'set_topic'; nodeId: string; topic: string };
+  | { type: 'set_topic'; nodeId: string; topic: string }
+  | { type: 'set_note'; nodeId: string; note: string };
 
 export interface MindmapUpdateRequest {
   relativePath: string;

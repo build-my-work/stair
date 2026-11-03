@@ -29,8 +29,7 @@ beforeAll(async () => {
       outfile: css,
       bundle: true,
       alias: {
-        '@drawnix/drawnix/index.css': join(dirname(require.resolve('@drawnix/drawnix')), 'index.css'),
-        '@plait-board/react-text/index.css': join(dirname(require.resolve('@plait-board/react-text')), 'index.css'),
+        '@ttsworld/drawnix/index.css': join(dirname(require.resolve('@ttsworld/drawnix')), 'index.css'),
       },
     }),
     esbuild.build({

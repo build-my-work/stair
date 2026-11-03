@@ -1,5 +1,4 @@
-@import '@drawnix/drawnix/index.css';
-@import '@plait-board/react-text/index.css';
+@import '@ttsworld/drawnix/index.css';
 
 .stair-drawnix-host .plait-board-container {
   position: relative;

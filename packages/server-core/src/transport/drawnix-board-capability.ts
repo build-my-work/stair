@@ -1,6 +1,7 @@
 export interface DrawnixMindmapNode {
   id: string
   topic: string
+  note?: string
   children: DrawnixMindmapNode[]
 }
 
@@ -15,6 +16,7 @@ export type DrawnixMindmapOperation =
   | { type: 'insert_child'; parentId: string; topic: string }
   | { type: 'insert_sibling'; nodeId: string; topic: string }
   | { type: 'set_topic'; nodeId: string; topic: string }
+  | { type: 'set_note'; nodeId: string; note: string }
 
 interface DrawnixBoardCapabilityBase {
   v: 1

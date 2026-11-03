@@ -64,13 +64,9 @@ export default defineConfig({
       '@webui': resolve(__dirname, 'src'),
       // Config alias (same as Electron)
       '@config': resolve(__dirname, '../../packages/shared/src/config'),
-      '@drawnix/drawnix/index.css': resolve(
+      '@ttsworld/drawnix/index.css': resolve(
         __dirname,
-        '../../node_modules/@drawnix/drawnix/index.css',
-      ),
-      '@plait-board/react-text/index.css': resolve(
-        __dirname,
-        '../../node_modules/@plait-board/react-text/index.css',
+        '../../node_modules/@ttsworld/drawnix/index.css',
       ),
       // Force single React copy from root node_modules
       'react': resolve(__dirname, '../../node_modules/react'),

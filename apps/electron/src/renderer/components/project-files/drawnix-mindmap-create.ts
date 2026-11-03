@@ -1,5 +1,4 @@
-import { parseMarkdownToDrawnix } from '@plait-board/markdown-to-drawnix'
-import type { MindElement } from '@plait/mind'
+import { createMindmapDocument, getMindmapOutline, type DrawnixDocument } from '@ttsworld/drawnix/editor'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import {
   isCanonicalProjectRelativePath,
@@ -13,7 +12,6 @@ import type {
   DrawnixBoardCreateCapabilityRequest,
   DrawnixBoardCapabilityResponse,
 } from '@craft-agent/server-core/transport'
-import { mindElementToOutlineNode } from './drawnix-document-controller'
 
 interface DrawnixMindmapCreateApi {
   isChannelAvailable(channel: string): boolean
@@ -66,35 +64,20 @@ export async function createDrawnixMindmap(
     )
   }
 
-  const lines = request.markdown.trim().split(/\r?\n/)
-  if (!lines.some(line => /^\s{0,3}#{1,6}\s+\S/.test(line))) {
-    const first = lines[0]!.trim()
-    const rootTopic = first.match(/^(?:[-+*]|\d+[.)])\s+(.+)$/)?.[1]?.trim() ?? first
-    if (!rootTopic || rootTopic.startsWith('```') || rootTopic.startsWith('~~~') || rootTopic.startsWith('>')) {
-      return errorResponse('MINDMAP_INVALID_OPERATION', 'Markdown must begin with a root topic or heading.')
-    }
-    lines[0] = `# ${rootTopic}`
-  }
-
-  let mind: MindElement
+  let document: DrawnixDocument
   try {
-    mind = parseMarkdownToDrawnix(lines.join('\n'))
-  } catch {
-    return errorResponse('MINDMAP_INVALID_OPERATION', 'Drawnix could not parse the Markdown hierarchy.')
+    document = createMindmapDocument(request.markdown)
+  } catch (error) {
+    return errorResponse(
+      'MINDMAP_INVALID_OPERATION',
+      error instanceof Error ? error.message : 'Drawnix could not parse the Markdown hierarchy.',
+    )
   }
-  mind.points = [[100, 100]]
 
   const pathSegments = request.relativePath.split('/')
   const name = pathSegments.pop()!
   const parentRelativePath = pathSegments.join('/')
-  const content = JSON.stringify({
-    type: 'drawnix',
-    version: 1,
-    source: 'web',
-    elements: [mind],
-    viewport: { zoom: 1 },
-    theme: { themeColorMode: 'default' },
-  }, null, 2)
+  const content = JSON.stringify(document, null, 2)
 
   try {
     let currentParent = ''
@@ -159,7 +142,7 @@ export async function createDrawnixMindmap(
       snapshot: {
         relativePath: request.relativePath,
         changeSeq: 0,
-        roots: [mindElementToOutlineNode(mind)],
+        roots: getMindmapOutline(document.elements),
       },
     }
   } catch (error) {

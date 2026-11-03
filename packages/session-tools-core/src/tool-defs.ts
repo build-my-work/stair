@@ -428,6 +428,11 @@ const MindmapUpdateOperationSchema = z.discriminatedUnion('type', [
     nodeId: z.string().min(1),
     topic: z.string().min(1),
   }),
+  z.object({
+    type: z.literal('set_note'),
+    nodeId: z.string().min(1),
+    note: z.string().describe('Plain-text node note; use an empty string to remove it'),
+  }),
 ]);
 
 export const MindmapUpdateSchema = z.object({
@@ -813,7 +818,7 @@ The .drawnix file must already exist and its canvas must be open. For a new boar
 
   mindmap_update: `Update an already-open Drawnix mind map without replacing the whole document.
 
-Pass the changeSeq from an immediately preceding mindmap_read. Use populate_empty only when roots is empty. Otherwise use node IDs returned by mindmap_read.`,
+Pass the changeSeq from an immediately preceding mindmap_read. Use populate_empty only when roots is empty. Otherwise use node IDs returned by mindmap_read. Use set_note to store detailed notes separately from a short topic; an empty note removes it.`,
 } as const;
 
 // ============================================================
