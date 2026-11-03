@@ -1,4 +1,5 @@
 @import '@drawnix/drawnix/index.css';
+@import '@plait-board/react-text/index.css';
 
 .stair-drawnix-host .plait-board-container {
   position: relative;
@@ -20,17 +21,13 @@
   pointer-events: none;
 }
 
-/* The published react-text build keeps pre-wrap inline; keep dynamic mind text on one visible line. */
-.stair-drawnix-host .plait-board-container g[plait-mind='true'] .text foreignObject,
-.stair-drawnix-host .plait-board-container g[plait-mind_child='true'] .text foreignObject,
-.stair-drawnix-host .plait-board-container g[plait-mind-temporary='true'] .text foreignObject {
-  overflow: visible;
-}
-
+/* Match Plait's character-by-character wrapping, including Latin words and CJK punctuation. */
 .stair-drawnix-host .plait-board-container g[plait-mind='true'] .slate-editable-container,
+.stair-drawnix-host .plait-board-container g[plait-mindmap='true'] .slate-editable-container,
 .stair-drawnix-host .plait-board-container g[plait-mind_child='true'] .slate-editable-container,
 .stair-drawnix-host .plait-board-container g[plait-mind-temporary='true'] .slate-editable-container {
-  white-space: nowrap !important;
+  word-break: break-all;
+  line-break: anywhere;
 }
 
 .stair-drawnix-host .plait-board-container.theme-colorful .board-host-svg,

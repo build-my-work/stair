@@ -16,14 +16,4 @@ describe('Drawnix Project File integration', () => {
     expect(source).toContain('registerOpenProjectFileDocument')
     expect(source).toContain('registerOpenDrawnixBoard')
   })
-
-  it('keeps dynamically sized mind-map text visible on a single line', () => {
-    const styles = readFileSync(
-      new URL('../../components/project-files/drawnix-project-file.css', import.meta.url),
-      'utf8',
-    )
-    expect(styles).toContain("g[plait-mind_child='true'] .text foreignObject")
-    expect(styles).toContain('overflow: visible')
-    expect(styles).toContain('white-space: nowrap !important')
-  })
 })

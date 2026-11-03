@@ -60,6 +60,10 @@ export default defineConfig({
         __dirname,
         '../../node_modules/@drawnix/drawnix/index.css',
       ),
+      '@plait-board/react-text/index.css': resolve(
+        __dirname,
+        '../../node_modules/@plait-board/react-text/index.css',
+      ),
       // Force all React imports to use the root node_modules React
       // Bun hoists deps to root. This prevents "multiple React copies" error from @craft-agent/ui
       'react': resolve(__dirname, '../../node_modules/react'),
