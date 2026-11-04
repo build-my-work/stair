@@ -225,6 +225,26 @@ class VideoNotesTests(unittest.TestCase):
             self.assertNotIn("TOKEN", stdout.getvalue())
             self.assertFalse((Path(tmp) / "source").exists())
 
+    def test_fetch_json_preserves_unicode_with_non_utf8_stdout(self):
+        self.info.update({"title": "中文标题 💡", "uploader": "字幕作者"})
+        for encoding in ("ascii", "cp1252", "gbk", "utf-8"):
+            with self.subTest(encoding=encoding), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "字幕 💡"
+                with io.BytesIO() as buffer, io.TextIOWrapper(buffer, encoding=encoding) as stdout:
+                    with patch.object(sys, "argv", ["video-notes", "fetch", YOUTUBE, "-o", str(output)]), contextlib.redirect_stdout(stdout):
+                        status = video.main()
+                    stdout.flush()
+                    result = json.loads(buffer.getvalue().decode("utf-8"))
+                self.assertEqual(status, 0)
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["source"]["title"], self.info["title"])
+                self.assertEqual(result["source"]["author"], self.info["uploader"])
+                self.assertEqual(Path(result["transcript"]), output.absolute() / "transcript.json")
+                saved_manifest = (output / "manifest.json").read_text(encoding="utf-8")
+                self.assertEqual(json.loads(saved_manifest), result)
+                self.assertIn(self.info["title"], saved_manifest)
+                self.assertIn("梯度 descent", Path(result["transcript"]).read_text(encoding="utf-8"))
+
     def test_citation_check_catches_wrong_times_videos_ids_and_missing_evidence(self):
         source, raw, ext, cues = video.fetch_source(YOUTUBE, None, None, None)
         good = f"A claim [00:01 · c000001]({YOUTUBE}&t=1)"
@@ -278,6 +298,29 @@ class VideoNotesSmokeTests(unittest.TestCase):
             invalid = run_tool("video-notes", "fetch", "https://example.com/video", "-o", str(Path(tmp) / "source"))
             self.assertEqual(invalid.returncode, 1, invalid.stderr)
             self.assertEqual(json.loads(invalid.stdout)["error"]["code"], "unsupported_url")
+
+    def test_bundled_verify_preserves_unicode_paths_with_non_utf8_stdout(self):
+        env = build_env()
+        good = f"观点 [00:01 · c000001]({YOUTUBE}&t=1)"
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "字幕.json"
+            transcript.write_text(json.dumps({"source": {"url": YOUTUBE}, "cues": [
+                {"id": "c000001", "start_ms": 1234, "end_ms": 3801, "text": "梯度 descent"}
+            ]}), encoding="utf-8")
+            note = Path(tmp) / "中文笔记 💡.md"
+            for encoding in ("ascii", "cp1252", "gbk", "utf-8"):
+                env["PYTHONIOENCODING"] = encoding
+                for content, status in ((good, 0), (good.replace("t=1", "t=7"), 1)):
+                    with self.subTest(encoding=encoding, status=status):
+                        note.write_text(content, encoding="utf-8")
+                        completed = run_tool("video-notes", "verify", str(transcript), str(note), env=env)
+                        self.assertEqual(completed.returncode, status, completed.stderr)
+                        result = json.loads(completed.stdout)
+                        self.assertEqual(result["ok"], status == 0)
+                        self.assertEqual(result["files"][0]["file"], str(note))
+                        if status:
+                            self.assertEqual(result["error"]["code"], "citation_mismatch")
+                            self.assertEqual(result["issues"][0]["file"], str(note))
 
     def test_real_subtitle_library_preserves_srt_and_vtt_precision(self):
         env = build_env()

@@ -323,20 +323,21 @@ def main() -> int:
     verify.add_argument("transcript", type=Path, help="Extracted source/transcript.json")
     verify.add_argument("files", type=Path, nargs="+", help="Generated notes.md and outline.md")
     args = parser.parse_args()
+    # Keep CLI JSON ASCII-safe for redirected output on legacy code pages.
     try:
         if args.command == "verify":
             result = verify_notes(args.transcript, args.files)
-            print(json.dumps(result, ensure_ascii=False))
+            print(json.dumps(result, ensure_ascii=True))
             return 0 if result["ok"] else 1
         normalize_url(args.url)
         output = args.output.expanduser().absolute()
         if output.exists() or output.is_symlink():
             raise VideoNotesError("output_exists", "The output path already exists. Choose a new directory; existing files were not changed.")
         source, raw, extension, cues = fetch_source(args.url, args.lang, args.cookies_from_browser, args.proxy)
-        print(json.dumps(write_bundle(output, source, raw, extension, cues), ensure_ascii=False))
+        print(json.dumps(write_bundle(output, source, raw, extension, cues), ensure_ascii=True))
         return 0
     except VideoNotesError as error:
-        print(json.dumps({"ok": False, "error": {"code": error.code, "message": str(error)}}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "error": {"code": error.code, "message": str(error)}}, ensure_ascii=True))
     except OSError:
         print(json.dumps({"ok": False, "error": {"code": "file_error", "message": "Could not read or write the requested files. Check their paths, permissions and available disk space."}}))
     return 1
