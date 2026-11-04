@@ -117,6 +117,7 @@ export const DOC_REFS = {
   pdfPreview: `${APP_ROOT}/docs/pdf-preview.md`,
   imagePreview: `${APP_ROOT}/docs/image-preview.md`,
   markdownPreview: `${APP_ROOT}/docs/markdown-preview.md`,
+  videoNotes: `${APP_ROOT}/docs/video-notes.md`,
   llmTool: `${APP_ROOT}/docs/llm-tool.md`,
   browserTools: `${APP_ROOT}/docs/browser-tools.md`,
   decisions: `${APP_ROOT}/docs/decisions.md`,

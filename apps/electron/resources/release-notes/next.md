@@ -4,6 +4,8 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Features
 
+- **Video notes from captions** — Paste a YouTube or Bilibili video link in chat to create source-linked notes and a native mind map. Stair preserves the existing captions and timestamps, processes long videos in chunks, and reports login, access and missing-caption failures without running speech recognition.
+
 - **Sign in to MCP servers that reject the OAuth relay** — Some MCP servers only accept a local (loopback) redirect address when signing in, and refuse the Craft Agents relay with an error like "only HTTP loopback callbacks". Add `"oauthRelay": false` to the source's `mcp` block to send the sign-in straight back to the app on `localhost` instead. Leave it unset to keep using the relay. See **Sources → MCP servers → Authentication** in the docs.
 - Added the rebuilt Stair desktop experience with Project-scoped sessions, files and readers, native Browser panels, Drawnix boards, references, and persistent multi-panel Workbench layouts.
 

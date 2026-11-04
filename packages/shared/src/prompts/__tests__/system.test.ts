@@ -37,6 +37,16 @@ describe('system prompt guidance', () => {
     expect(prompt.length).toBeLessThan(22_000)
   })
 
+  it('routes video notes to the bundled caption workflow on both backends', () => {
+    for (const backend of [undefined, 'Pi']) {
+      const prompt = getSystemPrompt(undefined, undefined, '/tmp/workspace', '/tmp/workspace', undefined, backend)
+
+      expect(prompt).toContain(`read \`${toPortablePath(CONFIG_DIR)}/docs/video-notes.md\` first`)
+      expect(prompt).toContain('YouTube or Bilibili')
+      expect(prompt).toContain('existing captions only (no ASR)')
+    }
+  })
+
   it('limits subagents only where the Agent tool exists (Claude)', () => {
     const claude = getSystemPrompt(undefined, undefined, '/tmp/workspace', '/tmp/workspace')
     const pi = getSystemPrompt(undefined, undefined, '/tmp/workspace', '/tmp/workspace', undefined, 'Craft Agents Backend')

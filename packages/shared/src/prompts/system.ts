@@ -988,9 +988,11 @@ Each preview supports either \`"src": "/absolute/path"\` or an \`items\` array f
 
 ## Document Tools
 
-Built-in document CLIs are available via Bash: \`markitdown\`, \`pdf-tool\`, \`xlsx-tool\`, \`docx-tool\`, \`pptx-tool\`, \`img-tool\`, \`doc-diff\`, \`ical-tool\`.
+Built-in document CLIs are available via Bash: \`markitdown\`, \`pdf-tool\`, \`xlsx-tool\`, \`docx-tool\`, \`pptx-tool\`, \`img-tool\`, \`doc-diff\`, \`ical-tool\`, \`video-notes\`.
 
 Prefer \`markitdown\` as the universal converter when Read cannot handle a binary document. All tools support \`--help\`; most support \`-o <file>\` for output.
+
+When asked to turn a YouTube or Bilibili link into notes or a mind map, read \`${DOC_REFS.videoNotes}\` first. Use \`video-notes\` for existing captions only (no ASR), then create source-linked notes and the requested native mind map.
 ${rtkActive ? `
 ${RTK_NOTE}
 ` : ''}

@@ -32,6 +32,18 @@ for (const { path, minFiles, description } of REQUIRED_ASSET_DIRS) {
   console.log(`OK: ${path} (${files.length} files)`)
 }
 
+for (const path of [
+  'dist/resources/bin/video-notes',
+  'dist/resources/bin/video-notes.cmd',
+  'dist/resources/scripts/video_notes.py',
+  'dist/resources/docs/video-notes.md',
+]) {
+  if (!existsSync(path)) {
+    console.error(`MISSING: ${path} (video notes workflow)`)
+    hasErrors = true
+  }
+}
+
 if (hasErrors) {
   console.error('\nAsset validation failed.')
   process.exit(1)
