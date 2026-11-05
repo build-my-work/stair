@@ -373,7 +373,36 @@ describe('remote adapters', () => {
     expect(existsSync(join(root, 'skills/nested'))).toBe(false)
   })
 
-  test('skills.sh search uses its public CLI endpoint and does not fabricate a browse feed', async () => {
+  test.each(['', '   '])('skills.sh empty query "%s" returns the first 40 GitHub skills in leaderboard order', async query => {
+    const calls: string[] = []
+    const fetcher: SkillFetch = async url => {
+      calls.push(url)
+      return Response.json({ skills: [
+        { name: 'external', skillId: 'external', source: 'skills.example.com' },
+        ...Array.from({ length: 45 }, (_, index) => ({
+          name: 'Skill ' + index, skillId: 'skill-' + index, source: 'owner/repo', installs: 1000 - index,
+        })),
+      ] })
+    }
+    const result = await searchSkillCatalog('skills-sh', query, fetcher)
+    expect(calls).toEqual(['https://skills.sh/api/skills/all-time/0'])
+    expect(result).toHaveLength(40)
+    expect(result.map(entry => entry.name)).toEqual(Array.from({ length: 40 }, (_, index) => 'Skill ' + index))
+    expect(result[0]).toEqual({
+      id: 'skills-sh:owner/repo/skill-0', name: 'Skill 0', description: 'owner/repo', author: 'owner',
+      market: 'skills-sh', url: 'https://skills.sh/owner/repo/skill-0',
+      source: { kind: 'github', url: 'https://github.com/owner/repo', skill: 'skill-0' },
+    })
+  })
+  test.each(['a', ' a '])('skills.sh short query "%s" does not request search or popular skills', async query => {
+    let calls = 0
+    expect(await searchSkillCatalog('skills-sh', query, async () => {
+      calls += 1
+      return Response.json({ skills: [] })
+    })).toEqual([])
+    expect(calls).toBe(0)
+  })
+  test('skills.sh search uses its public CLI endpoint and returns installable GitHub references', async () => {
     const calls: string[] = []
     const fetcher: SkillFetch = async url => {
       calls.push(url)
@@ -382,11 +411,23 @@ describe('remote adapters', () => {
         { id: 'external/one', name: 'one', skillId: 'one', source: 'skills.example.com' },
       ] })
     }
-    expect(await searchSkillCatalog('skills-sh', '', fetcher)).toEqual([])
     const result = await searchSkillCatalog('skills-sh', 'one', fetcher)
     expect(calls).toEqual(['https://skills.sh/api/search?q=one&limit=40'])
     expect(result).toHaveLength(1)
     expect(result[0]!.source).toEqual({ kind: 'github', url: 'https://github.com/owner/repo', skill: 'one' })
+  })
+  test('skills.sh trims and encodes keywords without replacing empty search results with popular skills', async () => {
+    const calls: string[] = []
+    const result = await searchSkillCatalog('skills-sh', ' agent & notes ', async url => {
+      calls.push(url)
+      return Response.json({ skills: [] })
+    })
+    expect(calls).toEqual(['https://skills.sh/api/search?q=agent%20%26%20notes&limit=40'])
+    expect(result).toEqual([])
+  })
+  test('skills.sh popular feed failures are surfaced instead of becoming empty results', async () => {
+    await expect(searchSkillCatalog('skills-sh', '', async () => new Response('', { status: 503 })))
+      .rejects.toThrow('skills.sh: HTTP 503')
   })
   test('GitHub catalog and directory links converge on the same immutable package identity', async () => {
     const sha = 'a'.repeat(40)

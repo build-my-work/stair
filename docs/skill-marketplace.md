@@ -21,7 +21,7 @@ GitHub updates select the exact repository-relative directory with `skillPath`, 
 ## Boundaries
 
 - GitHub access is public and unauthenticated. Rate limits and provider outages are surfaced in the UI; one catalog failing does not hide the other's results.
-- skills.sh's public CLI endpoint supports keyword search, starting at two characters. This installer lists its public GitHub-backed entries; externally hosted entries are filtered out. An empty search does not invent a catalog feed. Each catalog returns up to 40 results; refine the query to narrow them.
+- An empty skills.sh query loads the website's default all-time installs leaderboard (`/api/skills/all-time/0`). Queries with at least two characters use the public CLI search endpoint; a single character only shows search guidance. This installer lists public GitHub-backed entries, preserving the provider's order and filtering out externally hosted entries before taking up to 40 results. Feed failures are surfaced as catalog errors, not as an empty search. Each catalog returns up to 40 results; refine the query to narrow them.
 - Local folder/ZIP uploads are limited to 8 MiB. A remote ZIP is limited to 20 MiB compressed and 100 MiB expanded. An individual skill supports up to 600 files, 4 MiB per file, and 40 MiB total. GitHub resolution downloads the repository archive, including when selecting a subdirectory.
 - ZIP/GitHub executable mode is preserved on POSIX. Browser folder uploads expose file contents but not executable mode. ZIP is the import route for local executable scripts.
 - Installation parses YAML metadata and copies files; it does not execute downloaded scripts, install dependencies, or create MCP connections. Existing skill runtime and permission behavior applies when used.
@@ -31,6 +31,6 @@ GitHub updates select the exact repository-relative directory with `skillPath`, 
 
 `packages/server-core/src/skills/marketplace.test.ts` covers all source adapters, version/checksum pinning, multiple and nested skills, selected installation, conflict snapshots, local edits, client/workspace isolation, unsafe archives and frontmatter, preservation of old contents, executable/binary files, and resource-transfer round trips. Existing protocol, storage and resource-bundle suites cover integration contracts.
 
-`apps/electron/src/renderer/pages/__tests__/skill-marketplace.isolated.ts` exercises pending preview and installation across session-directory changes, plus stale responses after a workspace switch. Imports remain scoped to the workspace; the installed-skill refresh uses the latest session directory.
+`apps/electron/src/renderer/pages/__tests__/skill-marketplace.isolated.ts` exercises popular browsing, switching to keyword search and clearing it, short-query and empty-feed states, catalog failures and retry, pending preview and installation across session-directory changes, plus stale responses after a workspace switch. Imports remain scoped to the workspace; the installed-skill refresh uses the latest session directory.
 
 For UI acceptance, use a dedicated `CRAFT_CONFIG_DIR`, Vite port and deep-link scheme. Worktrees do not isolate the default Stair runtime profile. Verify each source through preview → install → installed list, manual replacement, instruction preview, and Use in chat without sending a message.

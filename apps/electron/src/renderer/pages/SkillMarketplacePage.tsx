@@ -142,6 +142,8 @@ export default function SkillMarketplacePage({ workspaceId, workingDirectory }: 
   }
 
   const filteredSkills = skills.filter(skill => (skill.metadata.name + ' ' + skill.metadata.description).toLowerCase().includes(browse.query.toLowerCase()))
+  const query = browse.query.trim()
+  const skillsSearchTooShort = browse.market !== 'eduhub' && query.length === 1
   return <div className="@container flex h-full min-h-0 flex-col">
     {error && <div role="alert" className="flex shrink-0 items-start justify-between gap-3 border-b border-subtle px-5 py-3 text-label-sm text-destructive">
       <div><span className="font-medium">{t('skillMarket.operationFailed')}</span><p className="whitespace-pre-wrap break-words">{error}</p></div>
@@ -179,7 +181,8 @@ export default function SkillMarketplacePage({ workspaceId, workingDirectory }: 
             {busy && <div role="status" className="flex items-center gap-2 text-label text-secondary"><Loader2 className="size-4 animate-spin" />{t('skillMarket.preparing')}</div>}
             {browse.tab === 'discover' ? <>
               {catalogErrors.map(message => <div role="alert" key={message} className="text-label-sm text-secondary">{message} <button className="underline" onClick={() => setRetry(n => n + 1)}>{t('skillMarket.retry')}</button></div>)}
-              {browse.market !== 'eduhub' && browse.query.trim().length < 2 && <p className="text-label-sm text-secondary">{t('skillMarket.searchHint')}</p>}
+              {browse.market !== 'eduhub' && !query && <p className="text-label-sm text-secondary">{t('skillMarket.popularHint')}</p>}
+              {skillsSearchTooShort && <p className="text-label-sm text-secondary">{t('skillMarket.searchHint')}</p>}
               {loading ? <div role="status" className="flex items-center gap-2 py-8 text-label text-secondary"><Loader2 className="size-4 animate-spin" />{t('common.loading')}</div>
                 : <div className="grid grid-cols-1 gap-x-8 gap-y-1 @min-[640px]:grid-cols-2">
                   {entries.map(entry => {
@@ -200,7 +203,7 @@ export default function SkillMarketplacePage({ workspaceId, workingDirectory }: 
                     </button>
                   })}
                 </div>}
-              {!loading && !entries.length && !catalogErrors.length && <p className="py-8 text-center text-label text-secondary">{t('skillMarket.noResults')}</p>}
+              {!loading && !entries.length && !catalogErrors.length && !skillsSearchTooShort && <p className="py-8 text-center text-label text-secondary">{t(query ? 'skillMarket.noResults' : 'skillMarket.noSkills')}</p>}
               {!loading && entries.length > 0 && <p className="text-label-sm text-secondary">{t('skillMarket.resultLimit')}</p>}
             </> : <div className="grid grid-cols-1 gap-x-8 gap-y-1 @min-[640px]:grid-cols-2">
               {filteredSkills.map(skill => <button key={skill.slug} onClick={() => navigate(routes.view.skills(skill.slug))}

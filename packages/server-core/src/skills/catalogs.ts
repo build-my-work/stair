@@ -46,17 +46,22 @@ export async function searchSkillCatalog(market: SkillMarket, query: string, fet
     }))
   }
   if (market !== 'skills-sh') throw new Error('Unknown skill catalog')
-  // The public API used by the official skills CLI supports search, not an unauthenticated browse feed.
-  if (q.length < 2) return []
-  const data = await request('https://skills.sh/api/search?q=' + encodeURIComponent(q) + '&limit=40', fetcher, true)
+  if (q.length === 1) return []
+  // Empty queries use the website's default leaderboard; keyword search requires two characters.
+  const path = q ? '/api/search?q=' + encodeURIComponent(q) + '&limit=40' : '/api/skills/all-time/0'
+  const data = await request('https://skills.sh' + path, fetcher, true)
   // The directory also indexes external hosts; only repository-backed entries use this installer.
   return data.skills.filter((entry: any) => typeof entry.source === 'string'
-    && /^[\w.-]+\/[\w.-]+$/.test(entry.source) && typeof entry.skillId === 'string').map((entry: any) => ({
-    id: 'skills-sh:' + entry.id, name: entry.name || entry.skillId,
-    description: entry.source, author: entry.source.split('/')[0], market,
-    url: 'https://skills.sh/' + entry.id,
-    source: { kind: 'github', url: 'https://github.com/' + entry.source, skill: entry.skillId },
-  }))
+    && /^[\w.-]+\/[\w.-]+$/.test(entry.source) && typeof entry.skillId === 'string').slice(0, 40).map((entry: any) => {
+    // Leaderboard entries omit the id supplied by the search endpoint.
+    const id = entry.id ?? entry.source + '/' + entry.skillId
+    return {
+      id: 'skills-sh:' + id, name: entry.name || entry.skillId,
+      description: entry.source, author: entry.source.split('/')[0], market,
+      url: 'https://skills.sh/' + id,
+      source: { kind: 'github', url: 'https://github.com/' + entry.source, skill: entry.skillId },
+    }
+  })
 }
 
 export interface ResolvedSkillSource {
