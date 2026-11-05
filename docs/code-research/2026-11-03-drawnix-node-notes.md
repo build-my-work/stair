@@ -7,13 +7,13 @@
 - Fork：[TTsWorld/drawnix，codex/node-notes](https://github.com/TTsWorld/drawnix/tree/codex/node-notes)
 - 基线：上游 `v0.4.0-2`，`1d614bb60fc99132e0cd55a608a14fe786f4ee9b`，与此前 Stair 使用的版本对应。
 - 初始实现提交：`e451710`；行为保持的整理提交：`58b3059`；备注交互修复提交：`60aa1bd`；布局时序修复：`5721b22`，外部文件加载回归测试：`2a5ef3e`；并发输入节点定位修复：`8db4bfc`；发布文件完整性修复：`f1ba893`。
-- 当前包：`@ttsworld/drawnix@0.4.0-notes.6`，从 [GitHub Release](https://github.com/TTsWorld/drawnix/releases/tag/v0.4.0-notes.6) 下载固定版本归档；未发布到 npm registry。
+- 当前包：`@ttsworld/drawnix@0.4.0-notes.7`，从 [GitHub Release](https://github.com/TTsWorld/drawnix/releases/tag/v0.4.0-notes.7) 下载固定版本归档；未发布到 npm registry。
 - Stair 的 `apps/electron/package.json` 与 `bun.lock` 固定该归档 URL，不依赖相邻源码目录、临时路径或 `npm link`。
-- 当前归档 SHA-256：`52d4266c1d5014825596b94e416a27fde8c3cd0e3907219a3ee7e3a2fd87f42a`。已重新下载 Release 文件并核对一致。
+- 当前归档 SHA-256：`73fea8038cf253b8cdf093dcf0cb1461fbc457a3ca7db3746b72206915ee1e72`。已重新下载 Release 文件并核对一致。
 
 ## 使用与数据
 
-选中脑图节点，点击浮动工具栏的“添加备注”。右侧面板支持多行纯文本，节点继续展示简短标题。有内容时，节点旁显示备注图标，点击即可重新打开。支持删除、撤销和重做。
+选中脑图节点，点击浮动工具栏的“添加备注”。右侧面板支持多行纯文本，节点继续展示简短标题。有内容时，节点旁显示备注图标，点击即可重新打开。清空内容即可删除备注，支持撤销和重做。
 
 备注保存在节点顶层可选的 `note: string` 字段中，随 `.drawnix` 文件保存和导入导出；空备注会移除该字段。旧文件不需要迁移。字段放在 `data` 之外，是因为 Plait 的删除 emoji 操作会重建 `data`。
 
@@ -138,3 +138,15 @@ Stair 固定锁文件安装通过，实际安装的 JS bundle 与 Release 归档
 - Stair 本轮仅修改包 URL、锁文件对应 URL 与本文档；依赖文件相对本轮开始的快照仅有 `.5` → `.6` URL 替换，改动保留在工作区。
 
 本轮验证针对构建、归档和安装完整性，未重跑完整备注交互 E2E、真实模型/RPC 流程或正式安装包验收。备注交互的上一轮验证记录仍对应相同的运行时代码。详细日志和归档检查见 `/tmp/drawnix-notes6-fix-20261103/report.md`。
+
+## 备注面板简化（0.4.0-notes.7，2026-11-05）
+
+按确认的组件预览，面板仅保留“节点备注”标题、关闭按钮和正文编辑区。标题通过浅色分隔线与正文区分；正文采用无内层边框的编辑区。移除重复节点标题、可见内容标签、占位提示、保存说明与删除按钮，清空输入即移除备注。输入框保留无障碍名称。
+
+- Drawnix 提交 `0a6a63b`、`046fe6f`，发布版本 `0.4.0-notes.7`；Stair 继续通过固定 GitHub Release URL 引用独立包。
+- 包内 107 个文件与用户确认的组件预览逐字节一致，README 和两份许可证完整；headless editor 的两个 JS 模块及入口声明与 `.6` 相同。
+- 备注数据格式、公开编辑器 API、保存与并发保护保持原有行为。
+- 验证通过：Drawnix 21 项测试、类型检查和独立包构建；Stair 64 项相关回归（含两项 Electron/Chromium 布局测试）、Electron/WebUI 类型检查及 Electron renderer 生产构建。
+- Stair 冻结锁文件安装通过，实际安装的全部 107 个文件与重新下载的发布归档一致；包清单及锁文件相对本轮开始仅替换 `.6` → `.7` URL。
+
+本轮未生成或替换 Stair 正式安装包，未重跑完整备注交互 E2E。经用户确认的组件截图来自真实浏览器；发布包与该预览所用文件一致。详细日志见 `/tmp/drawnix-notes7-release-20261105`。

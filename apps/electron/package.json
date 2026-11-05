@@ -99,7 +99,7 @@
     "unist-util-visit": "^5.0.0",
     "vaul": "^1.1.2",
     "ws": "^8.19.0",
-    "@ttsworld/drawnix": "https://github.com/TTsWorld/drawnix/releases/download/v0.4.0-notes.6/ttsworld-drawnix-0.4.0-notes.6.tgz"
+    "@ttsworld/drawnix": "https://github.com/TTsWorld/drawnix/releases/download/v0.4.0-notes.7/ttsworld-drawnix-0.4.0-notes.7.tgz"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"

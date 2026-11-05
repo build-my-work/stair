@@ -168,7 +168,7 @@
         "@radix-ui/react-popover": "^1.1.15",
         "@radix-ui/react-switch": "^1.2.6",
         "@tanstack/react-table": "^8.21.3",
-        "@ttsworld/drawnix": "https://github.com/TTsWorld/drawnix/releases/download/v0.4.0-notes.6/ttsworld-drawnix-0.4.0-notes.6.tgz",
+        "@ttsworld/drawnix": "https://github.com/TTsWorld/drawnix/releases/download/v0.4.0-notes.7/ttsworld-drawnix-0.4.0-notes.7.tgz",
         "chrono-node": "^2.9.0",
         "classnames": "^2.5.1",
         "cmdk": "^1.1.1",
@@ -1680,7 +1680,7 @@
 
     "@tokenizer/token": ["@tokenizer/token@0.3.0", "", {}, "sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A=="],
 
-    "@ttsworld/drawnix": ["@ttsworld/drawnix@https://github.com/TTsWorld/drawnix/releases/download/v0.4.0-notes.6/ttsworld-drawnix-0.4.0-notes.6.tgz", { "dependencies": { "@floating-ui/react": "^0.26.24", "@plait-board/markdown-to-drawnix": "0.0.8", "@plait-board/mermaid-to-drawnix": "^0.0.7", "@plait-board/react-board": "0.4.0-2", "@plait-board/react-text": "0.4.0-2", "@plait/common": "0.92.3", "@plait/core": "0.92.3", "@plait/draw": "0.92.3", "@plait/layouts": "0.92.3", "@plait/mind": "0.92.3", "@plait/text-plugins": "0.92.3", "browser-fs-access": "^0.35.0", "classnames": "^2.5.1", "is-hotkey": "^0.2.0", "laser-pen": "^1.0.1", "lodash": "^4.17.21", "mobile-detect": "^1.4.5", "open-color": "^1.9.1", "roughjs": "^4.6.6", "slate": "^0.116.0", "slate-dom": "^0.116.0", "slate-history": "^0.115.0", "slate-react": "^0.116.0" }, "peerDependencies": { "react": "^18.3.1 || ^19.0.0", "react-dom": "^18.3.1 || ^19.0.0" } }],
+    "@ttsworld/drawnix": ["@ttsworld/drawnix@https://github.com/TTsWorld/drawnix/releases/download/v0.4.0-notes.7/ttsworld-drawnix-0.4.0-notes.7.tgz", { "dependencies": { "@floating-ui/react": "^0.26.24", "@plait-board/markdown-to-drawnix": "0.0.8", "@plait-board/mermaid-to-drawnix": "^0.0.7", "@plait-board/react-board": "0.4.0-2", "@plait-board/react-text": "0.4.0-2", "@plait/common": "0.92.3", "@plait/core": "0.92.3", "@plait/draw": "0.92.3", "@plait/layouts": "0.92.3", "@plait/mind": "0.92.3", "@plait/text-plugins": "0.92.3", "browser-fs-access": "^0.35.0", "classnames": "^2.5.1", "is-hotkey": "^0.2.0", "laser-pen": "^1.0.1", "lodash": "^4.17.21", "mobile-detect": "^1.4.5", "open-color": "^1.9.1", "roughjs": "^4.6.6", "slate": "^0.116.0", "slate-dom": "^0.116.0", "slate-history": "^0.115.0", "slate-react": "^0.116.0" }, "peerDependencies": { "react": "^18.3.1 || ^19.0.0", "react-dom": "^18.3.1 || ^19.0.0" } }],
 
     "@tybys/wasm-util": ["@tybys/wasm-util@0.10.4", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-W3c4gRigFS0T/Ma4qIYF3GDAc5AQdHb1yL5znJT1Zv1YaD9Kitx656wBjvr19qbiosmZT8lWDM5BEMynUqX65A=="],
 
