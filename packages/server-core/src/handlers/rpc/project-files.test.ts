@@ -535,7 +535,7 @@ describe('Project Files RPC', () => {
       relativePath: 'large.drawnix',
       expectedFingerprint: saved.sourceFingerprint,
       content: changed.replace(/"}$/, 'x"}'),
-    })).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST')
+    })).rejects.toThrow('PROJECT_FILE_INVALID_REQUEST: Drawnix documents are limited to 8 MiB')
   })
 
   it('以 SHA-256 指纹比较并原子保存可编辑文本', async () => {

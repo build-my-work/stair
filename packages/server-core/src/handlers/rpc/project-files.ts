@@ -279,11 +279,21 @@ function validateDrawnixFileRequest(value: unknown, action: 'create'): ProjectFi
 function validateDrawnixFileRequest(value: unknown, action: 'save' | 'create'): ProjectFileRequest & { content: string; expectedFingerprint?: ProjectFileFingerprint } {
   const request = validateFileRequest(value)
   const save = value as Partial<SaveDrawnixProjectFileRequest>
+  if (typeof save.content !== 'string') {
+    throw projectFileError('PROJECT_FILE_INVALID_REQUEST', `Invalid Drawnix ${action} request`)
+  }
+  // Report the size limit separately so an oversized board (for example after
+  // large pasted images) surfaces an actionable message in the editor banner
+  // instead of the generic invalid-request wording.
+  if (Buffer.byteLength(save.content, 'utf8') > MAX_PROJECT_FILE_TEXT_BYTES) {
+    throw projectFileError(
+      'PROJECT_FILE_INVALID_REQUEST',
+      `Drawnix documents are limited to ${MAX_PROJECT_FILE_TEXT_BYTES / (1024 * 1024)} MiB`,
+    )
+  }
   if (
     !request.relativePath.toLowerCase().endsWith('.drawnix')
     || (action === 'save' && !isProjectFileFingerprint(save.expectedFingerprint))
-    || typeof save.content !== 'string'
-    || Buffer.byteLength(save.content, 'utf8') > MAX_PROJECT_FILE_TEXT_BYTES
   ) {
     throw projectFileError('PROJECT_FILE_INVALID_REQUEST', `Invalid Drawnix ${action} request`)
   }

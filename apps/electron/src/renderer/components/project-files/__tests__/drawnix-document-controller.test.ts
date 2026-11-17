@@ -22,6 +22,7 @@ import { DrawnixDocumentController } from '../drawnix-document-controller'
 import {
   applyMindmapOperations,
   createDrawnixEditor,
+  getMindmapAnkiCards,
   parseDrawnixDocument,
 } from '@ttsworld/drawnix/editor'
 import {
@@ -89,6 +90,87 @@ describe('Drawnix document controller', () => {
     const document = parseDrawnixDocument(saved)
     const reopened = createDrawnixEditor(createTestingBoard([], document.elements))
     expect(reopened.readMindmap()[0]).toMatchObject({ topic: '核心点', note: '用户刚刚修改的备注' })
+  })
+
+  it('preserves Anki cards through Agent node edits and the save/reopen round trip', async () => {
+    const scratch = createEmptyBoard()
+    applyMindmapOperations(scratch, [{
+      type: 'populate_empty',
+      markdown: '# Photosynthesis\n## Light reactions',
+    }])
+    const outline = createDrawnixEditor(scratch).readMindmap()
+    const lightId = outline[0]!.children[0]!.id
+    // The card widget stores cards as a top-level element field (outside
+    // `data`), the same place the note widget writes `note`. Elements are
+    // frozen on the board, so clone the populated tree before adding cards.
+    const elements = JSON.parse(JSON.stringify(scratch.children)) as MindElement[]
+    const card = {
+      id: '1f0d5c1e-6b7a-4a2b-9c3d-8e4f5a6b7c8d',
+      front: 'Light reaction products?',
+      back: 'ATP and NADPH',
+      tags: ['biology', 'chapter-5'],
+      frontImages: [{
+        id: '2a1b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
+        url: 'data:image/png;base64,iVBORw0KGgo=',
+        mimeType: 'image/png',
+        width: 3,
+        height: 2,
+      }],
+    }
+    elements[0]!.children[0]!.ankiCards = [card]
+    const board = createTestingBoard([], elements)
+    const editor = createDrawnixEditor(board)
+
+    let saved = ''
+    const controller = new DrawnixDocumentController(
+      editor, 'project-a', 'maps/cards.drawnix', INITIAL_FINGERPRINT,
+      async request => {
+        saved = request.content
+        return savedResponse(request, 1)
+      }, () => {},
+    )
+    const initial = await controller.read()
+    expect(initial.roots[0]!.children[0]).toMatchObject({ topic: 'Light reactions' })
+
+    const afterAgent = await controller.update({
+      v: 1,
+      action: 'update',
+      projectId: 'project-a',
+      relativePath: 'maps/cards.drawnix',
+      expectedChangeSeq: initial.changeSeq,
+      operations: [
+        { type: 'set_topic', nodeId: lightId, topic: 'Light-dependent reactions' },
+        { type: 'insert_child', parentId: lightId, topic: 'Photosystem II' },
+      ],
+    })
+    expect(afterAgent.roots[0]!.children[0]).toMatchObject({
+      topic: 'Light-dependent reactions',
+      children: [{ topic: 'Photosystem II' }],
+    })
+    // The Agent batch rebuilt the node; the cards must ride along unchanged.
+    expect(editor.readAnkiCards()).toMatchObject([{
+      nodeId: lightId,
+      topic: 'Light-dependent reactions',
+      cards: [card],
+    }])
+
+    await controller.flush()
+    const persisted = parseDrawnixDocument(saved)
+    expect(getMindmapAnkiCards(persisted.elements)).toMatchObject([{
+      nodeId: lightId,
+      topic: 'Light-dependent reactions',
+      cards: [card],
+    }])
+    const reopened = createDrawnixEditor(createTestingBoard([], persisted.elements))
+    const reopenedCards = reopened.readAnkiCards()
+    expect(reopenedCards).toHaveLength(1)
+    expect(reopenedCards[0]!.cards[0]).toMatchObject({
+      id: card.id,
+      front: card.front,
+      back: card.back,
+      tags: card.tags,
+      frontImages: card.frontImages,
+    })
   })
 
   it('does not reuse a read token from a previous renderer process', async () => {
