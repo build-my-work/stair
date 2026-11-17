@@ -347,6 +347,8 @@ export interface SessionToolContext {
    */
   createTask?(input: CreateTaskInput): Promise<CreateTaskResult>;
 
+  notion?: import('./notion.ts').NotionToolCallbacks;
+
   /**
    * Append a dated note to the invoking session's project MEMORY.md (project_memory_append).
    * Throws when the session has no project. Injected by SessionManager.

@@ -146,6 +146,21 @@ describe('attachSessionSelfManagementBindings', () => {
     expect(ctx.setSessionLabels).toBeDefined();
   });
 
+  it('Notion tools dispatch through late-bound callbacks used by both backends', async () => {
+    const ctx = createBaseContext(sessionId);
+    attachSessionSelfManagementBindings(ctx, sessionId);
+    const read = SESSION_TOOL_REGISTRY.get('project_notion_read')!;
+    expect((await read.handler!(ctx, {})).isError).toBe(true);
+    mergeSessionScopedToolCallbacks(sessionId, { notion: {
+      open: async pageId => ({ pageId }),
+      read: async () => ({ pageId: 'current-page', markdown: 'Current notes' }),
+      write: async input => input,
+    } });
+    const result = await read.handler!(ctx, {});
+    expect(result.isError).not.toBe(true);
+    expect(result.content[0]!.text).toContain('Current notes');
+  });
+
   it('project memory appends resolve from callbacks merged after the context was created', () => {
     const ctx = createBaseContext(sessionId);
     attachSessionSelfManagementBindings(ctx, sessionId);

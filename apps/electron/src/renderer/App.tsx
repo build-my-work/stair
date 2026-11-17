@@ -2487,6 +2487,11 @@ export default function App() {
         await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
         await draftCoordinator.flushPendingDrafts(windowWorkspaceId)
 
+        // Respect Notion's leave veto before workspace switching unmounts guests.
+        if (window.electronAPI.closeNotionViews && !await window.electronAPI.closeNotionViews()) {
+          throw new Error('NOTION_STAY')
+        }
+
         // 2. Update the main process's window-workspace mapping.
         await window.electronAPI.switchWorkspace(workspaceId)
         transportWorkspaceIdRef.current = workspaceId
@@ -2501,9 +2506,11 @@ export default function App() {
           '[Project Files] Workspace switch vetoed because save failed:',
           error instanceof Error ? error.message : String(error),
         )
-        toast.error(t('projectFileEditor.saveFailed'), {
-          description: t('projectFileEditor.saveFailedTitle'),
-        })
+        if (!(error instanceof Error && error.message === 'NOTION_STAY')) {
+          toast.error(t('projectFileEditor.saveFailed'), {
+            description: t('projectFileEditor.saveFailedTitle'),
+          })
+        }
         return
       }
 

@@ -40,6 +40,8 @@ export interface ProjectConfig {
   description?: string;
   /** Absolute path bound to this project; new sessions inherit it when not overridden */
   workingDirectory?: string;
+  /** Remote documents, independent of the local command working directory. */
+  notion?: import("../notion/index.ts").NotionBinding | null;
   /** Free-form text injected into the system prompt as project context */
   details?: string;
   /** Optional color theme ID for project-branded UI */
@@ -98,6 +100,7 @@ export interface LoadedProject {
  * Decoupled from ProjectConfig so prompt builders can be tested in isolation.
  */
 export interface ProjectPromptContext {
+  notion?: import("../notion/index.ts").NotionBinding | null;
   name: string;
   description?: string;
   details?: string;

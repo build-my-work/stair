@@ -1,3 +1,4 @@
+import { notionPageId } from '../notion/index.ts'
 import { isCanonicalProjectRelativePath } from '../project-files/index.ts'
 
 export const WORKBENCH_LAYOUT_VERSION = 1 as const
@@ -19,9 +20,17 @@ export interface PersistedProjectFileWorkbenchPanel {
   widthRatio: number
 }
 
+export interface PersistedNotionWorkbenchPanel {
+  id: string
+  kind: 'notion-page'
+  pageId: string
+  widthRatio: number
+}
+
 export type PersistedWorkbenchPanel =
   | PersistedSessionWorkbenchPanel
   | PersistedProjectFileWorkbenchPanel
+  | PersistedNotionWorkbenchPanel
 
 export interface PersistedProjectWorkbench {
   primary: PersistedSessionWorkbenchPanel | null
@@ -107,6 +116,12 @@ function normalizeAuxiliaryPanel(
   const panel = value
   if (!validIdentifier(panel.id)) return null
 
+  if (panel.kind === 'notion-page') {
+    try {
+      return { id: panel.id, kind: 'notion-page', pageId: notionPageId(String(panel.pageId)), widthRatio: normalizedRatio(panel.widthRatio) }
+    } catch { return null }
+  }
+
   if (panel.kind === 'project-file') {
     if (
       !isCanonicalProjectRelativePath(panel.relativePath)
@@ -147,6 +162,7 @@ function normalizeProjectLayout(
   }
 
   let hasPreview = false
+  let hasNotion = false
   const auxiliary: PersistedWorkbenchPanel[] = []
   for (const rawPanel of layout.auxiliary) {
     const panel = normalizeAuxiliaryPanel(rawPanel, projectId, validation)
@@ -154,8 +170,10 @@ function normalizeProjectLayout(
       !panel
       || usedPanelIds.has(panel.id)
       || (panel.kind === 'session' && usedSessionIds.has(panel.sessionId))
+      || (panel.kind === 'notion-page' && hasNotion)
       || (panel.kind === 'project-file' && panel.presentation === 'preview' && hasPreview)
     ) continue
+    if (panel.kind === 'notion-page') hasNotion = true
     usedPanelIds.add(panel.id)
     if (panel.kind === 'session') usedSessionIds.add(panel.sessionId)
     if (panel.kind === 'project-file' && panel.presentation === 'preview') hasPreview = true

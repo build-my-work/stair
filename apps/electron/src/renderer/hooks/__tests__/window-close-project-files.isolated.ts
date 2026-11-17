@@ -5,6 +5,7 @@ let projectFilesFlushRequested: ((requestId: string) => void) | undefined
 let resolveFlush: ((value?: 'idle' | 'timeout') => void) | undefined
 let flushError: Error | null = null
 let flushImageWait: 'idle' | 'timeout' = 'idle'
+let notionCloseResult = Promise.resolve(true)
 const order: string[] = []
 const flushCompletions: Array<{ requestId: string; error?: string }> = []
 const toasts: string[] = []
@@ -68,6 +69,7 @@ Object.assign(globalThis, {
         return () => {}
       },
       cancelCloseWindow: async () => { order.push('cancel-fallback') },
+      closeNotionViews: () => notionCloseResult,
       confirmCloseWindow: async () => { order.push('confirm-close') },
       debugLog: () => {},
     },
@@ -83,6 +85,7 @@ describe('窗口关闭前的 Project File flush', () => {
     resolveFlush = undefined
     flushError = null
     flushImageWait = 'idle'
+    notionCloseResult = Promise.resolve(true)
     order.length = 0
     flushCompletions.length = 0
     toasts.length = 0
@@ -106,6 +109,21 @@ describe('窗口关闭前的 Project File flush', () => {
 
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(order).toEqual(['cancel-fallback', 'flush', 'cancel-fallback'])
+  })
+
+  it('Notion 未确认或选择留在页面时不关闭窗口', async () => {
+    let resolveNotionClose!: (confirmed: boolean) => void
+    notionCloseResult = new Promise<boolean>(resolve => { resolveNotionClose = resolve })
+    useWindowCloseHandler()
+    closeRequested?.({ source: 'window-button' })
+    await Promise.resolve()
+    resolveFlush?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(order).toEqual(['cancel-fallback', 'flush'])
+
+    resolveNotionClose(false)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(order).toEqual(['cancel-fallback', 'flush'])
   })
 
   it('窗口关闭等待未完成的草稿保存，文件保存完成也不能提前关闭', async () => {

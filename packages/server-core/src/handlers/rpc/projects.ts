@@ -1,3 +1,5 @@
+import { projectNotionService } from '../../notion/service'
+import { parseNotionPage } from '@craft-agent/shared/notion'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
@@ -86,6 +88,15 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    if (patch.notion) {
+      const { loadProject } = await import('@craft-agent/shared/projects')
+      const previous = loadProject(workspace.rootPath, projectSlug)?.config.notion
+      patch.notion = { sourceSlug: patch.notion.sourceSlug, rootPageId: parseNotionPage(patch.notion.rootPageId) }
+      if (previous?.sourceSlug !== patch.notion.sourceSlug || previous?.rootPageId !== patch.notion.rootPageId) {
+        const service = await projectNotionService(workspace.rootPath, patch.notion)
+        await service.assertWithinRoot(patch.notion.rootPageId)
+      }
+    }
     const { updateProject } = await import('@craft-agent/shared/projects')
     const updated = await withExistingProjectMutation(
       workspace.rootPath,

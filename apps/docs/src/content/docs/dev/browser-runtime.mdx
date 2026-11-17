@@ -8,7 +8,7 @@ import NextSteps from '../../../components/NextSteps.astro';
 > **状态**：权威开发规则（authoritative）
 > **读取时机**：修改 Browser 生命周期、几何同步、目标绑定或窗口关闭行为之前
 
-Browser 的原生页面由 Electron Main 独占管理：Runtime（`WebContentsView`）、Bounds、Focus、窗口与页面生命周期都归 Main；Renderer Workbench 只提交 presentation intent 和 DOM Host 几何。Panel 身份与 Runtime 身份分离，通过显式关联绑定——不存在嵌入式展示、reparent 或跨 Project 的 presentation 路径。
+Browser 的原生页面由 Electron Main 独占管理：Runtime（`WebContentsView`）、Bounds、Focus、窗口与页面生命周期都归 Main；Renderer Workbench 只提交 presentation intent 和 DOM Host 几何。Panel 身份与 Runtime 身份分离，通过显式关联绑定。普通 Browser 保持独立窗口、不 reparent；Notion 项目文档使用下述单独的工作台宿主。
 
 ## 事实来源
 
@@ -28,9 +28,22 @@ Browser 的原生页面由 Electron Main 独占管理：Runtime（`WebContentsVi
 - **目标绑定**：从 Chat 打开显式绑定该 Chat；手动打开只绑定当前 Project。Chat 删除清除手动目标或销毁 Chat-owned 窗口；Project 删除清理其全部 Browser；恢复显示时刷新目标元数据，失败明确显示，不伪装成取消。
 - **选区与书签**：选区走与其他来源相同的 Project-scoped 引用协议；对其他 Project 的 Browser 发起动作被拒绝。书签以 Workspace 为边界持久化。
 
+## Notion 工作台宿主
+
+Notion 原网页使用受限的 `webview` guest，而非将普通 Browser 的原生视图搬入主窗口。真实 Electron 验证表明普通 `View` 容器无法可靠裁剪子 `WebContentsView`；guest 的 CSS 容器能保持网页视口宽度并正确裁剪。
+
+- `NotionViewManager` 在 `will-attach-webview` 中只接受指定 partition、初始 `about:blank`、主窗口拥有的 guest；移除 preload，强制 sandbox、context isolation，禁用 Node 和嵌套 webview。
+- 每个窗口、每个 Project 只有一个 guest。Renderer 的 `NotionViewPool` 保持 guest DOM 挂载，内容 slot 提交可见位置；切换 Project 只隐藏，关闭面板才销毁。
+- 登录态使用独立 `persist:project-notion` session，不加入普通 Browser/CDP 注册表。REST 凭据留在 server。
+- 网页 guest 的直接 close 可能跳过 `beforeunload`；关闭前先导航空白页，保留标准离开阻止信号，允许离开后再销毁。Agent 导航不能强制越过阻止信号。
+- Agent 的 open/read/write 通过现有 capability 通道与唯一宿主交互。写入使用读取时的页面、revision 和 clientId，不根据“最近窗口”回退。
+- 不支持的 URL、peek 页面或数据库记录不会作为 Agent 当前写入目标。
+
+验证：`notion-view.e2e.test.ts`（外部 Electron 验证，需要屏幕截图权限）覆盖裁剪、隐藏保留状态、sandbox、Agent 导航阻止及关闭 veto；Notion 服务与工具测试覆盖范围和写入竞态。实际个人账号登录及 REST 联调单独记录。
+
 ## Review 清单
 
-1. 有没有引入嵌入式展示、reparent 或隐式 presentation 路径？
+1. 普通 Browser 是否仍固定独立窗口？Notion 是否只通过受限 guest 宿主内嵌，且没有跨 Project 或跨窗口搬运？
 2. 关闭顺序是否保持"先销毁 Runtime，再移除 Panel"？
 3. 几何更新是否只提交可见几何，不夹带布局状态修改？
 4. 目标绑定的增删场景（Chat 删除、Project 删除、重命名、隐藏恢复竞态）是否都有失败出口？

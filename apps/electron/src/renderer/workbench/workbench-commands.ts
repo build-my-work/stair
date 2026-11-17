@@ -652,6 +652,15 @@ export const closeWorkbenchPanelAtom = atom(
 
     const closingPanel = getWorkbenchPanels(layout).find(panel => panel.id === input.panelId)
     if (!closingPanel) return false
+    // Web restores shared layouts but has no native guest to unload.
+    if (closingPanel.kind === 'notion-page' && window.electronAPI.getRuntimeEnvironment?.() !== 'web') {
+      const workspaceId = current.workspaceId
+      if (!await window.electronAPI.notionView({ action: 'close', projectId: input.projectId })) return false
+      current = get(workbenchAtom)
+      if (current.workspaceId !== workspaceId) return false
+      layout = current.layoutsByProject[input.projectId] ?? null
+      if (!layout || !layout.auxiliary.some(panel => panel.id === input.panelId)) return false
+    }
     if (closingPanel.kind === 'project-file') {
       try {
         await flushOpenProjectFile(closingPanel.projectId, closingPanel.relativePath)

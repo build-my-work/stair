@@ -68,7 +68,7 @@ import { collectFileChangesFromActivities, getFirstFileChangeIdForActivity } fro
 import { resolveBranchNewPanelOption } from "./branching"
 import { MemoizedMessageBubble } from "./chat-display/MessageBubble"
 import { ProcessingIndicator } from "./chat-display/ProcessingIndicator"
-import { ScrollOnMount } from "./chat-display/ScrollOnMount"
+import { ScrollOnMount, scrollChatToBottom } from "./chat-display/ScrollOnMount"
 import { TurnFrame } from "./chat-display/TurnFrame"
 import { NewChatSuggestions } from "./chat-display/NewChatSuggestions"
 import { newChatSuggestionMentions, newChatSuggestionMessage, pickNewChatSuggestions, pickCustomSuggestions, type NewChatSuggestion } from "./chat-display/new-chat-suggestions"
@@ -417,7 +417,6 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Input is only disabled when explicitly disabled (e.g., agent needs activation)
   // User can type during streaming - submitting will stop the stream and send
   const isInputDisabled = disabled
-  const messagesEndRef = React.useRef<HTMLDivElement>(null)
   const scrollViewportRef = React.useRef<HTMLDivElement>(null)
   const prevSessionIdRef = React.useRef<string | null>(null)
   // Reverse pagination: show last N turns initially, load more on scroll up
@@ -1159,7 +1158,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
       debounceTimer = setTimeout(() => {
         // Skip smooth scroll if we just did an instant scroll (session switch/lazy load)
         if (Date.now() < skipSmoothScrollUntilRef.current) return
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+        scrollChatToBottom(viewport, 'smooth')
       }, 200)
     })
 
@@ -1205,9 +1204,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     isStickToBottomRef.current = true
 
     requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({
-        behavior: isFocusedPanelRef.current ? 'smooth' : 'instant',
-      })
+      scrollChatToBottom(scrollViewportRef.current, isFocusedPanelRef.current ? 'smooth' : 'instant')
     })
   }, [session?.id, messageCount, lastMessageId, lastMessageRole])
 
@@ -1260,7 +1257,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     // Immediately scroll to bottom after sending - use requestAnimationFrame
     // to ensure the DOM has updated with the new message
     requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+      scrollChatToBottom(scrollViewportRef.current, 'smooth')
     })
   }
 
@@ -1704,7 +1701,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                   {/* Scroll to bottom before paint - fires via useLayoutEffect */}
                   {/* Skip when search is active on session switch - scroll to first match instead */}
                   <ScrollOnMount
-                    targetRef={messagesEndRef}
+                    viewportRef={scrollViewportRef}
                     skip={skipScrollToBottom}
                     onScroll={() => {
                       skipSmoothScrollUntilRef.current = Date.now() + 500
@@ -2044,8 +2041,8 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                     />
                   )
                 })()}
-                {/* Scroll Anchor: For auto-scroll to bottom */}
-                <div ref={messagesEndRef} />
+                {/* Preserve the transcript's bottom spacing. */}
+                <div />
               </div>
               </ScrollArea>
             </div>

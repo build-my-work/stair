@@ -503,6 +503,12 @@ export const RPC_CHANNELS = {
     FLUSH_REQUESTED: 'projectFiles:flushRequested',
     FLUSH_COMPLETED: 'projectFiles:flushCompleted',
   },
+  notion: {
+    CHILDREN: 'notion:children',
+    VIEW_CHANGED: 'notion:viewChanged',
+    VIEW_FOCUSED: 'notion:viewFocused',
+    CLOSE_REQUESTED: 'notion:closeRequested',
+  },
   workbenchLayout: {
     READ: 'workbenchLayout:read',
     WRITE: 'workbenchLayout:write',

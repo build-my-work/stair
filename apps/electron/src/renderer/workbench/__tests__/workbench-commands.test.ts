@@ -487,7 +487,7 @@ describe('Project File Workbench commands', () => {
     expect(layout.auxiliary.map(panel => (
       panel.kind === 'session'
         ? `session:${panel.sessionId}`
-        : `file:${panel.relativePath}`
+        : panel.kind === 'project-file' ? `file:${panel.relativePath}` : `notion:${panel.pageId}`
     ))).toEqual([
       'file:docs/source.md',
       'session:new-session',

@@ -27,9 +27,17 @@ export interface ProjectFileWorkbenchPanel extends WorkbenchPanelLayout {
   openIntentRevision: number
 }
 
+export interface NotionWorkbenchPanel extends WorkbenchPanelLayout {
+  id: string
+  kind: 'notion-page'
+  projectId: string
+  pageId: string
+}
+
 export type WorkbenchPanel =
   | SessionWorkbenchPanel
   | ProjectFileWorkbenchPanel
+  | NotionWorkbenchPanel
 
 export interface ProjectWorkbench {
   primary: SessionWorkbenchPanel | null

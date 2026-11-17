@@ -44,6 +44,7 @@ import {
   CLIENT_SAVE_TEXT_FILE,
   CLIENT_BROWSER_INVOKE,
   CLIENT_BROWSER_APPLICATION_INVOKE,
+  CLIENT_NOTION_INVOKE,
   CLIENT_DRAWNIX_BOARD_INVOKE,
   CLIENT_DRAWNIX_BOARD_DISCOVER,
   LOCAL_CLIENT_CAPABILITIES,
@@ -202,6 +203,12 @@ client.handleCapability(
   ),
 )
 
+let notionHandler: ((request: import('@craft-agent/shared/notion').NotionHostRequest) => Promise<import('@craft-agent/shared/notion').NotionHostState>) | null = null
+client.handleCapability(CLIENT_NOTION_INVOKE, request => {
+  if (!notionHandler) throw new Error('NOTION_HOST_UNAVAILABLE')
+  return notionHandler(request)
+})
+
 let drawnixBoardHandler:
   | ((request: DrawnixBoardCapabilityRequest) => Promise<DrawnixBoardCapabilityResponse>)
   | null = null
@@ -259,7 +266,9 @@ client.handleCapability(
 // ---------------------------------------------------------------------------
 
 const api = buildClientApi(client, CHANNEL_MAP, (ch) => client.isChannelAvailable(ch))
-
+;(api as any).setNotionCapabilityHandler = (handler: typeof notionHandler) => { notionHandler = handler }
+;(api as any).notionView = (request: import('@craft-agent/shared/notion').NotionViewRequest) => ipcRenderer.invoke('__notion:view', request)
+;(api as any).closeNotionViews = () => ipcRenderer.invoke('__notion:closeAll')
 ;(api as any).getRuntimeEnvironment = (): 'electron' | 'web' => 'electron'
 ;(api as any).setBrowserApplicationHandler = (
   workspaceId: string | null,

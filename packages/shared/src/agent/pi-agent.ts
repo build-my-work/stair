@@ -249,6 +249,7 @@ export class PiAgent extends BaseAgent {
         name: project.config.name,
         description: project.config.description,
         details: project.config.details,
+        notion: project.config.notion,
         assetsPath: getProjectAssetsPath(root, slug),
         assets: listProjectAssets(root, slug).map((a) => ({
           filename: a.filename,

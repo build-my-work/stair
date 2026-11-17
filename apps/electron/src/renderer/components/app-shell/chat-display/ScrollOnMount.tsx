@@ -1,21 +1,26 @@
 import * as React from "react"
 
+/** Keep transcript scrolling inside its panel rather than moving the Workbench. */
+export function scrollChatToBottom(viewport: HTMLElement | null, behavior: ScrollBehavior): void {
+  if (viewport) viewport.scrollTo({ top: viewport.scrollHeight, behavior })
+}
+
 /**
- * Scrolls to target element on mount, before browser paint.
+ * Scrolls the transcript viewport to the bottom on mount, before browser paint.
  * Uses useLayoutEffect to ensure scroll happens before content is visible.
  */
 export function ScrollOnMount({
-  targetRef,
+  viewportRef,
   onScroll,
   skip = false
 }: {
-  targetRef: React.RefObject<HTMLDivElement | null>
+  viewportRef: React.RefObject<HTMLDivElement | null>
   onScroll?: () => void
   skip?: boolean
 }) {
   React.useLayoutEffect(() => {
     if (skip) return
-    targetRef.current?.scrollIntoView({ behavior: 'instant' })
+    scrollChatToBottom(viewportRef.current, 'instant')
     onScroll?.()
   }, [skip])
   return null

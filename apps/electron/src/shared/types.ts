@@ -518,6 +518,13 @@ export interface ElectronAPI {
   writePreferences(content: string): Promise<{ success: boolean; error?: string }>
 
   // Workspace-scoped semantic Workbench layout
+  setNotionCapabilityHandler(handler: ((request: import('@craft-agent/shared/notion').NotionHostRequest) => Promise<import('@craft-agent/shared/notion').NotionHostState>) | null): void
+  getNotionChildren(request: { projectId: string; pageId?: string }): Promise<import('@craft-agent/shared/notion').NotionPage[]>
+  notionView(request: import('@craft-agent/shared/notion').NotionViewRequest): Promise<import('@craft-agent/shared/notion').NotionViewState | boolean | null>
+  closeNotionViews(): Promise<boolean>
+  onNotionViewChanged(callback: (projectId: string, state: import('@craft-agent/shared/notion').NotionViewState) => void): () => void
+  onNotionViewFocused(callback: (projectId: string) => void): () => void
+  onNotionViewCloseRequested(callback: (projectId: string) => void): () => void
   readWorkbenchLayout(): Promise<import('@craft-agent/shared/workbench-layout').PersistedWorkbenchLayoutDocument>
   writeWorkbenchLayout(
     document: import('@craft-agent/shared/workbench-layout').PersistedWorkbenchLayoutDocument,

@@ -463,6 +463,11 @@ export const CHANNEL_MAP = {
   getPageThumbnail: invoke(RPC_CHANNELS.pages.GET_THUMBNAIL),
   regeneratePageThumbnail: invoke(RPC_CHANNELS.pages.REGENERATE_THUMBNAIL),
   onPagesChanged: listener(RPC_CHANNELS.pages.CHANGED),
+  getNotionChildren: invoke(RPC_CHANNELS.notion.CHILDREN),
+  onNotionViewChanged: listener(RPC_CHANNELS.notion.VIEW_CHANGED),
+  onNotionViewFocused: listener(RPC_CHANNELS.notion.VIEW_FOCUSED),
+  onNotionViewCloseRequested: listener(RPC_CHANNELS.notion.CLOSE_REQUESTED),
+
   // Project Files
   searchProjectFiles: invoke(RPC_CHANNELS.projectFiles.SEARCH),
   listProjectDirectoryEntries: invoke(RPC_CHANNELS.projectFiles.LIST_DIRECTORY_ENTRIES),

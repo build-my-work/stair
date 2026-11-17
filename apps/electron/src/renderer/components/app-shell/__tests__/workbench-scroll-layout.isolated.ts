@@ -132,6 +132,7 @@ beforeAll(() => {
   mock.module(componentPath('ProjectFilePanelSlot'), () => ({
     ProjectFilePanelSlot: () => React.createElement('div', { 'data-slot': 'project-file' }),
   }))
+  mock.module(componentPath('../notion/NotionPanelSlot'), () => ({ NotionPanelSlot: () => null }))
   mock.module(componentPath('MainContentPanel'), () => ({
     MainContentPanel: () => React.createElement('div', { 'data-slot': 'main' }),
   }))

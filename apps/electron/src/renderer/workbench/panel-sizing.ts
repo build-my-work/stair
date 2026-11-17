@@ -1,6 +1,7 @@
 import {
   PANEL_DEFAULT_WIDTH,
   PANEL_MIN_WIDTH,
+  PANEL_NOTION_DEFAULT_WIDTH,
   PANEL_WIDE_DEFAULT_WIDTH,
 } from '@/components/app-shell/panel-constants'
 import type { WorkbenchPanel } from './workbench-state'
@@ -9,9 +10,11 @@ export function getDefaultWorkbenchPanelRatio(
   panelLayoutWidth: number,
   panelKind: WorkbenchPanel['kind'],
 ): number {
-  const defaultWidth = panelKind === 'session'
-    ? PANEL_DEFAULT_WIDTH
-    : PANEL_WIDE_DEFAULT_WIDTH
+  const defaultWidth = {
+    session: PANEL_DEFAULT_WIDTH,
+    'project-file': PANEL_WIDE_DEFAULT_WIDTH,
+    'notion-page': PANEL_NOTION_DEFAULT_WIDTH,
+  }[panelKind]
   return Number.isFinite(panelLayoutWidth) && panelLayoutWidth > 0
     ? defaultWidth / panelLayoutWidth
     : 1

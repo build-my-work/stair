@@ -493,6 +493,12 @@ export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string
     lines.push('');
   }
 
+  if (ctx.notion) {
+    lines.push('This Project stores notes and document outputs in Notion. Use project_notion_read/open/write.');
+    lines.push('Write to the currently open Project Notion page. If none is open, locate and open the intended page first; ask if the target is unclear.');
+    lines.push('Read current state through the tools. Do not silently save notes to local files or save every conversation.');
+  }
+
   lines.push(`<project_assets_path>${sanitizeProjectBodyText(ctx.assetsPath)}</project_assets_path>`);
   if (ctx.assets.length > 0) {
     lines.push('<project_assets>');
