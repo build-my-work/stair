@@ -99,7 +99,7 @@
     "unist-util-visit": "^5.0.0",
     "vaul": "^1.1.2",
     "ws": "^8.19.0",
-    "@ttsworld/drawnix": "https://github.com/TTsWorld/drawnix/releases/download/v0.4.0-notes.7/ttsworld-drawnix-0.4.0-notes.7.tgz"
+    "@ttsworld/drawnix": "file:/Users/zhihu/tmp/stair-anki-pkg/ttsworld-drawnix-0.4.0-anki.1.tgz"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"
