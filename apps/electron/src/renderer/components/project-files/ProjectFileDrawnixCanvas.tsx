@@ -8,6 +8,7 @@ import {
 } from 'react'
 import { AlertTriangle, Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import { Drawnix } from '@ttsworld/drawnix'
 import { parseDrawnixDocument, type DrawnixEditor } from '@ttsworld/drawnix/editor'
 import type { ProjectFileFingerprint } from '@craft-agent/shared/project-files'
@@ -68,17 +69,30 @@ export function ProjectFileDrawnixCanvas({
 
     return () => {
       unregisterBoard()
-      if (controllerRef.current === controller) controllerRef.current = null
-      void controller.flush()
+      // Keep controllerRef until flush finishes so Cmd+S / host flush during
+      // teardown still reaches the same controller that is writing the image.
+      void controller
+        .flush()
+        .then(imageWait => {
+          if (imageWait === 'timeout') {
+            window.electronAPI.debugLog(
+              '[Drawnix] Card image wait timed out while closing; saved committed images only.',
+            )
+            toast.warning(t('projectFileEditor.drawnixImageWaitTimeout'))
+          }
+        })
         .catch(error => {
           window.electronAPI.debugLog(
             '[Drawnix] Failed to flush while closing:',
             error instanceof Error ? error.message : String(error),
           )
         })
-        .finally(unregisterDocument)
+        .finally(() => {
+          if (controllerRef.current === controller) controllerRef.current = null
+          unregisterDocument()
+        })
     }
-  }, [editor, document, projectId, relativePath, sourceFingerprint])
+  }, [editor, document, projectId, relativePath, sourceFingerprint, t])
 
   const notifyBoardChanged = useCallback(() => {
     controllerRef.current?.notifyBoardChanged()

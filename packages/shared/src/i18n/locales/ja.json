@@ -1050,6 +1050,7 @@
   "preview.pdfPreview": "PDFプレビュー",
   "projectFileEditor.conflict": "Save conflict",
   "projectFileEditor.conflictTitle": "This file changed on disk. Your draft has not been overwritten.",
+  "projectFileEditor.drawnixImageWaitTimeout": "Some card images were still processing; saved what had finished.",
   "projectFileEditor.draftSaved": "Draft saved.",
   "projectFileEditor.edit": "Edit file",
   "projectFileEditor.preview": "Preview",

@@ -764,11 +764,18 @@ interface PendingRendererFlush {
 
 const pendingRendererFlushes = new Map<string, PendingRendererFlush>()
 
+/**
+ * Main-process wait for a renderer flush. Must cover Drawnix's default
+ * card-image wait (10 s) plus a short save window so quit/workspace switch
+ * does not report PROJECT_FILE_FLUSH_TIMEOUT while images are still decoding.
+ */
+export const PROJECT_FILES_FLUSH_TIMEOUT_MS = 12_500
+
 /** Ask one renderer client to flush every open Project document before app exit. */
 export function requestClientProjectFilesFlush(
   server: RpcServer,
   clientId: string,
-  timeoutMs = 2_500,
+  timeoutMs = PROJECT_FILES_FLUSH_TIMEOUT_MS,
 ): Promise<void> {
   const requestId = randomUUID()
   return new Promise<void>((resolveRequest, rejectRequest) => {

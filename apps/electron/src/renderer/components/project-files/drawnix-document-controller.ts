@@ -10,6 +10,9 @@ import type {
 } from '@craft-agent/server-core/transport'
 import type { OpenDrawnixBoardController } from './drawnix-board-registry'
 
+/** Matches Drawnix `waitForPendingCardImages`: idle queue vs bound elapsed. */
+export type DrawnixImageWaitResult = 'idle' | 'timeout'
+
 export interface DrawnixDocumentState {
   saving: boolean
   error: Error | null
@@ -32,6 +35,8 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private savePromise: Promise<void> | null = null
   private saveError: Error | null = null
+  /** Last content written (or the open baseline). Used after image wait when onValueChange is gone. */
+  private lastSavedContent: string
 
   constructor(
     private readonly editor: DrawnixEditor,
@@ -41,7 +46,9 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
     private readonly save: DrawnixSaveApi,
     private readonly onStateChange: (state: DrawnixDocumentState) => void,
     private readonly debounceMs = 800,
-  ) {}
+  ) {
+    this.lastSavedContent = editor.serialize()
+  }
 
   notifyBoardChanged(): void {
     if (this.pendingChange) return
@@ -98,21 +105,34 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
   private async runSave(): Promise<void> {
     this.dirty = false
     this.onStateChange({ saving: true, error: null })
+    const content = this.editor.serialize()
     const response = await this.save({
       projectId: this.projectId,
       relativePath: this.relativePath,
       expectedFingerprint: this.sourceFingerprint,
-      content: this.editor.serialize(),
+      content,
     })
+    this.lastSavedContent = content
     this.sourceFingerprint = response.sourceFingerprint
     this.onStateChange({ saving: false, error: null })
   }
 
-  async flush(): Promise<void> {
+  /**
+   * Waits for in-flight card images (bounded), then saves. Re-serializes after
+   * the wait so a batch that committed without `onValueChange` (panel/board
+   * teardown) is still written. Returns the image-wait result so callers can
+   * warn on `'timeout'` after saving whatever already landed.
+   */
+  async flush(timeoutMs?: number): Promise<DrawnixImageWaitResult> {
     // Card images commit asynchronously; onValueChange (and dirty) only fire
     // once a batch lands. Wait (bounded inside the editor) so close/switch/Cmd+S
     // persist an image the user already added.
-    await this.editor.waitForPendingCardImages()
+    const imageWait = await this.editor.waitForPendingCardImages(timeoutMs)
+    // After unmount, onValueChange may be detached: compare serialize() to the
+    // last saved baseline instead of relying only on dirty.
+    if (this.editor.serialize() !== this.lastSavedContent) {
+      this.dirty = true
+    }
     while (this.pendingChange || this.savePromise || this.dirty) {
       if (this.pendingChange) await this.pendingChange
       this.clearSaveTimer()
@@ -120,6 +140,7 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
       if (this.savePromise) await this.savePromise
       if (this.saveError) throw this.saveError
     }
+    return imageWait === 'timeout' ? 'timeout' : 'idle'
   }
 
   async read(): Promise<DrawnixMindmapSnapshot> {

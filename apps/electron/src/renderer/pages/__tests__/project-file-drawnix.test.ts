@@ -25,6 +25,18 @@ describe('Drawnix Project File integration', () => {
     expect(source).toContain('waitForPendingCardImages')
     expect(source.indexOf('waitForPendingCardImages'))
       .toBeLessThan(source.indexOf('while (this.pendingChange || this.savePromise || this.dirty)'))
+    expect(source).toContain('lastSavedContent')
+    expect(source).toContain("imageWait === 'timeout'")
+  })
+
+  it('keeps controllerRef until close flush finishes and surfaces image wait timeout', () => {
+    const canvas = readFileSync(
+      new URL('../../components/project-files/ProjectFileDrawnixCanvas.tsx', import.meta.url),
+      'utf8',
+    )
+    expect(canvas).toContain('controllerRef.current = null')
+    expect(canvas.indexOf('.flush()')).toBeLessThan(canvas.lastIndexOf('controllerRef.current = null'))
+    expect(canvas).toContain('drawnixImageWaitTimeout')
   })
 
   it('routes Cmd/Ctrl+S to Stair flush at the panel root so host chrome never opens Save As', () => {

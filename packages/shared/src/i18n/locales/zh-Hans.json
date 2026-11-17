@@ -1050,6 +1050,7 @@
   "preview.pdfPreview": "PDF 预览",
   "projectFileEditor.conflict": "保存冲突",
   "projectFileEditor.conflictTitle": "文件已在磁盘上发生变化，当前草稿未被覆盖。",
+  "projectFileEditor.drawnixImageWaitTimeout": "部分卡片图片仍在处理；已保存已完成的内容。",
   "projectFileEditor.draftSaved": "草稿已另存。",
   "projectFileEditor.edit": "编辑文件",
   "projectFileEditor.preview": "预览",

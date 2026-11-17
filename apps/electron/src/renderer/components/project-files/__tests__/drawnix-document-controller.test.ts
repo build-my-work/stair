@@ -438,7 +438,7 @@ describe('Drawnix document controller', () => {
     controller.notifyBoardChanged()
     await expect(controller.flush()).rejects.toThrow('temporary transport failure')
     controller.retry()
-    await expect(controller.flush()).resolves.toBeUndefined()
+    await expect(controller.flush()).resolves.toBe('idle')
     expect(attempts).toBe(2)
   })
 
@@ -475,6 +475,7 @@ describe('Drawnix document controller', () => {
     editor.waitForPendingCardImages = async () => {
       pendingCalls += 1
       await pending
+      return 'idle'
     }
 
     const saves: SaveDrawnixProjectFileRequest[] = []
@@ -497,8 +498,96 @@ describe('Drawnix document controller', () => {
     expect(saves).toHaveLength(0)
 
     releasePending!()
-    await flushing
+    await expect(flushing).resolves.toBe('idle')
     expect(saves).toHaveLength(1)
+  })
+
+  it('saves images committed after close even when onValueChange never marked dirty', async () => {
+    const board = createEmptyBoard()
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Cards' }])
+    const editor = createDrawnixEditor(board)
+    const baseline = editor.serialize()
+    let releasePending: (() => void) | undefined
+    const pending = new Promise<void>(resolve => {
+      releasePending = resolve
+    })
+    editor.waitForPendingCardImages = async () => {
+      await pending
+      // Simulate a late image commit that skipped onValueChange (detached).
+      const mutated = JSON.parse(baseline) as {
+        elements: Array<{ ankiCards?: unknown[] }>
+      }
+      mutated.elements[0]!.ankiCards = [
+        {
+          id: 'c1',
+          front: '',
+          back: '',
+          frontImages: [{ id: 'img1', url: 'data:image/jpeg;base64,QQ', mimeType: 'image/jpeg', width: 1, height: 1 }],
+        },
+      ]
+      board.children = mutated.elements as typeof board.children
+      return 'idle'
+    }
+
+    const saves: SaveDrawnixProjectFileRequest[] = []
+    const controller = new DrawnixDocumentController(
+      editor,
+      'project-a',
+      'maps/cards.drawnix',
+      INITIAL_FINGERPRINT,
+      async request => {
+        saves.push(request)
+        return savedResponse(request, saves.length)
+      },
+      () => {},
+    )
+
+    // Close immediately: no notifyBoardChanged / dirty from onValueChange.
+    const flushing = controller.flush()
+    expect(saves).toHaveLength(0)
+    releasePending!()
+    await expect(flushing).resolves.toBe('idle')
+    expect(saves).toHaveLength(1)
+    expect(saves[0]!.content).toContain('data:image/jpeg;base64,QQ')
+  })
+
+  it('still saves committed content and reports timeout when image wait expires', async () => {
+    const board = createEmptyBoard()
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Cards' }])
+    const editor = createDrawnixEditor(board)
+    editor.waitForPendingCardImages = async () => {
+      // Partial commit landed before the wait bound elapsed.
+      const mutated = JSON.parse(editor.serialize()) as {
+        elements: Array<{ ankiCards?: unknown[] }>
+      }
+      mutated.elements[0]!.ankiCards = [
+        {
+          id: 'c1',
+          front: '',
+          back: '',
+          frontImages: [{ id: 'img1', url: 'data:image/jpeg;base64,WW', mimeType: 'image/jpeg', width: 1, height: 1 }],
+        },
+      ]
+      board.children = mutated.elements as typeof board.children
+      return 'timeout'
+    }
+
+    const saves: SaveDrawnixProjectFileRequest[] = []
+    const controller = new DrawnixDocumentController(
+      editor,
+      'project-a',
+      'maps/cards.drawnix',
+      INITIAL_FINGERPRINT,
+      async request => {
+        saves.push(request)
+        return savedResponse(request, saves.length)
+      },
+      () => {},
+    )
+
+    await expect(controller.flush()).resolves.toBe('timeout')
+    expect(saves).toHaveLength(1)
+    expect(saves[0]!.content).toContain('data:image/jpeg;base64,WW')
   })
 
   it('persists viewport or theme changes without invalidating the Agent outline sequence', async () => {

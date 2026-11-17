@@ -41,6 +41,7 @@ import {
   readProjectFileBinaryWithinRoot,
   readProjectTextFileWithinRoot,
   registerProjectFileHandlers,
+  PROJECT_FILES_FLUSH_TIMEOUT_MS,
   requestClientProjectFilesFlush,
   searchProjectFilesWithinRoot,
   saveDrawnixProjectFileWithinRoot,
@@ -791,6 +792,11 @@ describe('Project Files RPC', () => {
       webContentsId: null,
     }, requestId)
     await expect(flush).resolves.toBeUndefined()
+  })
+
+  it('默认 flush 超时覆盖 Drawnix 卡片图片等待窗口', () => {
+    // 10s image wait + save headroom; must stay above the Drawnix default.
+    expect(PROJECT_FILES_FLUSH_TIMEOUT_MS).toBeGreaterThanOrEqual(12_500)
   })
 
   it('同窗口切换 Workspace 前先等待旧文档 flush', async () => {

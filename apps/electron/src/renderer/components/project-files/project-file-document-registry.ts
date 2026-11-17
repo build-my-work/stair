@@ -1,5 +1,6 @@
 export interface OpenProjectFileDocument {
-  flush(): Promise<void>
+  /** May resolve with Drawnix image-wait status (`idle` | `timeout`); other docs resolve void. */
+  flush(): Promise<void | 'idle' | 'timeout'>
 }
 
 const openDocuments = new Map<string, Set<OpenProjectFileDocument>>()
