@@ -1,0 +1,67 @@
+[
+  {
+    "artifact": "claude-runtime.md",
+    "models": [
+      "claude/claude-opus-5-5"
+    ],
+    "tool_calls": 45,
+    "last_event": "agent_settled"
+  },
+  {
+    "artifact": "glm-files.md",
+    "models": [
+      "zcode/GLM-5.3"
+    ],
+    "tool_calls": 62,
+    "last_event": "agent_settled"
+  },
+  {
+    "artifact": "claude-architecture.md",
+    "models": [
+      "claude/claude-opus-5-5"
+    ],
+    "tool_calls": 91,
+    "last_event": "agent_settled"
+  },
+  {
+    "artifact": "glm-architecture.md",
+    "models": [
+      "zcode/GLM-5.3"
+    ],
+    "tool_calls": 104,
+    "last_event": "agent_settled"
+  },
+  {
+    "artifact": "claude-discussion.md",
+    "models": [
+      "claude/claude-opus-5-5"
+    ],
+    "tool_calls": 0,
+    "last_event": "agent_settled"
+  },
+  {
+    "artifact": "claude-closing.md",
+    "models": [
+      "claude/claude-opus-5-5"
+    ],
+    "tool_calls": 0,
+    "last_event": "agent_settled"
+  },
+  {
+    "artifact": null,
+    "models": [
+      "zcode/GLM-5.3"
+    ],
+    "tool_calls": 0,
+    "last_event": "agent_settled",
+    "note": "Intermediate response had mistaken self-attribution; superseded by glm-closing. Only corrected conclusion is published."
+  },
+  {
+    "artifact": "glm-closing.md",
+    "models": [
+      "zcode/GLM-5.3"
+    ],
+    "tool_calls": 0,
+    "last_event": "agent_settled"
+  }
+]

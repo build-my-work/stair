@@ -1,0 +1,387 @@
+[
+  {
+    "name": "apps/cli",
+    "files": 4,
+    "exit": 0,
+    "ms": 726,
+    "counts": {
+      "pass": 81,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "apps/electron",
+    "files": 169,
+    "exit": 1,
+    "ms": 34885,
+    "counts": {
+      "pass": 1574,
+      "fail": 4,
+      "skip": 0
+    }
+  },
+  {
+    "name": "apps/webui",
+    "files": 1,
+    "exit": 0,
+    "ms": 15,
+    "counts": {
+      "pass": 4,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "packages/core",
+    "files": 2,
+    "exit": 0,
+    "ms": 13,
+    "counts": {
+      "pass": 4,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "packages/messaging-gateway",
+    "files": 25,
+    "exit": 0,
+    "ms": 9062,
+    "counts": {
+      "pass": 232,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "packages/messaging-whatsapp-worker",
+    "files": 3,
+    "exit": 0,
+    "ms": 43,
+    "counts": {
+      "pass": 41,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "packages/pi-agent-server",
+    "files": 26,
+    "exit": 0,
+    "ms": 18408,
+    "counts": {
+      "pass": 204,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "packages/server",
+    "files": 1,
+    "exit": 0,
+    "ms": 8591,
+    "counts": {
+      "pass": 4,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "packages/server-core",
+    "files": 122,
+    "exit": 1,
+    "ms": 28355,
+    "counts": {
+      "pass": 881,
+      "fail": 19,
+      "skip": 0
+    }
+  },
+  {
+    "name": "packages/session-tools-core",
+    "files": 25,
+    "exit": 0,
+    "ms": 932,
+    "counts": {
+      "pass": 186,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "packages/shared",
+    "files": 241,
+    "exit": 0,
+    "ms": 51941,
+    "counts": {
+      "pass": 3958,
+      "fail": 0,
+      "skip": 12
+    }
+  },
+  {
+    "name": "packages/ui",
+    "files": 40,
+    "exit": 0,
+    "ms": 464,
+    "counts": {
+      "pass": 332,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "scripts",
+    "files": 4,
+    "exit": 0,
+    "ms": 856,
+    "counts": {
+      "pass": 26,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/main/__tests__/auto-update-install.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 28,
+    "counts": {
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/main/__tests__/notifications-routing.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 37,
+    "counts": {
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/main/__tests__/session-branch-rollback.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 339,
+    "counts": {
+      "pass": 3,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/main/__tests__/sessions-annotations.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 284,
+    "counts": {
+      "pass": 3,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/main/__tests__/window-manager-renderer-lifecycle.isolated.ts",
+    "files": 1,
+    "exit": 1,
+    "ms": 177,
+    "counts": {
+      "pass": 0,
+      "fail": 1,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/main/__tests__/zoom.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 10,
+    "counts": {
+      "pass": 3,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/components/app-shell/__tests__/chat-display-stop-draft.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 53,
+    "counts": {
+      "pass": 8,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/components/app-shell/__tests__/project-note-target-reuse.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 52,
+    "counts": {
+      "pass": 11,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/components/app-shell/__tests__/workbench-compact-lifecycle.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 102,
+    "counts": {
+      "pass": 4,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/components/app-shell/__tests__/workbench-joined-card.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 107,
+    "counts": {
+      "pass": 8,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/components/app-shell/__tests__/workbench-scroll-layout.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 52,
+    "counts": {
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/components/project-files/__tests__/project-file-pdf-resize.isolated.ts",
+    "files": 1,
+    "exit": 1,
+    "ms": 267,
+    "counts": {
+      "pass": 0,
+      "fail": 7,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/hooks/__tests__/window-close-project-files.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 26,
+    "counts": {
+      "pass": 6,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/pages/__tests__/chat-page-attachments.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 45,
+    "counts": {
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/pages/__tests__/chat-page-loading.isolated.ts",
+    "files": 1,
+    "exit": 1,
+    "ms": 309,
+    "counts": {
+      "pass": 0,
+      "fail": 1,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/pages/__tests__/navigation-readiness.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 57,
+    "counts": {
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/pages/__tests__/project-file-response.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 43,
+    "counts": {
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:apps/electron/src/renderer/pages/__tests__/skill-marketplace.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 3022,
+    "counts": {
+      "pass": 7,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:packages/server-core/src/sessions/title-generation.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 1358,
+    "counts": {
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:packages/shared/src/agent/core/__tests__/pre-tool-use-checks.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 214,
+    "counts": {
+      "pass": 83,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:packages/shared/src/agent/core/__tests__/prerequisite-manager.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 184,
+    "counts": {
+      "pass": 78,
+      "fail": 0,
+      "skip": 0
+    }
+  },
+  {
+    "name": "isolated:packages/shared/src/sources/__tests__/slack-oauth-relay.isolated.ts",
+    "files": 1,
+    "exit": 0,
+    "ms": 154,
+    "counts": {
+      "pass": 6,
+      "fail": 0,
+      "skip": 0
+    }
+  }
+]

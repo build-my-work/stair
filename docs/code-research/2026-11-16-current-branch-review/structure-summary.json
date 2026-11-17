@@ -1,0 +1,722 @@
+{
+  "scope": "Tracked and untracked non-test JS/TS application code; excludes resources/playground/prototypes/declarations; TS resolved imports; runtime cycles include dynamic imports and are hypotheses, not proof of execution failure.",
+  "totals": {
+    "files": 1424,
+    "lines": 322059,
+    "edges": 7627
+  },
+  "packages": {
+    "apps/docs": {
+      "files": 4,
+      "lines": 259
+    },
+    "packages/pi-agent-server": {
+      "files": 30,
+      "lines": 5068
+    },
+    "apps/cli": {
+      "files": 3,
+      "lines": 2494
+    },
+    "apps/electron": {
+      "files": 622,
+      "lines": 124971
+    },
+    "apps/viewer": {
+      "files": 6,
+      "lines": 650
+    },
+    "apps/webui": {
+      "files": 12,
+      "lines": 999
+    },
+    "packages/core": {
+      "files": 13,
+      "lines": 1825
+    },
+    "packages/messaging-gateway": {
+      "files": 22,
+      "lines": 8903
+    },
+    "packages/messaging-whatsapp-worker": {
+      "files": 5,
+      "lines": 1164
+    },
+    "packages/server-core": {
+      "files": 142,
+      "lines": 40261
+    },
+    "packages/server": {
+      "files": 1,
+      "lines": 359
+    },
+    "packages/session-mcp-server": {
+      "files": 1,
+      "lines": 499
+    },
+    "packages/session-tools-core": {
+      "files": 45,
+      "lines": 8921
+    },
+    "packages/shared": {
+      "files": 328,
+      "lines": 92561
+    },
+    "packages/ui": {
+      "files": 168,
+      "lines": 28351
+    },
+    "scripts": {
+      "files": 22,
+      "lines": 4774
+    }
+  },
+  "packageEdges": {
+    "apps/cli -> packages/server-core (runtime)": 1,
+    "apps/cli -> packages/shared (runtime)": 1,
+    "apps/electron -> packages/core (runtime)": 7,
+    "apps/electron -> packages/core (type)": 21,
+    "apps/electron -> packages/messaging-gateway (runtime)": 1,
+    "apps/electron -> packages/messaging-gateway (type)": 1,
+    "apps/electron -> packages/server-core (runtime)": 19,
+    "apps/electron -> packages/server-core (type)": 24,
+    "apps/electron -> packages/shared (dynamic)": 16,
+    "apps/electron -> packages/shared (runtime)": 169,
+    "apps/electron -> packages/shared (type)": 131,
+    "apps/electron -> packages/ui (runtime)": 118,
+    "apps/electron -> packages/ui (type)": 4,
+    "apps/viewer -> packages/core (type)": 2,
+    "apps/viewer -> packages/shared (runtime)": 1,
+    "apps/viewer -> packages/ui (runtime)": 2,
+    "apps/webui -> apps/electron (dynamic)": 1,
+    "apps/webui -> apps/electron (runtime)": 8,
+    "apps/webui -> apps/electron (type)": 2,
+    "apps/webui -> packages/shared (runtime)": 1,
+    "apps/webui -> packages/ui (runtime)": 1,
+    "packages/messaging-gateway -> packages/messaging-whatsapp-worker (runtime)": 1,
+    "packages/messaging-gateway -> packages/server-core (type)": 5,
+    "packages/messaging-gateway -> packages/shared (runtime)": 3,
+    "packages/messaging-gateway -> packages/shared (type)": 7,
+    "packages/pi-agent-server -> packages/core (runtime)": 1,
+    "packages/pi-agent-server -> packages/shared (runtime)": 15,
+    "packages/pi-agent-server -> packages/shared (type)": 6,
+    "packages/server -> packages/messaging-gateway (runtime)": 1,
+    "packages/server -> packages/server-core (dynamic)": 2,
+    "packages/server -> packages/server-core (runtime)": 6,
+    "packages/server -> packages/server-core (type)": 3,
+    "packages/server -> packages/shared (dynamic)": 3,
+    "packages/server -> packages/shared (runtime)": 4,
+    "packages/server-core -> packages/core (runtime)": 5,
+    "packages/server-core -> packages/core (type)": 10,
+    "packages/server-core -> packages/session-tools-core (type)": 6,
+    "packages/server-core -> packages/shared (dynamic)": 149,
+    "packages/server-core -> packages/shared (runtime)": 188,
+    "packages/server-core -> packages/shared (type)": 69,
+    "packages/session-mcp-server -> packages/session-tools-core (runtime)": 1,
+    "packages/session-mcp-server -> packages/shared (runtime)": 1,
+    "packages/shared -> packages/core (runtime)": 3,
+    "packages/shared -> packages/core (type)": 32,
+    "packages/shared -> packages/session-tools-core (runtime)": 10,
+    "packages/shared -> packages/session-tools-core (type)": 11,
+    "packages/ui -> packages/core (runtime)": 5,
+    "packages/ui -> packages/core (type)": 16,
+    "packages/ui -> packages/shared (runtime)": 4,
+    "scripts -> packages/shared (runtime)": 2
+  },
+  "topHooks": [
+    {
+      "path": "apps/electron/src/renderer/components/app-shell/AppShell.tsx",
+      "lines": 3546,
+      "scope": "apps/electron",
+      "hooks": 169,
+      "asyncFns": 20,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "AppShell"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/App.tsx",
+      "lines": 3046,
+      "scope": "apps/electron",
+      "hooks": 140,
+      "asyncFns": 38,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "App"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/pages/settings/AiSettingsPage.tsx",
+      "lines": 2064,
+      "scope": "apps/electron",
+      "hooks": 115,
+      "asyncFns": 25,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "AiSettingsPage"
+      ]
+    },
+    {
+      "path": "packages/ui/src/components/chat/TurnCard.tsx",
+      "lines": 1966,
+      "scope": "packages/ui",
+      "hooks": 69,
+      "asyncFns": 2,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "ActivityStatus",
+        "ActivityType",
+        "AnnotationInteractionMode",
+        "TodoStatus",
+        "TodoItem",
+        "ActivityItem",
+        "ResponseContent",
+        "OpenAnnotationRequest",
+        "ChatTextSelection",
+        "ChatTextSelectionAction",
+        "TurnCardProps",
+        "ResponseCardProps",
+        "ResponseCard"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/contexts/NavigationContext.tsx",
+      "lines": 829,
+      "scope": "apps/electron",
+      "hooks": 67,
+      "asyncFns": 5,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "NavigationProvider",
+        "useNavigation",
+        "useNavigationState"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/components/app-shell/ChatDisplay.tsx",
+      "lines": 2286,
+      "scope": "apps/electron",
+      "hooks": 53,
+      "asyncFns": 10,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "ChatDisplayHandle"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/components/app-shell/SessionList.tsx",
+      "lines": 864,
+      "scope": "apps/electron",
+      "hooks": 47,
+      "asyncFns": 0,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "SessionListRow",
+        "ChatGroupingMode",
+        "SessionList"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/pages/settings/AppearanceSettingsPage.tsx",
+      "lines": 599,
+      "scope": "apps/electron",
+      "hooks": 37,
+      "asyncFns": 5,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "AppearanceSettingsPage"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/components/ui/EditPopover.tsx",
+      "lines": 1130,
+      "scope": "apps/electron",
+      "hooks": 33,
+      "asyncFns": 1,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "EditContext",
+        "EditContextKey",
+        "EditConfig",
+        "getEditConfig",
+        "SecondaryAction",
+        "EditPopoverProps",
+        "buildEditPrompt",
+        "EditPopover"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/context/ThemeContext.tsx",
+      "lines": 563,
+      "scope": "apps/electron",
+      "hooks": 33,
+      "asyncFns": 0,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "ThemeMode",
+        "FontFamily",
+        "ThemeProvider",
+        "useTheme"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/pages/ProjectFilePage.tsx",
+      "lines": 610,
+      "scope": "apps/electron",
+      "hooks": 31,
+      "asyncFns": 3,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "ProjectFilePage"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/pages/settings/WorkspaceSettingsPage.tsx",
+      "lines": 566,
+      "scope": "apps/electron",
+      "hooks": 30,
+      "asyncFns": 10,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "WorkspaceSettingsPage"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/components/app-shell/WorkbenchContainer.tsx",
+      "lines": 460,
+      "scope": "apps/electron",
+      "hooks": 28,
+      "asyncFns": 0,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "WorkbenchContainer"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/pages/ProjectInfoPage.tsx",
+      "lines": 462,
+      "scope": "apps/electron",
+      "hooks": 27,
+      "asyncFns": 9,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "ProjectInfoPage"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/components/apisetup/ApiKeyInput.tsx",
+      "lines": 841,
+      "scope": "apps/electron",
+      "hooks": 26,
+      "asyncFns": 1,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "ApiKeyStatus",
+        "ApiKeySubmitData",
+        "ApiKeyInputProps",
+        "ApiKeyInput"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/components/project-files/ProjectFilesTree.tsx",
+      "lines": 624,
+      "scope": "apps/electron",
+      "hooks": 26,
+      "asyncFns": 2,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "ProjectFilesTree"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/hooks/useOnboarding.ts",
+      "lines": 860,
+      "scope": "apps/electron",
+      "hooks": 24,
+      "asyncFns": 13,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "resolveSlugForMethod",
+        "apiSetupMethodToConnectionSetup",
+        "useOnboarding"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/components/app-shell/MainContentPanel.tsx",
+      "lines": 450,
+      "scope": "apps/electron",
+      "hooks": 22,
+      "asyncFns": 0,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "MainContentPanelProps",
+        "MainContentPanel"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/components/pages/PageFrame.tsx",
+      "lines": 346,
+      "scope": "apps/electron",
+      "hooks": 22,
+      "asyncFns": 2,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "PageFrame"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/pages/SourceInfoPage.tsx",
+      "lines": 578,
+      "scope": "apps/electron",
+      "hooks": 22,
+      "asyncFns": 6,
+      "methods": 0,
+      "properties": 0,
+      "exports": [
+        "SourceInfoPage"
+      ]
+    }
+  ],
+  "topClasses": [
+    {
+      "path": "packages/server-core/src/sessions/SessionManager.ts",
+      "lines": 13230,
+      "scope": "packages/server-core",
+      "hooks": 0,
+      "asyncFns": 186,
+      "methods": 203,
+      "properties": 31,
+      "exports": [
+        "setSessionPlatform",
+        "setSessionRuntimeHooks",
+        "filterBrowserWindowsForChat",
+        "loadPiTurnAnchors",
+        "savePiTurnAnchor",
+        "copyPiTurnAnchorsForBranch",
+        "getSessionInSameProject",
+        "AutoRetryPendingHost",
+        "claimAutoRetryPending",
+        "stripActivationRetrySuffixes",
+        "activationTurnReferences",
+        "buildActivationRetryMessage",
+        "isAttendedSession",
+        "hasConversationStarted",
+        "createManagedSession",
+        "labelSystemNotice",
+        "SessionCompletionEvent",
+        "MidStreamDeliveryOutcome",
+        "resolveMidStreamDeliveryOutcome",
+        "shouldAttemptMidStreamSteer",
+        "isInQueuedContinuation",
+        "canSteerTextPayload",
+        "SessionManager"
+      ]
+    },
+    {
+      "path": "apps/electron/src/main/browser-pane-manager.ts",
+      "lines": 5395,
+      "scope": "apps/electron",
+      "hooks": 0,
+      "asyncFns": 68,
+      "methods": 155,
+      "properties": 22,
+      "exports": [
+        "BrowserWindowOpenTarget",
+        "classifyWindowOpen",
+        "isSignInPopupUrl",
+        "BrowserChatTarget",
+        "BrowserProjectTarget",
+        "BrowserSelectionActionResult",
+        "BrowserApplicationService",
+        "BrowserScreenshotOptions",
+        "BrowserConsoleEntry",
+        "BrowserConsoleOptions",
+        "BrowserScreenshotRegionTarget",
+        "BrowserNetworkEntry",
+        "BrowserNetworkOptions",
+        "BrowserWaitArgs",
+        "BrowserWaitResult",
+        "BrowserKeyArgs",
+        "BrowserDownloadEntry",
+        "BrowserDownloadOptions",
+        "BrowserScreenshotResult",
+        "BrowserPaneManager"
+      ]
+    },
+    {
+      "path": "packages/shared/src/agent/base-agent.ts",
+      "lines": 1272,
+      "scope": "packages/shared",
+      "hooks": 0,
+      "asyncFns": 10,
+      "methods": 71,
+      "properties": 33,
+      "exports": [
+        "MiniAgentConfig",
+        "SpawnSessionRequest",
+        "SpawnSessionResult",
+        "SpawnSessionHelpResult",
+        "BaseAgent"
+      ]
+    },
+    {
+      "path": "packages/shared/src/agent/pi-agent.ts",
+      "lines": 3088,
+      "scope": "packages/shared",
+      "hooks": 0,
+      "asyncFns": 26,
+      "methods": 67,
+      "properties": 47,
+      "exports": [
+        "PiAgent"
+      ]
+    },
+    {
+      "path": "packages/shared/src/agent/claude-agent.ts",
+      "lines": 3524,
+      "scope": "packages/shared",
+      "hooks": 0,
+      "asyncFns": 29,
+      "methods": 60,
+      "properties": 42,
+      "exports": [
+        "resolveClaudeThinkingOptions",
+        "claudeThinkingKey",
+        "ClaudeAgentConfig",
+        "setGlobalPermissionHandler",
+        "requestToolPermission",
+        "resolveGlobalPermission",
+        "clearGlobalPermissions",
+        "jsonPropToZod",
+        "ClaudeAgent"
+      ]
+    },
+    {
+      "path": "packages/server-core/src/sessions/RemoteBrowserPaneManager.ts",
+      "lines": 358,
+      "scope": "packages/server-core",
+      "hooks": 0,
+      "asyncFns": 28,
+      "methods": 50,
+      "properties": 4,
+      "exports": [
+        "RemoteBrowserPaneManagerDeps",
+        "RemoteBrowserPaneManager"
+      ]
+    },
+    {
+      "path": "apps/electron/src/renderer/lib/session-draft-coordinator.ts",
+      "lines": 1128,
+      "scope": "apps/electron",
+      "hooks": 0,
+      "asyncFns": 17,
+      "methods": 48,
+      "properties": 34,
+      "exports": [
+        "SessionDraftPersistence",
+        "DraftHydrationHandle",
+        "DeferredDraftRestore",
+        "SessionDraftCoordinator"
+      ]
+    },
+    {
+      "path": "packages/server-core/src/runtime/null-browser-pane-manager.ts",
+      "lines": 104,
+      "scope": "packages/server-core",
+      "hooks": 0,
+      "asyncFns": 27,
+      "methods": 47,
+      "properties": 0,
+      "exports": [
+        "NullBrowserPaneManager"
+      ]
+    },
+    {
+      "path": "packages/messaging-gateway/src/registry.ts",
+      "lines": 1581,
+      "scope": "packages/messaging-gateway",
+      "hooks": 0,
+      "asyncFns": 24,
+      "methods": 46,
+      "properties": 4,
+      "exports": [
+        "MessagingGatewayRegistryOptions",
+        "MessagingGatewayRegistry"
+      ]
+    },
+    {
+      "path": "packages/server-core/src/tasks/TaskRunner.ts",
+      "lines": 1131,
+      "scope": "packages/server-core",
+      "hooks": 0,
+      "asyncFns": 10,
+      "methods": 46,
+      "properties": 19,
+      "exports": [
+        "ConductorSessionHost",
+        "TaskRunnerDeps",
+        "TaskDecisionFn",
+        "RepairScopeFn",
+        "NodeOutcomeFn",
+        "RunOptions",
+        "RunStatus",
+        "NodeRunStatus",
+        "RunSnapshot",
+        "TaskRunner"
+      ]
+    },
+    {
+      "path": "packages/shared/src/credentials/manager.ts",
+      "lines": 734,
+      "scope": "packages/shared",
+      "hooks": 0,
+      "asyncFns": 35,
+      "methods": 39,
+      "properties": 4,
+      "exports": [
+        "CredentialManager",
+        "getCredentialManager"
+      ]
+    },
+    {
+      "path": "apps/electron/src/main/browser-cdp.ts",
+      "lines": 1446,
+      "scope": "apps/electron",
+      "hooks": 0,
+      "asyncFns": 29,
+      "methods": 37,
+      "properties": 9,
+      "exports": [
+        "AccessibilityNode",
+        "AccessibilitySnapshot",
+        "ElementBox",
+        "ElementGeometry",
+        "ViewportMetrics",
+        "ClickOutcome",
+        "resolveCdpKey",
+        "BrowserCDP"
+      ]
+    },
+    {
+      "path": "packages/server-core/src/services/pr-watch/registry.ts",
+      "lines": 763,
+      "scope": "packages/server-core",
+      "hooks": 0,
+      "asyncFns": 14,
+      "methods": 36,
+      "properties": 13,
+      "exports": [
+        "PrWatchDeps",
+        "PrWatchRegistry"
+      ]
+    },
+    {
+      "path": "packages/shared/src/config/watcher.ts",
+      "lines": 1172,
+      "scope": "packages/shared",
+      "hooks": 0,
+      "asyncFns": 0,
+      "methods": 32,
+      "properties": 12,
+      "exports": [
+        "_getActiveWatchers",
+        "UserPreferences",
+        "ConfigWatcherCallbacks",
+        "loadPreferences",
+        "ConfigWatcher",
+        "createConfigWatcher"
+      ]
+    },
+    {
+      "path": "packages/server-core/src/transport/client.ts",
+      "lines": 991,
+      "scope": "packages/server-core",
+      "hooks": 0,
+      "asyncFns": 3,
+      "methods": 29,
+      "properties": 38,
+      "exports": [
+        "TransportMode",
+        "TransportConnectionStatus",
+        "TransportConnectionErrorKind",
+        "TransportConnectionError",
+        "TransportCloseInfo",
+        "TransportConnectionState",
+        "WsRpcClientOptions",
+        "WsRpcClient"
+      ]
+    }
+  ],
+  "cycles": [
+    [
+      "packages/shared/src/decisions/resolve.ts",
+      "packages/shared/src/config/preferences.ts",
+      "packages/shared/src/sources/token-refresh-manager.ts",
+      "packages/shared/src/sources/index.ts",
+      "packages/shared/src/sources/server-builder.ts",
+      "packages/shared/src/mcp/validation.ts",
+      "packages/shared/src/agent/claude-context.ts",
+      "packages/shared/src/agent/session-scoped-tools.ts",
+      "packages/shared/src/automations/automation-system.ts",
+      "packages/shared/src/automations/validation.ts",
+      "packages/shared/src/automations/index.ts",
+      "packages/shared/src/sources/credential-manager.ts",
+      "packages/shared/src/sources/storage.ts",
+      "packages/shared/src/agent/permissions-config.ts",
+      "packages/shared/src/config/validators.ts",
+      "packages/shared/src/sessions/bundle.ts",
+      "packages/shared/src/sessions/persistence-queue.ts",
+      "packages/shared/src/workspaces/storage.ts",
+      "packages/shared/src/sessions/storage.ts",
+      "packages/shared/src/sessions/index.ts",
+      "packages/shared/src/credentials/manager.ts",
+      "packages/shared/src/credentials/index.ts",
+      "packages/shared/src/config/storage.ts"
+    ],
+    [
+      "apps/electron/src/renderer/components/app-shell/input/ChatInputZone.tsx",
+      "apps/electron/src/renderer/components/ui/EditPopover.tsx",
+      "apps/electron/src/renderer/components/app-shell/input/FreeFormInput.tsx",
+      "apps/electron/src/renderer/components/app-shell/input/InputContainer.tsx",
+      "apps/electron/src/renderer/components/app-shell/input/index.ts",
+      "apps/electron/src/renderer/components/app-shell/ChatDisplay.tsx"
+    ],
+    [
+      "packages/ui/src/components/chat/InlineExecution.tsx",
+      "packages/ui/src/components/chat/index.ts",
+      "packages/ui/src/index.ts"
+    ],
+    [
+      "apps/electron/src/main/menu.ts",
+      "apps/electron/src/main/auto-update.ts"
+    ],
+    [
+      "packages/ui/src/components/markdown/MarkdownDocBlock.tsx",
+      "packages/ui/src/components/markdown/Markdown.tsx"
+    ],
+    [
+      "apps/electron/src/renderer/components/messaging/access/TelegramAccessSection.tsx",
+      "apps/electron/src/renderer/components/messaging/access/index.ts"
+    ]
+  ]
+}

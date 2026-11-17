@@ -1,0 +1,38 @@
+{
+  "packages/shared/src/agent/claude-agent.ts::override async postInit()": {
+    "lines_baseline_latest_head": [
+      931,
+      1046,
+      949
+    ],
+    "baseline_equals_latest": true,
+    "baseline_equals_head": true
+  },
+  "packages/shared/src/agent/options.ts::export function buildClaudeSubprocessEnv(": {
+    "lines_baseline_latest_head": [
+      186,
+      186,
+      186
+    ],
+    "baseline_equals_latest": false,
+    "baseline_equals_head": true
+  },
+  "packages/shared/src/agent/pi-agent.ts::forceAbort(reason: AbortReason): void {": {
+    "lines_baseline_latest_head": [
+      2442,
+      2450,
+      2598
+    ],
+    "baseline_equals_latest": true,
+    "baseline_equals_head": true
+  },
+  "packages/shared/src/agent/pi-agent.ts::private handleSubprocessEvent(event: Record<string, unknown>): void {": {
+    "lines_baseline_latest_head": [
+      1156,
+      1161,
+      1248
+    ],
+    "baseline_equals_latest": true,
+    "baseline_equals_head": true
+  }
+}

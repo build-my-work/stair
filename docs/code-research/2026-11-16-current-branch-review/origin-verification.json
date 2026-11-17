@@ -1,0 +1,14 @@
+{
+  "stage": "origin attribution follow-up",
+  "head": "d5a7157a01e9fee2441e6a5ad8bf875ed78b59b1",
+  "upstream_observed": "3ce9fc12837541d688a59a8f0a2e9755ceb89ac2",
+  "common_ancestor": "8df01c5d0ac73c35add5954e6f190ce038d35845",
+  "original_files_checked": 2718,
+  "original_changed": [],
+  "links_checked": 46,
+  "bad_links": [],
+  "upstream_targeted_tests": {
+    "pass": 32,
+    "fail": 0
+  }
+}
