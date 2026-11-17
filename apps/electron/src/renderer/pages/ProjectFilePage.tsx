@@ -32,6 +32,7 @@ import {
 } from '@/components/ui/select'
 import { ShikiCodeEditor } from '@/components/shiki/ShikiCodeEditor'
 import {
+  flushOpenProjectFile,
   registerOpenProjectFileDocument,
 } from '@/components/project-files/project-file-document-registry'
 import {
@@ -260,6 +261,18 @@ export default function ProjectFilePage({
     }
   }, [])
 
+  // Drawnix lives under this panel root with its own board shortcuts. When the
+  // file is active, Cmd/Ctrl+S must always flush Stair's document — including
+  // when focus is on panel chrome (header buttons) outside the canvas host —
+  // and must never reach Drawnix's Save As.
+  const handleDrawnixSaveShortcut = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (kind !== 'drawnix') return
+    if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return
+    event.preventDefault()
+    event.stopPropagation()
+    void flushOpenProjectFile(projectId, relativePath).catch(() => undefined)
+  }, [kind, projectId, relativePath])
+
   const handleReloadAfterConflict = useCallback(() => {
     if (!window.confirm(t('projectFileEditor.reloadConflictConfirm'))) return
     controllerRef.current?.discardChanges()
@@ -422,7 +435,10 @@ export default function ProjectFilePage({
     : 'text-muted-foreground'
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div
+      className="flex h-full min-h-0 flex-col"
+      onKeyDownCapture={handleDrawnixSaveShortcut}
+    >
       <PanelHeader
         title={fileName}
         badge={(

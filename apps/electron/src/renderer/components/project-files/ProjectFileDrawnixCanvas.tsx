@@ -86,6 +86,9 @@ export function ProjectFileDrawnixCanvas({
   const notifyPresentationChanged = useCallback(() => {
     controllerRef.current?.notifyPresentationChanged()
   }, [])
+  // Host-level capture: when focus is inside the board, Cmd/Ctrl+S is Stair's
+  // save (flush), never Drawnix's Save As. Panel chrome outside this host is
+  // covered by ProjectFilePage's capture on the panel root.
   const blockNativeFileShortcut = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
       event.preventDefault()
