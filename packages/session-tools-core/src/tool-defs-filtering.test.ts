@@ -99,6 +99,16 @@ describe('session tool filtering helpers', () => {
     }
   });
 
+  it('keeps Notion navigation and reads Explore-safe while requiring current-page identity for writes', () => {
+    const allowed = getSessionSafeAllowedToolNames();
+    const blocked = getSessionSafeBlockedToolNames();
+    expect(allowed.has('project_notion_open')).toBe(true);
+    expect(allowed.has('project_notion_read')).toBe(true);
+    expect(blocked.has('project_notion_write')).toBe(true);
+    const write = getToolDefsAsJsonSchema().find(tool => tool.name === 'project_notion_write');
+    expect(write?.inputSchema.required).toEqual(['expectedPageId', 'content']);
+  });
+
   it('requires a confirmed Project-relative path before creating a mind map', () => {
     const def = SESSION_TOOL_DEFS.find(tool => tool.name === 'mindmap_create');
 

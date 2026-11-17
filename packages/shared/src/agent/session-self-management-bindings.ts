@@ -143,6 +143,8 @@ export function attachSessionSelfManagementBindings(
     enumerable: true,
   });
 
+  Object.defineProperty(context, 'notion', { get: () => getSessionScopedToolCallbacks(sessionId)?.notion, configurable: true, enumerable: true });
+
   Object.defineProperty(context, 'appendProjectMemory', {
     get() {
       return getSessionScopedToolCallbacks(sessionId)?.appendProjectMemoryFn;

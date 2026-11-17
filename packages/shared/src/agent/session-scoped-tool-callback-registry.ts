@@ -87,6 +87,7 @@ export interface SessionScopedToolCallbacks {
   createTaskFn?: (
     input: import('@craft-agent/session-tools-core').CreateTaskInput
   ) => Promise<import('@craft-agent/session-tools-core').CreateTaskResult>;
+  notion?: import('@craft-agent/session-tools-core/notion').NotionToolCallbacks;
   /** Append a dated note to the session's project MEMORY.md (project_memory_append). */
   appendProjectMemoryFn?: (
     input: import('@craft-agent/session-tools-core').ProjectMemoryAppendInput

@@ -46,6 +46,8 @@ function serializePanel(panel: WorkbenchPanel): PersistedWorkbenchPanel {
         sessionId: panel.sessionId,
         widthRatio: panel.widthRatio,
       }
+    case 'notion-page':
+      return { id: panel.id, kind: panel.kind, pageId: panel.pageId, widthRatio: panel.widthRatio }
     case 'project-file':
       return {
         id: panel.id,
@@ -61,6 +63,7 @@ function serializePanel(panel: WorkbenchPanel): PersistedWorkbenchPanel {
 function hydratePanel(projectId: string, panel: PersistedWorkbenchPanel): WorkbenchPanel {
   switch (panel.kind) {
     case 'session':
+    case 'notion-page':
       return { ...panel, projectId }
     case 'project-file':
       return {

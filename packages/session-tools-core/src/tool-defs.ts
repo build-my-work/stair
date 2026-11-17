@@ -1,3 +1,4 @@
+import { handleNotionOpen, handleNotionRead, handleNotionWrite } from './handlers/notion.ts';
 /**
  * Session Tool Definitions — Single Source of Truth
  *
@@ -72,6 +73,10 @@ import { handleMindmapUpdate } from './handlers/mindmap-update.ts';
 // ============================================================
 // Canonical Zod Schemas
 // ============================================================
+
+export const NotionOpenSchema = z.object({ pageId: z.string().describe('Existing Notion page ID below this Project root') });
+export const NotionReadSchema = z.object({ pageId: z.string().optional(), children: z.boolean().optional().describe('List subpages; omit pageId to list the Project root') });
+export const NotionWriteSchema = z.object({ expectedPageId: z.string(), content: z.string(), oldText: z.string().optional().describe('Exact unique text to replace; omit to append') });
 
 export const SubmitPlanSchema = z.object({
   planPath: z.string().describe('Absolute path to the plan markdown file you wrote'),
@@ -896,6 +901,9 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'set_session_status', description: TOOL_DESCRIPTIONS.set_session_status, inputSchema: SetSessionStatusSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionStatus },
   { name: 'archive_session', description: TOOL_DESCRIPTIONS.archive_session, inputSchema: ArchiveSessionSchema, executionMode: 'registry', safeMode: 'block', handler: handleArchiveSession },
   { name: 'create_task', description: TOOL_DESCRIPTIONS.create_task, inputSchema: CreateTaskSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreateTask },
+  { name: 'project_notion_open', description: 'Open an existing page from this Project’s Notion tree in its main workbench panel. Finish sign-in if requested. Use this before writing a different page or when none is open. Never create a remote page implicitly.', inputSchema: NotionOpenSchema, executionMode: 'registry', safeMode: 'allow', handler: handleNotionOpen },
+  { name: 'project_notion_read', description: 'Read the current Project Notion page, or list subpages with children=true (pageId omitted means root). Read before writing. Resolve ambiguous target names with the user. Notion documents and notes belong in the current open page, not local files. Do not save casual conversation automatically.', inputSchema: NotionReadSchema, executionMode: 'registry', readOnly: true, safeMode: 'allow', handler: handleNotionRead },
+  { name: 'project_notion_write', description: 'Write only the current open Project Notion page, using expectedPageId from the latest read/open. Append content by default; oldText makes an exact targeted replacement. If no page is open, locate and open the user’s target first. Stop on page/host changes. On an unknown write result, read to verify; never blindly repeat the write. Return the page link.', inputSchema: NotionWriteSchema, executionMode: 'registry', safeMode: 'block', handler: handleNotionWrite },
   { name: 'project_memory_append', description: TOOL_DESCRIPTIONS.project_memory_append, inputSchema: ProjectMemoryAppendSchema, executionMode: 'registry', safeMode: 'block', handler: handleProjectMemoryAppend },
   // Pages tools (registry — use the grouped ctx.pages callbacks from SessionManager)
   { name: 'list_pages', description: TOOL_DESCRIPTIONS.list_pages, inputSchema: ListPagesSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListPages },
@@ -954,6 +962,9 @@ export const CODING_PROFILE_TOOLS: Readonly<Record<string, 'always' | 'sources' 
   pr_unbind: 'always',
   pr_set_auto_merge: 'always',
   project_memory_append: 'project',
+  project_notion_open: 'project',
+  project_notion_read: 'project',
+  project_notion_write: 'project',
   source_test: 'sources',
   source_oauth_trigger: 'sources',
   source_google_oauth_trigger: 'sources',

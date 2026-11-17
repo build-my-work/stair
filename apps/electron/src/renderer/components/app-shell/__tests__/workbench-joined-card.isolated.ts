@@ -4,9 +4,12 @@ import React, { act, useState, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { Provider, createStore } from 'jotai'
 import type { FlipOnChangeProps } from '@craft-agent/ui/motion'
-import type { DragStartEvent } from '@dnd-kit/core'
+import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core'
 import { workbenchAtom } from '@/workbench/workbench-state'
-import { focusWorkbenchPanelAtom } from '@/workbench/workbench-commands'
+import { focusWorkbenchPanelAtom, resizeWorkbenchPanelAtom } from '@/workbench/workbench-commands'
+import { ModalProvider } from '@/context/ModalContext'
+import { DismissibleLayerProvider } from '@/context/DismissibleLayerContext'
+import { notionViewLayoutsAtom } from '@/components/notion/notion-view-state'
 
 const domino = createRequire(import.meta.url)('@mixmark-io/domino') as {
   createWindow(html: string): Window & typeof globalThis
@@ -17,17 +20,30 @@ let root: Root | null = null
 let navigatorKind = 'sessions'
 let flip: FlipOnChangeProps
 let startDrag: (event: DragStartEvent) => void
+let endDrag: (event: DragEndEvent) => void
+let cancelDrag: () => void
 let fileMounts = 0
 const shellContext = { activeWorkspaceId: 'workspace-1' }
+const frames = new Map<number, FrameRequestCallback>()
+let frameId = 0
 
 beforeAll(() => {
   const browserWindow = domino.createWindow('<!doctype html><html><body><div id="root"></div></body></html>')
   Object.assign(globalThis, {
     window: browserWindow, document: browserWindow.document, navigator: browserWindow.navigator,
     HTMLElement: browserWindow.HTMLElement, Node: browserWindow.Node, Event: browserWindow.Event,
+    getComputedStyle: browserWindow.getComputedStyle.bind(browserWindow),
+    innerWidth: 1200, innerHeight: 800,
+    requestAnimationFrame: (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId },
+    cancelAnimationFrame: (id: number) => frames.delete(id),
     IS_REACT_ACT_ENVIRONMENT: true,
   })
-  HTMLElement.prototype.getBoundingClientRect = () => ({ left: 0, right: 1200 }) as DOMRect
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    const height = this.matches('button[aria-label="workbench.scrollPanels"]')
+      ? this.classList.contains('h-12') ? 48 : 12
+      : 800
+    return { x: 0, y: 0, left: 0, right: 1200, top: 0, bottom: height, width: 1200, height } as DOMRect
+  }
   HTMLElement.prototype.getClientRects = function () {
     for (let node: HTMLElement | null = this; node; node = node.parentElement) {
       if (node.style.display === 'none') return [] as unknown as DOMRectList
@@ -38,12 +54,18 @@ beforeAll(() => {
   mock.module('@craft-agent/ui/motion', () => ({
     FlipOnChange: (props: FlipOnChangeProps) => { flip = props; return props.children },
   }))
-  mock.module('@craft-agent/ui', () => ({ Spinner: () => null }))
+  mock.module('@craft-agent/ui', () => ({
+    Spinner: () => null, Tooltip: Passthrough, TooltipTrigger: Passthrough, TooltipContent: Passthrough,
+  }))
   mock.module('sonner', () => ({ Toaster: () => null, toast: { error() {} } }))
   mock.module(rendererPath('context/ThemeContext.tsx'), () => ({ useTheme: () => ({ resolvedMode: 'light' }) }))
   mock.module('@dnd-kit/core', () => ({
-    DndContext: ({ children, onDragStart }: { children?: ReactNode; onDragStart: typeof startDrag }) => {
+    DndContext: ({ children, onDragStart, onDragEnd, onDragCancel }: {
+      children?: ReactNode; onDragStart: typeof startDrag; onDragEnd: typeof endDrag; onDragCancel: typeof cancelDrag
+    }) => {
       startDrag = onDragStart
+      endDrag = onDragEnd
+      cancelDrag = onDragCancel
       return children
     },
     KeyboardSensor: class {}, PointerSensor: class {}, closestCenter() {},
@@ -87,6 +109,7 @@ afterEach(async () => {
   root = null
   navigatorKind = 'sessions'
   fileMounts = 0
+  frames.clear()
   document.body.innerHTML = '<div id="root"></div>'
 })
 
@@ -108,7 +131,10 @@ async function openWorkbench(withSession = true, withFile = true) {
   }
   const render = async (changes: Partial<typeof props> = {}) => {
     props = { ...props, ...changes }
-    await act(async () => root!.render(React.createElement(Provider, { store }, React.createElement(WorkbenchContainer, props))))
+    await act(async () => root!.render(React.createElement(Provider, { store },
+      React.createElement(ModalProvider, null,
+        React.createElement(DismissibleLayerProvider, null, React.createElement(WorkbenchContainer, props))),
+    )))
   }
   await render()
   return { store, render }
@@ -125,7 +151,197 @@ function pendingAnimation() {
   return { animation: { finished, cancel: mock(finish) } as unknown as Animation, finish }
 }
 
+async function renderFrame() {
+  await act(async () => {
+    const callbacks = [...frames.values()]
+    frames.clear()
+    for (const callback of callbacks) callback(0)
+  })
+}
+
 describe('Workbench joined paper cards', () => {
+  it('shows a closable Web fallback for a restored Notion panel', async () => {
+    Object.assign(window, { electronAPI: {
+      getRuntimeEnvironment: () => 'web',
+      onNotionViewChanged: () => () => {},
+      onNotionViewFocused: () => () => {},
+      onNotionViewCloseRequested: () => () => {},
+    } })
+    const { store } = await openWorkbench()
+    const state = store.get(workbenchAtom)
+    const layout = state.layoutsByProject['project-1']!
+    await act(async () => { store.set(workbenchAtom, {
+      ...state, layoutsByProject: { 'project-1': { ...layout,
+        auxiliary: [...layout.auxiliary, { id: 'notion-panel', kind: 'notion-page', projectId: 'project-1', pageId: '11111111-1111-1111-1111-111111111111', widthRatio: 0.5 }],
+        focusedPanelId: 'notion-panel',
+      } },
+    }) })
+    expect(content('notion-panel').textContent).toContain('notion.desktopRequired')
+    const close = content('notion-panel').querySelector<HTMLButtonElement>('button')!
+    expect(close.textContent).toBe('common.close')
+    await act(async () => { close.click() })
+    expect(document.querySelector('[data-panel-id="notion-panel"]')).toBeFalsy()
+    expect(store.get(workbenchAtom).layoutsByProject['project-1']!.auxiliary.map(panel => panel.id)).toEqual(['file-panel'])
+  })
+
+  it('keeps Notion at its chosen width and lets the adjacent panel fill spare space', async () => {
+    Object.assign(window, { electronAPI: {
+      getRuntimeEnvironment: () => 'electron', notionView: async () => null,
+      onNotionViewChanged: () => () => {}, onNotionViewFocused: () => () => {},
+      onNotionViewCloseRequested: () => () => {},
+    } })
+    const { store, render } = await openWorkbench(true, false)
+    const state = store.get(workbenchAtom)
+    const layout = state.layoutsByProject['project-1']!
+    const notion = { id: 'notion-panel', kind: 'notion-page' as const, projectId: 'project-1', pageId: '11111111-1111-1111-1111-111111111111', widthRatio: 760 / 1200 }
+    await act(async () => { store.set(workbenchAtom, {
+      ...state, layoutsByProject: { 'project-1': { ...layout, auxiliary: [notion], focusedPanelId: notion.id } },
+    }) })
+    const notionFrame = document.querySelector<HTMLElement>('[data-panel-frame][data-panel-id="notion-panel"]')!
+    const chatFrame = document.querySelector<HTMLElement>('[data-panel-frame][data-panel-id="session-panel"]')!
+    expect(notionFrame.style.width).toBe('760px')
+    expect(notionFrame.style.flex).toBe('0 0 auto')
+    expect(chatFrame.style.flex).toBe('1 0 auto')
+    await act(async () => { store.set(resizeWorkbenchPanelAtom, {
+      projectId: 'project-1', panelId: notion.id, widthRatio: 0.75,
+    }) })
+    expect(notionFrame.style.width).toBe('900px')
+    await render({ isCompact: true })
+    expect(notionFrame.style.width).toBe('')
+    expect(notionFrame.style.flexGrow).toBe('1')
+    await render({ isCompact: false })
+    expect(notionFrame.style.width).toBe('900px')
+    await act(async () => { store.set(workbenchAtom, {
+      ...state, layoutsByProject: { 'project-1': { ...layout, primary: null, auxiliary: [notion], focusedPanelId: notion.id } },
+    }) })
+    expect(notionFrame.style.width).toBe('')
+    expect(notionFrame.style.flexGrow).toBe('1')
+  })
+
+  it('floats the Notion scroll grip without reserving a header row or changing panel order', async () => {
+    Object.assign(window, { electronAPI: {
+      getRuntimeEnvironment: () => 'electron',
+      notionView: async () => null,
+      onNotionViewChanged: () => () => {},
+      onNotionViewFocused: () => () => {},
+      onNotionViewCloseRequested: () => () => {},
+    } })
+    const { store, render } = await openWorkbench(true, false)
+    const state = store.get(workbenchAtom)
+    const layout = state.layoutsByProject['project-1']!
+    await act(async () => { store.set(workbenchAtom, {
+      ...state, layoutsByProject: { 'project-1': { ...layout,
+        auxiliary: [{ id: 'notion-panel', kind: 'notion-page', projectId: 'project-1', pageId: '11111111-1111-1111-1111-111111111111', widthRatio: 0.5 }],
+      } },
+    }) })
+    const host = content('notion-panel')
+    await renderFrame()
+    const strip = document.querySelector<HTMLButtonElement>('[data-notion-scroll-handle="notion-panel"]')
+    expect(strip).toBeTruthy()
+    expect(host.contains(strip)).toBe(false)
+    expect(strip!.classList.contains('w-12')).toBe(true)
+    const pageBounds = store.get(notionViewLayoutsAtom)['project-1']!.bounds
+    expect(pageBounds).toEqual({ x: 0, y: 0, width: 1200, height: 800 })
+    expect(store.get(notionViewLayoutsAtom)['project-1']!.clip.y).toBe(0)
+    await act(async () => {
+      strip!.firstElementChild!.dispatchEvent(new Event('pointerover', { bubbles: true }))
+    })
+    expect(strip!.classList.contains('h-12')).toBe(true)
+    await renderFrame()
+    expect(store.get(notionViewLayoutsAtom)['project-1']!.bounds).toEqual(pageBounds)
+    expect(strip!.classList.contains('w-full')).toBe(true)
+    expect(store.get(notionViewLayoutsAtom)['project-1']!.clip.y).toBe(0)
+    await act(async () => {
+      strip!.dispatchEvent(Object.assign(new Event('pointerout', { bubbles: true }), { relatedTarget: document.body }))
+    })
+    expect(strip!.classList.contains('h-3')).toBe(true)
+    await renderFrame()
+    expect(store.get(notionViewLayoutsAtom)['project-1']!.bounds).toEqual(pageBounds)
+    expect(store.get(notionViewLayoutsAtom)['project-1']!.clip.y).toBe(0)
+    const matches = strip!.matches.bind(strip)
+    Object.defineProperty(strip, 'matches', { value: (selector: string) => selector === ':hover' ? false : matches(selector) })
+    const capture = mock()
+    strip!.setPointerCapture = capture
+    const scroller = viewport()
+    Object.defineProperty(scroller, 'clientWidth', { configurable: true, value: 600 })
+    scroller.scrollLeft = 240
+    await act(async () => {
+      strip!.dispatchEvent(Object.assign(new Event('pointerdown', { bubbles: true, cancelable: true }), { isPrimary: true, button: 0, pointerId: 7, clientX: 500 }))
+      strip!.dispatchEvent(Object.assign(new Event('pointermove', { bubbles: true }), { pointerId: 7, clientX: 420 }))
+    })
+    expect(capture).toHaveBeenCalledWith(7)
+    expect(strip!.classList.contains('h-12')).toBe(true)
+    await act(async () => {
+      strip!.dispatchEvent(Object.assign(new Event('pointerout', { bubbles: true }), { relatedTarget: document.body }))
+    })
+    expect(strip!.classList.contains('h-12')).toBe(true)
+    expect(scroller.scrollLeft).toBe(320)
+    await act(async () => {
+      strip!.dispatchEvent(Object.assign(new Event('pointermove', { bubbles: true }), { pointerId: 7, clientX: 560 }))
+    })
+    expect(scroller.scrollLeft).toBe(180)
+    await act(async () => {
+      strip!.dispatchEvent(Object.assign(new Event('lostpointercapture', { bubbles: true }), { pointerId: 7 }))
+      strip!.dispatchEvent(Object.assign(new Event('pointermove', { bubbles: true }), { pointerId: 7, clientX: 300 }))
+    })
+    expect(scroller.scrollLeft).toBe(180)
+    expect(strip!.classList.contains('h-3')).toBe(true)
+    await act(async () => {
+      strip!.dispatchEvent(Object.assign(new Event('keydown', { bubbles: true, cancelable: true }), { key: 'ArrowRight' }))
+    })
+    expect(scroller.scrollLeft).toBe(780)
+    const wheel = Object.assign(new Event('wheel', { bubbles: true, cancelable: true }), { deltaX: -100 })
+    await act(async () => { strip!.dispatchEvent(wheel) })
+    expect(scroller.scrollLeft).toBe(680)
+    expect(wheel.defaultPrevented).toBe(true)
+    expect(store.get(workbenchAtom).layoutsByProject['project-1']!.focusedPanelId).toBe('session-panel')
+    expect(store.get(workbenchAtom).layoutsByProject['project-1']!.auxiliary.map(panel => panel.id)).toEqual(['notion-panel'])
+    expect(document.querySelector('[data-dragging="true"]')).toBeFalsy()
+    expect(content('notion-panel')).toBe(host)
+    await act(async () => {
+      strip!.firstElementChild!.dispatchEvent(new Event('pointerover', { bubbles: true }))
+    })
+    await render({ isCompact: true })
+    expect(document.querySelector('[data-notion-scroll-handle="notion-panel"]')).toBeFalsy()
+    await render({ isCompact: false })
+    await renderFrame()
+    expect(document.querySelector('[data-notion-scroll-handle="notion-panel"]')!.classList.contains('h-3')).toBe(true)
+  })
+
+  it('hides the existing Notion guest during reorder and restores it after cancel or drop', async () => {
+    Object.assign(window, { electronAPI: {
+      getRuntimeEnvironment: () => 'electron',
+      notionView: async () => null,
+      onNotionViewChanged: () => () => {},
+      onNotionViewFocused: () => () => {},
+      onNotionViewCloseRequested: () => () => {},
+    } })
+    const { store } = await openWorkbench()
+    const state = store.get(workbenchAtom)
+    const layout = state.layoutsByProject['project-1']!
+    await act(async () => { store.set(workbenchAtom, {
+      ...state, layoutsByProject: { 'project-1': { ...layout,
+        auxiliary: [...layout.auxiliary, { id: 'notion-panel', kind: 'notion-page', projectId: 'project-1', pageId: '11111111-1111-1111-1111-111111111111', widthRatio: 0.5 }],
+      } },
+    }) })
+    const host = content('notion-panel')
+    await renderFrame()
+    expect(store.get(notionViewLayoutsAtom)['project-1']?.visible).toBe(true)
+    await act(async () => { startDrag({ active: { id: 'file-panel' } } as DragStartEvent) })
+    await renderFrame()
+    expect(store.get(notionViewLayoutsAtom)['project-1']?.visible).toBe(false)
+    await act(async () => { cancelDrag() })
+    await renderFrame()
+    expect(store.get(notionViewLayoutsAtom)['project-1']?.visible).toBe(true)
+    await act(async () => { startDrag({ active: { id: 'file-panel' } } as DragStartEvent) })
+    await renderFrame()
+    expect(store.get(notionViewLayoutsAtom)['project-1']?.visible).toBe(false)
+    await act(async () => { endDrag({ active: { id: 'file-panel' }, over: { id: 'notion-panel' } } as DragEndEvent) })
+    await renderFrame()
+    expect(store.get(notionViewLayoutsAtom)['project-1']?.visible).toBe(true)
+    expect(content('notion-panel')).toBe(host)
+  })
+
   it('joins only the first content card and keeps independent panel widths and DnD frames', async () => {
     const { store } = await openWorkbench()
     expect(navigatorPane().style.borderTopRightRadius).toBe('0')

@@ -823,6 +823,7 @@ export class ClaudeAgent extends BaseAgent {
         name: project.config.name,
         description: project.config.description,
         details: project.config.details,
+        notion: project.config.notion,
         assetsPath: getProjectAssetsPath(this.workspaceRootPath, slug),
         assets: listProjectAssets(this.workspaceRootPath, slug).map((a) => ({
           filename: a.filename,

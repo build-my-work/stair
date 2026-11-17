@@ -82,7 +82,8 @@
     "./resources": "./src/resources/index.ts",
     "./sessions/plan-approval": "./src/sessions/plan-approval.ts",
     "./skills/marketplace": "./src/skills/marketplace-types.ts",
-    "./utils/bundle-files": "./src/utils/bundle-files.ts"
+    "./utils/bundle-files": "./src/utils/bundle-files.ts",
+    "./notion": "./src/notion/index.ts"
   },
   "dependencies": {
     "@craft-agent/core": "workspace:*",

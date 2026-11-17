@@ -45,6 +45,9 @@ export const CLIENT_BROWSER_INVOKE = 'client:browser:invoke'
 /** Capability: access the active workspace's Project/Chat data for a local BrowserWindow. */
 export const CLIENT_BROWSER_APPLICATION_INVOKE = 'client:browserApplication:invoke'
 
+/** Capability: locate and control this Project's Notion panel in the client. */
+export const CLIENT_NOTION_INVOKE = 'client:notion:invoke'
+
 /** Capability: read or transform a Drawnix board currently visible in the client. */
 export const CLIENT_DRAWNIX_BOARD_INVOKE = 'client:drawnixBoard:invoke'
 
@@ -67,6 +70,7 @@ export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
   CLIENT_CONFIRM_DIALOG,
   CLIENT_OPEN_FILE_DIALOG,
   CLIENT_SAVE_TEXT_FILE,
+  CLIENT_NOTION_INVOKE,
   CLIENT_BROWSER_INVOKE,
   CLIENT_BROWSER_APPLICATION_INVOKE,
   CLIENT_DRAWNIX_BOARD_INVOKE,

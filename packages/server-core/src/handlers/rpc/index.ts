@@ -1,3 +1,4 @@
+import { registerNotionHandlers } from './notion'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 
@@ -53,6 +54,7 @@ export function registerCoreRpcHandlers(
   if (serverCtx) registerServerHandlers(server, deps, serverCtx)
   registerSettingsHandlers(server, deps)
   registerProjectsHandlers(server, deps)
+  registerNotionHandlers(server, deps)
   registerPagesHandlers(server, deps)
   registerPrWatchHandlers(server, deps)
   registerCodingReposHandlers(server, deps)

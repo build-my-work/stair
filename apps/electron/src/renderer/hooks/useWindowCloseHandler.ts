@@ -94,7 +94,9 @@ export function useWindowCloseHandler(
           flushWorkbenchLayoutPersistence(),
         ]))
         .then(() => flushDrafts?.())
-        .then(() => window.electronAPI.confirmCloseWindow())
+        .then(async () => {
+          if (await window.electronAPI.closeNotionViews()) await window.electronAPI.confirmCloseWindow()
+        })
         .catch(error => {
           window.electronAPI.debugLog(
             '[Project Files] Window close vetoed because save failed:',

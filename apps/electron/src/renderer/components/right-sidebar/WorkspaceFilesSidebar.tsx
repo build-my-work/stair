@@ -1,3 +1,4 @@
+import { NotionPagesTree } from '@/components/notion/NotionPagesTree'
 import { X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { LoadedProject } from '@craft-agent/shared/projects/types'
@@ -24,7 +25,7 @@ export function WorkspaceFilesSidebar({
   return (
     <div className="flex h-full min-h-0 flex-col bg-foreground-2">
       <PanelHeader
-        title={t('filesSidebar.title')}
+        title={project?.config.notion ? 'Notion' : t('filesSidebar.title')}
         actions={(
           <PanelHeaderCenterButton
             icon={<X className="h-3.5 w-3.5" />}
@@ -33,12 +34,12 @@ export function WorkspaceFilesSidebar({
           />
         )}
       />
-      <ProjectFilesTree
+      {project?.config.notion ? <NotionPagesTree project={project} /> : <ProjectFilesTree
         project={project}
         openFilePaths={openFilePaths}
         onOpenFile={onOpenFile}
         onOpenFileInPanel={onOpenFileInPanel}
-      />
+      />}
     </div>
   )
 }

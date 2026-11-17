@@ -1,3 +1,4 @@
+import { NotionPanelSlot } from '@/components/notion/NotionPanelSlot'
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { FlipOnChange, type FlipTarget } from '@craft-agent/ui/motion'
@@ -70,6 +71,17 @@ function PanelContentSlot({
   isCompact?: boolean
   reorderHandle?: ReactNode
 }) {
+  if (panel.kind === 'notion-page') return (
+    <NotionPanelSlot
+      panel={panel}
+      isOnly={panelCount === 1}
+      isFocusedPanel={isFocusedPanel}
+      isAtLeftEdge={isAtLeftEdge}
+      isAtRightEdge={isAtRightEdge}
+      isJoinedToNavigator={isJoinedToNavigator}
+      isCompact={isCompact}
+    />
+  )
   if (panel.kind === 'session') {
     return (
       <SessionPanelSlot
@@ -181,6 +193,8 @@ export function WorkbenchContainer({
   const [isAnimatingLayout, setIsAnimatingLayout] = useState(false)
   const handledKeyboardFocusRevision = useRef(keyboardFocusRevision)
   const focusedPanel = panels.find(panel => panel.id === focusedPanelId)
+  // Keep Notion at its chosen width; adjacent content absorbs spare space.
+  const fillRemainingPanelId = panels.findLast(panel => panel.kind !== 'notion-page')?.id ?? panels.at(-1)?.id
 
   const isWorkbenchVisible = isSessionsNavigation(navigationState)
     && navigationState.viewMode !== 'board'
@@ -291,6 +305,7 @@ export function WorkbenchContainer({
       ref={shellRef}
       onPointerDownCapture={cancelLayoutAnimations}
       data-mobile-menu-root="true"
+      data-dragging={activeDragId !== null ? 'true' : undefined}
       className="flex-1 min-w-0 relative z-panel @container/shell"
       style={{
         overflow: 'hidden',
@@ -403,7 +418,7 @@ export function WorkbenchContainer({
                       isOnly: isCompact || panels.length === 1,
                       isFocused: slotProps.isFocusedPanel,
                       panelLayoutWidth,
-                      fillRemainingSpace: isCompact || index === panels.length - 1,
+                      fillRemainingSpace: isCompact || panel.id === fillRemainingPanelId,
                       style: {
                         display: !isWorkbenchVisible || (isCompact && panel.id !== focusedPanelId) ? 'none' : undefined,
                       },

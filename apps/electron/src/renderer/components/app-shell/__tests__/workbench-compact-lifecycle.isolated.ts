@@ -99,6 +99,7 @@ beforeAll(() => {
   mock.module(rendererPath('components/app-shell/SessionPanelSlot.tsx'), () => ({
     SessionPanelSlot: () => React.createElement('div', null, 'Chat'),
   }))
+  mock.module(rendererPath('components/notion/NotionPanelSlot.tsx'), () => ({ NotionPanelSlot: () => null }))
   mock.module(rendererPath('components/app-shell/MainContentPanel.tsx'), () => ({ MainContentPanel: () => null }))
   mock.module(rendererPath('components/app-shell/PanelResizeSash.tsx'), () => ({ PanelResizeSash: () => null }))
 })

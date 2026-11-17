@@ -1,3 +1,5 @@
+import { NotionViewPool } from '@/components/notion/NotionViewPool'
+import { NotionCapabilityBridge } from '@/components/notion/NotionCapabilityBridge'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { init as sentryInit } from '@sentry/electron/renderer'
@@ -118,6 +120,8 @@ export function Root() {
   return (
     <ThemeProvider activeWorkspaceId={workspaceId}>
       <DrawnixBoardCapabilityBridge />
+      <NotionCapabilityBridge />
+      <NotionViewPool />
       <App />
       <Toaster />
     </ThemeProvider>

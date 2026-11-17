@@ -27,6 +27,9 @@ export const PANEL_DEFAULT_WIDTH = 560
 /** Default desktop width for Project File Panels. */
 export const PANEL_WIDE_DEFAULT_WIDTH = 840
 
+/** Default desktop reading width for Notion Panels. */
+export const PANEL_NOTION_DEFAULT_WIDTH = 760
+
 /** Extra vertical space reserved in panel stack for box-shadows. */
 export const PANEL_STACK_VERTICAL_OVERFLOW = 8
 

@@ -22,6 +22,9 @@ import type {
 } from './dto'
 
 export interface BroadcastEventMap {
+  [RPC_CHANNELS.notion.VIEW_CHANGED]: [projectId: string, state: import('../notion/index.ts').NotionViewState]
+  [RPC_CHANNELS.notion.VIEW_FOCUSED]: [projectId: string]
+  [RPC_CHANNELS.notion.CLOSE_REQUESTED]: [projectId: string]
   // Session events (workspace-scoped via broadcastToWorkspace)
   [RPC_CHANNELS.sessions.EVENT]: [event: SessionEvent]
   [RPC_CHANNELS.sessions.UNREAD_SUMMARY_CHANGED]: [summary: UnreadSummary]

@@ -284,7 +284,7 @@ export class WindowManager {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: false,
-        webviewTag: false, // Browser integration uses WebContentsView, not <webview>
+        webviewTag: true, // Notion guests are restricted by NotionViewManager before attachment.
         // Tell the renderer which native material sits behind the window (ThemeContext data-vibrancy)
         additionalArguments: windowVibrancy ? [`--craft-window-vibrancy=${windowVibrancy}`] : [],
       }

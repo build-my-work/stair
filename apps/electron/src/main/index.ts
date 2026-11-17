@@ -1,3 +1,4 @@
+import { pushTyped } from '@craft-agent/server-core/transport'
 // Load user's shell environment first (before other imports that may use env)
 // This ensures tools like Homebrew, nvm, etc. are available to the agent
 import { loadShellEnv } from './shell-env'
@@ -68,6 +69,7 @@ import { setupI18n, i18n, SUPPORTED_LANGUAGE_CODES, type LanguageCode } from '@c
 import { getPersistedUiLanguage, setPersistedUiLanguage } from '@craft-agent/shared/config'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { registerDefaultZoomIpc } from './zoom'
+import { notionViewManager } from './notion-view-manager'
 setupI18n([], { productName: productProfile.appName })
 const persistedUiLanguage = getPersistedUiLanguage()
 if (persistedUiLanguage) {
@@ -379,6 +381,17 @@ async function createInitialWindows(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  notionViewManager.registerIpc()
+  notionViewManager.setEventSink((webContentsId, event) => {
+    const server = moduleRpcServer
+    const clientId = moduleClientResolver?.(webContentsId)
+    if (!server || !clientId) return
+    const target = { to: 'client' as const, clientId }
+    if (event.type === 'changed') pushTyped(server, RPC_CHANNELS.notion.VIEW_CHANGED, target, event.projectId, event.state)
+    else if (event.type === 'focused') pushTyped(server, RPC_CHANNELS.notion.VIEW_FOCUSED, target, event.projectId)
+    else pushTyped(server, RPC_CHANNELS.notion.CLOSE_REQUESTED, target, event.projectId)
+  })
+
   // Export packaged state as env var so logger.ts (and headless Bun) don't need 'electron'
   process.env.CRAFT_IS_PACKAGED = app.isPackaged ? 'true' : 'false'
 
@@ -1368,13 +1381,15 @@ async function flushPendingChangesBeforeQuit(): Promise<void> {
     await sessionManager.flushAllSessions()
     mainLog.info('Flushed all pending session writes')
   }
+  if (!await notionViewManager.closeAll()) throw new Error('NOTION_STAY')
 }
 
 // Save window state and clean up resources before quitting
 app.on('before-quit', async (event) => {
   // Avoid re-entry when we call app.exit()
   if (isQuitting) return
-  if (sessionManager) event.preventDefault()
+  const needsFlush = Boolean(sessionManager) || notionViewManager.hasViews
+  if (needsFlush) event.preventDefault()
   isQuitting = true
 
   // Ensure Cmd+Q/app quit bypasses layered window close interception (Cmd+W behavior).
@@ -1412,12 +1427,13 @@ app.on('before-quit', async (event) => {
   // reach here — installUpdate's beforeUpdateInstallHook already ran
   // performQuitCleanup and set isQuitting, so the guard at the top returns early
   // and Squirrel.Mac's quit proceeds uninterrupted so the update installs (#891).
-  if (sessionManager) {
+  if (needsFlush) {
     try {
       await flushPendingChangesBeforeQuit()
     } catch (error) {
       isQuitting = false
       windowManager?.setAppQuitting(false)
+      if (error instanceof Error && error.message === 'NOTION_STAY') return
       mainLog.error('[Window] App quit cancelled because pending changes could not be saved:', error)
       void dialog.showMessageBox({
         type: 'error',

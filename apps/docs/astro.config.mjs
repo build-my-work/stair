@@ -37,6 +37,7 @@ export default defineConfig({
           items: [
             { label: '多面板工作台', slug: 'core/workbench' },
             { label: 'Project Files', slug: 'core/project-files' },
+            { label: 'Notion', slug: 'core/notion' },
             { label: 'Reader：EPUB 与 PDF', slug: 'core/reader' },
             { label: '引用与笔记', slug: 'core/citations-notes' },
             { label: '内置浏览器', slug: 'core/browser' },

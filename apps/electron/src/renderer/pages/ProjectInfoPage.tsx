@@ -48,6 +48,10 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')
   const [editWorkingDir, setEditWorkingDir] = useState('')
+  const [notionSource, setNotionSource] = useState('')
+  const [notionRoot, setNotionRoot] = useState('')
+  const [notionEnabled, setNotionEnabled] = useState(false)
+  const [notionSources, setNotionSources] = useState<import('@craft-agent/shared/sources').LoadedSource[]>([])
   const [editDetails, setEditDetails] = useState('')
   const [editColor, setEditColor] = useState<string>('')
   const [saving, setSaving] = useState(false)
@@ -69,6 +73,11 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
       setEditName(loaded.config.name)
       setEditDescription(loaded.config.description ?? '')
       setEditWorkingDir(loaded.config.workingDirectory ?? '')
+      setNotionEnabled(Boolean(loaded.config.notion))
+      setNotionSource(loaded.config.notion?.sourceSlug ?? '')
+      setNotionRoot(loaded.config.notion?.rootPageId ?? '')
+      const sources = await window.electronAPI.getSources(workspaceId)
+      setNotionSources(sources.filter(source => source.config.type === 'api' && source.config.api?.authType === 'bearer' && source.config.api.baseUrl.replace(/\/+$/, '') === 'https://api.notion.com'))
       setEditDetails(loaded.config.details ?? '')
       setEditColor(loaded.config.color ?? '')
     } catch (err) {
@@ -151,17 +160,18 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
         name: editName.trim() || project.config.name,
         description: editDescription.trim() || undefined,
         workingDirectory: editWorkingDir.trim() || undefined,
+        notion: notionEnabled ? { sourceSlug: notionSource, rootPageId: notionRoot.trim() } : null,
         details: editDetails.trim() || undefined,
         color: editColor.trim() || undefined,
       })
       toast.success(t('projectInfo.saved'))
     } catch (err) {
       console.error('[ProjectInfoPage] Save failed:', err)
-      toast.error(t('projectInfo.saveFailed'))
+      toast.error(err instanceof Error ? err.message : t('projectInfo.saveFailed'))
     } finally {
       setSaving(false)
     }
-  }, [workspaceId, project, editName, editDescription, editWorkingDir, editDetails, editColor, t])
+  }, [workspaceId, project, editName, editDescription, editWorkingDir, editDetails, editColor, notionEnabled, notionSource, notionRoot, t])
 
   const handleDeleteProject = useCallback(async () => {
     if (!workspaceId || !project) return
@@ -339,6 +349,23 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                     placeholder={t('projectInfo.descriptionPlaceholder')}
                   />
                 </Field>
+                <Field label={t('notion.storage')} hint={t('notion.storageHint')}>
+                  <select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={notionEnabled ? 'notion' : 'local'} onChange={event => setNotionEnabled(event.target.value === 'notion')}>
+                    <option value="local">{t('notion.localFiles')}</option>
+                    <option value="notion">Notion</option>
+                  </select>
+                </Field>
+                {notionEnabled && <>
+                  <Field label={t('notion.connection')} hint={t('notion.connectionHint')}>
+                    <select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={notionSource} onChange={event => setNotionSource(event.target.value)}>
+                      <option value="">{t('notion.chooseConnection')}</option>
+                      {notionSources.map(source => <option key={source.config.slug} value={source.config.slug}>{source.config.name}</option>)}
+                    </select>
+                  </Field>
+                  <Field label={t('notion.rootPage')}>
+                    <Input value={notionRoot} onChange={event => setNotionRoot(event.target.value)} placeholder="https://www.notion.so/…" />
+                  </Field>
+                </>}
                 <Field label={t('projectInfo.workingDirectory')}>
                   <div className="flex gap-2">
                     <Input

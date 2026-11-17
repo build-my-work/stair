@@ -1,3 +1,4 @@
+import { ProjectNotionTools } from '../notion/tool-callbacks'
 import type {
   DrawnixBoardCapabilityRequest,
   DrawnixBoardCapabilityResponse,
@@ -5855,6 +5856,7 @@ export class SessionManager implements ISessionManager {
         // project_memory_append — one O_APPEND write per note, so sessions sharing a
         // project never drop each other's notes (rewriting MEMORY.md from a
         // session-start snapshot did). The project is read at call time.
+        notion: new ProjectNotionTools(() => this.rpcServer, () => this.sessions.get(managed.id)),
         appendProjectMemoryFn: async (input) => {
           if (!managed.projectId) throw new Error('This session is not bound to a project.')
           const { loadProjectById, appendProjectMemoryEntry } = await import('@craft-agent/shared/projects')

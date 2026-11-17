@@ -203,6 +203,10 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   // debug — local debug logging
   RPC_CHANNELS.debug.LOG,
 
+  RPC_CHANNELS.notion.VIEW_CHANGED,
+  RPC_CHANNELS.notion.VIEW_FOCUSED,
+  RPC_CHANNELS.notion.CLOSE_REQUESTED,
+
   // projectFiles — renderer document lifecycle for the current local window
   RPC_CHANNELS.projectFiles.FLUSH_REQUESTED,
   RPC_CHANNELS.projectFiles.FLUSH_COMPLETED,
@@ -510,6 +514,8 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projectFiles.APPLY_EPUB_STATE_MUTATION,
   RPC_CHANNELS.projectFiles.GET_PDF_STATE,
   RPC_CHANNELS.projectFiles.APPLY_PDF_STATE_MUTATION,
+
+  RPC_CHANNELS.notion.CHILDREN,
 
   // workbenchLayout — Workspace-scoped semantic presentation state
   RPC_CHANNELS.workbenchLayout.READ,
