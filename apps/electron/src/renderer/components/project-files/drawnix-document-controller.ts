@@ -35,6 +35,8 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private savePromise: Promise<void> | null = null
   private saveError: Error | null = null
+  /** Shared in-flight flush so concurrent callers join one run instead of double-writing. */
+  private flushPromise: Promise<DrawnixImageWaitResult> | null = null
   /** Last content written (or the open baseline). Used after image wait when onValueChange is gone. */
   private lastSavedContent: string
 
@@ -122,28 +124,62 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
    * the wait so a batch that committed without `onValueChange` (panel/board
    * teardown) is still written. Returns the image-wait result so callers can
    * warn on `'timeout'` after saving whatever already landed.
+   *
+   * Concurrent callers share one in-flight flush so overlapping close/switch
+   * paths cannot each mark dirty and rewrite the same snapshot.
    */
   async flush(timeoutMs?: number): Promise<DrawnixImageWaitResult> {
+    if (this.flushPromise) return this.flushPromise
+    this.flushPromise = this.runFlush(timeoutMs).finally(() => {
+      this.flushPromise = null
+    })
+    return this.flushPromise
+  }
+
+  private async runFlush(timeoutMs?: number): Promise<DrawnixImageWaitResult> {
     // Card images commit asynchronously; onValueChange (and dirty) only fire
     // once a batch lands. Wait (bounded inside the editor) so close/switch/Cmd+S
     // persist an image the user already added.
     const imageWait = await this.editor.waitForPendingCardImages(timeoutMs)
-    // If an autosave is already writing the current content, wait for it before
-    // comparing — otherwise lastSavedContent is stale and we double-write (and
-    // a failed second write can falsely veto close).
-    if (this.savePromise) await this.savePromise
-    // After unmount, onValueChange may be detached: compare serialize() to the
-    // last saved baseline instead of relying only on dirty.
-    if (this.editor.serialize() !== this.lastSavedContent) {
-      this.dirty = true
-    }
-    while (this.pendingChange || this.savePromise || this.dirty) {
+
+    while (true) {
       if (this.pendingChange) await this.pendingChange
+      // Wait for any in-flight autosave/flush write before comparing — otherwise
+      // lastSavedContent is stale and we double-write the same snapshot.
+      if (this.savePromise) await this.savePromise
+
+      if (this.editor.serialize() === this.lastSavedContent) {
+        // Stale dirty from a concurrent waiter, or a redundant write that failed
+        // after the latest content was already persisted.
+        this.dirty = false
+        if (this.saveError) {
+          this.saveError = null
+          this.onStateChange({ saving: false, error: null })
+        }
+        break
+      }
+
+      // After unmount, onValueChange may be detached: compare serialize() to the
+      // last saved baseline instead of relying only on dirty.
+      this.dirty = true
+      if (this.saveError) throw this.saveError
       this.clearSaveTimer()
       this.startSave()
       if (this.savePromise) await this.savePromise
-      if (this.saveError) throw this.saveError
+
+      if (this.saveError) {
+        // Redundant failure: latest board content already matches lastSavedContent
+        // (another write won). Do not veto close/switch.
+        if (this.editor.serialize() === this.lastSavedContent) {
+          this.saveError = null
+          this.dirty = false
+          this.onStateChange({ saving: false, error: null })
+          break
+        }
+        throw this.saveError
+      }
     }
+
     return imageWait === 'timeout' ? 'timeout' : 'idle'
   }
 

@@ -401,12 +401,13 @@ describe('Drawnix document controller', () => {
 
   it('vetoes flush after a save failure and never claims the board was saved', async () => {
     const board = createEmptyBoard()
+    const editor = createDrawnixEditor(board)
     const states: Array<{ saving: boolean; error: Error | null }> = []
     const failure = Object.assign(new Error('changed on disk'), {
       code: 'PROJECT_FILE_CHANGED',
     })
     const controller = new DrawnixDocumentController(
-      createDrawnixEditor(board),
+      editor,
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,
@@ -414,6 +415,7 @@ describe('Drawnix document controller', () => {
       state => states.push(state),
     )
 
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Unsaved' }])
     controller.notifyBoardChanged()
     await expect(controller.flush()).rejects.toBe(failure)
     expect(states.at(-1)).toEqual({ saving: false, error: failure })
@@ -421,9 +423,10 @@ describe('Drawnix document controller', () => {
 
   it('retries a transient save failure without discarding the live board', async () => {
     const board = createEmptyBoard()
+    const editor = createDrawnixEditor(board)
     let attempts = 0
     const controller = new DrawnixDocumentController(
-      createDrawnixEditor(board),
+      editor,
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,
@@ -435,6 +438,7 @@ describe('Drawnix document controller', () => {
       () => {},
     )
 
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Retry me' }])
     controller.notifyBoardChanged()
     await expect(controller.flush()).rejects.toThrow('temporary transport failure')
     controller.retry()
@@ -444,9 +448,10 @@ describe('Drawnix document controller', () => {
 
   it('debounces ordinary board changes while flush still saves immediately', async () => {
     const board = createEmptyBoard()
+    const editor = createDrawnixEditor(board)
     const saves: SaveDrawnixProjectFileRequest[] = []
     const controller = new DrawnixDocumentController(
-      createDrawnixEditor(board),
+      editor,
       'project-a',
       'maps/tutorial.drawnix',
       INITIAL_FINGERPRINT,
@@ -457,6 +462,7 @@ describe('Drawnix document controller', () => {
       () => {},
     )
 
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Draft' }])
     controller.notifyBoardChanged()
     await Promise.resolve()
     expect(saves).toHaveLength(0)
@@ -491,6 +497,7 @@ describe('Drawnix document controller', () => {
       () => {},
     )
 
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Cards' }])
     controller.notifyBoardChanged()
     const flushing = controller.flush()
     await Promise.resolve()
@@ -588,6 +595,100 @@ describe('Drawnix document controller', () => {
     expect(saves).toHaveLength(1)
   })
 
+  it('coalesces concurrent flushes while an autosave of A is in flight and the board is already B', async () => {
+    const board = createEmptyBoard()
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Snapshot A' }])
+    const editor = createDrawnixEditor(board)
+    let releaseSave!: () => void
+    const saveGate = new Promise<void>(resolve => {
+      releaseSave = resolve
+    })
+    const saves: string[] = []
+    const controller = new DrawnixDocumentController(
+      editor,
+      'project-a',
+      'maps/cards.drawnix',
+      INITIAL_FINGERPRINT,
+      async request => {
+        saves.push(request.content)
+        await saveGate
+        return savedResponse(request, saves.length)
+      },
+      () => {},
+      0,
+    )
+
+    controller.notifyBoardChanged()
+    await Promise.resolve()
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    expect(saves).toHaveLength(1)
+    const snapshotA = saves[0]!
+
+    fakeNodeWeakMap(board)
+    MindTransforms.setTopic(
+      board as PlaitMindBoard,
+      board.children[0] as MindElement,
+      buildText('Snapshot B') as SlateElement,
+    )
+    const snapshotB = editor.serialize()
+    expect(snapshotB).not.toBe(snapshotA)
+
+    const first = controller.flush()
+    const second = controller.flush()
+    releaseSave()
+    await expect(Promise.all([first, second])).resolves.toEqual(['idle', 'idle'])
+    expect(saves).toEqual([snapshotA, snapshotB])
+  })
+
+  it('does not veto concurrent flushes when a redundant rewrite of already-saved B would fail', async () => {
+    const board = createEmptyBoard()
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Snapshot A' }])
+    const editor = createDrawnixEditor(board)
+    let releaseSave!: () => void
+    const saveGate = new Promise<void>(resolve => {
+      releaseSave = resolve
+    })
+    const saves: string[] = []
+    const seen = new Set<string>()
+    const controller = new DrawnixDocumentController(
+      editor,
+      'project-a',
+      'maps/cards.drawnix',
+      INITIAL_FINGERPRINT,
+      async request => {
+        if (seen.has(request.content)) {
+          throw new Error('redundant rewrite of already-saved content')
+        }
+        seen.add(request.content)
+        saves.push(request.content)
+        await saveGate
+        return savedResponse(request, saves.length)
+      },
+      () => {},
+      0,
+    )
+
+    controller.notifyBoardChanged()
+    await Promise.resolve()
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    expect(saves).toHaveLength(1)
+    const snapshotA = saves[0]!
+
+    fakeNodeWeakMap(board)
+    MindTransforms.setTopic(
+      board as PlaitMindBoard,
+      board.children[0] as MindElement,
+      buildText('Snapshot B') as SlateElement,
+    )
+    const snapshotB = editor.serialize()
+
+    const first = controller.flush()
+    const second = controller.flush()
+    releaseSave()
+    await expect(Promise.all([first, second])).resolves.toEqual(['idle', 'idle'])
+    // Coalesced flush writes B once; no redundant second B that would throw.
+    expect(saves).toEqual([snapshotA, snapshotB])
+  })
 
   it('still saves committed content and reports timeout when image wait expires', async () => {
     const board = createEmptyBoard()
