@@ -37,6 +37,12 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
   private saveError: Error | null = null
   /** Shared in-flight flush so concurrent callers join one run instead of double-writing. */
   private flushPromise: Promise<DrawnixImageWaitResult> | null = null
+  /**
+   * True when the most recent write attempted content that already matched
+   * `lastSavedContent` before the attempt (redundant rewrite). Used to decide
+   * whether a failed write may be swallowed.
+   */
+  private lastWriteWasRedundant = false
   /** Last content written (or the open baseline). Used after image wait when onValueChange is gone. */
   private lastSavedContent: string
 
@@ -108,6 +114,9 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
     this.dirty = false
     this.onStateChange({ saving: true, error: null })
     const content = this.editor.serialize()
+    // Capture before the attempt: only a rewrite of already-persisted content
+    // may be treated as a redundant failure if the write itself errors.
+    this.lastWriteWasRedundant = content === this.lastSavedContent
     const response = await this.save({
       projectId: this.projectId,
       relativePath: this.relativePath,
@@ -125,12 +134,20 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
    * teardown) is still written. Returns the image-wait result so callers can
    * warn on `'timeout'` after saving whatever already landed.
    *
-   * Concurrent callers share one in-flight flush so overlapping close/switch
-   * paths cannot each mark dirty and rewrite the same snapshot.
+   * Concurrent callers serialize on one in-flight flush (no duplicate write of
+   * the same snapshot). After joining, **this caller** still runs its own
+   * image-wait + compare/save so edits or images that arrived during the
+   * shared run are not skipped.
    */
   async flush(timeoutMs?: number): Promise<DrawnixImageWaitResult> {
-    if (this.flushPromise) return this.flushPromise
-    this.flushPromise = this.runFlush(timeoutMs).finally(() => {
+    // Join any in-flight flush, then always confirm ourselves. Loop so that if
+    // another caller starts between our await and ownership grab, we join again
+    // rather than sharing their promise without our own image wait.
+    while (this.flushPromise) {
+      await this.flushPromise
+    }
+    const run = this.runFlush(timeoutMs)
+    this.flushPromise = run.finally(() => {
       this.flushPromise = null
     })
     return this.flushPromise
@@ -139,7 +156,9 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
   private async runFlush(timeoutMs?: number): Promise<DrawnixImageWaitResult> {
     // Card images commit asynchronously; onValueChange (and dirty) only fire
     // once a batch lands. Wait (bounded inside the editor) so close/switch/Cmd+S
-    // persist an image the user already added.
+    // persist an image the user already added. One wait per flush call — do not
+    // loop the bound forever; save whatever landed, and a later flush does its
+    // own wait after joining.
     const imageWait = await this.editor.waitForPendingCardImages(timeoutMs)
 
     while (true) {
@@ -149,13 +168,11 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
       if (this.savePromise) await this.savePromise
 
       if (this.editor.serialize() === this.lastSavedContent) {
-        // Stale dirty from a concurrent waiter, or a redundant write that failed
-        // after the latest content was already persisted.
+        // Content matches the last successful in-memory snapshot. Do not clear
+        // saveError here: after a conflict, the user may revert the canvas to
+        // that snapshot while disk still holds external content.
         this.dirty = false
-        if (this.saveError) {
-          this.saveError = null
-          this.onStateChange({ saving: false, error: null })
-        }
+        if (this.saveError) throw this.saveError
         break
       }
 
@@ -168,9 +185,9 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
       if (this.savePromise) await this.savePromise
 
       if (this.saveError) {
-        // Redundant failure: latest board content already matches lastSavedContent
-        // (another write won). Do not veto close/switch.
-        if (this.editor.serialize() === this.lastSavedContent) {
+        // Only swallow when *this* failed write was a redundant rewrite of
+        // content already in lastSavedContent before the attempt.
+        if (this.lastWriteWasRedundant) {
           this.saveError = null
           this.dirty = false
           this.onStateChange({ saving: false, error: null })

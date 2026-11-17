@@ -421,6 +421,36 @@ describe('Drawnix document controller', () => {
     expect(states.at(-1)).toEqual({ saving: false, error: failure })
   })
 
+  it('keeps saveError when the canvas is reverted to the open content after a conflict', async () => {
+    const board = createEmptyBoard()
+    const editor = createDrawnixEditor(board)
+    const openContent = editor.serialize()
+    const states: Array<{ saving: boolean; error: Error | null }> = []
+    const failure = Object.assign(new Error('changed on disk'), {
+      code: 'PROJECT_FILE_CHANGED',
+    })
+    const controller = new DrawnixDocumentController(
+      editor,
+      'project-a',
+      'maps/tutorial.drawnix',
+      INITIAL_FINGERPRINT,
+      () => Promise.reject(failure),
+      state => states.push(state),
+    )
+
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Unsaved' }])
+    controller.notifyBoardChanged()
+    await expect(controller.flush()).rejects.toBe(failure)
+    expect(states.at(-1)).toEqual({ saving: false, error: failure })
+
+    // Revert canvas to the open/original snapshot. Disk still has external content;
+    // matching lastSavedContent must not clear the error or allow close.
+    board.children = JSON.parse(openContent).elements
+    expect(editor.serialize()).toBe(openContent)
+    await expect(controller.flush()).rejects.toBe(failure)
+    expect(states.at(-1)).toEqual({ saving: false, error: failure })
+  })
+
   it('retries a transient save failure without discarding the live board', async () => {
     const board = createEmptyBoard()
     const editor = createDrawnixEditor(board)
@@ -638,6 +668,105 @@ describe('Drawnix document controller', () => {
     releaseSave()
     await expect(Promise.all([first, second])).resolves.toEqual(['idle', 'idle'])
     expect(saves).toEqual([snapshotA, snapshotB])
+  })
+
+  it('after joining an in-flight flush, still waits for new pending images and saves them', async () => {
+    const board = createEmptyBoard()
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Cards' }])
+    const editor = createDrawnixEditor(board)
+    let releaseImageWaitA!: () => void
+    const imageWaitA = new Promise<void>(resolve => {
+      releaseImageWaitA = resolve
+    })
+    let releaseSaveA!: () => void
+    const saveGateA = new Promise<void>(resolve => {
+      releaseSaveA = resolve
+    })
+    let imageWaitCalls = 0
+    let releaseImageWaitB!: () => void
+    let imageWaitB!: Promise<void>
+    editor.waitForPendingCardImages = async () => {
+      imageWaitCalls += 1
+      if (imageWaitCalls === 1) {
+        await imageWaitA
+        return 'idle'
+      }
+      imageWaitB = new Promise<void>(resolve => {
+        releaseImageWaitB = resolve
+      })
+      await imageWaitB
+      // Late image commit that arrived while A was still writing.
+      const mutated = JSON.parse(editor.serialize()) as {
+        elements: Array<{ ankiCards?: unknown[] }>
+      }
+      mutated.elements[0]!.ankiCards = [
+        {
+          id: 'c1',
+          front: '',
+          back: '',
+          frontImages: [{
+            id: 'img-late',
+            url: 'data:image/jpeg;base64,LATE',
+            mimeType: 'image/jpeg',
+            width: 1,
+            height: 1,
+          }],
+        },
+      ]
+      board.children = mutated.elements as typeof board.children
+      return 'idle'
+    }
+
+    const saves: string[] = []
+    const controller = new DrawnixDocumentController(
+      editor,
+      'project-a',
+      'maps/cards.drawnix',
+      INITIAL_FINGERPRINT,
+      async request => {
+        saves.push(request.content)
+        if (saves.length === 1) await saveGateA
+        return savedResponse(request, saves.length)
+      },
+      () => {},
+    )
+
+    // Mutate so flush A has something to write after its image wait.
+    fakeNodeWeakMap(board)
+    MindTransforms.setTopic(
+      board as PlaitMindBoard,
+      board.children[0] as MindElement,
+      buildText('Snapshot A') as SlateElement,
+    )
+    controller.notifyBoardChanged()
+    await Promise.resolve()
+
+    const flushA = controller.flush()
+    // A is past image wait (blocked on save gate once wait releases).
+    releaseImageWaitA()
+    await Promise.resolve()
+    await Promise.resolve()
+    // Let runFlush reach the gated save.
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    expect(saves).toHaveLength(1)
+    expect(imageWaitCalls).toBe(1)
+
+    // New pending image arrives while A is still writing; B must not skip it.
+    const flushB = controller.flush()
+    expect(imageWaitCalls).toBe(1)
+
+    releaseSaveA()
+    await expect(flushA).resolves.toBe('idle')
+    // B joins A, then runs its own image wait.
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(imageWaitCalls).toBe(2)
+    expect(saves).toHaveLength(1)
+
+    releaseImageWaitB!()
+    await expect(flushB).resolves.toBe('idle')
+    expect(saves).toHaveLength(2)
+    expect(saves[1]).toContain('data:image/jpeg;base64,LATE')
   })
 
   it('does not veto concurrent flushes when a redundant rewrite of already-saved B would fail', async () => {
