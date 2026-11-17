@@ -20,6 +20,9 @@ import type { WindowCloseRequest } from '../../shared/types'
 /** Soft status for main: committed content saved, images still pending. */
 const DRAWNIX_IMAGE_WAIT_TIMEOUT = 'DRAWNIX_IMAGE_WAIT_TIMEOUT'
 
+/** Brief pause so the timeout toast can paint before the window hosting Toaster is destroyed. */
+const IMAGE_WAIT_TIMEOUT_TOAST_MS = 400
+
 function surfaceImageWaitTimeout(imageWait: ProjectFileFlushImageWait): void {
   if (imageWait !== 'timeout') return
   window.electronAPI.debugLog(
@@ -119,9 +122,16 @@ export function useWindowCloseHandler(
           flushOpenProjectFiles(),
           flushWorkbenchLayoutPersistence(),
         ]))
-        .then(([imageWait]) => {
+        .then(async ([imageWait]) => {
           surfaceImageWaitTimeout(imageWait)
-          return flushDrafts?.()
+          await flushDrafts?.()
+          // Quit/IPC flush must not delay; only the window-close path needs a
+          // beat so toast.warning can show before confirmCloseWindow destroys UI.
+          if (imageWait === 'timeout') {
+            await new Promise<void>(resolve => {
+              setTimeout(resolve, IMAGE_WAIT_TIMEOUT_TOAST_MS)
+            })
+          }
         })
         .then(() => window.electronAPI.confirmCloseWindow())
         .catch(error => {

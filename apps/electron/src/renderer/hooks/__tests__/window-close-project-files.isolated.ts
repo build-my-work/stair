@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test'
 
 let closeRequested: ((request: { source: string }) => void) | undefined
 let projectFilesFlushRequested: ((requestId: string) => void) | undefined
-let resolveFlush: (() => void) | undefined
+let resolveFlush: ((value?: 'idle' | 'timeout') => void) | undefined
 let flushError: Error | null = null
+let flushImageWait: 'idle' | 'timeout' = 'idle'
 const order: string[] = []
 const flushCompletions: Array<{ requestId: string; error?: string }> = []
+const toasts: string[] = []
 const actualReactModule = await import('react')
 const actualJotaiModule = await import('jotai')
 const actualWorkbenchStateModule = await import('../../workbench/workbench-state')
@@ -32,12 +34,22 @@ mock.module('@/context/ModalContext', () => ({
 mock.module('@/context/DismissibleLayerContext', () => ({
   useDismissibleLayerRegistry: () => ({ hasOpenLayers: () => false, closeTop: () => {} }),
 }))
+mock.module('sonner', () => ({
+  toast: {
+    warning: (message: string) => { toasts.push(message) },
+  },
+}))
+mock.module('i18next', () => ({
+  default: { t: (key: string) => key },
+}))
 mock.module('@/components/project-files/project-file-document-registry', () => ({
   ...actualProjectFileRegistryModule,
   flushOpenProjectFiles: () => {
     order.push('flush')
     if (flushError) return Promise.reject(flushError)
-    return new Promise<void>(resolve => { resolveFlush = resolve })
+    return new Promise<'idle' | 'timeout'>(resolve => {
+      resolveFlush = () => resolve(flushImageWait)
+    })
   },
 }))
 
@@ -70,8 +82,10 @@ describe('窗口关闭前的 Project File flush', () => {
     projectFilesFlushRequested = undefined
     resolveFlush = undefined
     flushError = null
+    flushImageWait = 'idle'
     order.length = 0
     flushCompletions.length = 0
+    toasts.length = 0
   })
 
   it('先取消主进程 fallback，再等待 flush，最后确认关闭', async () => {
@@ -139,5 +153,32 @@ describe('窗口关闭前的 Project File flush', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(order).not.toContain('confirm-close')
     expect(order.filter(entry => entry === 'cancel-fallback')).toHaveLength(2)
+  })
+
+  it('窗口关闭在 image wait timeout 时短暂延迟再确认，以便 toast 可见', async () => {
+    flushImageWait = 'timeout'
+    useWindowCloseHandler()
+    closeRequested?.({ source: 'window-button' })
+    await Promise.resolve()
+    resolveFlush?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(toasts).toEqual(['projectFileEditor.drawnixImageWaitTimeout'])
+    expect(order).not.toContain('confirm-close')
+
+    await new Promise(resolve => setTimeout(resolve, 450))
+    expect(order).toEqual(['cancel-fallback', 'flush', 'confirm-close'])
+  })
+
+  it('退出 flush 在 image wait timeout 时不额外延迟 complete', async () => {
+    flushImageWait = 'timeout'
+    useWindowCloseHandler()
+    projectFilesFlushRequested?.('quit-timeout')
+    resolveFlush?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(toasts).toEqual(['projectFileEditor.drawnixImageWaitTimeout'])
+    expect(flushCompletions).toEqual([{
+      requestId: 'quit-timeout',
+      error: 'DRAWNIX_IMAGE_WAIT_TIMEOUT',
+    }])
   })
 })
