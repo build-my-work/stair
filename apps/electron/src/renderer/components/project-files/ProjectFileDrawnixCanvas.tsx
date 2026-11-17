@@ -38,6 +38,10 @@ export function ProjectFileDrawnixCanvas({
   onReload,
 }: ProjectFileDrawnixCanvasProps) {
   const { t } = useTranslation()
+  // Keep translations out of the controller effect deps: a language change must
+  // not recreate the controller (that would reset sourceFingerprint and break saves).
+  const tRef = useRef(t)
+  tRef.current = t
   const documentResult = useMemo(() => {
     try {
       return { document: parseDrawnixDocument(content), error: null }
@@ -78,7 +82,7 @@ export function ProjectFileDrawnixCanvas({
             window.electronAPI.debugLog(
               '[Drawnix] Card image wait timed out while closing; saved committed images only.',
             )
-            toast.warning(t('projectFileEditor.drawnixImageWaitTimeout'))
+            toast.warning(tRef.current('projectFileEditor.drawnixImageWaitTimeout'))
           }
         })
         .catch(error => {
@@ -92,7 +96,7 @@ export function ProjectFileDrawnixCanvas({
           unregisterDocument()
         })
     }
-  }, [editor, document, projectId, relativePath, sourceFingerprint, t])
+  }, [editor, document, projectId, relativePath, sourceFingerprint])
 
   const notifyBoardChanged = useCallback(() => {
     controllerRef.current?.notifyBoardChanged()

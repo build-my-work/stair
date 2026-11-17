@@ -120,7 +120,15 @@ export const switchWorkbenchProjectAtom = atom(
     const sourceProjectId = current.activeProjectId
 
     try {
-      await flushOpenProjectFilesForProject(sourceProjectId)
+      const imageWait = await flushOpenProjectFilesForProject(sourceProjectId)
+      if (imageWait === 'timeout') {
+        window.electronAPI.debugLog(
+          '[Drawnix] Card image wait timed out during project switch; saved committed images only.',
+        )
+        const { toast } = await import('sonner')
+        const i18n = (await import('i18next')).default
+        toast.warning(i18n.t('projectFileEditor.drawnixImageWaitTimeout'))
+      }
     } catch {
       return false
     }

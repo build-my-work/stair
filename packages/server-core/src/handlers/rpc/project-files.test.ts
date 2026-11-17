@@ -41,6 +41,7 @@ import {
   readProjectFileBinaryWithinRoot,
   readProjectTextFileWithinRoot,
   registerProjectFileHandlers,
+  PROJECT_FILES_FLUSH_IMAGE_WAIT_TIMEOUT,
   PROJECT_FILES_FLUSH_TIMEOUT_MS,
   requestClientProjectFilesFlush,
   searchProjectFilesWithinRoot,
@@ -791,13 +792,40 @@ describe('Project Files RPC', () => {
       workspaceId: null,
       webContentsId: null,
     }, requestId)
-    await expect(flush).resolves.toBeUndefined()
+    await expect(flush).resolves.toBe('idle')
   })
 
   it('默认 flush 超时覆盖 Drawnix 卡片图片等待窗口', () => {
     // 10s image wait + save headroom; must stay above the Drawnix default.
     expect(PROJECT_FILES_FLUSH_TIMEOUT_MS).toBeGreaterThanOrEqual(12_500)
   })
+
+  it('propagates Drawnix image-wait timeout without rejecting the flush', async () => {
+    const handlers = new Map<string, HandlerFn>()
+    let requestId = ''
+    const server: RpcServer = {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      push: (_channel, _target, id) => { requestId = id as string },
+      updateClientWorkspace: () => {},
+      invokeClient: async () => undefined,
+      hasClientCapability: () => false,
+      findClientsWithCapability: () => [],
+    }
+    registerProjectFileHandlers(server, {
+      sessionManager: {},
+      oauthFlowStore: {},
+      platform: { logger: console },
+    } as unknown as HandlerDeps)
+
+    const flush = requestClientProjectFilesFlush(server, 'renderer-a', 100)
+    await handlers.get(RPC_CHANNELS.projectFiles.FLUSH_COMPLETED)!({
+      clientId: 'renderer-a',
+      workspaceId: null,
+      webContentsId: null,
+    }, requestId, PROJECT_FILES_FLUSH_IMAGE_WAIT_TIMEOUT)
+    await expect(flush).resolves.toBe('timeout')
+  })
+
 
   it('同窗口切换 Workspace 前先等待旧文档 flush', async () => {
     const handlers = new Map<string, HandlerFn>()

@@ -37,7 +37,23 @@ describe('Drawnix Project File integration', () => {
     expect(canvas).toContain('controllerRef.current = null')
     expect(canvas.indexOf('.flush()')).toBeLessThan(canvas.lastIndexOf('controllerRef.current = null'))
     expect(canvas).toContain('drawnixImageWaitTimeout')
+    expect(canvas).toContain('tRef')
+    expect(canvas).not.toMatch(/sourceFingerprint,\s*t\s*\]/)
   })
+
+  it('awaits in-flight autosave before comparing lastSavedContent during flush', () => {
+    const source = readFileSync(
+      new URL('../../components/project-files/drawnix-document-controller.ts', import.meta.url),
+      'utf8',
+    )
+    const waitIdx = source.indexOf('waitForPendingCardImages')
+    const awaitSaveIdx = source.indexOf('if (this.savePromise) await this.savePromise')
+    const compareIdx = source.indexOf('!== this.lastSavedContent')
+    expect(waitIdx).toBeGreaterThan(-1)
+    expect(awaitSaveIdx).toBeGreaterThan(waitIdx)
+    expect(compareIdx).toBeGreaterThan(awaitSaveIdx)
+  })
+
 
   it('routes Cmd/Ctrl+S to Stair flush at the panel root so host chrome never opens Save As', () => {
     const page = readFileSync(new URL('../ProjectFilePage.tsx', import.meta.url), 'utf8')

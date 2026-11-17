@@ -1,6 +1,8 @@
+export type ProjectFileFlushImageWait = 'idle' | 'timeout'
+
 export interface OpenProjectFileDocument {
   /** May resolve with Drawnix image-wait status (`idle` | `timeout`); other docs resolve void. */
-  flush(): Promise<void | 'idle' | 'timeout'>
+  flush(): Promise<void | ProjectFileFlushImageWait>
 }
 
 const openDocuments = new Map<string, Set<OpenProjectFileDocument>>()
@@ -27,25 +29,32 @@ export function registerOpenProjectFileDocument(
   }
 }
 
-async function flushDocuments(documents: Iterable<OpenProjectFileDocument>): Promise<void> {
-  await Promise.all(Array.from(new Set(documents), document => document.flush()))
+async function flushDocuments(
+  documents: Iterable<OpenProjectFileDocument>,
+): Promise<ProjectFileFlushImageWait> {
+  const results = await Promise.all(
+    Array.from(new Set(documents), document => document.flush()),
+  )
+  return results.includes('timeout') ? 'timeout' : 'idle'
 }
 
 export async function flushOpenProjectFile(
   projectId: string,
   relativePath: string,
-): Promise<void> {
-  await flushDocuments(openDocuments.get(documentKey(projectId, relativePath)) ?? [])
+): Promise<ProjectFileFlushImageWait> {
+  return flushDocuments(openDocuments.get(documentKey(projectId, relativePath)) ?? [])
 }
 
-export async function flushOpenProjectFilesForProject(projectId: string): Promise<void> {
+export async function flushOpenProjectFilesForProject(
+  projectId: string,
+): Promise<ProjectFileFlushImageWait> {
   const documents: OpenProjectFileDocument[] = []
   for (const [key, current] of openDocuments) {
     if (key.startsWith(`${projectId}\0`)) documents.push(...current)
   }
-  await flushDocuments(documents)
+  return flushDocuments(documents)
 }
 
-export async function flushOpenProjectFiles(): Promise<void> {
-  await flushDocuments(Array.from(openDocuments.values()).flatMap(documents => [...documents]))
+export async function flushOpenProjectFiles(): Promise<ProjectFileFlushImageWait> {
+  return flushDocuments(Array.from(openDocuments.values()).flatMap(documents => [...documents]))
 }

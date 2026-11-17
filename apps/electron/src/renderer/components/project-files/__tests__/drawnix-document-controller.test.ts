@@ -551,6 +551,44 @@ describe('Drawnix document controller', () => {
     expect(saves[0]!.content).toContain('data:image/jpeg;base64,QQ')
   })
 
+  it('awaits an in-flight autosave before comparing lastSavedContent so flush does not double-write', async () => {
+    const board = createEmptyBoard()
+    await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Draft' }])
+    const editor = createDrawnixEditor(board)
+    let releaseSave!: () => void
+    const saveGate = new Promise<void>(resolve => {
+      releaseSave = resolve
+    })
+    const saves: SaveDrawnixProjectFileRequest[] = []
+    const controller = new DrawnixDocumentController(
+      editor,
+      'project-a',
+      'maps/cards.drawnix',
+      INITIAL_FINGERPRINT,
+      async request => {
+        saves.push(request)
+        await saveGate
+        return savedResponse(request, saves.length)
+      },
+      () => {},
+      0,
+    )
+
+    controller.notifyBoardChanged()
+    // pendingChange microtask, then debounceMs=0 timer starts the save.
+    await Promise.resolve()
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    // Autosave is in flight with the current content; lastSavedContent is still baseline.
+    expect(saves).toHaveLength(1)
+    const flushing = controller.flush()
+    await Promise.resolve()
+    releaseSave()
+    await expect(flushing).resolves.toBe('idle')
+    // One write only — flush waited for the in-flight save before comparing.
+    expect(saves).toHaveLength(1)
+  })
+
+
   it('still saves committed content and reports timeout when image wait expires', async () => {
     const board = createEmptyBoard()
     await applyMindmapOperations(board, [{ type: 'populate_empty', markdown: '# Cards' }])

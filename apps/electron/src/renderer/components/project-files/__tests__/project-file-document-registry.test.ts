@@ -17,17 +17,31 @@ describe('Project 文档注册表', () => {
     })
 
     try {
-      await flushOpenProjectFile('project-a', 'a.md')
+      await expect(flushOpenProjectFile('project-a', 'a.md')).resolves.toBe('idle')
       expect(calls).toEqual(['a'])
       calls.length = 0
-      await flushOpenProjectFilesForProject('project-b')
+      await expect(flushOpenProjectFilesForProject('project-b')).resolves.toBe('idle')
       expect(calls).toEqual(['b'])
       calls.length = 0
-      await flushOpenProjectFiles()
+      await expect(flushOpenProjectFiles()).resolves.toBe('idle')
       expect(calls.sort()).toEqual(['a', 'b'])
     } finally {
       unregisterA()
       unregisterB()
     }
   })
+
+  it('propagates Drawnix image-wait timeout from any open document', async () => {
+    const unregister = registerOpenProjectFileDocument('project-a', 'map.drawnix', {
+      flush: async () => 'timeout',
+    })
+    try {
+      await expect(flushOpenProjectFiles()).resolves.toBe('timeout')
+      await expect(flushOpenProjectFilesForProject('project-a')).resolves.toBe('timeout')
+      await expect(flushOpenProjectFile('project-a', 'map.drawnix')).resolves.toBe('timeout')
+    } finally {
+      unregister()
+    }
+  })
 })
+

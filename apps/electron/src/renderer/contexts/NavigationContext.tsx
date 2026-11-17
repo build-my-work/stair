@@ -333,7 +333,13 @@ export function NavigationProvider({
       const activeProjectId = store.get(workbenchAtom).activeProjectId
       if (activeProjectId) {
         try {
-          await flushOpenProjectFilesForProject(activeProjectId)
+          const imageWait = await flushOpenProjectFilesForProject(activeProjectId)
+          if (imageWait === 'timeout') {
+            window.electronAPI.debugLog(
+              '[Drawnix] Card image wait timed out during navigation; saved committed images only.',
+            )
+            toast.warning(t('projectFileEditor.drawnixImageWaitTimeout'))
+          }
           if (!isCurrent()) return false
         } catch {
           return false
@@ -358,7 +364,7 @@ export function NavigationProvider({
     setBaseNavigationState(resolvedState)
     syncSemanticUrl(resolvedState, options?.pushHistory ?? true)
     return true
-  }, [defaultProjectId, initializeWorkbench, resolveAutoSelection, selectSessionFromNavigator, store, switchWorkbenchProject, syncSemanticUrl, workspaceId])
+  }, [defaultProjectId, initializeWorkbench, resolveAutoSelection, selectSessionFromNavigator, store, switchWorkbenchProject, syncSemanticUrl, t, workspaceId])
 
   const routeForSession = useCallback((sessionId: string): ViewRoute => {
     if (!isSessionsNavigation(baseNavigationState)) return routes.view.allSessions(sessionId)

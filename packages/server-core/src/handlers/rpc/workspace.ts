@@ -98,8 +98,14 @@ export function registerWorkspaceCoreHandlers(server: RpcServer, deps: HandlerDe
 
     // Keep the old Workspace authorization active until every open document has
     // finished saving. A failed flush vetoes the whole switch transaction.
+    // Image-wait timeout still saved committed content — log and continue.
     if (ctx.webContentsId != null) {
-      await requestClientProjectFilesFlush(server, ctx.clientId)
+      const flushResult = await requestClientProjectFilesFlush(server, ctx.clientId)
+      if (flushResult === 'timeout') {
+        deps.platform.logger.warn(
+          '[Project Files] Card image wait timed out during workspace switch; saved committed images only.',
+        )
+      }
     }
 
     // Keep WS push routing in sync (works for both GUI and headless)

@@ -755,9 +755,14 @@ export async function readProjectFileBinaryWithinRoot(
 
 const projectFileWriteQueues = new Map<string, Promise<void>>()
 
+/** Soft status from the renderer: committed content saved, images still pending. */
+export const PROJECT_FILES_FLUSH_IMAGE_WAIT_TIMEOUT = 'DRAWNIX_IMAGE_WAIT_TIMEOUT'
+
+export type ProjectFilesFlushResult = 'idle' | 'timeout'
+
 interface PendingRendererFlush {
   clientId: string
-  resolve: () => void
+  resolve: (result: ProjectFilesFlushResult) => void
   reject: (error: Error) => void
   timeout: ReturnType<typeof setTimeout>
 }
@@ -771,14 +776,19 @@ const pendingRendererFlushes = new Map<string, PendingRendererFlush>()
  */
 export const PROJECT_FILES_FLUSH_TIMEOUT_MS = 12_500
 
-/** Ask one renderer client to flush every open Project document before app exit. */
+/**
+ * Ask one renderer client to flush every open Project document before app exit
+ * or workspace switch. Resolves `'timeout'` when Drawnix image wait expired
+ * (committed content was still saved); rejects only on hard save failures or
+ * when the renderer never replies.
+ */
 export function requestClientProjectFilesFlush(
   server: RpcServer,
   clientId: string,
   timeoutMs = PROJECT_FILES_FLUSH_TIMEOUT_MS,
-): Promise<void> {
+): Promise<ProjectFilesFlushResult> {
   const requestId = randomUUID()
-  return new Promise<void>((resolveRequest, rejectRequest) => {
+  return new Promise<ProjectFilesFlushResult>((resolveRequest, rejectRequest) => {
     const timeout = setTimeout(() => {
       pendingRendererFlushes.delete(requestId)
       rejectRequest(new Error('PROJECT_FILE_FLUSH_TIMEOUT: Renderer did not finish saving'))
@@ -1046,8 +1056,10 @@ export function registerProjectFileHandlers(server: RpcServer, deps: HandlerDeps
       if (!pending || pending.clientId !== context.clientId) return
       clearTimeout(pending.timeout)
       pendingRendererFlushes.delete(requestId)
-      if (error) pending.reject(new Error(error))
-      else pending.resolve()
+      // Soft image-wait timeout: committed content saved; do not veto quit/switch.
+      if (error === PROJECT_FILES_FLUSH_IMAGE_WAIT_TIMEOUT) pending.resolve('timeout')
+      else if (error) pending.reject(new Error(error))
+      else pending.resolve('idle')
     },
   )
 }

@@ -1360,9 +1360,14 @@ async function flushPendingChangesBeforeQuit(): Promise<void> {
       const clientId = resolveClientId(window.webContents.id)
       if (clientId) clientIds.add(clientId)
     }
-    await Promise.all(
+    const flushResults = await Promise.all(
       [...clientIds].map(clientId => requestClientProjectFilesFlush(server, clientId)),
     )
+    if (flushResults.includes('timeout')) {
+      mainLog.warn(
+        '[Project Files] Card image wait timed out during quit; saved committed images only.',
+      )
+    }
   }
   if (sessionManager) {
     await sessionManager.flushAllSessions()

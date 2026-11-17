@@ -128,6 +128,10 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
     // once a batch lands. Wait (bounded inside the editor) so close/switch/Cmd+S
     // persist an image the user already added.
     const imageWait = await this.editor.waitForPendingCardImages(timeoutMs)
+    // If an autosave is already writing the current content, wait for it before
+    // comparing — otherwise lastSavedContent is stale and we double-write (and
+    // a failed second write can falsely veto close).
+    if (this.savePromise) await this.savePromise
     // After unmount, onValueChange may be detached: compare serialize() to the
     // last saved baseline instead of relying only on dirty.
     if (this.editor.serialize() !== this.lastSavedContent) {

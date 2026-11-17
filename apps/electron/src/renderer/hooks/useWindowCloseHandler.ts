@@ -1,5 +1,7 @@
 import { useEffect } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
+import { toast } from 'sonner'
+import i18n from 'i18next'
 import { useModalRegistry } from '@/context/ModalContext'
 import { useDismissibleLayerRegistry } from '@/context/DismissibleLayerContext'
 import {
@@ -8,9 +10,23 @@ import {
   workbenchPanelsAtom,
 } from '@/workbench/workbench-state'
 import { closeWorkbenchPanelAtom } from '@/workbench/workbench-commands'
-import { flushOpenProjectFiles } from '@/components/project-files/project-file-document-registry'
+import {
+  flushOpenProjectFiles,
+  type ProjectFileFlushImageWait,
+} from '@/components/project-files/project-file-document-registry'
 import { flushWorkbenchLayoutPersistence } from '@/workbench/workbench-persistence'
 import type { WindowCloseRequest } from '../../shared/types'
+
+/** Soft status for main: committed content saved, images still pending. */
+const DRAWNIX_IMAGE_WAIT_TIMEOUT = 'DRAWNIX_IMAGE_WAIT_TIMEOUT'
+
+function surfaceImageWaitTimeout(imageWait: ProjectFileFlushImageWait): void {
+  if (imageWait !== 'timeout') return
+  window.electronAPI.debugLog(
+    '[Drawnix] Card image wait timed out during flush; saved committed images only.',
+  )
+  toast.warning(i18n.t('projectFileEditor.drawnixImageWaitTimeout'))
+}
 
 /**
  * Hook to handle window close requests with source-aware behavior.
@@ -44,8 +60,18 @@ export function useWindowCloseHandler(
       flushOpenProjectFiles(),
       flushWorkbenchLayoutPersistence(),
     ])
-      .then(() => flushDrafts?.())
-      .then(() => window.electronAPI.completeProjectFilesFlush(requestId))
+      .then(async ([imageWait]) => {
+        surfaceImageWaitTimeout(imageWait)
+        await flushDrafts?.()
+        if (imageWait === 'timeout') {
+          await window.electronAPI.completeProjectFilesFlush(
+            requestId,
+            DRAWNIX_IMAGE_WAIT_TIMEOUT,
+          )
+        } else {
+          await window.electronAPI.completeProjectFilesFlush(requestId)
+        }
+      })
       .catch(error => window.electronAPI.completeProjectFilesFlush(
         requestId,
         error instanceof Error ? error.message : String(error),
@@ -93,7 +119,10 @@ export function useWindowCloseHandler(
           flushOpenProjectFiles(),
           flushWorkbenchLayoutPersistence(),
         ]))
-        .then(() => flushDrafts?.())
+        .then(([imageWait]) => {
+          surfaceImageWaitTimeout(imageWait)
+          return flushDrafts?.()
+        })
         .then(() => window.electronAPI.confirmCloseWindow())
         .catch(error => {
           window.electronAPI.debugLog(
