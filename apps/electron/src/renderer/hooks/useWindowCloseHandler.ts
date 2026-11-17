@@ -131,6 +131,14 @@ export function useWindowCloseHandler(
             await new Promise<void>(resolve => {
               setTimeout(resolve, IMAGE_WAIT_TIMEOUT_TOAST_MS)
             })
+            // Edits or late image commits during the toast pause must be saved
+            // before destroy. Do not add a second delay if this also times out.
+            const [followUpWait] = await Promise.all([
+              flushOpenProjectFiles(),
+              flushWorkbenchLayoutPersistence(),
+            ])
+            surfaceImageWaitTimeout(followUpWait)
+            await flushDrafts?.()
           }
         })
         .then(() => window.electronAPI.confirmCloseWindow())

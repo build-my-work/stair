@@ -166,7 +166,44 @@ describe('窗口关闭前的 Project File flush', () => {
     expect(order).not.toContain('confirm-close')
 
     await new Promise(resolve => setTimeout(resolve, 450))
-    expect(order).toEqual(['cancel-fallback', 'flush', 'confirm-close'])
+    // Follow-up flush after the toast pause (no second delay).
+    expect(order).toEqual(['cancel-fallback', 'flush', 'flush'])
+    expect(order).not.toContain('confirm-close')
+    flushImageWait = 'idle'
+    resolveFlush?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(order).toEqual(['cancel-fallback', 'flush', 'flush', 'confirm-close'])
+  })
+
+  it('image wait timeout 延迟期间的编辑在关闭前再次 flush', async () => {
+    flushImageWait = 'timeout'
+    let draftFlushes = 0
+    useWindowCloseHandler(false, async () => {
+      draftFlushes += 1
+      order.push('draft-flush')
+    })
+    closeRequested?.({ source: 'window-button' })
+    await Promise.resolve()
+    resolveFlush?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(order).toEqual(['cancel-fallback', 'flush', 'draft-flush'])
+    expect(order).not.toContain('confirm-close')
+
+    // Edit lands during the 400ms toast pause; follow-up flush must persist it.
+    await new Promise(resolve => setTimeout(resolve, 450))
+    expect(order).toEqual(['cancel-fallback', 'flush', 'draft-flush', 'flush'])
+    flushImageWait = 'idle'
+    resolveFlush?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(order).toEqual([
+      'cancel-fallback',
+      'flush',
+      'draft-flush',
+      'flush',
+      'draft-flush',
+      'confirm-close',
+    ])
+    expect(draftFlushes).toBe(2)
   })
 
   it('退出 flush 在 image wait timeout 时不额外延迟 complete', async () => {
@@ -180,5 +217,7 @@ describe('窗口关闭前的 Project File flush', () => {
       requestId: 'quit-timeout',
       error: 'DRAWNIX_IMAGE_WAIT_TIMEOUT',
     }])
+    // Quit/IPC path: one flush only, no toast-pause follow-up.
+    expect(order).toEqual(['flush'])
   })
 })
