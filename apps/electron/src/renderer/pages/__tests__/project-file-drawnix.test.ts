@@ -16,4 +16,28 @@ describe('Drawnix Project File integration', () => {
     expect(source).toContain('registerOpenProjectFileDocument')
     expect(source).toContain('registerOpenDrawnixBoard')
   })
+
+  it('awaits pending card images inside flush so close and switch keep in-flight images', () => {
+    const source = readFileSync(
+      new URL('../../components/project-files/drawnix-document-controller.ts', import.meta.url),
+      'utf8',
+    )
+    expect(source).toContain('waitForPendingCardImages')
+    expect(source.indexOf('waitForPendingCardImages'))
+      .toBeLessThan(source.indexOf('while (this.pendingChange || this.savePromise || this.dirty)'))
+  })
+
+  it('routes Cmd/Ctrl+S to Stair flush at the panel root so host chrome never opens Save As', () => {
+    const page = readFileSync(new URL('../ProjectFilePage.tsx', import.meta.url), 'utf8')
+    expect(page).toContain('flushOpenProjectFile')
+    expect(page).toContain('handleDrawnixSaveShortcut')
+    expect(page).toContain('onKeyDownCapture={handleDrawnixSaveShortcut}')
+
+    const canvas = readFileSync(
+      new URL('../../components/project-files/ProjectFileDrawnixCanvas.tsx', import.meta.url),
+      'utf8',
+    )
+    expect(canvas).toContain('onKeyDownCapture={blockNativeFileShortcut}')
+    expect(canvas).toContain("event.key.toLowerCase() === 's'")
+  })
 })

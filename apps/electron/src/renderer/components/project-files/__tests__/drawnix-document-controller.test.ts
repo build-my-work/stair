@@ -464,6 +464,43 @@ describe('Drawnix document controller', () => {
     expect(saves).toHaveLength(1)
   })
 
+  it('waits for pending card images before flush serializes and saves', async () => {
+    const board = createEmptyBoard()
+    const editor = createDrawnixEditor(board)
+    let releasePending: (() => void) | undefined
+    const pending = new Promise<void>(resolve => {
+      releasePending = resolve
+    })
+    let pendingCalls = 0
+    editor.waitForPendingCardImages = async () => {
+      pendingCalls += 1
+      await pending
+    }
+
+    const saves: SaveDrawnixProjectFileRequest[] = []
+    const controller = new DrawnixDocumentController(
+      editor,
+      'project-a',
+      'maps/cards.drawnix',
+      INITIAL_FINGERPRINT,
+      async request => {
+        saves.push(request)
+        return savedResponse(request, saves.length)
+      },
+      () => {},
+    )
+
+    controller.notifyBoardChanged()
+    const flushing = controller.flush()
+    await Promise.resolve()
+    expect(pendingCalls).toBe(1)
+    expect(saves).toHaveLength(0)
+
+    releasePending!()
+    await flushing
+    expect(saves).toHaveLength(1)
+  })
+
   it('persists viewport or theme changes without invalidating the Agent outline sequence', async () => {
     const board = createEmptyBoard()
     const controller = new DrawnixDocumentController(

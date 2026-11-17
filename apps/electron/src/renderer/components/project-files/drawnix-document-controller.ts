@@ -109,6 +109,10 @@ export class DrawnixDocumentController implements OpenDrawnixBoardController {
   }
 
   async flush(): Promise<void> {
+    // Card images commit asynchronously; onValueChange (and dirty) only fire
+    // once a batch lands. Wait (bounded inside the editor) so close/switch/Cmd+S
+    // persist an image the user already added.
+    await this.editor.waitForPendingCardImages()
     while (this.pendingChange || this.savePromise || this.dirty) {
       if (this.pendingChange) await this.pendingChange
       this.clearSaveTimer()
