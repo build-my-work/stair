@@ -9,7 +9,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     description: '产品文档面向使用者，开发文档面向维护者，选一个入口。',
   }}
 >
-  <p>两个体系，各进各的门：日常使用遇到的问题在产品文档里；想了解内部实现、数据边界和打包机制，去开发文档。</p>
+  <p>三个体系，各进各的门：想知道 Stair 能帮你什么、接下来会有什么，看产品介绍；日常使用遇到的问题在产品文档里；想了解产品规格、内部实现和打包机制，去开发文档。</p>
 
   <CardGrid stagger={false}>
     <Card
@@ -17,6 +17,12 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
       href="/start/welcome/"
     >
       安装、核心功能、学习工作流、快捷键与常见问题。使用 Stair 的一切从这里进。
+    </Card>
+    <Card
+      title="产品介绍"
+      href="/design/why/"
+    >
+      Stair 想帮你解决什么问题，一次学习是什么样的，哪些功能已经能用，以及产品想法正在怎样展开。
     </Card>
     <Card
       title="开发文档"

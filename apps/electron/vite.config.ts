@@ -12,6 +12,8 @@ export default defineConfig({
   define: {
     __APP_PRODUCT_NAME__: JSON.stringify(process.env.VITE_APP_NAME || 'Craft Agents'),
     __APP_DEEP_LINK_SCHEME__: JSON.stringify(process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'),
+    // 仅 stair:dev 设置：本地文档站地址；为空时帮助菜单不显示 Stair 文档入口
+    __STAIR_DOCS_URL__: JSON.stringify(process.env.STAIR_DOCS_URL || ''),
   },
   plugins: [
     react({

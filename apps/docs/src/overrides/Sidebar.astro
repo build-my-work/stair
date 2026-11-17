@@ -1,17 +1,20 @@
 ---
 /**
- * 按所在体系切换侧边栏：/dev/ 下的页面只显示「开发文档」分组，
- * 其余页面只显示产品分组。两个体系共用一个站点，导航互不混入。
+ * 按所在体系切换侧边栏：/dev/ 下只显示「开发文档」分组，/design/ 下只显示
+ * 「产品设计」下的分组，其余页面只显示使用文档分组。三个体系共用一个站点，导航互不混入。
  */
 import SidebarPersister from '@astrojs/starlight/components/SidebarPersister.astro';
 import SidebarSublist from '@astrojs/starlight/components/SidebarSublist.astro';
 import MobileMenuFooter from '@astrojs/starlight/components/MobileMenuFooter.astro';
+import { sectionOf, SECTION_GROUPS } from './sections';
 
 const route = Astro.locals.starlightRoute;
-const isDevSection = Astro.url.pathname.includes('/dev');
-route.sidebar = isDevSection
-  ? route.sidebar.filter((entry) => entry.label === '开发文档')
-  : route.sidebar.filter((entry) => entry.label !== '开发文档');
+const section = sectionOf(Astro.url.pathname);
+const isOwnGroup = (label: string) =>
+  section === 'guide'
+    ? !SECTION_GROUPS.dev.includes(label) && !SECTION_GROUPS.design.includes(label)
+    : SECTION_GROUPS[section].includes(label);
+route.sidebar = route.sidebar.filter((entry) => isOwnGroup(entry.label));
 ---
 
 <SidebarPersister>

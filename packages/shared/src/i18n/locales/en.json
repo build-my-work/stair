@@ -786,6 +786,8 @@
   "menu.resetZoom": "Reset Zoom",
   "menu.selectAll": "Select All",
   "menu.settings": "Settings...",
+  "menu.stairDocs": "Stair Docs",
+  "menu.stairProductDesign": "Stair Product Overview",
   "menu.toggleDevTools": "Toggle DevTools",
   "menu.toggleFocusMode": "Toggle Focus Mode",
   "menu.toggleNavigator": "Toggle Navigator",

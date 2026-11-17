@@ -2319,6 +2319,19 @@ function AppShellContent({
     }
   }, [activeProject, activeWorkspace, focusedSessionId, sessionMetaMap, t])
 
+  // Opens a fixed URL (e.g. the local Stair docs site) in a new Browser panel of the active Project.
+  const handleOpenUrlInBrowserPanel = useCallback(async (url: string) => {
+    if (!activeProject) return
+    const projectId = activeProject.config.id
+    try {
+      const browserId = await window.electronAPI.browserPane.create({ show: true, projectId })
+      await window.electronAPI.browserPane.navigate(browserId, url, projectId)
+    } catch (error) {
+      console.error('[Chat] Failed to open URL in browser window:', error)
+      toast.error(t('toast.failedToCreateBrowser'))
+    }
+  }, [activeProject, t])
+
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
     if (!activeWorkspace) return
@@ -2918,6 +2931,7 @@ function AppShellContent({
         onToggleFocusMode={handleToggleFocusModeFromPointer}
         onAddSessionPanel={() => handleNewChat(true)}
         onAddBrowserWindow={() => { void handleNewBrowserWindow() }}
+        onOpenUrlInBrowserPanel={(url) => { void handleOpenUrlInBrowserPanel(url) }}
         isCompact={isAutoCompact}
       />
 

@@ -1,0 +1,58 @@
+---
+/**
+ * 列出某个空间下的功能页（content/docs/design/<space>/ 中带 status 的页面），
+ * 按 sidebar.order 排序，附面向读者的状态标签。空间概览页和产品全景共用。
+ */
+import { getCollection } from 'astro:content';
+import { Badge } from '@astrojs/starlight/components';
+import { STATUS } from '../design/catalog';
+
+interface Props {
+  space: string;
+}
+
+const { space } = Astro.props;
+const features = (
+  await getCollection(
+    'docs',
+    (entry) => entry.id.startsWith(`design/${space}/`) && entry.data.status !== undefined,
+  )
+).sort((a, b) => (a.data.sidebar?.order ?? 999) - (b.data.sidebar?.order ?? 999));
+---
+
+<ul class="space-features">
+  {
+    features.map((f) => (
+      <li>
+        <div>
+          <a href={`/${f.id}/`}>{f.data.title}</a>
+          <Badge text={STATUS[f.data.status!].label} variant={STATUS[f.data.status!].variant} size="small" />
+        </div>
+        <span>{f.data.description}</span>
+      </li>
+    ))
+  }
+</ul>
+
+<style>
+  .space-features {
+    list-style: none;
+    padding: 0;
+  }
+  .space-features li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--sl-color-hairline);
+  }
+  .space-features div {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .space-features a {
+    font-weight: 600;
+  }
+  .space-features span {
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+  }
+</style>

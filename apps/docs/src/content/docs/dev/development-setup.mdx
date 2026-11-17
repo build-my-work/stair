@@ -28,7 +28,7 @@ bun run stair:dev     # 启动 Stair 开发版（端口 5193）
 
 | 命令 | 用途 |
 | --- | --- |
-| `bun run stair:dev` | Stair 开发版（5193），入口 `scripts/stair-dev.ts` |
+| `bun run stair:dev` | Stair 开发版（5193），入口 `scripts/stair-dev.ts`；同时启动本文档站（5176，已在运行则复用），帮助菜单中的「Stair 文档」「Stair 产品介绍」在内置浏览器中打开它 |
 | `bun run stair:build` | 当前架构目录包；回归 Gate 之一 |
 | `bun run stair:dist` | 完整分发构建 |
 | `bun run validate:ci` | 源码门禁：typecheck + guards + i18n + 源码测试 + 文档工具 + 构建资产校验 |

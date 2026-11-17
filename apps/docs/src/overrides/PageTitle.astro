@@ -1,0 +1,28 @@
+---
+/**
+ * 覆盖默认 PageTitle：带 status 的功能页在标题旁显示面向用户的状态（已上线 / 计划中…）。
+ * module、principles、cases 仍保留在 frontmatter 中供看板与构建校验使用，但不展示给读者。
+ */
+import Default from '@astrojs/starlight/components/PageTitle.astro';
+import { Badge } from '@astrojs/starlight/components';
+import { STATUS } from '../design/catalog';
+
+const data = Astro.locals.starlightRoute.entry.data;
+const status = data.status ? STATUS[data.status] : undefined;
+---
+
+<Default />
+
+{
+  status && (
+    <p class="feature-status">
+      <Badge text={status.label} variant={status.variant} />
+    </p>
+  )
+}
+
+<style>
+  .feature-status {
+    margin-top: 0.5rem;
+  }
+</style>

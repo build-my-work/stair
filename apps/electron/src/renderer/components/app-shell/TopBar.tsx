@@ -34,6 +34,9 @@ import { CompactWorkspaceSwitcher } from "./CompactWorkspaceSwitcher"
 import { getDocUrl } from "@craft-agent/shared/docs/doc-links"
 import { AppMenu } from "../AppMenu"
 
+// stair:dev 注入的本地文档站地址；正式包和非 Vite 环境（测试）下为空，不显示入口
+const STAIR_DOCS_URL = typeof __STAIR_DOCS_URL__ === "string" ? __STAIR_DOCS_URL__ : ""
+
 const RIGHT_SLOT_FULL_BADGES_THRESHOLD = 420
 const RIGHT_SLOT_TWO_BADGES_THRESHOLD = 300
 
@@ -64,6 +67,8 @@ interface TopBarProps {
   onToggleFocusMode: () => void
   onAddSessionPanel: () => void
   onAddBrowserWindow: () => void
+  /** Opens a URL in a new built-in Browser panel */
+  onOpenUrlInBrowserPanel: (url: string) => void
   /** When true, hides controls that don't apply in compact/mobile layout */
   isCompact?: boolean
 }
@@ -95,6 +100,7 @@ export function TopBar({
   onToggleFocusMode,
   onAddSessionPanel,
   onAddBrowserWindow,
+  onOpenUrlInBrowserPanel,
   isCompact,
 }: TopBarProps) {
   const { t } = useTranslation()
@@ -283,6 +289,19 @@ export function TopBar({
                 </TopBarButton>
               </DropdownMenuTrigger>
               <StyledDropdownMenuContent align="end" minWidth="min-w-48">
+                {STAIR_DOCS_URL && (
+                  <>
+                    <StyledDropdownMenuItem onClick={() => onOpenUrlInBrowserPanel(`${STAIR_DOCS_URL}/`)}>
+                      <Icons.BookOpen className="h-3.5 w-3.5" />
+                      <span className="flex-1">{t("menu.stairDocs")}</span>
+                    </StyledDropdownMenuItem>
+                    <StyledDropdownMenuItem onClick={() => onOpenUrlInBrowserPanel(`${STAIR_DOCS_URL}/design/`)}>
+                      <Icons.Compass className="h-3.5 w-3.5" />
+                      <span className="flex-1">{t("menu.stairProductDesign")}</span>
+                    </StyledDropdownMenuItem>
+                    <StyledDropdownMenuSeparator />
+                  </>
+                )}
                 <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl(getDocUrl('sources'))}>
                   <Icons.DatabaseZap className="h-3.5 w-3.5" />
                   <span className="flex-1">{t("sidebar.sources")}</span>

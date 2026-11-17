@@ -1,0 +1,34 @@
+---
+title: 产品思考
+description: 原始想法与深入讨论各自保留，从这里直接回到对应的 Codex 任务。
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+这里不是一份整理过的路线图，而是产品思考的入口。原始想法保留最初的说法；需要展开的问题放到专门的任务里继续讨论，两边不会互相覆盖。
+
+<CardGrid stagger={false}>
+  <LinkCard
+    title="打开原始想法"
+    href="codex://threads/01a0413a-c630-7c73-ab44-4bb8d7a7a74a"
+    description="每个 Stair idea 和问题都按提出顺序留在这里，只记录，不把后续讨论结果写回来。"
+  />
+  <LinkCard
+    title="进入深入讨论"
+    href="codex://threads/01a04142-da45-78a1-8b29-aef48dd1f6ed"
+    description="围绕产品想法、用户需求和 PMF 继续讨论；讨论保持在自己的任务里。"
+  />
+</CardGrid>
+
+<Aside type="note" title="在系统浏览器中直接打开">
+  上面的入口使用 Codex 桌面应用深链。在系统浏览器中点击会唤起本机 Codex；Stair 内置浏览器目前会拦截这种外部协议。如果入口没有反应，请在 Codex 中用下面的任务 ID 查找。它们是私有任务，公开部署本文档站不会让任务内容变成公开页面。
+</Aside>
+
+## 两个入口分别做什么
+
+| 入口 | 任务 ID | 保存什么 | 适合做什么 |
+|---|---|---|---|
+| 原始想法 | `01a0413a-c630-7c73-ab44-4bb8d7a7a74a` | 用户提出的 idea 与问题，保留原始语义和顺序 | 快速记录、回看问题从哪里开始 |
+| 深入讨论 | `01a04142-da45-78a1-8b29-aef48dd1f6ed` | 对问题的推演、挑战、取舍与待验证假设 | 把一个值得讨论的问题继续往深处推进 |
+
+这样既不会让整理后的结论覆盖最初的问题，也不用在文档站复制一份很快过期的聊天记录。

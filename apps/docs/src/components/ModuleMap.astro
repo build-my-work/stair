@@ -1,0 +1,77 @@
+---
+/**
+ * 模块地图：按层列出模块、职责、依赖，以及该模块下各状态的功能数。
+ * 每个模块带锚点（#模块 id），功能页标题下的"模块"链接指向这里。
+ */
+import { getCollection } from 'astro:content';
+import { Badge } from '@astrojs/starlight/components';
+import { LAYERS, MODULES, STATUS, moduleById, type FeatureStatus } from '../design/catalog';
+
+const features = await getCollection(
+  'docs',
+  (entry) => entry.id.startsWith('design/') && entry.data.status !== undefined,
+);
+
+function statusSummary(moduleId: string) {
+  const items = features.filter((f) => f.data.module === moduleId);
+  return (Object.keys(STATUS) as FeatureStatus[])
+    .map((s) => ({ s, n: items.filter((f) => f.data.status === s).length }))
+    .filter(({ n }) => n > 0);
+}
+---
+
+{
+  LAYERS.map((layer) => (
+    <section class="module-layer">
+      <h3 id={`layer-${layer.id}`}>{layer.name}</h3>
+      <p>{layer.summary}</p>
+      <table>
+        <thead>
+          <tr>
+            <th>模块</th>
+            <th>职责</th>
+            <th>依赖</th>
+            <th>功能</th>
+          </tr>
+        </thead>
+        <tbody>
+          {MODULES.filter((m) => m.layer === layer.id).map((m) => (
+            <tr id={m.id}>
+              <td class="module-name">{m.name}</td>
+              <td>{m.role}</td>
+              <td>
+                {(m.dependsOn ?? [])
+                  .map((d) => moduleById(d))
+                  .filter((d) => d !== undefined)
+                  .map((d, i) => (
+                    <>
+                      {i > 0 && '、'}
+                      <a href={`#${d.id}`}>{d.name}</a>
+                    </>
+                  ))}
+              </td>
+              <td class="module-status">
+                {statusSummary(m.id).map(({ s, n }) => (
+                  <Badge text={`${STATUS[s].label} ${n}`} variant={STATUS[s].variant} size="small" />
+                ))}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  ))
+}
+
+<style>
+  .module-name {
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .module-status {
+    white-space: nowrap;
+  }
+  .module-layer tr:target {
+    background: var(--sl-color-accent-low);
+  }
+</style>

@@ -57,6 +57,7 @@ function renderTopBar(isCompact = false, isProjectFilesAvailable = true) {
       onToggleFocusMode={() => {}}
       onAddSessionPanel={() => {}}
       onAddBrowserWindow={() => {}}
+      onOpenUrlInBrowserPanel={() => {}}
       isCompact={isCompact}
     />,
   )

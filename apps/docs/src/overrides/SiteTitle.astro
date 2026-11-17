@@ -1,17 +1,19 @@
 ---
 /**
- * 覆盖默认 SiteTitle：标题旁加「产品功能 / 技术文档」两个导航入口，
+ * 覆盖默认 SiteTitle：标题旁加「产品功能 / 产品介绍 / 技术文档」三个导航入口，
  * 按当前路径所在体系高亮。
  */
 import { logos } from 'virtual:starlight/user-images';
 import config from 'virtual:starlight/user-config';
+import { sectionOf } from './sections';
 const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
 
 const pathname = Astro.url.pathname;
-const isDev = pathname.includes('/dev');
+const section = sectionOf(pathname);
 const entries = [
-  { href: '/start/welcome/', label: '产品功能', active: !isDev && pathname !== '/' },
-  { href: '/dev/overview/', label: '技术文档', active: isDev },
+  { href: '/start/welcome/', label: '产品功能', active: section === 'guide' && pathname !== '/' },
+  { href: '/design/why/', label: '产品介绍', active: section === 'design' },
+  { href: '/dev/overview/', label: '技术文档', active: section === 'dev' },
 ];
 ---
 

@@ -1,0 +1,50 @@
+---
+/**
+ * 产品全景：按空间分组列出全部功能。功能页位于 content/docs/design/<space>/，
+ * 状态来自 frontmatter。module 与 cases 只在这里做构建校验，不展示给读者。
+ */
+import { getCollection } from 'astro:content';
+import { MODULES, SPACES, spaceOfEntryId } from '../design/catalog';
+import SpaceFeatures from './SpaceFeatures.astro';
+
+const features = await getCollection(
+  'docs',
+  (entry) => entry.id.startsWith('design/') && entry.data.status !== undefined,
+);
+
+const misplaced = features.filter((f) => !spaceOfEntryId(f.id));
+if (misplaced.length > 0) {
+  throw new Error(`功能页必须放在某个空间目录下：${misplaced.map((f) => f.id).join('，')}`);
+}
+const unknownModules = features.filter((f) => !MODULES.some((m) => m.id === f.data.module));
+if (unknownModules.length > 0) {
+  throw new Error(
+    `功能页的 module 不在模块清单中：${unknownModules.map((f) => `${f.id}(${f.data.module})`).join('，')}`,
+  );
+}
+const missingCases = features.filter((f) => f.data.status === 'shipped' && !f.data.cases?.length);
+if (missingCases.length > 0) {
+  throw new Error(`已上线的功能必须填写回归 Case：${missingCases.map((f) => f.id).join('，')}`);
+}
+---
+
+{
+  SPACES.map((s) => (
+    <>
+      <h3 id={s.id}>
+        <a href={`/design/${s.id}/`}>{s.name}</a>
+        {s.step && <small>· {s.step}</small>}
+      </h3>
+      <p>{s.tagline}</p>
+      <SpaceFeatures space={s.id} />
+    </>
+  ))
+}
+
+<style>
+  h3 small {
+    font-weight: 400;
+    color: var(--sl-color-gray-3);
+    margin-inline-start: 0.5rem;
+  }
+</style>
