@@ -352,6 +352,7 @@ const EXPECTED_CHANNELS: string[] = [
   'skills:prepareImport',
   'skills:searchMarketplace',
   'sources:changed',
+  'sources:connectNotion',
   'sources:create',
   'sources:delete',
   'sources:get',

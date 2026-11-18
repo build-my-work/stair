@@ -1,6 +1,7 @@
 export type { NotionBinding, NotionPage, NotionHostRequest, NotionHostState } from '@craft-agent/session-tools-core/notion';
 
 export const NOTION_HOSTS = ['notion.so', 'www.notion.so', 'notion.com', 'www.notion.com', 'app.notion.com'];
+export const NOTION_API_VERSION = '2026-03-11';
 
 /** Canonicalize only Notion UUIDs; never interpret an arbitrary URL as a page. */
 export function notionPageId(value: string): string {

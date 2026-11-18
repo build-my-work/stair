@@ -1,7 +1,7 @@
 import { buildApiAuthHeaders } from '@craft-agent/session-tools-core/api-auth';
 import type { NotionBinding, NotionPage, NotionWriteInput } from '@craft-agent/session-tools-core/notion';
 import { loadSource, getSourceCredentialManager } from '@craft-agent/shared/sources';
-import { notionPageId, notionPageUrl } from '@craft-agent/shared/notion';
+import { NOTION_API_VERSION, notionPageId, notionPageUrl } from '@craft-agent/shared/notion';
 
 type Parent = { type: string; page_id?: string; block_id?: string; database_id?: string; data_source_id?: string };
 type Entity = {
@@ -155,5 +155,5 @@ export async function projectNotionService(workspaceRoot: string, binding: Notio
   }
   const credential = await getSourceCredentialManager().getApiCredential(source);
   if (typeof credential !== 'string' || !credential) throw new Error('NOTION_AUTH_REQUIRED: Set the API Source credential in Stair.');
-  return new ProjectNotionService(binding, buildApiAuthHeaders({ type: 'bearer' }, credential, { 'Notion-Version': '2026-03-11' }));
+  return new ProjectNotionService(binding, buildApiAuthHeaders({ type: 'bearer' }, credential, { 'Notion-Version': NOTION_API_VERSION }));
 }

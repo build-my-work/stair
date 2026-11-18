@@ -3,12 +3,15 @@ import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { loadWorkspaceSources } from '@craft-agent/shared/sources'
 import { safeJsonParse } from '@craft-agent/shared/utils/files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
+import { NOTION_API_VERSION } from '@craft-agent/shared/notion'
+import { buildApiAuthHeaders } from '@craft-agent/session-tools-core/api-auth'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 
 export const HANDLED_CHANNELS = [
   RPC_CHANNELS.sources.GET,
   RPC_CHANNELS.sources.CREATE,
+  RPC_CHANNELS.sources.CONNECT_NOTION,
   RPC_CHANNELS.sources.DELETE,
   RPC_CHANNELS.sources.START_OAUTH,
   RPC_CHANNELS.sources.SAVE_CREDENTIALS,
@@ -45,6 +48,52 @@ export function registerSourcesHandlers(server: RpcServer, deps: HandlerDeps): v
       api: config.api,
       local: config.local,
     })
+  })
+
+  // A fixed Notion preset keeps API details and credentials out of the form/config.
+  server.handle(RPC_CHANNELS.sources.CONNECT_NOTION, async (_ctx, workspaceId: string, token: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    if (typeof token !== 'string' || !token.trim()) throw new Error('NOTION_TOKEN_REQUIRED')
+    const value = token.trim()
+
+    const response = await fetch('https://api.notion.com/v1/users/me', {
+      method: 'GET',
+      headers: buildApiAuthHeaders({ type: 'bearer' }, value, { 'Notion-Version': NOTION_API_VERSION }),
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    }).catch(() => { throw new Error('NOTION_UNAVAILABLE') })
+    if (response.status === 401 || response.status === 403) throw new Error('NOTION_AUTH_FAILED')
+    if (!response.ok) throw new Error('NOTION_UNAVAILABLE')
+
+    const { createSource, loadSource, deleteSource, getSourceCredentialManager, markSourceAuthenticated } = await import('@craft-agent/shared/sources')
+    const config = await createSource(workspace.rootPath, {
+      name: 'Notion', provider: 'notion', type: 'api',
+      icon: 'https://www.notion.so/images/favicon.ico',
+      api: {
+        baseUrl: 'https://api.notion.com', authType: 'bearer',
+        defaultHeaders: { 'Notion-Version': NOTION_API_VERSION },
+        testEndpoint: { method: 'GET', path: '/v1/users/me' },
+      },
+    })
+    const source = loadSource(workspace.rootPath, config.slug)
+    if (!source) {
+      deleteSource(workspace.rootPath, config.slug)
+      throw new Error('NOTION_SAVE_FAILED')
+    }
+    const credentials = getSourceCredentialManager()
+    try {
+      await credentials.save(source, { value })
+      markSourceAuthenticated(workspace.rootPath, config.slug)
+      return loadSource(workspace.rootPath, config.slug)!.config
+    } catch {
+      try {
+        await credentials.delete(source)
+      } finally {
+        deleteSource(workspace.rootPath, config.slug)
+      }
+      throw new Error('NOTION_SAVE_FAILED')
+    }
   })
 
   // Delete a source

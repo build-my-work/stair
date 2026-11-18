@@ -13,7 +13,7 @@ import { SourceMenu } from './SourceMenu'
 import { SendResourceToWorkspaceDialog } from './SendResourceToWorkspaceDialog'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { buildProductDeepLink } from '@/lib/product-deep-link'
-import { EditPopover, getEditConfig, type EditContextKey } from '@/components/ui/EditPopover'
+import { AddSourceMenu } from '@/components/sources/AddSourceMenu'
 import type { LoadedSource, SourceConnectionStatus, SourceFilter } from '../../../shared/types'
 
 /** Source type, shown as the row's trailing meta (MCP · API · Folder) */
@@ -99,18 +99,17 @@ export function SourcesListPanel({
           description={t('sourcesList.emptyDescription')}
           docKey="sources"
         >
-          {workspaceRootPath && (
-            <EditPopover
-              align="center"
+          {workspaceRootPath && activeWorkspaceId && (
+            <AddSourceMenu
+              key={activeWorkspaceId}
+              workspaceId={activeWorkspaceId}
+              workspaceRootPath={workspaceRootPath}
+              sourceType={sourceFilter?.kind === 'type' ? sourceFilter.sourceType : undefined}
               trigger={
                 <Button variant="secondary">
                   {t('sourcesList.addSource')}
                 </Button>
               }
-              {...getEditConfig(
-                sourceFilter?.kind === 'type' ? `add-source-${sourceFilter.sourceType}` as EditContextKey : 'add-source',
-                workspaceRootPath
-              )}
             />
           )}
         </EntityListEmptyScreen>

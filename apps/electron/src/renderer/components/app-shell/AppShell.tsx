@@ -136,6 +136,7 @@ import {
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
 import { SourcesListPanel } from "./SourcesListPanel"
+import { AddSourceMenu } from "../sources/AddSourceMenu"
 import { SkillsListPanel } from "./SkillsListPanel"
 import { AutomationsListPanel } from "../automations/AutomationsListPanel"
 import { ProjectsListPanel } from "./ProjectsListPanel"
@@ -3039,7 +3040,11 @@ function AppShellContent({
                   )}
                   {/* Add Source button (only for sources mode) - uses filter-aware edit config */}
                   {isSourcesNavigation(navState) && activeWorkspace && (
-                    <EditPopover
+                    <AddSourceMenu
+                      key={activeWorkspace.id}
+                      workspaceId={activeWorkspace.id}
+                      workspaceRootPath={activeWorkspace.rootPath}
+                      sourceType={sourceFilter?.kind === 'type' ? sourceFilter.sourceType : undefined}
                       trigger={
                         <HeaderIconButton
                           icon={<Plus className="h-4 w-4" />}
@@ -3047,10 +3052,6 @@ function AppShellContent({
                           data-tutorial="add-source-button"
                         />
                       }
-                      {...getEditConfig(
-                        sourceFilter?.kind === 'type' ? `add-source-${sourceFilter.sourceType}` as EditContextKey : 'add-source',
-                        activeWorkspace.rootPath
-                      )}
                     />
                   )}
                   {/* Add Skill button (only for skills mode) */}

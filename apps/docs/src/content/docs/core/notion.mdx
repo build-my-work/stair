@@ -7,7 +7,9 @@ Project 可以选择以 Notion 保存笔记和文档。在 Project Settings 的�
 
 ## 配置连接
 
-先在 Sources 中配置一个 API Source：地址为 `https://api.notion.com`，认证方式为 Bearer，并通过 Source 的凭据设置填写 Notion API token。个人使用可以采用有 Notion API 权限的 PAT；内部集成 token 需要先在 Notion 中获得父页面的访问权限。
+在 Sources 中点击「＋ → Notion」，填写 API Token 后点击「连接」。Stair 内置了 API 地址、Bearer 认证和连接测试；验证通过后才创建 Source，并将 token 保存到加密凭据存储中。无需填写 URL 或运行配置助手。个人使用可以采用有 Notion API 权限的 PAT；内部集成 token 需要先在 Notion 中获得父页面的访问权限。
+
+接着进入 Projects → 选择项目 → Settings，将「项目文档」设为 Notion，选择刚创建的连接，填写父页面链接并保存。同一工作区的不同 Project 可以复用连接，各自绑定不同父页面。其他类型的数据源仍通过「＋ → 自定义数据源」配置。
 
 Project 配置只保存连接 slug 和父页面 ID，不保存 token。网页需要另外登录；MCP OAuth token、网页 cookie 和 REST token 不能互换。
 
